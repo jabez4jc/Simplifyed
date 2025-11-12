@@ -36,9 +36,11 @@ class QuickOrderService {
       product = 'MIS',
       orderType = 'MARKET',
       price = 0,
+      expiry = null,  // User-selected expiry date
+      optionsLeg = null,  // User-selected options leg (ITM2, ATM, OTM1, etc.)
     } = params;
 
-    log.info('Placing quick order', { symbolId, instanceId, action, tradeMode, quantity });
+    log.info('Placing quick order', { symbolId, instanceId, action, tradeMode, quantity, expiry, optionsLeg });
 
     // Validate inputs
     this._validateOrderParams(params);
@@ -57,7 +59,7 @@ class QuickOrderService {
       strategy,
       symbol,
       instances,
-      { action, tradeMode, quantity, product, orderType, price }
+      { action, tradeMode, quantity, product, orderType, price, expiry, optionsLeg }
     );
 
     log.info('Quick order completed', {
@@ -338,7 +340,7 @@ class QuickOrderService {
    * @private
    */
   async _executeOptionsOrder(instance, symbol, orderParams) {
-    const { action, quantity, product, orderType, price } = orderParams;
+    const { action, quantity, product, orderType, price, expiry: userExpiry, optionsLeg: userOptionsLeg } = orderParams;
 
     // Parse action to determine option type and side
     const optionType = action.includes('CE') ? 'CE' : 'PE';
@@ -348,12 +350,22 @@ class QuickOrderService {
     const underlying = symbol.underlying_symbol || symbol.symbol;
     const ltp = await this._getUnderlyingLTP(instance, underlying, symbol.exchange);
 
-    // Get expiry
-    const expiry = await expiryManagementService.getNearestExpiry(
-      underlying,
-      symbol.exchange,
-      instance
-    );
+    // Get expiry - use user-selected expiry if provided, otherwise auto-select nearest
+    let expiry = userExpiry;
+    if (!expiry) {
+      expiry = await expiryManagementService.getNearestExpiry(
+        underlying,
+        symbol.exchange,
+        instance
+      );
+      log.info('Auto-selected nearest expiry', { expiry });
+    } else {
+      log.info('Using user-selected expiry', { expiry });
+    }
+
+    // Get strike offset - use user-selected options leg if provided, otherwise use symbol default
+    const strikeOffset = userOptionsLeg || symbol.options_strike_selection || 'ATM';
+    log.info('Using strike offset', { strikeOffset, userSelected: !!userOptionsLeg });
 
     // Resolve option symbol
     const optionSymbol = await optionsResolutionService.resolveOptionSymbol({
@@ -361,7 +373,7 @@ class QuickOrderService {
       exchange: symbol.exchange,
       expiry,
       optionType,
-      strikeOffset: symbol.options_strike_selection || 'ITM2',
+      strikeOffset,
       ltp,
       instance,
     });
@@ -451,7 +463,7 @@ class QuickOrderService {
    * @private
    */
   async _closePositions(instance, symbol, orderParams) {
-    const { action, tradeMode, product } = orderParams;
+    const { action, tradeMode, product, expiry: userExpiry } = orderParams;
 
     const underlying = symbol.underlying_symbol || symbol.symbol;
 
@@ -459,11 +471,18 @@ class QuickOrderService {
 
     if (action === 'EXIT_ALL' && tradeMode === 'OPTIONS') {
       // Close all CE and PE positions for the underlying
-      const expiry = await expiryManagementService.getNearestExpiry(
-        underlying,
-        symbol.exchange,
-        instance
-      );
+      // Use user-selected expiry if provided, otherwise auto-select nearest
+      let expiry = userExpiry;
+      if (!expiry) {
+        expiry = await expiryManagementService.getNearestExpiry(
+          underlying,
+          symbol.exchange,
+          instance
+        );
+        log.info('Auto-selected nearest expiry for EXIT_ALL', { expiry });
+      } else {
+        log.info('Using user-selected expiry for EXIT_ALL', { expiry });
+      }
 
       const cePositions = await this._getOpenOptionsPositions(
         instance,

@@ -464,8 +464,7 @@ class QuickOrderHandler {
 
       // Build order request
       const orderData = {
-        symbol,
-        exchange,
+        symbolId,  // Watchlist symbol database ID (required by backend)
         action,
         tradeMode,
         quantity,
