@@ -63,8 +63,11 @@ class QuickOrderHandler {
       // Fetch available expiries for FUTURES/OPTIONS if needed
       let expiries = [];
       if (tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') {
-        console.log(`[QuickOrder] Fetching expiries for symbol: ${symbol}, exchange: ${exchange}, mode: ${tradeMode}`);
-        expiries = await this.fetchAvailableExpiries(symbol, exchange);
+        // Use NFO exchange for derivatives (futures/options)
+        // INDEX and EQUITY symbols need to use NFO/BFO for their derivatives
+        const derivativeExchange = this.getDerivativeExchange(exchange, symbolType);
+        console.log(`[QuickOrder] Fetching expiries for symbol: ${symbol}, exchange: ${exchange} -> ${derivativeExchange}, mode: ${tradeMode}`);
+        expiries = await this.fetchAvailableExpiries(symbol, derivativeExchange);
         console.log(`[QuickOrder] Received ${expiries.length} expiries:`, expiries.slice(0, 5));
         this.availableExpiries.set(symbolId, expiries);
       }
@@ -331,28 +334,73 @@ class QuickOrderHandler {
     try {
       // Extract underlying symbol (remove expiry and strike info)
       const underlying = this.extractUnderlying(symbol);
+      console.log(`[QuickOrder] fetchAvailableExpiries: underlying=${underlying}, exchange=${exchange}`);
 
       // Get first active instance to fetch expiries
-      const instancesResponse = await api.getInstances({ is_active: 1 });
+      // Try without filter first, then filter on client side as fallback
+      let instancesResponse = await api.getInstances({ is_active: 1 });
+      console.log(`[QuickOrder] Instances response with is_active=1:`, instancesResponse.data?.length || 0, 'instances');
+
+      // Fallback: if no instances found with filter, try getting all and filter manually
       if (!instancesResponse.data || instancesResponse.data.length === 0) {
-        console.warn('No active instances available to fetch expiries');
-        return [];
+        console.log(`[QuickOrder] No instances with filter, trying all instances...`);
+        instancesResponse = await api.getInstances({});
+        if (instancesResponse.data && instancesResponse.data.length > 0) {
+          // Filter active instances manually
+          const activeInstances = instancesResponse.data.filter(inst =>
+            inst.is_active === 1 || inst.is_active === true || inst.is_active === '1'
+          );
+          console.log(`[QuickOrder] Found ${activeInstances.length} active instances out of ${instancesResponse.data.length} total`);
+          if (activeInstances.length === 0) {
+            console.warn('No active instances available to fetch expiries (after manual filter)');
+            return [];
+          }
+          instancesResponse.data = activeInstances;
+        } else {
+          console.warn('No instances available at all to fetch expiries');
+          return [];
+        }
       }
 
-      const instanceId = instancesResponse.data[0].id;
+      const instance = instancesResponse.data[0];
+      const instanceId = instance.id;
+      console.log(`[QuickOrder] Using instance: ${instance.name} (ID: ${instanceId})`);
 
       // Fetch expiries from API
       const response = await api.getExpiry(underlying, instanceId, exchange);
+      console.log(`[QuickOrder] Expiry API response:`, response);
 
       if (response.data && Array.isArray(response.data)) {
-        return response.data.map(exp => exp.expiry || exp);
+        const expiries = response.data.map(exp => exp.expiry || exp);
+        console.log(`[QuickOrder] Mapped ${expiries.length} expiries:`, expiries.slice(0, 5));
+        return expiries;
       }
 
+      console.warn('[QuickOrder] Expiry API returned no data or non-array data');
       return [];
     } catch (error) {
-      console.error('Failed to fetch expiries:', error);
+      console.error('[QuickOrder] Failed to fetch expiries:', error);
       return [];
     }
+  }
+
+  /**
+   * Get the correct exchange for derivatives based on the symbol's cash exchange
+   */
+  getDerivativeExchange(exchange, symbolType) {
+    // Map cash exchanges to their derivative exchanges
+    const exchangeMap = {
+      'NSE': 'NFO',         // NSE equity -> NSE F&O
+      'NSE_INDEX': 'NFO',   // NSE indices -> NSE F&O
+      'BSE': 'BFO',         // BSE equity -> BSE F&O
+      'BSE_INDEX': 'BFO',   // BSE indices -> BSE F&O
+      'NFO': 'NFO',         // Already derivative exchange
+      'BFO': 'BFO',         // Already derivative exchange
+      'MCX': 'MCX',         // Commodities
+      'CDS': 'CDS',         // Currency derivatives
+    };
+
+    return exchangeMap[exchange] || 'NFO'; // Default to NFO
   }
 
   /**
