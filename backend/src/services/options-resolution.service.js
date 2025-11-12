@@ -304,7 +304,8 @@ class OptionsResolutionService {
 
       // Filter for options with matching expiry
       const options = searchResults.filter(result => {
-        const isOption = result.instrumenttype?.includes('OPT');
+        // Options have instrumenttype as 'CE' or 'PE', not 'OPT'
+        const isOption = result.instrumenttype === 'CE' || result.instrumenttype === 'PE';
         const matchesExpiry = result.expiry === expiry;
         const matchesUnderlying = result.name === underlying;
         return isOption && matchesExpiry && matchesUnderlying;
@@ -315,7 +316,7 @@ class OptionsResolutionService {
           underlying,
           requestedExpiry: expiry,
           uniqueExpiriesInResults: [...new Set(searchResults
-            .filter(r => r.instrumenttype?.includes('OPT'))
+            .filter(r => r.instrumenttype === 'CE' || r.instrumenttype === 'PE')
             .map(r => r.expiry))]
         });
         throw new NotFoundError(`No options found for ${underlying} with expiry ${expiry}`);
