@@ -536,6 +536,21 @@ class QuickOrderHandler {
       // Log results
       console.log('Quick order results:', response.data);
 
+      // Log detailed error information if any orders failed
+      if (response.data.results) {
+        response.data.results.forEach((result, index) => {
+          if (!result.success) {
+            console.error(`[QuickOrder] Order ${index + 1} FAILED:`, {
+              message: result.message,
+              error: result.error,
+              fullResult: result
+            });
+          } else {
+            console.log(`[QuickOrder] Order ${index + 1} SUCCESS:`, result);
+          }
+        });
+      }
+
     } catch (error) {
       console.error('Quick order failed:', error);
       Utils.showToast(`Order failed: ${error.message}`, 'error');
