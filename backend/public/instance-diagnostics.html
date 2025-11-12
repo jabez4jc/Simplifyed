@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Instance Diagnostics</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      max-width: 900px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 30px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    h1 { color: #333; margin-top: 0; }
+    button {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      padding: 15px 30px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+      margin: 10px 10px 10px 0;
+      transition: transform 0.2s;
+    }
+    button:hover { transform: translateY(-2px); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.danger {
+      background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+    }
+    button.success {
+      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    }
+    #output {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 20px;
+      border-radius: 8px;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      line-height: 1.6;
+      max-height: 500px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+    .success { color: #4ade80; }
+    .error { color: #f87171; }
+    .info { color: #60a5fa; }
+    .warning { color: #fbbf24; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      padding: 12px;
+      text-align: left;
+      border-bottom: 1px solid #e5e7eb;
+    }
+    th {
+      background: #f9fafb;
+      font-weight: 600;
+    }
+    .badge {
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .badge-active { background: #d1fae5; color: #065f46; }
+    .badge-inactive { background: #fee2e2; color: #991b1b; }
+    .badge-healthy { background: #dbeafe; color: #1e40af; }
+    .badge-unhealthy { background: #fef3c7; color: #92400e; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🔍 Instance Diagnostics</h1>
+    <p>Check instance status and force activation if needed.</p>
+
+    <button onclick="checkInstances()">1. Check All Instances</button>
+    <button class="success" onclick="activateInstance()" id="activateBtn" disabled>2. Force Activate</button>
+    <button onclick="testConnection()" id="testBtn" disabled>3. Test Connection</button>
+    <button onclick="fetchExpiries()" id="expiryBtn" disabled>4. Test Expiry Fetch</button>
+  </div>
+
+  <div class="card" id="instancesCard" style="display: none;">
+    <h2>📋 Instances</h2>
+    <div id="instancesTable"></div>
+  </div>
+
+  <div class="card">
+    <h2>📋 Console Output</h2>
+    <div id="output"></div>
+  </div>
+
+  <script>
+    const output = document.getElementById('output');
+    let currentInstanceId = null;
+
+    function log(message, type = 'info') {
+      const timestamp = new Date().toLocaleTimeString();
+      const span = document.createElement('span');
+      span.className = type;
+      span.textContent = `[${timestamp}] ${message}\n`;
+      output.appendChild(span);
+      output.scrollTop = output.scrollHeight;
+    }
+
+    async function checkInstances() {
+      log('Checking all instances...', 'info');
+
+      try {
+        const response = await fetch('/api/v1/instances', {
+          credentials: 'include'
+        });
+        const result = await response.json();
+
+        if (!result.data || result.data.length === 0) {
+          log('❌ No instances found at all!', 'error');
+          return;
+        }
+
+        log(`✅ Found ${result.data.length} instance(s)`, 'success');
+
+        // Show instances in table
+        const card = document.getElementById('instancesCard');
+        const tableDiv = document.getElementById('instancesTable');
+
+        let tableHtml = '<table><thead><tr>';
+        tableHtml += '<th>ID</th><th>Name</th><th>Status</th><th>Health</th><th>Order Placement</th><th>Actions</th>';
+        tableHtml += '</tr></thead><tbody>';
+
+        result.data.forEach(inst => {
+          const isActive = inst.is_active === 1 || inst.is_active === true;
+          const isHealthy = inst.health_status === 'healthy';
+          const canPlaceOrders = inst.order_placement_enabled === 1 || inst.order_placement_enabled === true;
+
+          tableHtml += '<tr>';
+          tableHtml += `<td>${inst.id}</td>`;
+          tableHtml += `<td>${inst.name}</td>`;
+          tableHtml += `<td><span class="badge badge-${isActive ? 'active' : 'inactive'}">${isActive ? 'Active' : 'Inactive'}</span></td>`;
+          tableHtml += `<td><span class="badge badge-${isHealthy ? 'healthy' : 'unhealthy'}">${inst.health_status || 'unknown'}</span></td>`;
+          tableHtml += `<td>${canPlaceOrders ? '✅' : '❌'}</td>`;
+          tableHtml += `<td><button onclick="selectInstance(${inst.id})">Select</button></td>`;
+          tableHtml += '</tr>';
+
+          log(`  Instance ${inst.id}: ${inst.name}`, 'info');
+          log(`    Active: ${isActive}`, isActive ? 'success' : 'error');
+          log(`    Health: ${inst.health_status || 'unknown'}`, isHealthy ? 'success' : 'warning');
+          log(`    Orders: ${canPlaceOrders}`, canPlaceOrders ? 'success' : 'error');
+
+          // Auto-select the Flattrade instance
+          if (inst.name.includes('Flattrade')) {
+            currentInstanceId = inst.id;
+            log(`\n👉 Auto-selected instance ${inst.id}`, 'info');
+            document.getElementById('activateBtn').disabled = false;
+            document.getElementById('testBtn').disabled = false;
+            document.getElementById('expiryBtn').disabled = !isActive;
+          }
+        });
+
+        tableHtml += '</tbody></table>';
+        tableDiv.innerHTML = tableHtml;
+        card.style.display = 'block';
+
+        // Count active instances
+        const activeCount = result.data.filter(i => i.is_active === 1 || i.is_active === true).length;
+        if (activeCount === 0) {
+          log('\n⚠️  No active instances! Use "Force Activate" button.', 'warning');
+        } else {
+          log(`\n✅ ${activeCount} active instance(s) ready`, 'success');
+        }
+
+      } catch (error) {
+        log(`❌ Error: ${error.message}`, 'error');
+      }
+    }
+
+    function selectInstance(id) {
+      currentInstanceId = id;
+      log(`Selected instance ${id}`, 'info');
+      document.getElementById('activateBtn').disabled = false;
+      document.getElementById('testBtn').disabled = false;
+      document.getElementById('expiryBtn').disabled = false;
+    }
+
+    async function activateInstance() {
+      if (!currentInstanceId) {
+        log('❌ No instance selected', 'error');
+        return;
+      }
+
+      log(`\nForce activating instance ${currentInstanceId}...`, 'info');
+
+      try {
+        const response = await fetch(`/api/v1/instances/${currentInstanceId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            is_active: true,
+            order_placement_enabled: true,
+            is_analyzer_mode: false
+          })
+        });
+
+        const result = await response.json();
+
+        if (result.status === 'success') {
+          log('✅ Instance activated successfully!', 'success');
+          log('Checking status again...', 'info');
+          await checkInstances();
+        } else {
+          log(`⚠️  ${result.message}`, 'warning');
+        }
+      } catch (error) {
+        log(`❌ Error: ${error.message}`, 'error');
+      }
+    }
+
+    async function testConnection() {
+      if (!currentInstanceId) {
+        log('❌ No instance selected', 'error');
+        return;
+      }
+
+      log(`\nTesting connection to instance ${currentInstanceId}...`, 'info');
+
+      try {
+        const response = await fetch(`/api/v1/instances/${currentInstanceId}/health`, {
+          method: 'POST',
+          credentials: 'include'
+        });
+
+        const result = await response.json();
+
+        if (result.status === 'success') {
+          log('✅ Connection test successful!', 'success');
+          log(`   Health: ${result.data.health_status}`, 'success');
+        } else {
+          log(`⚠️  Connection test: ${result.message}`, 'warning');
+        }
+      } catch (error) {
+        log(`❌ Error: ${error.message}`, 'error');
+      }
+    }
+
+    async function fetchExpiries() {
+      if (!currentInstanceId) {
+        log('❌ No instance selected', 'error');
+        return;
+      }
+
+      log(`\nFetching expiries from instance ${currentInstanceId}...`, 'info');
+
+      try {
+        // Test NIFTY
+        log('Testing NIFTY...', 'info');
+        const niftyResponse = await fetch(
+          `/api/v1/symbols/expiry?symbol=NIFTY&instanceId=${currentInstanceId}&exchange=NFO`,
+          { credentials: 'include' }
+        );
+        const niftyResult = await niftyResponse.json();
+
+        if (niftyResult.data && niftyResult.data.length > 0) {
+          log(`✅ Found ${niftyResult.data.length} NIFTY expiries`, 'success');
+          niftyResult.data.slice(0, 5).forEach(exp => {
+            log(`   📅 ${exp.expiry || exp}`, 'info');
+          });
+        } else {
+          log('⚠️  No NIFTY expiries found', 'warning');
+        }
+
+        // Test BANKNIFTY
+        log('\nTesting BANKNIFTY...', 'info');
+        const bnResponse = await fetch(
+          `/api/v1/symbols/expiry?symbol=BANKNIFTY&instanceId=${currentInstanceId}&exchange=NFO`,
+          { credentials: 'include' }
+        );
+        const bnResult = await bnResponse.json();
+
+        if (bnResult.data && bnResult.data.length > 0) {
+          log(`✅ Found ${bnResult.data.length} BANKNIFTY expiries`, 'success');
+          bnResult.data.slice(0, 5).forEach(exp => {
+            log(`   📅 ${exp.expiry || exp}`, 'info');
+          });
+        } else {
+          log('⚠️  No BANKNIFTY expiries found', 'warning');
+        }
+
+        log('\n🎉 Expiry selector should now work in dashboard!', 'success');
+
+      } catch (error) {
+        log(`❌ Error: ${error.message}`, 'error');
+      }
+    }
+
+    // Auto-run on page load
+    log('🚀 Instance Diagnostics ready', 'success');
+    log('Click "1. Check All Instances" to begin\n', 'info');
+  </script>
+</body>
+</html>
