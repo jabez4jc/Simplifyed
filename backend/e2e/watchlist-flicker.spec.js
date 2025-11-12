@@ -9,10 +9,20 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Watchlist Quotes Flickering Issue', () => {
+  let consoleErrors = [];
+
   test.beforeEach(async ({ page }) => {
+    // Clear console errors from previous tests
+    consoleErrors = [];
+
     // Enable console logging to catch errors
     page.on('console', msg => {
       console.log(`[Browser Console] ${msg.type()}: ${msg.text()}`);
+
+      // Collect errors for later reporting
+      if (msg.type() === 'error') {
+        consoleErrors.push(msg.text());
+      }
     });
 
     // Enable network monitoring
@@ -32,18 +42,14 @@ test.describe('Watchlist Quotes Flickering Issue', () => {
     // Wait for login or dashboard
     await page.waitForLoadState('networkidle');
 
-    // Check if we need to login (test mode)
-    const isLoggedIn = await page.evaluate(() => {
-      return document.body.innerHTML.includes('dashboard') ||
-             document.body.innerHTML.includes('Simplifyed');
-    });
-
-    if (!isLoggedIn) {
-      console.log('⚠️  Need to handle authentication');
+    // Check if we need to login (test mode) - use reliable selector
+    try {
+      await page.waitForSelector('#current-user-email', { timeout: 5000 });
+      console.log('✅ Logged in successfully\n');
+    } catch (error) {
+      console.log('⚠️  Could not find login indicator (may need authentication)');
       return;
     }
-
-    console.log('✅ Logged in successfully\n');
 
     // Click on Watchlists navigation
     await page.click('[data-view="watchlists"]');
@@ -100,16 +106,7 @@ test.describe('Watchlist Quotes Flickering Issue', () => {
       console.log('✅ No flickering detected in DOM element count\n');
     }
 
-    // Check console for any critical errors
-    const consoleErrors = [];
-    page.on('console', msg => {
-      if (msg.type() === 'error') {
-        consoleErrors.push(msg.text());
-      }
-    });
-
-    await page.waitForTimeout(1000);
-
+    // Check console for any critical errors (collected in beforeEach)
     if (consoleErrors.length > 0) {
       console.log(`\n❌ Found ${consoleErrors.length} console errors:`);
       consoleErrors.forEach((err, i) => console.log(`   ${i + 1}. ${err}`));
