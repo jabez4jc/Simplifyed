@@ -16,13 +16,13 @@ const router = express.Router();
  *
  * Request body:
  * {
- *   "symbol": "NIFTY",
- *   "exchange": "NFO",
+ *   "symbolId": 123 (required - watchlist symbol database ID),
  *   "action": "BUY" | "SELL" | "EXIT" | "BUY_CE" | "SELL_CE" | "BUY_PE" | "SELL_PE" | "EXIT_ALL",
  *   "tradeMode": "EQUITY" | "FUTURES" | "OPTIONS",
- *   "optionsLeg": "ITM2" | "ITM1" | "ATM" | "OTM1" | "OTM2" (required if tradeMode is OPTIONS),
- *   "quantity": 100,
- *   "instanceId": 1 (optional - if not provided, broadcasts to all instances),
+ *   "optionsLeg": "ITM3" | "ITM2" | "ITM1" | "ATM" | "OTM1" | "OTM2" | "OTM3" (required for OPTIONS actions),
+ *   "quantity": 1,
+ *   "expiry": "2025-11-18" (optional - for FUTURES/OPTIONS, uses nearest if not provided),
+ *   "instanceId": 1 (optional - if not provided, broadcasts to all assigned instances),
  *   "product": "MIS" | "CNC" | "NRML" (optional, defaults to MIS),
  *   "strategy": "quickorder" (optional)
  * }
@@ -30,8 +30,7 @@ const router = express.Router();
 router.post('/', async (req, res, next) => {
   try {
     const {
-      symbol,
-      exchange,
+      symbolId,
       action,
       tradeMode,
       optionsLeg,
@@ -39,15 +38,17 @@ router.post('/', async (req, res, next) => {
       instanceId,
       product,
       strategy,
+      expiry,
     } = req.body;
 
     // Validate required fields
-    if (!symbol) {
-      throw new ValidationError('symbol is required');
+    if (!symbolId) {
+      throw new ValidationError('symbolId is required');
     }
 
-    if (!exchange) {
-      throw new ValidationError('exchange is required');
+    const parsedSymbolId = parseInt(symbolId, 10);
+    if (isNaN(parsedSymbolId) || parsedSymbolId <= 0) {
+      throw new ValidationError('symbolId must be a positive integer');
     }
 
     if (!action) {
@@ -91,19 +92,18 @@ router.post('/', async (req, res, next) => {
     }
 
     log.info('Placing quick order', {
-      symbol,
-      exchange,
+      symbolId: parsedSymbolId,
       action,
       tradeMode,
       optionsLeg,
       quantity,
       instanceId,
+      expiry,
     });
 
     // Place quick order
     const result = await quickOrderService.placeQuickOrder({
-      symbol,
-      exchange,
+      symbolId: parsedSymbolId,
       action,
       tradeMode,
       optionsLeg,
@@ -111,6 +111,7 @@ router.post('/', async (req, res, next) => {
       instanceId: instanceId ? parseInt(instanceId, 10) : undefined,
       product: product || 'MIS',
       strategy: strategy || 'quickorder',
+      expiry: expiry || null,
     });
 
     // Determine overall success
