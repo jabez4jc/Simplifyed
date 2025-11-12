@@ -484,9 +484,10 @@ class DashboardApp {
       }
 
       return `
-        <table class="table" id="watchlist-table-${watchlistId}">
+        <table class="table watchlist-table" id="watchlist-table-${watchlistId}">
           <thead>
             <tr>
+              <th style="width: 40px;"></th>
               <th>Symbol</th>
               <th>Exchange</th>
               <th>Type</th>
@@ -501,7 +502,16 @@ class DashboardApp {
           </thead>
           <tbody>
             ${symbols.map(sym => `
-              <tr data-symbol-id="${sym.id}" data-symbol="${sym.symbol}" data-exchange="${sym.exchange}">
+              <tr class="symbol-row" data-symbol-id="${sym.id}" data-symbol="${sym.symbol}" data-exchange="${sym.exchange}">
+                <td>
+                  <button
+                    class="btn-toggle-expansion"
+                    data-toggle-symbol="${sym.id}"
+                    onclick="quickOrder.toggleRowExpansion(${watchlistId}, ${sym.id})"
+                    title="Expand trading controls">
+                    ▼
+                  </button>
+                </td>
                 <td class="font-medium">${Utils.escapeHTML(sym.symbol)}</td>
                 <td>${Utils.escapeHTML(sym.exchange)}</td>
                 <td>
@@ -525,6 +535,13 @@ class DashboardApp {
                   <button class="btn btn-error btn-sm" onclick="app.removeSymbol(${watchlistId}, ${sym.id})">
                     Remove
                   </button>
+                </td>
+              </tr>
+              <tr id="expansion-row-${sym.id}" class="expansion-row" style="display: none;">
+                <td colspan="11" class="expansion-cell">
+                  <div id="expansion-content-${sym.id}" class="expansion-content" data-loaded="false">
+                    <p class="text-neutral-500 text-sm">Loading...</p>
+                  </div>
                 </td>
               </tr>
             `).join('')}
