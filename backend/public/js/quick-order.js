@@ -60,6 +60,18 @@ class QuickOrderHandler {
       const optionsLeg = this.selectedOptionsLegs.get(symbolId) || 'ATM';
       const quantity = this.defaultQuantities.get(symbolId) || 1;
 
+      // Save defaults to Maps if not already set
+      if (!this.selectedTradeModes.has(symbolId)) {
+        this.selectedTradeModes.set(symbolId, tradeMode);
+        console.log('[QuickOrder] Initialized tradeMode to default:', tradeMode);
+      }
+      if (!this.selectedOptionsLegs.has(symbolId)) {
+        this.selectedOptionsLegs.set(symbolId, optionsLeg);
+      }
+      if (!this.defaultQuantities.has(symbolId)) {
+        this.defaultQuantities.set(symbolId, quantity);
+      }
+
       // Fetch available expiries for FUTURES/OPTIONS if needed
       let expiries = [];
       if (tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') {
