@@ -380,6 +380,14 @@ class QuickOrderService {
       instance,
     });
 
+    // Determine the correct derivatives exchange
+    // INDEX symbols are on NSE_INDEX but their options trade on NFO
+    const derivativeExchange = this._getDerivativeExchange(symbol.exchange);
+    log.info('Exchange mapping for options', {
+      originalExchange: symbol.exchange,
+      derivativeExchange
+    });
+
     // Get open positions for this underlying and expiry
     const openPositions = await this._getOpenOptionsPositions(
       instance,
@@ -407,14 +415,14 @@ class QuickOrderService {
     const positionSize = await this._getCurrentPositionSize(
       instance,
       optionSymbol.symbol,
-      symbol.exchange,
+      derivativeExchange,  // Use derivative exchange
       product
     );
 
     // Place new order
     const orderResult = await openalgoClient.placeSmartOrder(instance, {
       strategy: symbol.watchlist_name || 'default',
-      exchange: symbol.exchange,
+      exchange: derivativeExchange,  // Use derivative exchange (NFO, not NSE_INDEX)
       symbol: optionSymbol.symbol,
       action: side,
       quantity: finalQuantity,
@@ -431,7 +439,7 @@ class QuickOrderService {
       instance_id: instance.id,
       underlying,
       symbol: optionSymbol.symbol,
-      exchange: symbol.exchange,
+      exchange: derivativeExchange,  // Use derivative exchange
       action: side,
       trade_mode: 'OPTIONS',
       options_leg: symbol.options_strike_selection,
@@ -1007,6 +1015,25 @@ class QuickOrderService {
       log.error('Failed to get quick order stats', error);
       throw error;
     }
+  }
+
+  /**
+   * Map cash market exchange to derivative exchange
+   * @private
+   */
+  _getDerivativeExchange(exchange) {
+    const exchangeMap = {
+      'NSE': 'NFO',         // NSE equity -> NSE F&O
+      'NSE_INDEX': 'NFO',   // NSE indices -> NSE F&O
+      'BSE': 'BFO',         // BSE equity -> BSE F&O
+      'BSE_INDEX': 'BFO',   // BSE indices -> BSE F&O
+      'NFO': 'NFO',         // Already derivative exchange
+      'BFO': 'BFO',         // Already derivative exchange
+      'MCX': 'MCX',         // Commodities
+      'CDS': 'CDS',         // Currency derivatives
+    };
+
+    return exchangeMap[exchange] || exchange;
   }
 }
 
