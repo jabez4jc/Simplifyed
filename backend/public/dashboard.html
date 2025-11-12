@@ -73,6 +73,32 @@
   </div>
 
   <!-- Scripts -->
+  <script>
+    // Clear Service Workers and caches on page load
+    (async function clearAllCaches() {
+      console.log('[Cache] Clearing all caches and service workers...');
+
+      // Unregister service workers
+      if ('serviceWorker' in navigator) {
+        const registrations = await navigator.serviceWorker.getRegistrations();
+        for (let registration of registrations) {
+          await registration.unregister();
+          console.log('[Cache] ✅ Service Worker unregistered:', registration.scope);
+        }
+      }
+
+      // Delete all caches
+      if ('caches' in window) {
+        const names = await caches.keys();
+        for (let name of names) {
+          await caches.delete(name);
+          console.log('[Cache] ✅ Deleted cache:', name);
+        }
+      }
+
+      console.log('[Cache] ✅ All caches cleared!');
+    })();
+  </script>
   <script src="/js/api-client.js?v=20251112-2200"></script>
   <script src="/js/utils.js?v=20251112-2200"></script>
   <script src="/js/quick-order.js?v=20251112-2200"></script>
