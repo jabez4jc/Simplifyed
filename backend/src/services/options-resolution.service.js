@@ -12,11 +12,40 @@ import { parseFloatSafe } from '../utils/sanitizers.js';
 
 class OptionsResolutionService {
   /**
+   * Convert expiry date from YYYY-MM-DD to DD-MMM-YY format (OpenAlgo format)
+   * @param {string} expiry - Expiry in YYYY-MM-DD format
+   * @returns {string} Expiry in DD-MMM-YY format
+   * @private
+   */
+  _convertToOpenAlgoExpiryFormat(expiry) {
+    if (!expiry) return null;
+
+    // If already in DD-MMM-YY format, return as-is
+    if (/^\d{2}-[A-Z]{3}-\d{2}$/.test(expiry)) {
+      return expiry;
+    }
+
+    // Convert YYYY-MM-DD to DD-MMM-YY
+    if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
+      const date = new Date(expiry);
+      const day = String(date.getDate()).padStart(2, '0');
+      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+                          'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+      const month = monthNames[date.getMonth()];
+      const year = String(date.getFullYear()).slice(-2);
+      return `${day}-${month}-${year}`;
+    }
+
+    log.warn('Unknown expiry format in _convertToOpenAlgoExpiryFormat', { expiry });
+    return expiry;
+  }
+
+  /**
    * Resolve option symbol for a given underlying and strike offset
    * @param {Object} params - Resolution parameters
    * @param {string} params.underlying - Underlying symbol (e.g., NIFTY, RELIANCE)
    * @param {string} params.exchange - Exchange (NFO, BSE)
-   * @param {string} params.expiry - Expiry date (YYYY-MM-DD)
+   * @param {string} params.expiry - Expiry date (YYYY-MM-DD or DD-MMM-YY)
    * @param {string} params.optionType - CE or PE
    * @param {string} params.strikeOffset - ITM3, ITM2, ITM1, ATM, OTM1, OTM2, OTM3
    * @param {number} params.ltp - Current LTP of underlying
@@ -107,19 +136,26 @@ class OptionsResolutionService {
    * @private
    */
   async _getOptionChain(underlying, exchange, expiry, instance) {
-    // Try to get from cache first
-    const cached = await this._getOptionChainFromCache(underlying, exchange, expiry);
+    // Convert expiry to OpenAlgo format (DD-MMM-YY) for API calls and cache lookup
+    const openalgoExpiry = this._convertToOpenAlgoExpiryFormat(expiry);
+    log.debug('Expiry format conversion', {
+      inputExpiry: expiry,
+      openalgoExpiry
+    });
+
+    // Try to get from cache first (using OpenAlgo format)
+    const cached = await this._getOptionChainFromCache(underlying, exchange, openalgoExpiry);
     if (cached && cached.length > 0) {
       log.debug('Option chain retrieved from cache', {
         underlying,
-        expiry,
+        expiry: openalgoExpiry,
         count: cached.length,
       });
       return this._processOptionChain(cached);
     }
 
     // Fetch from OpenAlgo
-    log.debug('Fetching option chain from OpenAlgo', { underlying, expiry });
+    log.debug('Fetching option chain from OpenAlgo', { underlying, expiry: openalgoExpiry });
 
     try {
       // Use the getOptionChain method from OpenAlgo client
@@ -128,22 +164,22 @@ class OptionsResolutionService {
       const chainData = await openalgoClient.getOptionChain(
         instance,
         underlying,
-        expiry,
+        openalgoExpiry,  // Use OpenAlgo format
         exchange
       );
 
-      // Cache the option chain
-      await this._cacheOptionChain(underlying, exchange, expiry, chainData);
+      // Cache the option chain (using OpenAlgo format)
+      await this._cacheOptionChain(underlying, exchange, openalgoExpiry, chainData);
 
       return this._processOptionChain(chainData);
     } catch (error) {
       log.error('Failed to fetch option chain from OpenAlgo', error, {
         underlying,
-        expiry,
+        expiry: openalgoExpiry,
       });
 
       // If OpenAlgo option chain fails, try to get symbols via search
-      return await this._getOptionChainViaSearch(underlying, exchange, expiry, instance);
+      return await this._getOptionChainViaSearch(underlying, exchange, openalgoExpiry, instance);
     }
   }
 
@@ -259,6 +295,13 @@ class OptionsResolutionService {
       const searchQuery = underlying;
       const searchResults = await openalgoClient.searchSymbols(instance, searchQuery);
 
+      log.debug('Search results for option chain', {
+        underlying,
+        expiry,
+        totalResults: searchResults.length,
+        sampleExpiries: searchResults.slice(0, 5).map(r => r.expiry)
+      });
+
       // Filter for options with matching expiry
       const options = searchResults.filter(result => {
         const isOption = result.instrumenttype?.includes('OPT');
@@ -268,8 +311,21 @@ class OptionsResolutionService {
       });
 
       if (options.length === 0) {
+        log.warn('No matching options found after filtering', {
+          underlying,
+          requestedExpiry: expiry,
+          uniqueExpiriesInResults: [...new Set(searchResults
+            .filter(r => r.instrumenttype?.includes('OPT'))
+            .map(r => r.expiry))]
+        });
         throw new NotFoundError(`No options found for ${underlying} with expiry ${expiry}`);
       }
+
+      log.debug('Found options via search', {
+        underlying,
+        expiry,
+        optionsCount: options.length
+      });
 
       // Cache these options
       await this._cacheOptionChain(underlying, exchange, expiry, options);
