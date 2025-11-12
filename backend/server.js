@@ -1,0 +1,214 @@
+/**
+ * Simplifyed Admin V2 - Server Entry Point
+ * Complete rebuild with clean architecture
+ */
+
+import express from 'express';
+import helmet from 'helmet';
+import cors from 'cors';
+import compression from 'compression';
+import passport from 'passport';
+import { config } from './src/core/config.js';
+import { log } from './src/core/logger.js';
+import db from './src/core/database.js';
+import pollingService from './src/services/polling.service.js';
+
+// Middleware
+import { configureSession, configurePassport, requireAuth } from './src/middleware/auth.js';
+import { errorHandler, notFoundHandler } from './src/middleware/error-handler.js';
+import { requestLogger, bodyParserErrorHandler } from './src/middleware/request-logger.js';
+
+// Routes
+import apiV1Routes from './src/routes/v1/index.js';
+
+// Create Express app
+const app = express();
+
+/**
+ * Middleware Setup
+ */
+
+// Security
+app.use(helmet({
+  contentSecurityPolicy: false, // Disable for development
+}));
+
+// CORS
+app.use(cors({
+  origin: config.cors.origin,
+  credentials: true,
+}));
+
+// Compression
+app.use(compression());
+
+// Body parsers
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Body parser error handler
+app.use(bodyParserErrorHandler);
+
+// Request logging
+app.use(requestLogger);
+
+// Session
+app.use(configureSession());
+
+// Passport authentication
+app.use(configurePassport());
+app.use(passport.session());
+
+/**
+ * Routes
+ */
+
+// API v1
+app.use('/api/v1', apiV1Routes);
+
+// Google OAuth routes
+app.get('/auth/google', passport.authenticate('google', {
+  scope: ['profile', 'email'],
+}));
+
+app.get('/auth/google/callback',
+  passport.authenticate('google', { failureRedirect: '/login' }),
+  (req, res) => {
+    res.redirect('/dashboard');
+  }
+);
+
+// Logout
+app.post('/auth/logout', (req, res) => {
+  req.logout((err) => {
+    if (err) {
+      log.error('Logout error', err);
+    }
+    res.json({ status: 'success', message: 'Logged out successfully' });
+  });
+});
+
+// Current user
+app.get('/api/user', requireAuth, (req, res) => {
+  res.json({
+    status: 'success',
+    data: {
+      id: req.user.id,
+      email: req.user.email,
+      is_admin: req.user.is_admin,
+    },
+  });
+});
+
+// Static files (frontend)
+app.use(express.static('public'));
+
+// 404 handler
+app.use(notFoundHandler);
+
+// Global error handler
+app.use(errorHandler);
+
+/**
+ * Server Startup
+ */
+async function startServer() {
+  try {
+    // Connect to database
+    await db.connect();
+    log.info('Database connected');
+
+    // Ensure test user exists in development
+    if (config.env === 'development' && !config.auth.googleClientId) {
+      const testUser = await db.get('SELECT * FROM users WHERE id = 1');
+      if (!testUser) {
+        await db.run(
+          'INSERT INTO users (id, email, is_admin) VALUES (1, ?, 1)',
+          ['test@example.com']
+        );
+        log.info('Test user created');
+      }
+    }
+
+    // Start polling service
+    await pollingService.start();
+    log.info('Polling service started');
+
+    // Start HTTP server
+    app.listen(config.port, () => {
+      log.info('Server started', {
+        port: config.port,
+        env: config.env,
+        baseUrl: config.baseUrl,
+        testMode: !config.auth.googleClientId,
+      });
+
+      console.log('');
+      console.log('╔════════════════════════════════════════════════════════════╗');
+      console.log('║                                                            ║');
+      console.log('║         Simplifyed Admin V2 - Server Running              ║');
+      console.log('║                                                            ║');
+      console.log('╠════════════════════════════════════════════════════════════╣');
+      console.log(`║  Environment:  ${config.env.padEnd(43)} ║`);
+      console.log(`║  Port:         ${config.port.toString().padEnd(43)} ║`);
+      console.log(`║  Base URL:     ${config.baseUrl.padEnd(43)} ║`);
+      console.log(`║  Test Mode:    ${(!config.auth.googleClientId ? 'Yes' : 'No').padEnd(43)} ║`);
+      console.log('║                                                            ║');
+      console.log('╠════════════════════════════════════════════════════════════╣');
+      console.log('║  API Endpoints:                                            ║');
+      console.log('║    - GET  /api/v1/health                                   ║');
+      console.log('║    - GET  /api/v1/instances                                ║');
+      console.log('║    - GET  /api/v1/watchlists                               ║');
+      console.log('║    - GET  /api/v1/orders                                   ║');
+      console.log('║    - GET  /api/v1/positions/:instanceId                    ║');
+      console.log('║    - GET  /api/v1/symbols/search                           ║');
+      console.log('║    - GET  /api/v1/polling/status                           ║');
+      console.log('║                                                            ║');
+      console.log('╠════════════════════════════════════════════════════════════╣');
+      console.log('║  Polling:                                                  ║');
+      console.log(`║    - Instance Updates:  Every ${(config.polling.instanceInterval / 1000).toString()}s ║`.padEnd(62) + '║');
+      console.log(`║    - Market Data:       Every ${(config.polling.marketDataInterval / 1000).toString()}s (when active) ║`.padEnd(62) + '║');
+      console.log('║    - Health Checks:     Every 5m                           ║');
+      console.log('║                                                            ║');
+      console.log('╚════════════════════════════════════════════════════════════╝');
+      console.log('');
+
+      if (!config.auth.googleClientId) {
+        console.log('⚠️  Running in TEST MODE (no Google OAuth configured)');
+        console.log('   All requests will use test user: test@example.com');
+        console.log('');
+      }
+    });
+  } catch (error) {
+    log.error('Failed to start server', error);
+    process.exit(1);
+  }
+}
+
+/**
+ * Graceful Shutdown
+ */
+async function shutdown() {
+  log.info('Shutting down server...');
+
+  try {
+    // Stop polling service
+    pollingService.stop();
+    log.info('Polling service stopped');
+
+    // Close database
+    await db.close();
+    log.info('Database closed');
+
+    process.exit(0);
+  } catch (error) {
+    log.error('Error during shutdown', error);
+    process.exit(1);
+  }
+}
+
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
+// Start server
+startServer();

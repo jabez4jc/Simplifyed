@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Simplifyed Admin V2 - Trading Dashboard</title>
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <!-- Toast Container -->
+  <div id="toast-container"></div>
+
+  <div class="app-container">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h1>Simplifyed Admin</h1>
+        <p class="text-sm text-neutral-600">V2.0</p>
+      </div>
+
+      <nav class="sidebar-nav">
+        <a href="#" class="nav-item active" data-view="dashboard">
+          <span>📊</span>
+          <span>Dashboard</span>
+        </a>
+        <a href="#" class="nav-item" data-view="instances">
+          <span>🖥️</span>
+          <span>Instances</span>
+        </a>
+        <a href="#" class="nav-item" data-view="watchlists">
+          <span>📋</span>
+          <span>Watchlists</span>
+        </a>
+        <a href="#" class="nav-item" data-view="orders">
+          <span>📝</span>
+          <span>Orders</span>
+        </a>
+        <a href="#" class="nav-item" data-view="positions">
+          <span>💼</span>
+          <span>Positions</span>
+        </a>
+      </nav>
+
+      <div style="padding: 1rem; border-top: 1px solid var(--color-neutral-200);">
+        <button class="btn btn-secondary" style="width: 100%;" onclick="app.logout()">
+          Logout
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Top Bar -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <h2 id="view-title">Dashboard</h2>
+        </div>
+        <div class="topbar-right">
+          <button class="btn btn-secondary btn-icon" onclick="app.refreshCurrentView()" title="Refresh">
+            🔄
+          </button>
+          <div class="text-sm text-neutral-600">
+            <span id="current-user-email">Loading...</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- Content Area -->
+      <div class="content-area" id="content-area">
+        <!-- Dynamic content loads here -->
+      </div>
+    </main>
+  </div>
+
+  <!-- Scripts -->
+  <script src="/js/api-client.js"></script>
+  <script src="/js/utils.js"></script>
+  <script src="/js/dashboard.js"></script>
+</body>
+</html>
