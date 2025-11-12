@@ -22,10 +22,10 @@ Each row expands to show **context‑specific trade controls** based on the inst
 | Instrument Type | Controls Shown | Toggle Options |
 |------------------|----------------|----------------|
 | Equity (non‑F&O) | [BUY] [SELL] [EXIT] | — |
-| Equity (F&O‑eligible) | [BUY] [SELL] [EXIT] (Equity) + Options/Futures toggles | `Equity | Futures | Options` |
+| Equity (F&O‑eligible) | [BUY] [SELL] [EXIT] (Equity) + Options/Futures toggles | `Equity, Futures, Options` |
 | Futures | [BUY] [SELL] [EXIT] | — |
 | Direct Option Symbol | [BUY] [SELL] [EXIT] | — |
-| Index (e.g., NIFTY) | Options/Futures controls | `Futures | Options` |
+| Index (e.g., NIFTY) | Options/Futures controls | `Futures, Options` |
 
 ---
 
@@ -168,8 +168,8 @@ Each row expands to show **context‑specific trade controls** based on the inst
 
 | Index | Exchange | Toggle Options |
 |--------|-----------|----------------|
-| NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY | NSE_INDEX | `Futures | Options` |
-| SENSEX | BSE_INDEX | `Futures | Options` |
+| NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY | NSE_INDEX | `Futures, Options` |
+| SENSEX | BSE_INDEX | `Futures, Options` |
 
 Indexes follow the same logic as underlying equity but are **always traded via Futures or Options** only.
 
