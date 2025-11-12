@@ -151,7 +151,8 @@ class QuickOrderHandler {
                 <button
                   class="btn-trade-mode ${mode === tradeMode ? 'active' : ''} ${!this.isModeAvailable(mode, symbolType) ? 'disabled' : ''}"
                   data-mode="${mode}"
-                  onclick="quickOrder.selectTradeMode(${symbolId}, '${mode}')"
+                  data-symbol-id="${symbolId}"
+                  onclick="console.log('[QuickOrder] Button clicked:', ${symbolId}, '${mode}'); quickOrder.selectTradeMode(${symbolId}, '${mode}'); return false;"
                   ${!this.isModeAvailable(mode, symbolType) ? 'disabled' : ''}
                   title="${this.getTradeModeTooltip(mode, symbolType)}">
                   ${mode}
