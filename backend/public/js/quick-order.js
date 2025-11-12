@@ -63,7 +63,9 @@ class QuickOrderHandler {
       // Fetch available expiries for FUTURES/OPTIONS if needed
       let expiries = [];
       if (tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') {
+        console.log(`[QuickOrder] Fetching expiries for symbol: ${symbol}, exchange: ${exchange}, mode: ${tradeMode}`);
         expiries = await this.fetchAvailableExpiries(symbol, exchange);
+        console.log(`[QuickOrder] Received ${expiries.length} expiries:`, expiries.slice(0, 5));
         this.availableExpiries.set(symbolId, expiries);
       }
 
@@ -71,6 +73,7 @@ class QuickOrderHandler {
       if (selectedExpiry && !this.selectedExpiries.has(symbolId)) {
         this.selectedExpiries.set(symbolId, selectedExpiry);
       }
+      console.log(`[QuickOrder] Selected expiry:`, selectedExpiry);
 
       // Render trading controls
       contentDiv.innerHTML = this.renderTradingControls({
@@ -114,6 +117,13 @@ class QuickOrderHandler {
     const availableModes = this.getAvailableTradeModes(symbolType);
     const showOptionsLeg = tradeMode === 'OPTIONS';
     const showExpirySelector = (tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') && expiries && expiries.length > 0;
+
+    console.log(`[QuickOrder] Rendering controls:`, {
+      tradeMode,
+      expiryCount: expiries?.length || 0,
+      showExpirySelector,
+      selectedExpiry
+    });
 
     return `
       <div class="quick-order-panel">
