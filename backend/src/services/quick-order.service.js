@@ -146,7 +146,8 @@ class QuickOrderService {
    * @private
    */
   async _getTargetInstances(instanceId, watchlistId) {
-    if (instanceId === 'ALL') {
+    // If no instanceId provided or instanceId is 'ALL', broadcast to all assigned instances
+    if (!instanceId || instanceId === 'ALL') {
       // Get all assigned instances
       const instances = await db.all(
         `SELECT i.* FROM instances i
@@ -160,6 +161,7 @@ class QuickOrderService {
         throw new NotFoundError('No active instances available for order placement');
       }
 
+      log.info(`Broadcasting order to ${instances.length} assigned instance(s)`);
       return instances;
     } else {
       // Get specific instance
