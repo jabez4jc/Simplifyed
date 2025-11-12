@@ -1030,3 +1030,27 @@ body {
 .badge.badge-warning { background-color: var(--color-warning); color: white; }
 .badge.badge-neutral { background-color: var(--color-neutral-400); color: white; }
 
+
+/* Expiry selector */
+.select-expiry {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-sm);
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--radius-sm);
+  background: white;
+  color: var(--color-neutral-700);
+  cursor: pointer;
+  transition: border-color 0.2s ease;
+  min-width: 150px;
+}
+
+.select-expiry:hover {
+  border-color: var(--color-neutral-400);
+}
+
+.select-expiry:focus {
+  outline: none;
+  border-color: var(--color-info);
+  box-shadow: 0 0 0 3px var(--color-info-bg);
+}
+

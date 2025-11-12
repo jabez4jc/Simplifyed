@@ -9,6 +9,8 @@ class QuickOrderHandler {
     this.defaultQuantities = new Map(); // symbolId -> quantity
     this.selectedTradeModes = new Map(); // symbolId -> tradeMode
     this.selectedOptionsLegs = new Map(); // symbolId -> optionsLeg
+    this.selectedExpiries = new Map(); // symbolId -> expiry
+    this.availableExpiries = new Map(); // symbolId -> expiry list
   }
 
   /**
@@ -58,6 +60,18 @@ class QuickOrderHandler {
       const optionsLeg = this.selectedOptionsLegs.get(symbolId) || 'ATM';
       const quantity = this.defaultQuantities.get(symbolId) || 1;
 
+      // Fetch available expiries for FUTURES/OPTIONS if needed
+      let expiries = [];
+      if (tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') {
+        expiries = await this.fetchAvailableExpiries(symbol, exchange);
+        this.availableExpiries.set(symbolId, expiries);
+      }
+
+      const selectedExpiry = this.selectedExpiries.get(symbolId) || (expiries.length > 0 ? expiries[0] : null);
+      if (selectedExpiry && !this.selectedExpiries.has(symbolId)) {
+        this.selectedExpiries.set(symbolId, selectedExpiry);
+      }
+
       // Render trading controls
       contentDiv.innerHTML = this.renderTradingControls({
         watchlistId,
@@ -68,6 +82,8 @@ class QuickOrderHandler {
         tradeMode,
         optionsLeg,
         quantity,
+        expiries,
+        selectedExpiry,
       });
 
       contentDiv.dataset.loaded = 'true';
@@ -94,9 +110,10 @@ class QuickOrderHandler {
   /**
    * Render trading controls UI
    */
-  renderTradingControls({ watchlistId, symbolId, symbol, exchange, symbolType, tradeMode, optionsLeg, quantity }) {
+  renderTradingControls({ watchlistId, symbolId, symbol, exchange, symbolType, tradeMode, optionsLeg, quantity, expiries, selectedExpiry }) {
     const availableModes = this.getAvailableTradeModes(symbolType);
     const showOptionsLeg = tradeMode === 'OPTIONS';
+    const showExpirySelector = (tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') && expiries && expiries.length > 0;
 
     return `
       <div class="quick-order-panel">
@@ -117,6 +134,22 @@ class QuickOrderHandler {
               `).join('')}
             </div>
           </div>
+
+          ${showExpirySelector ? `
+            <div class="form-group-inline">
+              <label class="form-label-sm">Expiry:</label>
+              <select
+                class="select-expiry"
+                data-symbol-id="${symbolId}"
+                onchange="quickOrder.selectExpiry(${symbolId}, this.value)">
+                ${expiries.map(expiry => `
+                  <option value="${expiry}" ${expiry === selectedExpiry ? 'selected' : ''}>
+                    ${this.formatExpiryDate(expiry)}
+                  </option>
+                `).join('')}
+              </select>
+            </div>
+          ` : ''}
 
           ${showOptionsLeg ? `
             <div class="form-group-inline">
@@ -268,10 +301,85 @@ class QuickOrderHandler {
   }
 
   /**
+   * Select expiry date
+   */
+  selectExpiry(symbolId, expiry) {
+    this.selectedExpiries.set(symbolId, expiry);
+  }
+
+  /**
    * Update quantity
    */
   updateQuantity(symbolId, quantity) {
     this.defaultQuantities.set(symbolId, quantity);
+  }
+
+  /**
+   * Fetch available expiries for a symbol
+   */
+  async fetchAvailableExpiries(symbol, exchange) {
+    try {
+      // Extract underlying symbol (remove expiry and strike info)
+      const underlying = this.extractUnderlying(symbol);
+
+      // Get first active instance to fetch expiries
+      const instancesResponse = await api.getInstances({ is_active: 1 });
+      if (!instancesResponse.data || instancesResponse.data.length === 0) {
+        console.warn('No active instances available to fetch expiries');
+        return [];
+      }
+
+      const instanceId = instancesResponse.data[0].id;
+
+      // Fetch expiries from API
+      const response = await api.getExpiry(underlying, instanceId, exchange);
+
+      if (response.data && Array.isArray(response.data)) {
+        return response.data.map(exp => exp.expiry || exp);
+      }
+
+      return [];
+    } catch (error) {
+      console.error('Failed to fetch expiries:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Extract underlying symbol from full symbol name
+   */
+  extractUnderlying(symbol) {
+    // Remove common suffixes and extract base symbol
+    // Examples: BANKNIFTY25NOV2558000CE -> BANKNIFTY
+    //           NIFTY25DEC50FUT -> NIFTY
+
+    // Try to match pattern with numbers/dates
+    const match = symbol.match(/^([A-Z]+)/);
+    return match ? match[1] : symbol;
+  }
+
+  /**
+   * Format expiry date for display
+   */
+  formatExpiryDate(expiry) {
+    if (!expiry) return 'N/A';
+
+    // Handle different date formats
+    // "2025-11-28" -> "28-NOV-25"
+    // "28-NOV-25" -> "28-NOV-25" (already formatted)
+
+    if (expiry.includes('-') && expiry.length === 10) {
+      // Convert YYYY-MM-DD to DD-MMM-YY
+      const date = new Date(expiry);
+      const day = String(date.getDate()).padStart(2, '0');
+      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+                          'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+      const month = monthNames[date.getMonth()];
+      const year = String(date.getFullYear()).slice(-2);
+      return `${day}-${month}-${year}`;
+    }
+
+    return expiry;
   }
 
   /**
@@ -288,6 +396,7 @@ class QuickOrderHandler {
       const tradeMode = this.selectedTradeModes.get(symbolId) || 'EQUITY';
       const optionsLeg = this.selectedOptionsLegs.get(symbolId) || 'ATM';
       const quantity = this.defaultQuantities.get(symbolId) || 1;
+      const selectedExpiry = this.selectedExpiries.get(symbolId);
 
       // Validate quantity
       if (!quantity || quantity <= 0) {
@@ -303,6 +412,11 @@ class QuickOrderHandler {
         tradeMode,
         quantity,
       };
+
+      // Add expiry for FUTURES/OPTIONS mode
+      if ((tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') && selectedExpiry) {
+        orderData.expiry = selectedExpiry;
+      }
 
       // Add options leg for OPTIONS mode with option actions
       if (tradeMode === 'OPTIONS' && ['BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE'].includes(action)) {
