@@ -611,6 +611,13 @@ class DashboardApp {
    */
   async updateWatchlistQuotes(watchlistId) {
     try {
+      // Check if watchlist table exists in DOM (view might be re-rendering)
+      const table = document.getElementById(`watchlist-table-${watchlistId}`);
+      if (!table) {
+        console.log(`Watchlist table ${watchlistId} not found in DOM, skipping quote update`);
+        return;
+      }
+
       // Get watchlist symbols
       const response = await api.getWatchlistSymbols(watchlistId);
       const symbols = response.data;
@@ -1569,6 +1576,7 @@ class DashboardApp {
 
   /**
    * Start auto-refresh
+   * Note: Does not refresh watchlists view to avoid conflicts with watchlist polling
    */
   startAutoRefresh() {
     // Clear existing interval
@@ -1576,9 +1584,14 @@ class DashboardApp {
       clearInterval(this.pollingInterval);
     }
 
-    // Refresh every 15 seconds
+    // Refresh every 15 seconds, but skip watchlists view
+    // to avoid conflicts with independent watchlist polling
     this.pollingInterval = setInterval(() => {
-      this.refreshCurrentView();
+      // Only refresh if not on watchlists view
+      // Watchlists view has its own polling mechanism
+      if (this.currentView !== 'watchlists') {
+        this.refreshCurrentView();
+      }
     }, 15000);
   }
 
