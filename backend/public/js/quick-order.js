@@ -84,11 +84,15 @@ class QuickOrderHandler {
         this.availableExpiries.set(symbolId, expiries);
       }
 
-      const selectedExpiry = this.selectedExpiries.get(symbolId) || (expiries.length > 0 ? expiries[0] : null);
-      if (selectedExpiry && !this.selectedExpiries.has(symbolId)) {
+      // Get or set the selected expiry (always store in YYYY-MM-DD format)
+      let selectedExpiry = this.selectedExpiries.get(symbolId);
+      if (!selectedExpiry && expiries.length > 0) {
+        // Use first expiry, ensure it's normalized to YYYY-MM-DD
+        selectedExpiry = this.normalizeExpiryDate(expiries[0]);
         this.selectedExpiries.set(symbolId, selectedExpiry);
+        console.log(`[QuickOrder] Initial expiry set: raw="${expiries[0]}" normalized="${selectedExpiry}"`);
       }
-      console.log(`[QuickOrder] Selected expiry:`, selectedExpiry);
+      console.log(`[QuickOrder] Selected expiry (YYYY-MM-DD format):`, selectedExpiry);
 
       // Render trading controls
       contentDiv.innerHTML = this.renderTradingControls({
@@ -332,7 +336,10 @@ class QuickOrderHandler {
    * Select expiry date
    */
   selectExpiry(symbolId, expiry) {
-    this.selectedExpiries.set(symbolId, expiry);
+    // Ensure expiry is always stored in YYYY-MM-DD format (API format)
+    const normalizedExpiry = this.normalizeExpiryDate(expiry);
+    console.log(`[QuickOrder] selectExpiry: raw="${expiry}" normalized="${normalizedExpiry}"`);
+    this.selectedExpiries.set(symbolId, normalizedExpiry);
   }
 
   /**
@@ -456,6 +463,42 @@ class QuickOrderHandler {
   }
 
   /**
+   * Normalize expiry date to YYYY-MM-DD format (API format)
+   * Converts "18-NOV-25" -> "2025-11-18"
+   * Passes through "2025-11-18" unchanged
+   */
+  normalizeExpiryDate(expiry) {
+    if (!expiry) return null;
+
+    // Already in YYYY-MM-DD format (10 chars, starts with digit, has 2 dashes)
+    if (expiry.length === 10 && /^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
+      return expiry;
+    }
+
+    // Convert DD-MMM-YY to YYYY-MM-DD
+    if (expiry.length === 9 && /^\d{2}-[A-Z]{3}-\d{2}$/.test(expiry)) {
+      const [day, monthStr, year] = expiry.split('-');
+      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+                          'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+      const month = monthNames.indexOf(monthStr);
+
+      if (month === -1) {
+        console.error('[QuickOrder] Invalid month in expiry:', expiry);
+        return null;
+      }
+
+      // Convert 2-digit year to 4-digit year (assuming 20xx)
+      const fullYear = `20${year}`;
+      const paddedMonth = String(month + 1).padStart(2, '0');
+
+      return `${fullYear}-${paddedMonth}-${day}`;
+    }
+
+    console.warn('[QuickOrder] Unknown expiry format:', expiry);
+    return expiry;
+  }
+
+  /**
    * Place quick order
    */
   async placeOrder(watchlistId, symbolId, action) {
@@ -496,9 +539,11 @@ class QuickOrderHandler {
         quantity,
       };
 
-      // Add expiry for FUTURES/OPTIONS mode
+      // Add expiry for FUTURES/OPTIONS mode (ensure YYYY-MM-DD format)
       if ((tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') && selectedExpiry) {
-        orderData.expiry = selectedExpiry;
+        // Double-check normalization (defensive programming)
+        orderData.expiry = this.normalizeExpiryDate(selectedExpiry);
+        console.log(`[QuickOrder] Expiry for order: raw="${selectedExpiry}" normalized="${orderData.expiry}"`);
       }
 
       // Add options leg for OPTIONS mode with option actions
