@@ -293,7 +293,9 @@ class QuickOrderHandler {
    * Select trade mode
    */
   selectTradeMode(symbolId, mode) {
+    console.log('[QuickOrder] selectTradeMode called:', { symbolId, mode });
     this.selectedTradeModes.set(symbolId, mode);
+    console.log('[QuickOrder] Map after setting:', Array.from(this.selectedTradeModes.entries()));
 
     // Reload expansion content
     const expansionContent = document.getElementById(`expansion-content-${symbolId}`);
@@ -456,6 +458,17 @@ class QuickOrderHandler {
       const quantity = this.defaultQuantities.get(symbolId) || 1;
       const selectedExpiry = this.selectedExpiries.get(symbolId);
 
+      console.log('[QuickOrder] placeOrder - Settings retrieved:', {
+        symbolId,
+        action,
+        tradeModeFromMap: this.selectedTradeModes.get(symbolId),
+        finalTradeMode: tradeMode,
+        optionsLeg,
+        quantity,
+        selectedExpiry,
+        mapContents: Array.from(this.selectedTradeModes.entries()),
+      });
+
       // Validate quantity
       if (!quantity || quantity <= 0) {
         Utils.showToast('Quantity must be greater than 0', 'error');
@@ -479,6 +492,8 @@ class QuickOrderHandler {
       if (tradeMode === 'OPTIONS' && ['BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE'].includes(action)) {
         orderData.optionsLeg = optionsLeg;
       }
+
+      console.log('[QuickOrder] Final order data being sent:', orderData);
 
       // Show loading state
       const actionButtons = document.querySelectorAll(`#expansion-content-${symbolId} .btn-quick-action`);
