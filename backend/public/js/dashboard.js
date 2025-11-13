@@ -340,7 +340,8 @@ class DashboardApp {
     this.expandedWatchlists = this.expandedWatchlists || new Set();
 
     contentArea.innerHTML = `
-      <div class="card">
+      <!-- Watchlists Section -->
+      <div class="card mb-6">
         <div class="card-header">
           <h3 class="card-title">Watchlists</h3>
           <button class="btn btn-primary" onclick="app.showAddWatchlistModal()">
@@ -351,7 +352,32 @@ class DashboardApp {
           ${await this.renderWatchlistsAccordion(this.watchlists)}
         </div>
       </div>
+
+      <!-- Positions & Orders Tabbed Section -->
+      <div class="card">
+        <div class="card-header" style="border-bottom: 1px solid var(--color-neutral-200);">
+          <div class="tabs" id="positions-orders-tabs">
+            <button class="tab-button active" data-tab="positions" onclick="app.switchTab('positions')">
+              💼 Positions
+            </button>
+            <button class="tab-button" data-tab="orders" onclick="app.switchTab('orders')">
+              📝 Orders
+            </button>
+          </div>
+        </div>
+        <div class="tab-content">
+          <div id="tab-positions" class="tab-panel active">
+            <div class="p-4">Loading positions...</div>
+          </div>
+          <div id="tab-orders" class="tab-panel hidden">
+            <div class="p-4">Loading orders...</div>
+          </div>
+        </div>
+      </div>
     `;
+
+    // Load positions by default
+    await this.loadPositionsTab();
   }
 
   /**
@@ -1610,6 +1636,128 @@ class DashboardApp {
         this.refreshCurrentView();
       }
     }, 15000);
+  }
+
+  /**
+   * Switch between Positions and Orders tabs
+   */
+  async switchTab(tabName) {
+    // Update tab buttons
+    const tabs = document.querySelectorAll('.tab-button');
+    tabs.forEach(tab => {
+      if (tab.dataset.tab === tabName) {
+        tab.classList.add('active');
+      } else {
+        tab.classList.remove('active');
+      }
+    });
+
+    // Update tab panels
+    const panels = document.querySelectorAll('.tab-panel');
+    panels.forEach(panel => {
+      panel.classList.add('hidden');
+    });
+
+    const activePanel = document.getElementById(`tab-${tabName}`);
+    if (activePanel) {
+      activePanel.classList.remove('hidden');
+    }
+
+    // Load content if needed
+    if (tabName === 'positions') {
+      await this.loadPositionsTab();
+    } else if (tabName === 'orders') {
+      await this.loadOrdersTab();
+    }
+  }
+
+  /**
+   * Load positions content into tab
+   */
+  async loadPositionsTab() {
+    const positionsPanel = document.getElementById('tab-positions');
+    if (!positionsPanel) return;
+
+    try {
+      // Fetch all instances
+      const instancesRes = await api.getInstances({ is_active: true });
+      const instances = instancesRes.data;
+
+      if (instances.length === 0) {
+        positionsPanel.innerHTML = '<div class="p-4"><p class="text-center text-neutral-600">No active instances found</p></div>';
+        return;
+      }
+
+      // Fetch positions for all instances
+      const positionsData = await Promise.all(
+        instances.map(async (instance) => {
+          try {
+            const posRes = await api.getPositions(instance.id);
+            return {
+              instance,
+              positions: posRes.data.filter(p => {
+                const qty = parseFloat(p.quantity || p.netqty || p.net_quantity || 0);
+                return qty !== 0;
+              }),
+            };
+          } catch (error) {
+            return { instance, positions: [] };
+          }
+        })
+      );
+
+      positionsPanel.innerHTML = `
+        ${positionsData.map(({ instance, positions }) => `
+          <div class="border-b last:border-b-0" style="padding: 1rem;">
+            <div class="flex items-center justify-between mb-3">
+              <h4 class="font-semibold text-lg">${Utils.escapeHTML(instance.name)}</h4>
+              <button class="btn btn-error btn-sm"
+                      onclick="app.closeAllPositions(${instance.id})">
+                Close All Positions
+              </button>
+            </div>
+            ${positions.length > 0 ? this.renderPositionsTable(positions) :
+              '<p class="text-center text-neutral-600">No open positions</p>'}
+          </div>
+        `).join('')}
+      `;
+    } catch (error) {
+      positionsPanel.innerHTML = `<div class="p-4"><p class="text-center text-error-600">Failed to load positions: ${error.message}</p></div>`;
+    }
+  }
+
+  /**
+   * Load orders content into tab
+   */
+  async loadOrdersTab() {
+    const ordersPanel = document.getElementById('tab-orders');
+    if (!ordersPanel) return;
+
+    try {
+      // Fetch orders
+      const response = await api.getOrders();
+      const orders = response.data;
+
+      ordersPanel.innerHTML = `
+        <div class="p-4">
+          <div class="flex justify-between items-center mb-4">
+            <div class="flex gap-2">
+              <select class="form-select" onchange="app.filterOrders(this.value)">
+                <option value="">All Status</option>
+                <option value="pending">Pending</option>
+                <option value="open">Open</option>
+                <option value="complete">Complete</option>
+                <option value="cancelled">Cancelled</option>
+                <option value="rejected">Rejected</option>
+              </select>
+            </div>
+          </div>
+          ${this.renderOrdersTable(orders)}
+        </div>
+      `;
+    } catch (error) {
+      ordersPanel.innerHTML = `<div class="p-4"><p class="text-center text-error-600">Failed to load orders: ${error.message}</p></div>`;
+    }
   }
 
   /**

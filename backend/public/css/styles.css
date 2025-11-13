@@ -190,6 +190,50 @@ body {
   color: var(--color-neutral-700);
 }
 
+/* ========== Tabs ========== */
+.tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 2px solid var(--color-neutral-200);
+  margin-bottom: -1px;
+}
+
+.tab-button {
+  padding: var(--space-3) var(--space-6);
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  cursor: pointer;
+  font-size: var(--font-size-base);
+  font-weight: 500;
+  color: var(--color-neutral-600);
+  transition: all 0.2s;
+  position: relative;
+  bottom: -2px;
+}
+
+.tab-button:hover {
+  color: var(--color-neutral-900);
+  background-color: var(--color-neutral-50);
+}
+
+.tab-button.active {
+  color: var(--color-primary-600);
+  border-bottom-color: var(--color-primary-600);
+}
+
+.tab-content {
+  min-height: 200px;
+}
+
+.tab-panel {
+  display: block;
+}
+
+.tab-panel.hidden {
+  display: none;
+}
+
 /* ========== Buttons ========== */
 .btn {
   display: inline-flex;
