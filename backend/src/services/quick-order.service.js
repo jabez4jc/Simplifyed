@@ -148,12 +148,11 @@ class QuickOrderService {
   async _getTargetInstances(instanceId, watchlistId) {
     // If no instanceId provided or instanceId is 'ALL', broadcast to all assigned instances
     if (!instanceId || instanceId === 'ALL') {
-      // Get all assigned instances
+      // Get all assigned instances (including analyzer mode instances)
       const instances = await db.all(
         `SELECT i.* FROM instances i
          JOIN watchlist_instances wi ON i.id = wi.instance_id
-         WHERE wi.watchlist_id = ? AND i.is_active = 1 AND i.order_placement_enabled = 1
-         AND i.is_analyzer_mode = 0`,
+         WHERE wi.watchlist_id = ? AND i.is_active = 1 AND i.order_placement_enabled = 1`,
         [watchlistId]
       );
 
@@ -178,10 +177,7 @@ class QuickOrderService {
         throw new ValidationError('Order placement is disabled for this instance');
       }
 
-      if (instance.is_analyzer_mode) {
-        throw new ValidationError('Instance is in analyzer mode, cannot place orders');
-      }
-
+      // Allow order placement even in analyzer mode
       return [instance];
     }
   }
