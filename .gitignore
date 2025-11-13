@@ -8,9 +8,13 @@ yarn-error.log*
 database/*.db
 database/*.db-shm
 database/*.db-wal
+backend/database/*.db
+backend/database/*.db-shm
+backend/database/*.db-wal
 
 # Logs
 logs/*.log
+backend/logs/*.log
 
 # Environment
 .env

@@ -343,6 +343,33 @@ class APIClient {
     });
   }
 
+  // Quick Order APIs
+  async placeQuickOrder(data) {
+    return this.request('/quickorders', {
+      method: 'POST',
+      body: data,
+    });
+  }
+
+  async getQuickOrders(filters = {}) {
+    const params = new URLSearchParams(filters);
+    return this.request(`/quickorders?${params}`);
+  }
+
+  async getQuickOrderById(id) {
+    return this.request(`/quickorders/${id}`);
+  }
+
+  async getQuickOrdersBySymbol(symbol, filters = {}) {
+    const params = new URLSearchParams(filters);
+    return this.request(`/quickorders/symbol/${symbol}?${params}`);
+  }
+
+  async getQuickOrderStats(filters = {}) {
+    const params = new URLSearchParams(filters);
+    return this.request(`/quickorders/stats/summary?${params}`);
+  }
+
   // Auth APIs
   async getCurrentUser() {
     return this.request('/user', { baseURL: '/api' });

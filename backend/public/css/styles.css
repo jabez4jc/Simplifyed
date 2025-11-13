@@ -190,6 +190,50 @@ body {
   color: var(--color-neutral-700);
 }
 
+/* ========== Tabs ========== */
+.tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 2px solid var(--color-neutral-200);
+  margin-bottom: -1px;
+}
+
+.tab-button {
+  padding: var(--space-3) var(--space-6);
+  background: none;
+  border: none;
+  border-bottom: 3px solid transparent;
+  cursor: pointer;
+  font-size: var(--font-size-base);
+  font-weight: 500;
+  color: var(--color-neutral-600);
+  transition: all 0.2s;
+  position: relative;
+  bottom: -2px;
+}
+
+.tab-button:hover {
+  color: var(--color-neutral-900);
+  background-color: var(--color-neutral-50);
+}
+
+.tab-button.active {
+  color: var(--color-primary-600);
+  border-bottom-color: var(--color-primary-600);
+}
+
+.tab-content {
+  min-height: 200px;
+}
+
+.tab-panel {
+  display: block;
+}
+
+.tab-panel.hidden {
+  display: none;
+}
+
 /* ========== Buttons ========== */
 .btn {
   display: inline-flex;
@@ -698,3 +742,359 @@ body {
 .value-loss-updated {
   animation: loss-highlight 0.8s ease-out;
 }
+
+/* ========== Quick Order / Row Expansion Styles ========== */
+
+/* Toggle expansion button */
+.btn-toggle-expansion {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--color-neutral-600);
+  padding: 4px 8px;
+  transition: all 0.2s ease;
+  border-radius: var(--radius-sm);
+}
+
+.btn-toggle-expansion:hover {
+  background-color: var(--color-neutral-100);
+  color: var(--color-neutral-900);
+}
+
+/* Expansion row */
+.expansion-row {
+  background-color: var(--color-neutral-50);
+}
+
+.expansion-cell {
+  padding: 0 !important;
+  border-top: 2px solid var(--color-neutral-200);
+}
+
+.expansion-content {
+  padding: var(--space-4);
+  animation: slideDown 0.2s ease-out;
+}
+
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Quick order panel layout */
+.quick-order-panel {
+  display: flex;
+  gap: var(--space-6);
+  align-items: flex-start;
+  justify-content: space-between;
+  background: white;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-neutral-200);
+}
+
+/* Config section (left side) */
+.quick-order-config {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  flex: 1;
+}
+
+.form-group-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.form-label-sm {
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  color: var(--color-neutral-700);
+  min-width: 100px;
+}
+
+/* Trade mode selector */
+.trade-mode-selector {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.btn-trade-mode {
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  border: 1px solid var(--color-neutral-300);
+  background: white;
+  color: var(--color-neutral-700);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-trade-mode:hover:not(.disabled) {
+  border-color: var(--color-info);
+  color: var(--color-info);
+  background-color: var(--color-info-bg);
+}
+
+.btn-trade-mode.active {
+  background-color: var(--color-info);
+  color: white;
+  border-color: var(--color-info);
+}
+
+.btn-trade-mode.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Options leg selector */
+.select-options-leg {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-sm);
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--radius-sm);
+  background: white;
+  color: var(--color-neutral-700);
+  cursor: pointer;
+  transition: border-color 0.2s ease;
+  min-width: 120px;
+}
+
+.select-options-leg:hover {
+  border-color: var(--color-neutral-400);
+}
+
+.select-options-leg:focus {
+  outline: none;
+  border-color: var(--color-info);
+  box-shadow: 0 0 0 3px var(--color-info-bg);
+}
+
+/* Quantity input */
+.input-quantity {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-sm);
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--radius-sm);
+  background: white;
+  color: var(--color-neutral-900);
+  width: 120px;
+  transition: border-color 0.2s ease;
+}
+
+.input-quantity:hover {
+  border-color: var(--color-neutral-400);
+}
+
+.input-quantity:focus {
+  outline: none;
+  border-color: var(--color-info);
+  box-shadow: 0 0 0 3px var(--color-info-bg);
+}
+
+/* Action buttons section (right side) */
+.quick-order-actions {
+  display: flex;
+  align-items: center;
+}
+
+.action-buttons-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-2);
+  min-width: 360px;
+}
+
+.action-buttons-grid.simple {
+  grid-template-columns: repeat(3, 1fr);
+  min-width: 270px;
+}
+
+/* Quick action buttons */
+.btn-quick-action {
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-quick-action:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.btn-quick-action:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-quick-action:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Loading state */
+.btn-quick-action.loading::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.3),
+    transparent
+  );
+  animation: loading 1s infinite;
+}
+
+@keyframes loading {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+/* BUY buttons (green) */
+.btn-buy,
+.btn-buy-ce,
+.btn-buy-pe {
+  background-color: var(--color-profit);
+  color: white;
+}
+
+.btn-buy:hover:not(:disabled),
+.btn-buy-ce:hover:not(:disabled),
+.btn-buy-pe:hover:not(:disabled) {
+  background-color: #0d9668;
+}
+
+/* SELL buttons (red) */
+.btn-sell,
+.btn-sell-ce,
+.btn-sell-pe {
+  background-color: var(--color-loss);
+  color: white;
+}
+
+.btn-sell:hover:not(:disabled),
+.btn-sell-ce:hover:not(:disabled),
+.btn-sell-pe:hover:not(:disabled) {
+  background-color: #dc2626;
+}
+
+/* EXIT buttons (orange/warning) */
+.btn-exit {
+  background-color: var(--color-warning);
+  color: white;
+}
+
+.btn-exit:hover:not(:disabled) {
+  background-color: #d97706;
+}
+
+/* EXIT ALL button (dark orange) */
+.btn-exit-all {
+  background-color: #ea580c;
+  color: white;
+}
+
+.btn-exit-all:hover:not(:disabled) {
+  background-color: #c2410c;
+}
+
+/* Responsive design for smaller screens */
+@media (max-width: 1200px) {
+  .quick-order-panel {
+    flex-direction: column;
+  }
+
+  .action-buttons-grid,
+  .action-buttons-grid.simple {
+    width: 100%;
+    min-width: unset;
+  }
+}
+
+@media (max-width: 768px) {
+  .action-buttons-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .action-buttons-grid.simple {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .form-label-sm {
+    min-width: 80px;
+    font-size: var(--font-size-xs);
+  }
+
+  .trade-mode-selector {
+    flex-wrap: wrap;
+  }
+}
+
+/* Enhanced watchlist table for row expansion */
+.watchlist-table {
+  width: 100%;
+}
+
+.watchlist-table .symbol-row {
+  transition: background-color 0.15s ease;
+}
+
+.watchlist-table .symbol-row:hover {
+  background-color: var(--color-neutral-50);
+}
+
+/* Symbol type badge updates */
+.badge.badge-primary { background-color: var(--color-info); color: white; }
+.badge.badge-info { background-color: #06b6d4; color: white; }
+.badge.badge-success { background-color: var(--color-profit); color: white; }
+.badge.badge-warning { background-color: var(--color-warning); color: white; }
+.badge.badge-neutral { background-color: var(--color-neutral-400); color: white; }
+
+
+/* Expiry selector */
+.select-expiry {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-sm);
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--radius-sm);
+  background: white;
+  color: var(--color-neutral-700);
+  cursor: pointer;
+  transition: border-color 0.2s ease;
+  min-width: 150px;
+}
+
+.select-expiry:hover {
+  border-color: var(--color-neutral-400);
+}
+
+.select-expiry:focus {
+  outline: none;
+  border-color: var(--color-info);
+  box-shadow: 0 0 0 3px var(--color-info-bg);
+}
+

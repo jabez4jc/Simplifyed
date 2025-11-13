@@ -10,6 +10,7 @@ import orderRoutes from './orders.js';
 import positionRoutes from './positions.js';
 import symbolRoutes from './symbols.js';
 import pollingRoutes from './polling.js';
+import quickOrderRoutes from './quickorders.js';
 
 const router = express.Router();
 
@@ -20,6 +21,7 @@ router.use('/orders', orderRoutes);
 router.use('/positions', positionRoutes);
 router.use('/symbols', symbolRoutes);
 router.use('/polling', pollingRoutes);
+router.use('/quickorders', quickOrderRoutes);
 
 // Health check endpoint
 router.get('/health', (req, res) => {
