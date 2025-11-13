@@ -56,8 +56,8 @@ class DashboardService {
             error: null,
           };
 
-          // Group by analyzer_mode
-          if (instance.analyzer_mode) {
+          // Group by is_analyzer_mode
+          if (instance.is_analyzer_mode) {
             analyzerMetrics.instances.push(instanceData);
             analyzerMetrics.total_available_balance += funds.available_balance;
             analyzerMetrics.total_realized_pnl += funds.realized_pnl;
@@ -84,7 +84,7 @@ class DashboardService {
             error: promiseResult.reason?.message || 'Failed to fetch funds',
           };
 
-          if (instance.analyzer_mode) {
+          if (instance.is_analyzer_mode) {
             analyzerMetrics.instances.push(instanceData);
           } else {
             liveMetrics.instances.push(instanceData);
