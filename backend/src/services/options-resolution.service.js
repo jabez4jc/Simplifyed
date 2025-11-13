@@ -62,8 +62,18 @@ class OptionsResolutionService {
     instance,
   }) {
     // Validate inputs
-    if (!underlying || !exchange || !expiry || !optionType || !strikeOffset || !ltp) {
-      throw new ValidationError('Missing required parameters for option resolution');
+    const missingParams = [];
+    if (!underlying) missingParams.push('underlying');
+    if (!exchange) missingParams.push('exchange');
+    if (!expiry) missingParams.push('expiry');
+    if (!optionType) missingParams.push('optionType');
+    if (!strikeOffset) missingParams.push('strikeOffset');
+    if (!ltp || ltp === 0) missingParams.push('ltp');
+
+    if (missingParams.length > 0) {
+      throw new ValidationError(
+        `Missing required parameters for option resolution: ${missingParams.join(', ')}`
+      );
     }
 
     if (!['CE', 'PE'].includes(optionType)) {

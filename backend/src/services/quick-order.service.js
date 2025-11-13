@@ -842,6 +842,13 @@ class QuickOrderService {
    */
   async _getUnderlyingLTP(instance, underlying, exchange) {
     try {
+      log.debug('Fetching LTP for underlying', {
+        instance_id: instance.id,
+        instance_name: instance.name,
+        underlying,
+        exchange,
+      });
+
       const quotes = await openalgoClient.getQuotes(instance, [
         { exchange, symbol: underlying },
       ]);
@@ -850,9 +857,26 @@ class QuickOrderService {
         throw new NotFoundError(`No quote found for ${underlying}`);
       }
 
-      return parseFloatSafe(quotes[0].ltp || quotes[0].last_price, 0);
+      const ltp = parseFloatSafe(quotes[0].ltp || quotes[0].last_price, 0);
+
+      if (!ltp || ltp === 0) {
+        throw new ValidationError(`Invalid LTP (${ltp}) received for ${underlying}`);
+      }
+
+      log.debug('LTP fetched successfully', {
+        instance_id: instance.id,
+        underlying,
+        ltp,
+      });
+
+      return ltp;
     } catch (error) {
-      log.error('Failed to get underlying LTP', error);
+      log.error('Failed to get underlying LTP', error, {
+        instance_id: instance.id,
+        instance_name: instance.name,
+        underlying,
+        exchange,
+      });
       throw new ValidationError(`Unable to get LTP for ${underlying}: ${error.message}`);
     }
   }
