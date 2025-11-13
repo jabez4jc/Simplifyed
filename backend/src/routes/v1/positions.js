@@ -6,11 +6,33 @@
 import express from 'express';
 import pnlService from '../../services/pnl.service.js';
 import instanceService from '../../services/instance.service.js';
+import positionsService from '../../services/positions.service.js';
 import openalgoClient from '../../integrations/openalgo/client.js';
 import { log } from '../../core/logger.js';
 import { NotFoundError } from '../../core/errors.js';
 
 const router = express.Router();
+
+/**
+ * GET /api/v1/positions/all
+ * Get positions from all active instances
+ * Query params: onlyOpen=true/false (default: false)
+ * NOTE: Must be before /:instanceId routes to avoid capturing "all" as instanceId
+ */
+router.get('/all', async (req, res, next) => {
+  try {
+    const onlyOpen = req.query.onlyOpen === 'true';
+
+    const positions = await positionsService.getAllPositions({ onlyOpen });
+
+    res.json({
+      status: 'success',
+      data: positions,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 /**
  * GET /api/v1/positions/aggregate/pnl

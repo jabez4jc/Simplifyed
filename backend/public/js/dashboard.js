@@ -12,6 +12,8 @@ class DashboardApp {
     this.pollingInterval = null;
     // Track watchlist quote polling intervals
     this.watchlistPollers = new Map();
+    // Track positions polling interval (10 seconds)
+    this.positionsPollingInterval = null;
     // Cache for quote data to prevent unnecessary DOM updates
     // Structure: { watchlistId_symbolId: { ltp, changePercent, volume } }
     this.quoteCache = new Map();
@@ -86,6 +88,7 @@ class DashboardApp {
     // Clean up watchlist pollers when leaving watchlists view
     if (this.currentView === 'watchlists' && viewName !== 'watchlists') {
       this.stopAllWatchlistPolling();
+      this.stopPositionsPolling();
     }
 
     this.currentView = viewName;
@@ -380,8 +383,8 @@ class DashboardApp {
       </div>
     `;
 
-    // Load positions by default
-    await this.loadPositionsTab();
+    // Load positions by default and start auto-refresh
+    this.startPositionsPolling();
   }
 
   /**
@@ -654,6 +657,35 @@ class DashboardApp {
   }
 
   /**
+   * Start polling positions (10 second interval)
+   */
+  startPositionsPolling() {
+    // Clear existing interval if any
+    this.stopPositionsPolling();
+
+    // Load positions immediately
+    this.loadPositionsTab();
+
+    // Set up polling interval (10 seconds)
+    this.positionsPollingInterval = setInterval(() => {
+      this.loadPositionsTab();
+    }, 10000);
+
+    console.log('Positions polling started (10s interval)');
+  }
+
+  /**
+   * Stop polling positions
+   */
+  stopPositionsPolling() {
+    if (this.positionsPollingInterval) {
+      clearInterval(this.positionsPollingInterval);
+      this.positionsPollingInterval = null;
+      console.log('Positions polling stopped');
+    }
+  }
+
+  /**
    * Update quotes for all symbols in a watchlist
    */
   async updateWatchlistQuotes(watchlistId) {
@@ -901,54 +933,82 @@ class DashboardApp {
   async renderPositionsView() {
     const contentArea = document.getElementById('content-area');
 
-    // Fetch all instances
-    const instancesRes = await api.getInstances({ is_active: true });
-    const instances = instancesRes.data;
+    try {
+      // Fetch ALL positions from all active instances (including closed)
+      const response = await api.getAllPositions(false); // onlyOpen = false
+      const data = response.data;
 
-    if (instances.length === 0) {
+      if (data.instances.length === 0) {
+        contentArea.innerHTML = `
+          <div class="card">
+            <p class="text-center text-neutral-600">No active instances found</p>
+          </div>
+        `;
+        return;
+      }
+
       contentArea.innerHTML = `
-        <div class="card">
-          <p class="text-center text-neutral-600">No active instances found</p>
-        </div>
-      `;
-      return;
-    }
-
-    // Fetch positions for all instances
-    const positionsData = await Promise.all(
-      instances.map(async (instance) => {
-        try {
-          const posRes = await api.getPositions(instance.id);
-          return {
-            instance,
-            positions: posRes.data.filter(p => {
-              const qty = parseFloat(p.quantity || p.netqty || p.net_quantity || 0);
-              return qty !== 0;
-            }),
-          };
-        } catch (error) {
-          return { instance, positions: [] };
-        }
-      })
-    );
-
-    contentArea.innerHTML = `
-      ${positionsData.map(({ instance, positions }) => `
+        <!-- Overall Summary Card -->
         <div class="card mb-6">
           <div class="card-header">
-            <h3 class="card-title">${Utils.escapeHTML(instance.name)}</h3>
-            <button class="btn btn-error btn-sm"
-                    onclick="app.closeAllPositions(${instance.id})">
-              Close All Positions
-            </button>
+            <h3 class="card-title">All Positions Summary</h3>
           </div>
-          <div class="table-container">
-            ${positions.length > 0 ? this.renderPositionsTable(positions) :
-              '<p class="text-center text-neutral-600">No open positions</p>'}
+          <div class="p-4">
+            <div class="grid grid-cols-3 gap-4">
+              <div class="text-center">
+                <div class="text-sm text-neutral-600 mb-1">Open Positions</div>
+                <div class="text-2xl font-semibold">${data.overall_open_positions}</div>
+              </div>
+              <div class="text-center">
+                <div class="text-sm text-neutral-600 mb-1">Closed Positions</div>
+                <div class="text-2xl font-semibold">${data.overall_closed_positions}</div>
+              </div>
+              <div class="text-center">
+                <div class="text-sm text-neutral-600 mb-1">Overall P&L</div>
+                <div class="text-2xl font-semibold ${Utils.getPnLColorClass(data.overall_total_pnl)}">
+                  ${Utils.formatCurrency(data.overall_total_pnl)}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
-      `).join('')}
-    `;
+
+        <!-- Instance Positions -->
+        ${data.instances.map(inst => `
+          <div class="card mb-6">
+            <div class="card-header">
+              <div>
+                <h3 class="card-title">${Utils.escapeHTML(inst.instance_name)}</h3>
+                <div class="flex gap-4 mt-1 text-sm text-neutral-600">
+                  <span>Broker: <span class="font-medium">${Utils.escapeHTML(inst.broker || 'N/A')}</span></span>
+                  <span>Open: <span class="font-medium">${inst.open_positions_count}</span></span>
+                  <span>Closed: <span class="font-medium">${inst.closed_positions_count}</span></span>
+                  <span>P&L: <span class="font-medium ${Utils.getPnLColorClass(inst.total_pnl)}">${Utils.formatCurrency(inst.total_pnl)}</span></span>
+                </div>
+              </div>
+              <button class="btn btn-error btn-sm"
+                      onclick="app.closeAllPositions(${inst.instance_id})">
+                Close All Positions
+              </button>
+            </div>
+            <div class="table-container">
+              ${inst.error ?
+                `<p class="text-center text-error-600 p-4">${Utils.escapeHTML(inst.error)}</p>` :
+                (inst.positions.length > 0 ?
+                  this.renderPositionsTable(inst.positions) :
+                  '<p class="text-center text-neutral-600 p-4">No positions</p>')
+              }
+            </div>
+          </div>
+        `).join('')}
+      `;
+    } catch (error) {
+      contentArea.innerHTML = `
+        <div class="card">
+          <p class="text-center text-error-600">Failed to load positions: ${error.message}</p>
+        </div>
+      `;
+    }
   }
 
   /**
@@ -1669,63 +1729,82 @@ class DashboardApp {
       activePanel.classList.remove('hidden');
     }
 
-    // Load content if needed
+    // Load content and manage polling
     if (tabName === 'positions') {
-      await this.loadPositionsTab();
+      // Start positions auto-refresh (10 seconds)
+      this.startPositionsPolling();
     } else if (tabName === 'orders') {
+      // Stop positions polling when switching away
+      this.stopPositionsPolling();
       await this.loadOrdersTab();
     }
   }
 
   /**
-   * Load positions content into tab
+   * Load positions content into tab (watchlist positions - only open positions)
    */
   async loadPositionsTab() {
     const positionsPanel = document.getElementById('tab-positions');
     if (!positionsPanel) return;
 
     try {
-      // Fetch all instances
-      const instancesRes = await api.getInstances({ is_active: true });
-      const instances = instancesRes.data;
+      // Fetch positions from all active instances (only open positions)
+      const response = await api.getAllPositions(true); // onlyOpen = true
+      const data = response.data;
 
-      if (instances.length === 0) {
+      if (data.instances.length === 0) {
         positionsPanel.innerHTML = '<div class="p-4"><p class="text-center text-neutral-600">No active instances found</p></div>';
         return;
       }
 
-      // Fetch positions for all instances
-      const positionsData = await Promise.all(
-        instances.map(async (instance) => {
-          try {
-            const posRes = await api.getPositions(instance.id);
-            return {
-              instance,
-              positions: posRes.data.filter(p => {
-                const qty = parseFloat(p.quantity || p.netqty || p.net_quantity || 0);
-                return qty !== 0;
-              }),
-            };
-          } catch (error) {
-            return { instance, positions: [] };
-          }
-        })
-      );
-
+      // Render positions grouped by instance
       positionsPanel.innerHTML = `
-        ${positionsData.map(({ instance, positions }) => `
-          <div class="border-b last:border-b-0" style="padding: 1rem;">
-            <div class="flex items-center justify-between mb-3">
-              <h4 class="font-semibold text-lg">${Utils.escapeHTML(instance.name)}</h4>
-              <button class="btn btn-error btn-sm"
-                      onclick="app.closeAllPositions(${instance.id})">
-                Close All Positions
-              </button>
+        <div class="p-4">
+          <!-- Overall Summary -->
+          <div class="bg-neutral-50 rounded-lg p-4 mb-4 flex justify-between items-center">
+            <div>
+              <span class="text-sm text-neutral-600">Total Open Positions:</span>
+              <span class="font-semibold ml-2">${data.overall_open_positions}</span>
             </div>
-            ${positions.length > 0 ? this.renderPositionsTable(positions) :
-              '<p class="text-center text-neutral-600">No open positions</p>'}
+            <div>
+              <span class="text-sm text-neutral-600">Overall P&L:</span>
+              <span class="font-semibold ml-2 ${Utils.getPnLColorClass(data.overall_total_pnl)}">
+                ${Utils.formatCurrency(data.overall_total_pnl)}
+              </span>
+            </div>
           </div>
-        `).join('')}
+
+          <!-- Instance Groups -->
+          ${data.instances.map(inst => `
+            <div class="border-b last:border-b-0 pb-4 mb-4">
+              <div class="flex items-center justify-between mb-3">
+                <div>
+                  <h4 class="font-semibold text-lg">${Utils.escapeHTML(inst.instance_name)}</h4>
+                  <div class="flex gap-4 mt-1">
+                    <span class="text-sm text-neutral-600">
+                      Open: <span class="font-medium">${inst.open_positions_count}</span>
+                    </span>
+                    <span class="text-sm text-neutral-600">
+                      P&L: <span class="font-medium ${Utils.getPnLColorClass(inst.total_pnl)}">
+                        ${Utils.formatCurrency(inst.total_pnl)}
+                      </span>
+                    </span>
+                  </div>
+                </div>
+                <button class="btn btn-error btn-sm"
+                        onclick="app.closeAllPositions(${inst.instance_id})">
+                  Close All Positions
+                </button>
+              </div>
+              ${inst.error ?
+                `<p class="text-center text-error-600">${Utils.escapeHTML(inst.error)}</p>` :
+                (inst.positions.length > 0 ?
+                  this.renderPositionsTable(inst.positions) :
+                  '<p class="text-center text-neutral-600 py-4">No open positions</p>')
+              }
+            </div>
+          `).join('')}
+        </div>
       `;
     } catch (error) {
       positionsPanel.innerHTML = `<div class="p-4"><p class="text-center text-error-600">Failed to load positions: ${error.message}</p></div>`;
