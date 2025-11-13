@@ -259,11 +259,12 @@ class QuickOrderService {
    * @private
    */
   async _executeDirectOrder(instance, symbol, orderParams) {
-    const { action, tradeMode, quantity, product, orderType, price } = orderParams;
+    const { action, tradeMode, quantity, product, orderType, price, expiry } = orderParams;
 
     // Determine final symbol based on trade mode
     let finalSymbol = symbol.symbol;
     let finalExchange = symbol.exchange;
+    let resolvedLotSize = symbol.lot_size;
 
     if (tradeMode === 'FUTURES') {
       // For futures, we need to get the futures symbol
@@ -271,9 +272,39 @@ class QuickOrderService {
       // or we need to resolve it from the underlying
       if (symbol.symbol_type === 'FUTURES') {
         finalSymbol = symbol.symbol;
+        finalExchange = symbol.exchange;
       } else {
-        // Need to get futures symbol (this would require additional logic)
-        throw new ValidationError('Futures symbol resolution not yet implemented for this symbol');
+        // Resolve futures symbol from underlying and expiry
+        if (!expiry) {
+          throw new ValidationError('Expiry is required for FUTURES trading on this symbol');
+        }
+
+        const underlying = symbol.underlying_symbol || symbol.symbol;
+        const derivativeExchange = this._getDerivativeExchange(symbol.exchange);
+
+        log.info('Resolving futures symbol', {
+          underlying,
+          expiry,
+          originalExchange: symbol.exchange,
+          derivativeExchange,
+        });
+
+        const futuresSymbol = await this._resolveFuturesSymbol(
+          instance,
+          underlying,
+          derivativeExchange,
+          expiry
+        );
+
+        finalSymbol = futuresSymbol.symbol;
+        finalExchange = derivativeExchange;
+        resolvedLotSize = futuresSymbol.lot_size || symbol.lot_size;
+
+        log.info('Futures symbol resolved', {
+          symbol: finalSymbol,
+          exchange: finalExchange,
+          lotSize: resolvedLotSize,
+        });
       }
     }
 
@@ -301,7 +332,8 @@ class QuickOrderService {
       // - Direct OPTIONS symbols: lots * lot_size
       // - INDEX with FUTURES/OPTIONS mode: lots * lot_size
       // - EQUITY with FUTURES/OPTIONS mode: lots * lot_size
-      lotSize = symbol.lot_size || 1;
+      // Use resolvedLotSize if futures symbol was resolved, otherwise use symbol.lot_size
+      lotSize = resolvedLotSize || symbol.lot_size || 1;
       tradeQuantity = quantity * lotSize;
     }
 
@@ -1101,6 +1133,87 @@ class QuickOrderService {
    * Map cash market exchange to derivative exchange
    * @private
    */
+  /**
+   * Resolve futures symbol from underlying and expiry
+   * @private
+   */
+  async _resolveFuturesSymbol(instance, underlying, exchange, expiry) {
+    try {
+      // Convert expiry to OpenAlgo format (DD-MMM-YY)
+      const openalgoExpiry = this._convertExpiryToOpenAlgoFormat(expiry);
+
+      log.debug('Searching for futures symbol', {
+        underlying,
+        exchange,
+        expiry: openalgoExpiry,
+      });
+
+      // Search for futures symbol matching underlying and expiry
+      const searchResults = await openalgoClient.searchSymbols(instance, underlying);
+
+      const futuresSymbols = searchResults.filter(result => {
+        const isFutures = result.instrumenttype === 'FUT';
+        const matchesUnderlying = result.name === underlying;
+        const matchesExpiry = result.expiry === openalgoExpiry;
+        return isFutures && matchesUnderlying && matchesExpiry;
+      });
+
+      if (futuresSymbols.length === 0) {
+        throw new NotFoundError(
+          `No futures contract found for ${underlying} with expiry ${openalgoExpiry}`
+        );
+      }
+
+      const futuresSymbol = futuresSymbols[0];
+
+      log.info('Futures symbol found', {
+        symbol: futuresSymbol.symbol,
+        lotSize: futuresSymbol.lotsize || futuresSymbol.lot_size,
+        expiry: futuresSymbol.expiry,
+      });
+
+      return {
+        symbol: futuresSymbol.symbol,
+        trading_symbol: futuresSymbol.tradingsymbol || futuresSymbol.symbol,
+        lot_size: futuresSymbol.lotsize || futuresSymbol.lot_size || 1,
+        tick_size: futuresSymbol.tick_size || 0.05,
+        token: futuresSymbol.token,
+        expiry: futuresSymbol.expiry,
+      };
+    } catch (error) {
+      log.error('Failed to resolve futures symbol', error);
+      throw new NotFoundError(
+        `Unable to find futures contract for ${underlying} with expiry ${expiry}: ${error.message}`
+      );
+    }
+  }
+
+  /**
+   * Convert expiry from YYYY-MM-DD to DD-MMM-YY format (OpenAlgo format)
+   * @private
+   */
+  _convertExpiryToOpenAlgoFormat(expiry) {
+    if (!expiry) return null;
+
+    // If already in DD-MMM-YY format, return as-is
+    if (/^\d{2}-[A-Z]{3}-\d{2}$/.test(expiry)) {
+      return expiry;
+    }
+
+    // Convert YYYY-MM-DD to DD-MMM-YY
+    if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
+      const date = new Date(expiry);
+      const day = String(date.getDate()).padStart(2, '0');
+      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+                          'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+      const month = monthNames[date.getMonth()];
+      const year = String(date.getFullYear()).slice(-2);
+      return `${day}-${month}-${year}`;
+    }
+
+    return expiry;
+  }
+
   _getDerivativeExchange(exchange) {
     const exchangeMap = {
       'NSE': 'NFO',         // NSE equity -> NSE F&O
