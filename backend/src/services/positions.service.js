@@ -98,6 +98,19 @@ class PositionsService {
   }
 
   /**
+   * Normalize quantity field from position object
+   * Different brokers use different field names for quantity
+   * @private
+   * @param {Object} pos - Position object
+   * @returns {number} - Normalized quantity value
+   */
+  _getPositionQuantity(pos) {
+    // Try various field names used by different brokers
+    const rawQty = pos.quantity ?? pos.netqty ?? pos.net_quantity ?? pos.netQty ?? pos.net ?? 0;
+    return parseIntSafe(rawQty, 0);
+  }
+
+  /**
    * Fetch positions from a single instance
    * @private
    * @param {Object} instance - Instance configuration
@@ -122,14 +135,14 @@ class PositionsService {
       let filteredPositions = positions;
       if (onlyOpen) {
         filteredPositions = positions.filter(pos => {
-          const qty = parseIntSafe(pos.quantity, 0);
+          const qty = this._getPositionQuantity(pos);
           return qty !== 0;
         });
       }
 
       // Calculate totals
-      const openPositions = positions.filter(pos => parseIntSafe(pos.quantity, 0) !== 0);
-      const closedPositions = positions.filter(pos => parseIntSafe(pos.quantity, 0) === 0);
+      const openPositions = positions.filter(pos => this._getPositionQuantity(pos) !== 0);
+      const closedPositions = positions.filter(pos => this._getPositionQuantity(pos) === 0);
 
       // Calculate total P&L from positions
       // Some brokers return pnl field, some return mtm, some return realized_pnl + unrealized_pnl
