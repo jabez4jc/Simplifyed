@@ -378,8 +378,8 @@ class OptionsResolutionService {
       const optType = option.option_type || (option.symbol.includes('CE') ? 'CE' : 'PE');
       optionsByStrike[strike][optType] = {
         symbol: option.symbol,
-        trading_symbol: option.trading_symbol || option.symbol,
-        lot_size: option.lot_size || 1,
+        trading_symbol: option.trading_symbol || option.tradingsymbol || option.symbol,
+        lot_size: option.lot_size || option.lotsize || 1,  // Handle both lot_size and lotsize
         tick_size: option.tick_size || 0.05,
         instrument_type: option.instrument_type || option.instrumenttype,
         token: option.token,

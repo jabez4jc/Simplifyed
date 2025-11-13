@@ -277,20 +277,58 @@ class QuickOrderService {
       }
     }
 
-    // Get current position size
-    const positionSize = await this._getCurrentPositionSize(
+    // Get current position size (signed: positive for long, negative for short)
+    const currentPosition = await this._getCurrentPositionSize(
       instance,
       finalSymbol,
       finalExchange,
       product
     );
 
-    // Calculate lot size
-    const lotSize = symbol.lot_size || 1;
-    const finalQuantity = tradeMode === 'EQUITY' ? quantity : quantity * lotSize;
+    // Calculate lot size - for EQUITY, lotSize is 1 (actual quantity)
+    // For FUTURES/OPTIONS, multiply by lot_size
+    const lotSize = tradeMode === 'EQUITY' ? 1 : (symbol.lot_size || 1);
+    const tradeQuantity = quantity * lotSize;
 
-    // Map action to OpenAlgo action
-    const algoAction = action; // BUY or SELL
+    // Calculate target position_size based on action
+    let targetPosition;
+    let algoAction;
+
+    if (action === 'BUY') {
+      // BUY: Increase position (or reduce short position)
+      algoAction = 'BUY';
+      targetPosition = currentPosition + tradeQuantity;
+    } else if (action === 'SELL') {
+      // SELL: Decrease position (or increase short position)
+      algoAction = 'SELL';
+      targetPosition = currentPosition - tradeQuantity;
+      // Ensure target position doesn't go below 0 for now (no shorting for simplicity)
+      if (targetPosition < 0) targetPosition = 0;
+    } else if (action === 'EXIT') {
+      // EXIT: Close current position completely
+      targetPosition = 0;
+      if (currentPosition > 0) {
+        // Close long position - SELL
+        algoAction = 'SELL';
+      } else if (currentPosition < 0) {
+        // Close short position - BUY
+        algoAction = 'BUY';
+      } else {
+        // No position to exit
+        throw new ValidationError('No open position to exit');
+      }
+    } else {
+      throw new ValidationError(`Invalid action: ${action}`);
+    }
+
+    log.info('Calculated position for order', {
+      action,
+      currentPosition,
+      tradeQuantity,
+      targetPosition,
+      algoAction,
+      lotSize,
+    });
 
     // Place order using placesmartorder
     const orderResult = await openalgoClient.placeSmartOrder(instance, {
@@ -298,8 +336,8 @@ class QuickOrderService {
       exchange: finalExchange,
       symbol: finalSymbol,
       action: algoAction,
-      quantity: finalQuantity,
-      position_size: positionSize,
+      quantity: tradeQuantity,
+      position_size: targetPosition,
       product,
       pricetype: orderType,
       price: price.toString(),
@@ -315,7 +353,7 @@ class QuickOrderService {
       exchange: finalExchange,
       action: algoAction,
       trade_mode: tradeMode,
-      quantity: finalQuantity,
+      quantity: tradeQuantity,
       product,
       order_type: orderType,
       price,
@@ -328,7 +366,7 @@ class QuickOrderService {
       order_id: orderResult.orderid,
       status: orderResult.status,
       symbol: finalSymbol,
-      quantity: finalQuantity,
+      quantity: tradeQuantity,
       action: algoAction,
     };
   }
@@ -403,17 +441,39 @@ class QuickOrderService {
       symbol.watchlist_name
     );
 
-    // Calculate final quantity (in lots)
+    // Calculate trade quantity from lots
     const lotSize = optionSymbol.lot_size || symbol.lot_size || 1;
-    const finalQuantity = quantity * lotSize;
+    const tradeQuantity = quantity * lotSize;
 
-    // Get position size after reconciliation
-    const positionSize = await this._getCurrentPositionSize(
+    // Get current position for the resolved option symbol
+    const currentPosition = await this._getCurrentPositionSize(
       instance,
       optionSymbol.symbol,
-      derivativeExchange,  // Use derivative exchange
+      derivativeExchange,
       product
     );
+
+    // Calculate target position_size based on action
+    let targetPosition;
+    if (side === 'BUY') {
+      // BUY: Add to position
+      targetPosition = currentPosition + tradeQuantity;
+    } else {
+      // SELL: Reduce position
+      targetPosition = currentPosition - tradeQuantity;
+      // Ensure target position doesn't go below 0
+      if (targetPosition < 0) targetPosition = 0;
+    }
+
+    log.info('Calculated position for options order', {
+      action,
+      side,
+      optionSymbol: optionSymbol.symbol,
+      currentPosition,
+      tradeQuantity,
+      targetPosition,
+      lotSize,
+    });
 
     // Place new order
     const orderResult = await openalgoClient.placeSmartOrder(instance, {
@@ -421,8 +481,8 @@ class QuickOrderService {
       exchange: derivativeExchange,  // Use derivative exchange (NFO, not NSE_INDEX)
       symbol: optionSymbol.symbol,
       action: side,
-      quantity: finalQuantity,
-      position_size: positionSize,
+      quantity: tradeQuantity,
+      position_size: targetPosition,
       product,
       pricetype: orderType,
       price: price.toString(),
@@ -439,7 +499,7 @@ class QuickOrderService {
       action: side,
       trade_mode: 'OPTIONS',
       options_leg: symbol.options_strike_selection,
-      quantity: finalQuantity,
+      quantity: tradeQuantity,
       product,
       order_type: orderType,
       price,
@@ -458,7 +518,7 @@ class QuickOrderService {
       symbol: optionSymbol.symbol,
       strike: optionSymbol.targetStrike,
       option_type: optionType,
-      quantity: finalQuantity,
+      quantity: tradeQuantity,
       action: side,
       closed_positions: closeResults.length,
     };
@@ -533,13 +593,14 @@ class QuickOrderService {
         const closeAction = position.quantity > 0 ? 'SELL' : 'BUY';
         const closeQuantity = Math.abs(position.quantity);
 
+        // For EXIT/EXIT_ALL, position_size should be 0 to close completely
         const orderResult = await openalgoClient.placeSmartOrder(instance, {
           strategy: symbol.watchlist_name || 'default',
           exchange: position.exchange,
           symbol: position.symbol,
           action: closeAction,
           quantity: closeQuantity,
-          position_size: position.quantity,
+          position_size: 0,  // Target position is 0 (close completely)
           product,
           pricetype: 'MARKET',
           price: '0',
