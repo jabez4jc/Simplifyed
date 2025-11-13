@@ -285,10 +285,27 @@ class QuickOrderService {
       product
     );
 
-    // Calculate lot size - for EQUITY, lotSize is 1 (actual quantity)
-    // For FUTURES/OPTIONS, multiply by lot_size
-    const lotSize = tradeMode === 'EQUITY' ? 1 : (symbol.lot_size || 1);
-    const tradeQuantity = quantity * lotSize;
+    // Calculate trade quantity based on symbol type and trade mode
+    let tradeQuantity;
+    if (symbol.symbol_type === 'FUTURES' || symbol.symbol_type === 'OPTIONS') {
+      // Direct FUTURES/OPTIONS symbols: quantity is actual quantity (must be in multiples of lot_size)
+      tradeQuantity = quantity;
+    } else if (symbol.symbol_type === 'EQUITY') {
+      // EQUITY symbols: quantity is actual quantity
+      tradeQuantity = quantity;
+    } else {
+      // INDEX or other symbols with FUTURES/OPTIONS trade mode: quantity is in lots
+      const lotSize = symbol.lot_size || 1;
+      tradeQuantity = quantity * lotSize;
+    }
+
+    log.info('Calculated trade quantity', {
+      symbolType: symbol.symbol_type,
+      tradeMode,
+      inputQuantity: quantity,
+      lotSize: symbol.lot_size,
+      tradeQuantity,
+    });
 
     // Calculate target position_size based on action
     let targetPosition;
