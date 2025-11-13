@@ -33,8 +33,9 @@ class DashboardApp {
       // Load initial view
       await this.loadView('dashboard');
 
-      // Start auto-refresh (every 15 seconds)
-      this.startAutoRefresh();
+      // Note: Auto-refresh disabled to prevent page flicker
+      // Individual polling mechanisms (quotes, positions) handle their own updates
+      // this.startAutoRefresh();
 
       console.log('✅ Dashboard initialized');
     } catch (error) {
@@ -1981,42 +1982,60 @@ class DashboardApp {
       const response = await api.getAllPositions(true); // onlyOpen = true
       const data = response.data;
 
-      if (data.instances.length === 0) {
-        positionsPanel.innerHTML = '<div class="p-4"><p class="text-center text-neutral-600">No active instances found</p></div>';
-        return;
+      // Check if positions have been rendered before
+      const isInitialRender = !positionsPanel.hasAttribute('data-positions-initialized');
+
+      if (isInitialRender) {
+        // Initial render - create the full structure
+        this.renderPositionsTabInitial(positionsPanel, data);
+        positionsPanel.setAttribute('data-positions-initialized', 'true');
+      } else {
+        // Subsequent updates - only update changed values
+        this.updatePositionsTabData(positionsPanel, data);
       }
+    } catch (error) {
+      positionsPanel.innerHTML = `<div class="p-4"><p class="text-center text-error-600">Failed to load positions: ${error.message}</p></div>`;
+      positionsPanel.removeAttribute('data-positions-initialized');
+    }
+  }
 
-      // Render positions grouped by instance
-      positionsPanel.innerHTML = `
-        <div class="p-4">
-          <!-- Overall Summary -->
-          <div class="bg-neutral-50 rounded-lg p-4 mb-4 flex justify-between items-center">
-            <div>
-              <span class="text-sm text-neutral-600">Total Open Positions:</span>
-              <span class="font-semibold ml-2">${data.overall_open_positions}</span>
-            </div>
-            <div>
-              <span class="text-sm text-neutral-600">Overall P&L:</span>
-              <span class="font-semibold ml-2 ${Utils.getPnLColorClass(data.overall_total_pnl)}">
-                ${Utils.formatCurrency(data.overall_total_pnl)}
-              </span>
-            </div>
+  /**
+   * Initial render of positions tab (called once)
+   */
+  renderPositionsTabInitial(positionsPanel, data) {
+    if (data.instances.length === 0) {
+      positionsPanel.innerHTML = '<div class="p-4"><p class="text-center text-neutral-600">No active instances found</p></div>';
+      return;
+    }
+
+    // Render positions grouped by instance
+    positionsPanel.innerHTML = `
+      <div class="p-4">
+        <!-- Overall Summary -->
+        <div class="bg-neutral-50 rounded-lg p-4 mb-4 flex justify-between items-center">
+          <div>
+            <span class="text-sm text-neutral-600">Total Open Positions:</span>
+            <span class="font-semibold ml-2" data-overall-open-count>${data.overall_open_positions}</span>
           </div>
+          <div>
+            <span class="text-sm text-neutral-600">Overall P&L:</span>
+            <span class="font-semibold ml-2" data-overall-pnl>${Utils.formatCurrency(data.overall_total_pnl)}</span>
+          </div>
+        </div>
 
-          <!-- Instance Groups -->
+        <!-- Instance Groups -->
+        <div id="positions-instance-groups">
           ${data.instances.map(inst => `
-            <div class="border-b last:border-b-0 pb-4 mb-4">
+            <div class="border-b last:border-b-0 pb-4 mb-4" data-instance-id="${inst.instance_id}">
               <div class="flex items-center justify-between mb-3">
                 <div>
                   <h4 class="font-semibold text-lg">${Utils.escapeHTML(inst.instance_name)}</h4>
                   <div class="flex gap-4 mt-1">
                     <span class="text-sm text-neutral-600">
-                      Open: <span class="font-medium">${inst.open_positions_count}</span>
+                      Open: <span class="font-medium" data-open-count>${inst.open_positions_count}</span>
                     </span>
                     <span class="text-sm text-neutral-600">
-                      P&L: <span class="font-medium ${Utils.getPnLColorClass(inst.total_pnl)}">
-                        ${Utils.formatCurrency(inst.total_pnl)}
-                      </span>
+                      P&L: <span class="font-medium" data-pnl>${Utils.formatCurrency(inst.total_pnl)}</span>
                     </span>
                   </div>
                 </div>
@@ -2025,19 +2044,145 @@ class DashboardApp {
                   Close All Positions
                 </button>
               </div>
-              ${inst.error ?
-                `<p class="text-center text-error-600">${Utils.escapeHTML(inst.error)}</p>` :
-                (inst.positions.length > 0 ?
-                  this.renderPositionsTable(inst.positions) :
-                  '<p class="text-center text-neutral-600 py-4">No open positions</p>')
-              }
+              <div data-positions-container>
+                ${inst.error ?
+                  `<p class="text-center text-error-600">${Utils.escapeHTML(inst.error)}</p>` :
+                  (inst.positions.length > 0 ?
+                    this.renderPositionsTableWithIds(inst.positions) :
+                    '<p class="text-center text-neutral-600 py-4">No open positions</p>')
+                }
+              </div>
             </div>
           `).join('')}
         </div>
-      `;
-    } catch (error) {
-      positionsPanel.innerHTML = `<div class="p-4"><p class="text-center text-error-600">Failed to load positions: ${error.message}</p></div>`;
+      </div>
+    `;
+  }
+
+  /**
+   * Update positions tab data (targeted updates only)
+   */
+  updatePositionsTabData(positionsPanel, data) {
+    if (data.instances.length === 0) {
+      // If no instances, revert to initial state
+      positionsPanel.innerHTML = '<div class="p-4"><p class="text-center text-neutral-600">No active instances found</p></div>';
+      positionsPanel.removeAttribute('data-positions-initialized');
+      return;
     }
+
+    // Update overall summary
+    const overallOpenCountEl = positionsPanel.querySelector('[data-overall-open-count]');
+    const overallPnlEl = positionsPanel.querySelector('[data-overall-pnl]');
+
+    if (overallOpenCountEl && overallOpenCountEl.textContent !== String(data.overall_open_positions)) {
+      overallOpenCountEl.textContent = data.overall_open_positions;
+    }
+
+    if (overallPnlEl) {
+      const newPnlText = Utils.formatCurrency(data.overall_total_pnl);
+      if (overallPnlEl.textContent !== newPnlText) {
+        overallPnlEl.textContent = newPnlText;
+        // Update color class
+        overallPnlEl.className = `font-semibold ml-2 ${Utils.getPnLColorClass(data.overall_total_pnl)}`;
+      }
+    }
+
+    // Update each instance group
+    data.instances.forEach(inst => {
+      const instanceDiv = positionsPanel.querySelector(`[data-instance-id="${inst.instance_id}"]`);
+      if (!instanceDiv) {
+        // New instance appeared - need full re-render
+        this.renderPositionsTabInitial(positionsPanel, data);
+        return;
+      }
+
+      // Update instance summary
+      const openCountEl = instanceDiv.querySelector('[data-open-count]');
+      const pnlEl = instanceDiv.querySelector('[data-pnl]');
+
+      if (openCountEl && openCountEl.textContent !== String(inst.open_positions_count)) {
+        openCountEl.textContent = inst.open_positions_count;
+      }
+
+      if (pnlEl) {
+        const newPnlText = Utils.formatCurrency(inst.total_pnl);
+        if (pnlEl.textContent !== newPnlText) {
+          pnlEl.textContent = newPnlText;
+          pnlEl.className = `font-medium ${Utils.getPnLColorClass(inst.total_pnl)}`;
+        }
+      }
+
+      // Update positions table values
+      if (inst.positions && inst.positions.length > 0) {
+        inst.positions.forEach(pos => {
+          const symbol = pos.symbol || pos.tradingsymbol;
+          const posRow = instanceDiv.querySelector(`[data-position-symbol="${symbol}"]`);
+
+          if (posRow) {
+            // Update quantity
+            const qtyCell = posRow.querySelector('[data-position-qty]');
+            const newQty = pos.quantity || pos.netqty || pos.net_quantity || 0;
+            if (qtyCell && qtyCell.textContent !== String(newQty)) {
+              qtyCell.textContent = newQty;
+            }
+
+            // Update LTP
+            const ltpCell = posRow.querySelector('[data-position-ltp]');
+            const newLtp = Utils.formatCurrency(pos.ltp || pos.last_price || 0);
+            if (ltpCell && ltpCell.textContent !== newLtp) {
+              ltpCell.textContent = newLtp;
+            }
+
+            // Update P&L
+            const pnlCell = posRow.querySelector('[data-position-pnl]');
+            const pnl = parseFloat(pos.pnl || pos.unrealized_pnl || pos.mtm || 0);
+            const newPnlValue = Utils.formatCurrency(pnl);
+            if (pnlCell && pnlCell.textContent !== newPnlValue) {
+              pnlCell.textContent = newPnlValue;
+              pnlCell.className = `text-right ${Utils.getPnLColorClass(pnl)}`;
+            }
+          }
+        });
+      }
+    });
+  }
+
+  /**
+   * Render positions table with data attributes for targeted updates
+   */
+  renderPositionsTableWithIds(positions) {
+    return `
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Quantity</th>
+            <th>Product</th>
+            <th class="text-right">Avg Price</th>
+            <th class="text-right">LTP</th>
+            <th class="text-right">P&L</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${positions.map(pos => {
+            const pnl = parseFloat(pos.pnl || pos.unrealized_pnl || pos.mtm || 0);
+            const symbol = pos.symbol || pos.tradingsymbol;
+            return `
+              <tr data-position-symbol="${Utils.escapeHTML(symbol)}">
+                <td class="font-medium">${Utils.escapeHTML(symbol)}</td>
+                <td data-position-qty>${pos.quantity || pos.netqty || pos.net_quantity || 0}</td>
+                <td>${pos.product || pos.product_type || '-'}</td>
+                <td class="text-right">${Utils.formatCurrency(pos.average_price || pos.avg_price || 0)}</td>
+                <td class="text-right" data-position-ltp>${Utils.formatCurrency(pos.ltp || pos.last_price || 0)}</td>
+                <td class="text-right ${Utils.getPnLColorClass(pnl)}" data-position-pnl>
+                  ${Utils.formatCurrency(pnl)}
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    `;
   }
 
   /**
