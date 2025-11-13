@@ -132,6 +132,15 @@ class APIClient {
     });
   }
 
+  // Market Data Instance APIs
+  async getMarketDataInstance() {
+    return this.request('/instances/market-data/instance');
+  }
+
+  async getAllMarketDataInstances() {
+    return this.request('/instances/market-data/all');
+  }
+
   // Watchlist APIs
   async getWatchlists(filters = {}) {
     const params = new URLSearchParams(filters);

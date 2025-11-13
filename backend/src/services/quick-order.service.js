@@ -838,49 +838,46 @@ class QuickOrderService {
   }
 
   /**
-   * Get underlying LTP with fallback to other instances
-   * Tries current instance first, falls back to any healthy instance if needed
+   * Get underlying LTP using primary/secondary market data instances with failover
+   * Uses the designated primary or secondary instance for market data, not the order instance
    * @private
    */
   async _getUnderlyingLTPWithFallback(instance, underlying, exchange) {
+    const marketDataInstanceService = (await import('./market-data-instance.service.js')).default;
+
     try {
-      // Try current instance first
-      return await this._getUnderlyingLTP(instance, underlying, exchange);
-    } catch (error) {
-      log.warn('Failed to get LTP from current instance, trying fallback instances', {
-        instance_id: instance.id,
-        instance_name: instance.name,
+      // Get the designated market data instance (primary with failover to secondary)
+      const marketDataInstance = await marketDataInstanceService.getMarketDataInstance();
+
+      log.debug('Using market data instance for LTP', {
+        order_instance_id: instance.id,
+        order_instance_name: instance.name,
+        market_data_instance_id: marketDataInstance.id,
+        market_data_instance_name: marketDataInstance.name,
+        market_data_role: marketDataInstance.market_data_role,
         underlying,
-        error: error.message,
+        exchange,
       });
 
-      // Get all active instances from database
-      const instances = await db.all(
-        'SELECT * FROM instances WHERE is_active = 1 AND health_status = ? AND id != ?',
-        ['healthy', instance.id]
-      );
+      // Fetch LTP from the market data instance
+      const ltp = await this._getUnderlyingLTP(marketDataInstance, underlying, exchange);
 
-      // Try each healthy instance until we get a valid LTP
-      for (const fallbackInstance of instances) {
-        try {
-          const ltp = await this._getUnderlyingLTP(fallbackInstance, underlying, exchange);
-          log.info('Successfully fetched LTP from fallback instance', {
-            original_instance: instance.name,
-            fallback_instance: fallbackInstance.name,
-            underlying,
-            ltp,
-          });
-          return ltp;
-        } catch (fallbackError) {
-          log.debug('Fallback instance also failed', {
-            fallback_instance: fallbackInstance.name,
-            error: fallbackError.message,
-          });
-          continue;
-        }
-      }
+      log.debug('Successfully fetched LTP from market data instance', {
+        market_data_instance: marketDataInstance.name,
+        market_data_role: marketDataInstance.market_data_role,
+        underlying,
+        ltp,
+      });
 
-      // If all instances failed, throw the original error
+      return ltp;
+    } catch (error) {
+      log.error('Failed to get LTP from market data instances', {
+        order_instance_id: instance.id,
+        order_instance_name: instance.name,
+        underlying,
+        exchange,
+        error: error.message,
+      });
       throw error;
     }
   }
