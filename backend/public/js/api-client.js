@@ -259,6 +259,11 @@ class APIClient {
   }
 
   // Position APIs
+  async getAllPositions(onlyOpen = false) {
+    const params = new URLSearchParams({ onlyOpen: onlyOpen.toString() });
+    return this.request(`/positions/all?${params}`);
+  }
+
   async getPositions(instanceId) {
     return this.request(`/positions/${instanceId}`);
   }

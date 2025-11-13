@@ -110,8 +110,16 @@ export const config = {
   // OpenAlgo
   openalgo: {
     requestTimeout: getEnvInt('OPENALGO_REQUEST_TIMEOUT_MS', 15000),
-    maxRetries: getEnvInt('OPENALGO_MAX_RETRIES', 3),
-    retryDelay: getEnvInt('OPENALGO_RETRY_DELAY_MS', 1000),
+    // Critical operations (orders, cancellations) - fast retries
+    critical: {
+      maxRetries: getEnvInt('OPENALGO_CRITICAL_MAX_RETRIES', 3),
+      retryDelay: getEnvInt('OPENALGO_CRITICAL_RETRY_DELAY_MS', 500),
+    },
+    // Non-critical operations (polling, quotes) - slower retries
+    nonCritical: {
+      maxRetries: getEnvInt('OPENALGO_NONCRITICAL_MAX_RETRIES', 1),
+      retryDelay: getEnvInt('OPENALGO_NONCRITICAL_RETRY_DELAY_MS', 2000),
+    },
   },
 
   // Logging

@@ -15,8 +15,11 @@ import { maskApiKey } from '../../utils/sanitizers.js';
 class OpenAlgoClient {
   constructor() {
     this.timeout = config.openalgo.requestTimeout;
-    this.maxRetries = config.openalgo.maxRetries;
-    this.retryDelay = config.openalgo.retryDelay;
+    // Store both critical and non-critical retry configs
+    this.criticalRetries = config.openalgo.critical.maxRetries;
+    this.criticalRetryDelay = config.openalgo.critical.retryDelay;
+    this.nonCriticalRetries = config.openalgo.nonCritical.maxRetries;
+    this.nonCriticalRetryDelay = config.openalgo.nonCritical.retryDelay;
 
     // Create undici ProxyAgent that uses environment proxy
     // TLS verification can be disabled via PROXY_TLS_REJECT_UNAUTHORIZED=false (development only)
@@ -61,10 +64,13 @@ class OpenAlgoClient {
    * @param {string} endpoint - API endpoint (e.g., 'ping', 'placeorder')
    * @param {Object} data - Request payload (apikey will be added)
    * @param {string} method - HTTP method (default: POST)
+   * @param {Object} options - Request options
+   * @param {boolean} options.isCritical - Whether this is a critical operation (default: false)
    * @returns {Promise<Object>} - API response
    */
-  async request(instance, endpoint, data = {}, method = 'POST') {
+  async request(instance, endpoint, data = {}, method = 'POST', options = {}) {
     const { host_url, api_key } = instance;
+    const { isCritical = false } = options;
 
     if (!host_url || !api_key) {
       throw new OpenAlgoError('Instance host_url and api_key are required', endpoint);
@@ -74,11 +80,22 @@ class OpenAlgoClient {
     const payload = { ...data, apikey: api_key };
     const maskedPayload = { ...data, apikey: maskApiKey(api_key) };
 
-    log.debug('OpenAlgo API Request', { endpoint, url, payload: maskedPayload });
+    // Select retry configuration based on operation type
+    const maxRetries = isCritical ? this.criticalRetries : this.nonCriticalRetries;
+    const baseRetryDelay = isCritical ? this.criticalRetryDelay : this.nonCriticalRetryDelay;
+
+    log.debug('OpenAlgo API Request', {
+      endpoint,
+      url,
+      payload: maskedPayload,
+      isCritical,
+      maxRetries,
+      baseRetryDelay
+    });
 
     // Retry with exponential backoff
     let lastError;
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const startTime = Date.now();
         const response = await this._makeRequest(url, method, payload);
@@ -96,13 +113,14 @@ class OpenAlgoClient {
         }
 
         // Log retry attempt
-        if (attempt < this.maxRetries) {
-          const delay = this.retryDelay * Math.pow(2, attempt);
+        if (attempt < maxRetries) {
+          const delay = baseRetryDelay * Math.pow(2, attempt);
           log.warn('OpenAlgo request failed, retrying', {
             endpoint,
             attempt: attempt + 1,
-            maxRetries: this.maxRetries,
+            maxRetries,
             delay,
+            isCritical,
             error: error.message,
           });
 
@@ -114,7 +132,8 @@ class OpenAlgoClient {
     // All retries failed
     log.error('OpenAlgo request failed after retries', lastError, {
       endpoint,
-      maxRetries: this.maxRetries,
+      maxRetries,
+      isCritical,
     });
 
     throw lastError;
@@ -293,7 +312,7 @@ class OpenAlgoClient {
    * @returns {Promise<Object>} - { orderid }
    */
   async placeSmartOrder(instance, orderData) {
-    const response = await this.request(instance, 'placesmartorder', orderData);
+    const response = await this.request(instance, 'placesmartorder', orderData, 'POST', { isCritical: true });
     return {
       orderid: response.orderid || response.data?.orderid,
       status: response.status,
@@ -311,7 +330,7 @@ class OpenAlgoClient {
     const response = await this.request(instance, 'cancelorder', {
       orderid,
       strategy,
-    });
+    }, 'POST', { isCritical: true });
     return {
       orderid: response.orderid || response.data?.orderid,
       status: response.status,
@@ -327,7 +346,7 @@ class OpenAlgoClient {
   async cancelAllOrders(instance, strategy) {
     const response = await this.request(instance, 'cancelallorder', {
       strategy,
-    });
+    }, 'POST', { isCritical: true });
     return response.data || response;
   }
 
@@ -354,7 +373,7 @@ class OpenAlgoClient {
   async closePosition(instance, strategy) {
     const response = await this.request(instance, 'closeposition', {
       strategy,
-    });
+    }, 'POST', { isCritical: true });
     return response.data || response;
   }
 
@@ -479,7 +498,7 @@ class OpenAlgoClient {
    * @returns {Promise<Object>} - { success_orders, failed_orders }
    */
   async placeSplitOrder(instance, orderData) {
-    const response = await this.request(instance, 'splitorder', orderData);
+    const response = await this.request(instance, 'splitorder', orderData, 'POST', { isCritical: true });
     return response.data || response;
   }
 
@@ -490,7 +509,7 @@ class OpenAlgoClient {
    * @returns {Promise<Object>} - { orderid, status }
    */
   async modifyOrder(instance, orderData) {
-    const response = await this.request(instance, 'modifyorder', orderData);
+    const response = await this.request(instance, 'modifyorder', orderData, 'POST', { isCritical: true });
     return {
       orderid: response.orderid || response.data?.orderid,
       status: response.status,
