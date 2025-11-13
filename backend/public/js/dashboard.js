@@ -341,8 +341,30 @@ class DashboardApp {
             + Add Instance
           </button>
         </div>
+
+        <!-- Bulk Actions Bar -->
+        <div id="bulk-actions-bar" class="p-4 bg-neutral-50 border-b border-neutral-200" style="display: none;">
+          <div class="flex items-center gap-4">
+            <span id="selected-count" class="text-sm font-medium">0 selected</span>
+            <div class="flex gap-2">
+              <button class="btn btn-secondary btn-sm" onclick="app.bulkSetActive(true)">
+                Set Active
+              </button>
+              <button class="btn btn-secondary btn-sm" onclick="app.bulkSetActive(false)">
+                Set Inactive
+              </button>
+              <button class="btn btn-success btn-sm" onclick="app.bulkSetAnalyzerMode(false)">
+                Set Live Mode
+              </button>
+              <button class="btn btn-warning btn-sm" onclick="app.bulkSetAnalyzerMode(true)">
+                Set Analyzer Mode
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div class="table-container">
-          ${this.renderInstancesTable(this.instances)}
+          ${this.renderInstancesTable(this.instances, true)}
         </div>
       </div>
     `;
@@ -351,7 +373,7 @@ class DashboardApp {
   /**
    * Render instances table
    */
-  renderInstancesTable(instances) {
+  renderInstancesTable(instances, showBulkActions = false) {
     if (instances.length === 0) {
       return '<p class="text-center text-neutral-600">No instances found</p>';
     }
@@ -360,8 +382,10 @@ class DashboardApp {
       <table class="table">
         <thead>
           <tr>
+            ${showBulkActions ? '<th><input type="checkbox" id="select-all-instances" onchange="app.toggleSelectAllInstances(this.checked)"></th>' : ''}
             <th>Name</th>
             <th>Broker</th>
+            <th>Status</th>
             <th>Health</th>
             <th>Mode</th>
             <th class="text-right">Balance</th>
@@ -374,8 +398,14 @@ class DashboardApp {
         <tbody>
           ${instances.map(instance => `
             <tr>
+              ${showBulkActions ? `<td><input type="checkbox" class="instance-checkbox" data-instance-id="${instance.id}" onchange="app.updateBulkActionsState()"></td>` : ''}
               <td class="font-medium">${Utils.escapeHTML(instance.name)}</td>
               <td>${Utils.escapeHTML(instance.broker || 'N/A')}</td>
+              <td>
+                ${instance.is_active
+                  ? '<span class="badge badge-success">Active</span>'
+                  : '<span class="badge badge-neutral">Inactive</span>'}
+              </td>
               <td>${Utils.getStatusBadge(instance.health_status || 'unknown')}</td>
               <td>
                 ${instance.is_analyzer_mode
@@ -1455,6 +1485,112 @@ class DashboardApp {
     try {
       await api.deleteInstance(instanceId);
       Utils.showToast('Instance deleted', 'success');
+      await this.refreshCurrentView();
+    } catch (error) {
+      Utils.showToast(error.message, 'error');
+    }
+  }
+
+  /**
+   * Toggle select all instances checkbox
+   */
+  toggleSelectAllInstances(checked) {
+    const checkboxes = document.querySelectorAll('.instance-checkbox');
+    checkboxes.forEach(checkbox => {
+      checkbox.checked = checked;
+    });
+    this.updateBulkActionsState();
+  }
+
+  /**
+   * Update bulk actions bar visibility and count
+   */
+  updateBulkActionsState() {
+    const checkboxes = document.querySelectorAll('.instance-checkbox:checked');
+    const count = checkboxes.length;
+    const bulkActionsBar = document.getElementById('bulk-actions-bar');
+    const selectedCount = document.getElementById('selected-count');
+
+    if (bulkActionsBar && selectedCount) {
+      if (count > 0) {
+        bulkActionsBar.style.display = 'block';
+        selectedCount.textContent = `${count} selected`;
+      } else {
+        bulkActionsBar.style.display = 'none';
+      }
+    }
+
+    // Update select-all checkbox state
+    const selectAllCheckbox = document.getElementById('select-all-instances');
+    const allCheckboxes = document.querySelectorAll('.instance-checkbox');
+    if (selectAllCheckbox && allCheckboxes.length > 0) {
+      selectAllCheckbox.checked = checkboxes.length === allCheckboxes.length;
+      selectAllCheckbox.indeterminate = checkboxes.length > 0 && checkboxes.length < allCheckboxes.length;
+    }
+  }
+
+  /**
+   * Get selected instance IDs
+   */
+  getSelectedInstanceIds() {
+    const checkboxes = document.querySelectorAll('.instance-checkbox:checked');
+    return Array.from(checkboxes).map(cb => parseInt(cb.dataset.instanceId));
+  }
+
+  /**
+   * Bulk set active/inactive status
+   */
+  async bulkSetActive(isActive) {
+    const instanceIds = this.getSelectedInstanceIds();
+    if (instanceIds.length === 0) {
+      Utils.showToast('No instances selected', 'warning');
+      return;
+    }
+
+    const action = isActive ? 'activate' : 'deactivate';
+    const confirmed = await Utils.confirm(
+      `Are you sure you want to ${action} ${instanceIds.length} instance(s)?`,
+      `Confirm ${action.charAt(0).toUpperCase() + action.slice(1)}`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      await api.bulkUpdateInstances({
+        instance_ids: instanceIds,
+        is_active: isActive,
+      });
+      Utils.showToast(`${instanceIds.length} instance(s) ${isActive ? 'activated' : 'deactivated'}`, 'success');
+      await this.refreshCurrentView();
+    } catch (error) {
+      Utils.showToast(error.message, 'error');
+    }
+  }
+
+  /**
+   * Bulk set analyzer mode
+   */
+  async bulkSetAnalyzerMode(isAnalyzerMode) {
+    const instanceIds = this.getSelectedInstanceIds();
+    if (instanceIds.length === 0) {
+      Utils.showToast('No instances selected', 'warning');
+      return;
+    }
+
+    const mode = isAnalyzerMode ? 'Analyzer' : 'Live';
+    const confirmed = await Utils.confirm(
+      `Are you sure you want to set ${instanceIds.length} instance(s) to ${mode} mode?`,
+      `Confirm Set ${mode} Mode`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      await api.bulkUpdateInstances({
+        instance_ids: instanceIds,
+        is_analyzer_mode: isAnalyzerMode,
+      });
+      Utils.showToast(`${instanceIds.length} instance(s) set to ${mode} mode`, 'success');
       await this.refreshCurrentView();
     } catch (error) {
       Utils.showToast(error.message, 'error');

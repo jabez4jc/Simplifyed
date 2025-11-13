@@ -223,6 +223,67 @@ class InstanceService {
   }
 
   /**
+   * Bulk update instances
+   * @param {number[]} instanceIds - Array of instance IDs
+   * @param {Object} updates - Fields to update (is_active, is_analyzer_mode)
+   * @returns {Promise<Object>} - Result with count of updated instances
+   */
+  async bulkUpdateInstances(instanceIds, updates) {
+    try {
+      if (!instanceIds || instanceIds.length === 0) {
+        throw new ValidationError('No instance IDs provided');
+      }
+
+      // Build SET clause dynamically
+      const setClauses = [];
+      const params = [];
+
+      if (updates.is_active !== undefined) {
+        setClauses.push('is_active = ?');
+        params.push(updates.is_active ? 1 : 0);
+      }
+
+      if (updates.is_analyzer_mode !== undefined) {
+        setClauses.push('is_analyzer_mode = ?');
+        params.push(updates.is_analyzer_mode ? 1 : 0);
+      }
+
+      if (setClauses.length === 0) {
+        throw new ValidationError('No fields to update');
+      }
+
+      // Add last_updated timestamp
+      setClauses.push('last_updated = CURRENT_TIMESTAMP');
+
+      // Create placeholders for WHERE IN clause
+      const placeholders = instanceIds.map(() => '?').join(',');
+      params.push(...instanceIds);
+
+      const sql = `
+        UPDATE instances
+        SET ${setClauses.join(', ')}
+        WHERE id IN (${placeholders})
+      `;
+
+      const result = await db.run(sql, params);
+
+      log.info('Bulk updated instances', {
+        instanceIds,
+        updates,
+        updated: result.changes,
+      });
+
+      return {
+        updated: result.changes,
+        requested: instanceIds.length,
+      };
+    } catch (error) {
+      log.error('Failed to bulk update instances', error, { instanceIds, updates });
+      throw error;
+    }
+  }
+
+  /**
    * Update instance health status
    * @param {number} id - Instance ID
    * @returns {Promise<Object>} - Updated instance with health info
