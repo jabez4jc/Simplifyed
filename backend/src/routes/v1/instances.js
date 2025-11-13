@@ -6,6 +6,7 @@
 import express from 'express';
 import instanceService from '../../services/instance.service.js';
 import pollingService from '../../services/polling.service.js';
+import marketDataInstanceService from '../../services/market-data-instance.service.js';
 import { log } from '../../core/logger.js';
 import {
   NotFoundError,
@@ -59,6 +60,44 @@ router.get('/admin/instances', async (req, res, next) => {
     res.json({
       status: 'success',
       data: adminInstances,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/instances/market-data/instance
+ * Get the current market data instance (primary with failover to secondary)
+ * Used for frontend quote polling
+ * NOTE: Must be before /:id route to avoid capturing "market-data" as id
+ */
+router.get('/market-data/instance', async (req, res, next) => {
+  try {
+    const instance = await marketDataInstanceService.getMarketDataInstance();
+
+    res.json({
+      status: 'success',
+      data: instance,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/instances/market-data/all
+ * Get all market data instances (primary and secondary) for status display
+ * NOTE: Must be before /:id route
+ */
+router.get('/market-data/all', async (req, res, next) => {
+  try {
+    const instances = await marketDataInstanceService.getMarketDataInstances();
+
+    res.json({
+      status: 'success',
+      data: instances,
+      count: instances.length,
     });
   } catch (error) {
     next(error);

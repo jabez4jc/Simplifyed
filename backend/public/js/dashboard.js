@@ -671,15 +671,17 @@ class DashboardApp {
 
       if (symbols.length === 0) return;
 
-      // Use the first available active instance for quotes
-      const activeInstance = this.instances.find(i => i.is_active && i.health_status === 'healthy');
-      if (!activeInstance) {
-        console.warn('No active instances available for quotes');
+      // Get the designated market data instance (primary with failover to secondary)
+      // This instance does not need to be mapped to the watchlist
+      let marketDataInstance;
+      try {
+        const mdResponse = await api.getMarketDataInstance();
+        marketDataInstance = mdResponse.data;
+        console.log(`Using market data instance: ${marketDataInstance.name} (${marketDataInstance.market_data_role})`);
+      } catch (error) {
+        console.warn('No healthy market data instance available for quotes:', error.message);
         return;
       }
-
-      // Use the active instance for quotes
-      const instanceId = activeInstance.id;
 
       // Prepare symbols array for quotes API
       const symbolsForQuotes = symbols.map(s => ({
@@ -687,8 +689,8 @@ class DashboardApp {
         symbol: s.symbol
       }));
 
-      // Fetch quotes
-      const quotesResponse = await api.getQuotes(symbolsForQuotes, instanceId);
+      // Fetch quotes from the market data instance
+      const quotesResponse = await api.getQuotes(symbolsForQuotes, marketDataInstance.id);
       const quotes = quotesResponse.data;
 
       // Update UI for each symbol
