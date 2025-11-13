@@ -286,15 +286,18 @@ class QuickOrderService {
     );
 
     // Calculate trade quantity based on symbol type and trade mode
+    // ONLY EQUITY symbols in EQUITY mode use actual quantity
+    // Everything else (FUTURES, OPTIONS, derivatives on EQUITY/INDEX) uses lots
     let tradeQuantity;
-    if (symbol.symbol_type === 'FUTURES' || symbol.symbol_type === 'OPTIONS') {
-      // Direct FUTURES/OPTIONS symbols: quantity is actual quantity (must be in multiples of lot_size)
-      tradeQuantity = quantity;
-    } else if (symbol.symbol_type === 'EQUITY') {
-      // EQUITY symbols: quantity is actual quantity
+    if (symbol.symbol_type === 'EQUITY' && tradeMode === 'EQUITY') {
+      // EQUITY symbols in EQUITY mode: quantity is actual quantity
       tradeQuantity = quantity;
     } else {
-      // INDEX or other symbols with FUTURES/OPTIONS trade mode: quantity is in lots
+      // All other cases: quantity is number of lots (multiply by lot_size)
+      // - Direct FUTURES symbols: lots * lot_size
+      // - Direct OPTIONS symbols: lots * lot_size
+      // - INDEX with FUTURES/OPTIONS mode: lots * lot_size
+      // - EQUITY with FUTURES/OPTIONS mode: lots * lot_size
       const lotSize = symbol.lot_size || 1;
       tradeQuantity = quantity * lotSize;
     }
