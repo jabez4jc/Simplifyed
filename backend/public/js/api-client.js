@@ -141,6 +141,11 @@ class APIClient {
     return this.request('/instances/market-data/all');
   }
 
+  // Dashboard APIs
+  async getDashboardMetrics() {
+    return this.request('/dashboard/metrics');
+  }
+
   // Watchlist APIs
   async getWatchlists(filters = {}) {
     const params = new URLSearchParams(filters);
