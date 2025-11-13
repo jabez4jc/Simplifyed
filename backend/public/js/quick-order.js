@@ -243,10 +243,6 @@ class QuickOrderHandler {
                   onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SELL_PE')">
             SELL PE
           </button>
-          <button class="btn-quick-action btn-exit"
-                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'EXIT')">
-            EXIT
-          </button>
           <button class="btn-quick-action btn-exit-all"
                   onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'EXIT_ALL')">
             EXIT ALL
