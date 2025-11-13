@@ -339,6 +339,10 @@ class DashboardApp {
     this.watchlists = response.data;
     this.expandedWatchlists = this.expandedWatchlists || new Set();
 
+    // Fetch instances for quote polling
+    const instancesRes = await api.getInstances();
+    this.instances = instancesRes.data;
+
     contentArea.innerHTML = `
       <!-- Watchlists Section -->
       <div class="card mb-6">
