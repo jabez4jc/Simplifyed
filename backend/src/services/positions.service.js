@@ -146,10 +146,11 @@ class PositionsService {
 
       // Calculate total P&L from positions
       // Some brokers return pnl field, some return mtm, some return realized_pnl + unrealized_pnl
+      // Use explicit null/undefined checks to preserve zero values (0 is a valid P&L)
       const totalPnL = positions.reduce((sum, pos) => {
         const pnl =
-          parseFloatSafe(pos.pnl, 0) ||
-          parseFloatSafe(pos.mtm, 0) ||
+          pos.pnl != null ? parseFloatSafe(pos.pnl, 0) :
+          pos.mtm != null ? parseFloatSafe(pos.mtm, 0) :
           parseFloatSafe(pos.realized_pnl, 0) + parseFloatSafe(pos.unrealized_pnl, 0);
         return sum + pnl;
       }, 0);
