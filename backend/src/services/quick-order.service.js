@@ -289,8 +289,11 @@ class QuickOrderService {
     // ONLY EQUITY symbols in EQUITY mode use actual quantity
     // Everything else (FUTURES, OPTIONS, derivatives on EQUITY/INDEX) uses lots
     let tradeQuantity;
+    let lotSize;
+
     if (symbol.symbol_type === 'EQUITY' && tradeMode === 'EQUITY') {
       // EQUITY symbols in EQUITY mode: quantity is actual quantity
+      lotSize = 1;
       tradeQuantity = quantity;
     } else {
       // All other cases: quantity is number of lots (multiply by lot_size)
@@ -298,7 +301,7 @@ class QuickOrderService {
       // - Direct OPTIONS symbols: lots * lot_size
       // - INDEX with FUTURES/OPTIONS mode: lots * lot_size
       // - EQUITY with FUTURES/OPTIONS mode: lots * lot_size
-      const lotSize = symbol.lot_size || 1;
+      lotSize = symbol.lot_size || 1;
       tradeQuantity = quantity * lotSize;
     }
 
@@ -306,7 +309,7 @@ class QuickOrderService {
       symbolType: symbol.symbol_type,
       tradeMode,
       inputQuantity: quantity,
-      lotSize: symbol.lot_size,
+      lotSize,
       tradeQuantity,
     });
 

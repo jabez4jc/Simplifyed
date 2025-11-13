@@ -121,9 +121,9 @@ class QuickOrderHandler {
     const modeMap = {
       'EQUITY_ONLY': 'EQUITY',
       'EQUITY_FNO': 'EQUITY',
-      'FUTURES_ONLY': 'FUTURES',
-      'OPTIONS_ONLY': 'OPTIONS',
-      'INDEX': 'OPTIONS',
+      'FUTURES': 'EQUITY',      // Direct FUTURES symbols use EQUITY-like interface (BUY/SELL/EXIT)
+      'OPTIONS': 'EQUITY',      // Direct OPTIONS symbols use EQUITY-like interface (BUY/SELL/EXIT)
+      'INDEX': 'OPTIONS',       // INDEX symbols default to OPTIONS mode (BUY_CE/SELL_CE/etc)
       'UNKNOWN': 'EQUITY',
     };
     return modeMap[symbolType] || 'EQUITY';
@@ -284,8 +284,8 @@ class QuickOrderHandler {
     const availability = {
       'EQUITY_ONLY': ['EQUITY'],
       'EQUITY_FNO': ['EQUITY', 'FUTURES', 'OPTIONS'],
-      'FUTURES_ONLY': ['FUTURES', 'OPTIONS'],
-      'OPTIONS_ONLY': ['OPTIONS'],
+      'FUTURES': ['EQUITY'],    // Direct FUTURES symbols: only EQUITY mode (BUY/SELL/EXIT)
+      'OPTIONS': ['EQUITY'],    // Direct OPTIONS symbols: only EQUITY mode (BUY/SELL/EXIT)
       'INDEX': ['FUTURES', 'OPTIONS'],
       'UNKNOWN': ['EQUITY'],
     };
