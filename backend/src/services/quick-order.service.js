@@ -438,8 +438,9 @@ class QuickOrderService {
     const side = action.startsWith('BUY') ? 'BUY' : 'SELL';
 
     // Get underlying symbol and current LTP
+    // Try current instance first, fallback to any healthy instance if needed
     const underlying = symbol.underlying_symbol || symbol.symbol;
-    const ltp = await this._getUnderlyingLTP(instance, underlying, symbol.exchange);
+    const ltp = await this._getUnderlyingLTPWithFallback(instance, underlying, symbol.exchange);
 
     // Get expiry - use user-selected expiry if provided, otherwise auto-select nearest
     let expiry = userExpiry;
@@ -833,6 +834,54 @@ class QuickOrderService {
     } catch (error) {
       log.error('Failed to get positions for symbol', error);
       return [];
+    }
+  }
+
+  /**
+   * Get underlying LTP with fallback to other instances
+   * Tries current instance first, falls back to any healthy instance if needed
+   * @private
+   */
+  async _getUnderlyingLTPWithFallback(instance, underlying, exchange) {
+    try {
+      // Try current instance first
+      return await this._getUnderlyingLTP(instance, underlying, exchange);
+    } catch (error) {
+      log.warn('Failed to get LTP from current instance, trying fallback instances', {
+        instance_id: instance.id,
+        instance_name: instance.name,
+        underlying,
+        error: error.message,
+      });
+
+      // Get all active instances from database
+      const instances = await db.all(
+        'SELECT * FROM instances WHERE is_active = 1 AND health_status = ? AND id != ?',
+        ['healthy', instance.id]
+      );
+
+      // Try each healthy instance until we get a valid LTP
+      for (const fallbackInstance of instances) {
+        try {
+          const ltp = await this._getUnderlyingLTP(fallbackInstance, underlying, exchange);
+          log.info('Successfully fetched LTP from fallback instance', {
+            original_instance: instance.name,
+            fallback_instance: fallbackInstance.name,
+            underlying,
+            ltp,
+          });
+          return ltp;
+        } catch (fallbackError) {
+          log.debug('Fallback instance also failed', {
+            fallback_instance: fallbackInstance.name,
+            error: fallbackError.message,
+          });
+          continue;
+        }
+      }
+
+      // If all instances failed, throw the original error
+      throw error;
     }
   }
 
