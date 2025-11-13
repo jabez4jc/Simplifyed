@@ -147,79 +147,108 @@ class DashboardApp {
     const contentArea = document.getElementById('content-area');
 
     // Fetch data
-    const [instancesRes, aggregatedPnLRes] = await Promise.all([
+    const [instancesRes, metricsRes] = await Promise.all([
       api.getInstances({ is_active: true }),
-      api.getAggregatedPnL().catch(() => ({
+      api.getDashboardMetrics().catch(() => ({
         data: {
-          totalPnL: {
-            realized_pnl: 0,
-            unrealized_pnl: 0,
+          live: {
+            instances: [],
+            total_available_balance: 0,
+            total_realized_pnl: 0,
+            total_unrealized_pnl: 0,
             total_pnl: 0,
-            current_balance: 0,
           },
-          metadata: {
-            total_instances: 0,
-            active_instances: 0,
-            total_symbols: 0,
-            total_positions: 0,
+          analyzer: {
+            instances: [],
+            total_available_balance: 0,
+            total_realized_pnl: 0,
+            total_unrealized_pnl: 0,
+            total_pnl: 0,
           },
         },
       })),
     ]);
 
     this.instances = instancesRes.data;
-    const pnlData = aggregatedPnLRes.data;
+    const metrics = metricsRes.data;
 
     // Render
     contentArea.innerHTML = `
-      <!-- P&L Stats -->
-      <div class="stats-grid">
-        <div class="stat-card pnl-card ${Utils.getPnLBgClass(pnlData.totalPnL.total_pnl)}">
-          <div class="stat-label">Total P&L</div>
-          <div class="stat-value ${Utils.getPnLColorClass(pnlData.totalPnL.total_pnl)}">
-            ${Utils.formatCurrency(pnlData.totalPnL.total_pnl)}
-          </div>
+      <!-- Live Mode Stats (Primary) -->
+      <div class="mb-4">
+        <div class="flex items-center mb-2">
+          <h2 class="text-xl font-semibold">Live Trading</h2>
+          <span class="ml-2 px-2 py-1 text-xs font-semibold bg-green-100 text-green-800 rounded">LIVE</span>
         </div>
-
-        <div class="stat-card">
-          <div class="stat-label">Realized P&L</div>
-          <div class="stat-value ${Utils.getPnLColorClass(pnlData.totalPnL.realized_pnl)}">
-            ${Utils.formatCurrency(pnlData.totalPnL.realized_pnl)}
+        <div class="stats-grid">
+          <div class="stat-card pnl-card ${Utils.getPnLBgClass(metrics.live.total_pnl)}">
+            <div class="stat-label">Total P&L</div>
+            <div class="stat-value ${Utils.getPnLColorClass(metrics.live.total_pnl)}">
+              ${Utils.formatCurrency(metrics.live.total_pnl)}
+            </div>
           </div>
-        </div>
 
-        <div class="stat-card">
-          <div class="stat-label">Unrealized P&L</div>
-          <div class="stat-value ${Utils.getPnLColorClass(pnlData.totalPnL.unrealized_pnl)}">
-            ${Utils.formatCurrency(pnlData.totalPnL.unrealized_pnl)}
+          <div class="stat-card">
+            <div class="stat-label">Realized P&L</div>
+            <div class="stat-value ${Utils.getPnLColorClass(metrics.live.total_realized_pnl)}">
+              ${Utils.formatCurrency(metrics.live.total_realized_pnl)}
+            </div>
           </div>
-        </div>
 
-        <div class="stat-card">
-          <div class="stat-label">Available Balance</div>
-          <div class="stat-value">
-            ${Utils.formatCurrency(pnlData.totalPnL.current_balance)}
+          <div class="stat-card">
+            <div class="stat-label">Unrealized P&L</div>
+            <div class="stat-value ${Utils.getPnLColorClass(metrics.live.total_unrealized_pnl)}">
+              ${Utils.formatCurrency(metrics.live.total_unrealized_pnl)}
+            </div>
+          </div>
+
+          <div class="stat-card">
+            <div class="stat-label">Available Balance</div>
+            <div class="stat-value">
+              ${Utils.formatCurrency(metrics.live.total_available_balance)}
+            </div>
           </div>
         </div>
       </div>
 
-      <!-- Instance Stats -->
-      <div class="stats-grid mb-6">
-        <div class="stat-card">
-          <div class="stat-label">Active Instances</div>
-          <div class="stat-value">${pnlData.metadata.active_instances}</div>
-        </div>
+      <!-- Analyzer Mode Stats (Secondary) -->
+      ${metrics.analyzer.instances.length > 0 ? `
+        <div class="mb-6">
+          <div class="flex items-center mb-2">
+            <h2 class="text-xl font-semibold text-neutral-600">Analyzer Mode</h2>
+            <span class="ml-2 px-2 py-1 text-xs font-semibold bg-gray-200 text-gray-700 rounded">SIMULATION</span>
+          </div>
+          <div class="stats-grid opacity-75">
+            <div class="stat-card bg-gray-50">
+              <div class="stat-label">Total P&L</div>
+              <div class="stat-value ${Utils.getPnLColorClass(metrics.analyzer.total_pnl)}">
+                ${Utils.formatCurrency(metrics.analyzer.total_pnl)}
+              </div>
+            </div>
 
-        <div class="stat-card">
-          <div class="stat-label">Open Positions</div>
-          <div class="stat-value">${pnlData.metadata.total_positions}</div>
-        </div>
+            <div class="stat-card bg-gray-50">
+              <div class="stat-label">Realized P&L</div>
+              <div class="stat-value ${Utils.getPnLColorClass(metrics.analyzer.total_realized_pnl)}">
+                ${Utils.formatCurrency(metrics.analyzer.total_realized_pnl)}
+              </div>
+            </div>
 
-        <div class="stat-card">
-          <div class="stat-label">Symbols Traded</div>
-          <div class="stat-value">${pnlData.metadata.total_symbols}</div>
+            <div class="stat-card bg-gray-50">
+              <div class="stat-label">Unrealized P&L</div>
+              <div class="stat-value ${Utils.getPnLColorClass(metrics.analyzer.total_unrealized_pnl)}">
+                ${Utils.formatCurrency(metrics.analyzer.total_unrealized_pnl)}
+              </div>
+            </div>
+
+            <div class="stat-card bg-gray-50">
+              <div class="stat-label">Available Balance</div>
+              <div class="stat-value">
+                ${Utils.formatCurrency(metrics.analyzer.total_available_balance)}
+              </div>
+            </div>
+          </div>
         </div>
-      </div>
+      ` : ''}
 
       <!-- Instances Table -->
       <div class="card">

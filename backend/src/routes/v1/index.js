@@ -11,6 +11,7 @@ import positionRoutes from './positions.js';
 import symbolRoutes from './symbols.js';
 import pollingRoutes from './polling.js';
 import quickOrderRoutes from './quickorders.js';
+import dashboardRoutes from './dashboard.js';
 
 const router = express.Router();
 
@@ -22,6 +23,7 @@ router.use('/positions', positionRoutes);
 router.use('/symbols', symbolRoutes);
 router.use('/polling', pollingRoutes);
 router.use('/quickorders', quickOrderRoutes);
+router.use('/dashboard', dashboardRoutes);
 
 // Health check endpoint
 router.get('/health', (req, res) => {
