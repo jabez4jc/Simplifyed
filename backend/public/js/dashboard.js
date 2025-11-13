@@ -172,6 +172,29 @@ class DashboardApp {
     this.instances = instancesRes.data;
     const metrics = metricsRes.data;
 
+    // Merge fund balance data into instances
+    const allMetricsInstances = [...metrics.live.instances, ...metrics.analyzer.instances];
+    const fundsMap = new Map();
+    allMetricsInstances.forEach(mi => {
+      fundsMap.set(mi.instance_id, {
+        available_balance: mi.available_balance,
+        realized_pnl: mi.realized_pnl,
+        unrealized_pnl: mi.unrealized_pnl,
+        total_pnl: mi.total_pnl,
+      });
+    });
+
+    // Add fund data to instances
+    this.instances = this.instances.map(instance => ({
+      ...instance,
+      ...(fundsMap.get(instance.id) || {
+        available_balance: 0,
+        realized_pnl: 0,
+        unrealized_pnl: 0,
+        total_pnl: 0,
+      }),
+    }));
+
     // Render
     contentArea.innerHTML = `
       <!-- Live Mode Stats (Primary) -->
@@ -271,9 +294,44 @@ class DashboardApp {
   async renderInstancesView() {
     const contentArea = document.getElementById('content-area');
 
-    // Fetch instances
-    const response = await api.getInstances();
-    this.instances = response.data;
+    // Fetch instances and metrics
+    const [instancesRes, metricsRes] = await Promise.all([
+      api.getInstances(),
+      api.getDashboardMetrics().catch(() => ({
+        data: {
+          live: { instances: [] },
+          analyzer: { instances: [] },
+        },
+      })),
+    ]);
+
+    this.instances = instancesRes.data;
+    const metrics = metricsRes.data;
+
+    // Merge fund balance data into active instances only
+    const allMetricsInstances = [...metrics.live.instances, ...metrics.analyzer.instances];
+    const fundsMap = new Map();
+    allMetricsInstances.forEach(mi => {
+      fundsMap.set(mi.instance_id, {
+        available_balance: mi.available_balance,
+        realized_pnl: mi.realized_pnl,
+        unrealized_pnl: mi.unrealized_pnl,
+        total_pnl: mi.total_pnl,
+      });
+    });
+
+    // Add fund data to active instances
+    this.instances = this.instances.map(instance => ({
+      ...instance,
+      ...(instance.is_active && fundsMap.has(instance.id)
+        ? fundsMap.get(instance.id)
+        : {
+            available_balance: null, // null indicates no data for inactive instances
+            realized_pnl: instance.realized_pnl || 0,
+            unrealized_pnl: instance.unrealized_pnl || 0,
+            total_pnl: instance.total_pnl || 0,
+          }),
+    }));
 
     contentArea.innerHTML = `
       <div class="card">
@@ -306,6 +364,7 @@ class DashboardApp {
             <th>Broker</th>
             <th>Health</th>
             <th>Mode</th>
+            <th class="text-right">Balance</th>
             <th class="text-right">Total P&L</th>
             <th class="text-right">Realized</th>
             <th class="text-right">Unrealized</th>
@@ -322,6 +381,11 @@ class DashboardApp {
                 ${instance.is_analyzer_mode
                   ? '<span class="badge badge-warning">Analyzer</span>'
                   : '<span class="badge badge-success">Live</span>'}
+              </td>
+              <td class="text-right">
+                ${instance.available_balance != null
+                  ? Utils.formatCurrency(instance.available_balance)
+                  : '<span class="text-neutral-400">-</span>'}
               </td>
               <td class="text-right ${Utils.getPnLColorClass(instance.total_pnl)}">
                 ${Utils.formatCurrency(instance.total_pnl || 0)}
