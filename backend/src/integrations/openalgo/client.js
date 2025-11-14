@@ -929,20 +929,40 @@ class OpenAlgoClient {
         return null;
       }
 
+      // Calculate time window (60 seconds) for filtering recent orders only
+      const now = Date.now();
+      const timeWindowMs = 60 * 1000; // 60 seconds
+      const earliestAllowedTime = now - timeWindowMs;
+
+      // Invalid order statuses that should be excluded
+      const invalidStatuses = ['CANCELLED', 'REJECTED', 'FAILED', 'cancelled', 'rejected', 'failed'];
+
       // Filter orders matching this order's characteristics
       // Include quantity validation with tolerance for partial fills (20% variance)
+      // Only match orders placed within the last 60 seconds
+      // Exclude orders with invalid statuses
       const quantityTolerance = 0.2; // 20% tolerance
       const matchingOrders = orders.filter((order) => {
         const orderQty = parseInt(order.quantity, 10) || 0;
         const qtyDiff = Math.abs(orderQty - requestedQty);
         const qtyWithinTolerance = qtyDiff <= requestedQty * quantityTolerance;
 
+        // Check if order is within time window
+        const orderTime = new Date(order.timestamp || 0).getTime();
+        const withinTimeWindow = orderTime >= earliestAllowedTime;
+
+        // Check if order status is valid (not cancelled/rejected/failed)
+        const orderStatus = (order.order_status || '').toLowerCase();
+        const hasValidStatus = !invalidStatuses.some(status => status.toLowerCase() === orderStatus);
+
         return (
           order.symbol === orderData.symbol &&
           order.exchange === orderData.exchange &&
           order.product === (orderData.product || 'MIS') &&
           order.action === orderData.action &&
-          qtyWithinTolerance
+          qtyWithinTolerance &&
+          withinTimeWindow &&
+          hasValidStatus
         );
       });
 
@@ -951,6 +971,10 @@ class OpenAlgoClient {
           symbol: orderData.symbol,
           exchange: orderData.exchange,
           action: orderData.action,
+          product: orderData.product || 'MIS',
+          quantity: requestedQty,
+          timeWindowSeconds: 60,
+          totalOrdersInBook: orders.length,
         });
         return null;
       }
@@ -974,6 +998,9 @@ class OpenAlgoClient {
         quantity: mostRecentOrder.quantity,
         order_status: mostRecentOrder.order_status,
         timestamp: mostRecentOrder.timestamp,
+        matchingOrdersCount: matchingOrders.length,
+        timeWindowSeconds: 60,
+        filtersApplied: ['symbol', 'exchange', 'product', 'action', 'quantity±20%', 'time≤60s', 'validStatus'],
       });
 
       return mostRecentOrder.orderid || null;
