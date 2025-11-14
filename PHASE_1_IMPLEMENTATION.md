@@ -427,19 +427,26 @@ class OrderMonitorService {
     // Create position key to prevent duplicate triggers
     const positionKey = `${instance.id}:${symbol}:${exchange}`;
 
-    // Check if already triggered (in-memory cache first)
+    // Check if already triggered (in-memory cache first, with timestamp validation)
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
     if (this.checkedPositions.has(positionKey)) {
-      return;
+      const cachedTimestamp = this.checkedPositions.get(positionKey);
+      // Only skip if cached timestamp is within the 1-hour window
+      if (cachedTimestamp > oneHourAgo) {
+        return;
+      }
+      // Cached entry is stale, remove it and continue checking
+      this.checkedPositions.delete(positionKey);
     }
 
     // Double-check database for recent triggers (last 1 hour)
-    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const oneHourAgoISO = new Date(oneHourAgo).toISOString();
     const recentTrigger = await db.get(`
       SELECT id FROM order_monitor_log
       WHERE instance_id = ? AND symbol = ? AND exchange = ?
       AND created_at > ?
       LIMIT 1
-    `, [instance.id, symbol, exchange, oneHourAgo]);
+    `, [instance.id, symbol, exchange, oneHourAgoISO]);
 
     if (recentTrigger) {
       // Update cache and skip
@@ -576,6 +583,8 @@ class OrderMonitorService {
    * Send Telegram alert (if configured)
    */
   async sendTelegramAlert(instance, alert) {
+    let userId = null;
+
     try {
       // Get user ID from instance relationship
       // Query user via instance ownership (assumes instances.user_id FK exists)
@@ -587,6 +596,7 @@ class OrderMonitorService {
       `, [instance.id]);
 
       if (user) {
+        userId = user.id;
         await telegramService.sendAlert(user.id, alert);
       } else {
         log.warn('No user associated with instance for Telegram alert', {
@@ -596,20 +606,23 @@ class OrderMonitorService {
     } catch (error) {
       log.error('Telegram alert failed', error);
       // Log failure to telegram_message_log for audit trail
-      try {
-        await db.run(`
-          INSERT INTO telegram_message_log
-          (user_id, message_type, message_text, send_status, error_message)
-          VALUES (?, ?, ?, ?, ?)
-        `, [
-          instance.id, // Use instance ID as fallback if user not found
-          'ALERT',
-          JSON.stringify(alert),
-          'failed',
-          error.message
-        ]);
-      } catch (dbError) {
-        log.error('Failed to log Telegram error', dbError);
+      // Only log if we have a valid user_id to maintain referential integrity
+      if (userId) {
+        try {
+          await db.run(`
+            INSERT INTO telegram_message_log
+            (user_id, message_type, message_text, send_status, error_message)
+            VALUES (?, ?, ?, ?, ?)
+          `, [
+            userId,
+            'ALERT',
+            JSON.stringify(alert),
+            'failed',
+            error.message
+          ]);
+        } catch (dbError) {
+          log.error('Failed to log Telegram error', dbError);
+        }
       }
     }
   }

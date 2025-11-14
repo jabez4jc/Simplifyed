@@ -1523,7 +1523,7 @@ class DashboardApp {
 
     // Update select-all checkbox state
     const selectAllCheckbox = document.getElementById('select-all-instances');
-    const allCheckboxes = document.querySelectorAll('.instance-checkbox');
+    const allCheckboxes = document.querySelectorAll('.instances-bulk-checkbox');
     if (selectAllCheckbox && allCheckboxes.length > 0) {
       selectAllCheckbox.checked = checkboxes.length === allCheckboxes.length;
       selectAllCheckbox.indeterminate = checkboxes.length > 0 && checkboxes.length < allCheckboxes.length;
@@ -1534,7 +1534,7 @@ class DashboardApp {
    * Get selected instance IDs
    */
   getSelectedInstanceIds() {
-    const checkboxes = document.querySelectorAll('.instance-checkbox:checked');
+    const checkboxes = document.querySelectorAll('.instances-bulk-checkbox:checked');
     return Array.from(checkboxes).map(cb => parseInt(cb.dataset.instanceId));
   }
 
