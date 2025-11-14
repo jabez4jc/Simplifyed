@@ -12,6 +12,8 @@ import symbolRoutes from './symbols.js';
 import pollingRoutes from './polling.js';
 import quickOrderRoutes from './quickorders.js';
 import dashboardRoutes from './dashboard.js';
+import telegramRoutes from './telegram.js';
+import monitorRoutes from './monitor.js';
 
 const router = express.Router();
 
@@ -24,6 +26,8 @@ router.use('/symbols', symbolRoutes);
 router.use('/polling', pollingRoutes);
 router.use('/quickorders', quickOrderRoutes);
 router.use('/dashboard', dashboardRoutes);
+router.use('/telegram', telegramRoutes);
+router.use('/monitor', monitorRoutes);
 
 // Health check endpoint
 router.get('/health', (req, res) => {

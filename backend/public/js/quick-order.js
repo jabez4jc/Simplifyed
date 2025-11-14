@@ -94,6 +94,9 @@ class QuickOrderHandler {
       }
       console.log(`[QuickOrder] Selected expiry (YYYY-MM-DD format):`, selectedExpiry);
 
+      // Fetch target configuration from database
+      const targetConfig = await this.fetchTargetConfig(watchlistId, symbolId);
+
       // Render trading controls
       contentDiv.innerHTML = this.renderTradingControls({
         watchlistId,
@@ -106,6 +109,7 @@ class QuickOrderHandler {
         quantity,
         expiries,
         selectedExpiry,
+        targetConfig,
       });
 
       contentDiv.dataset.loaded = 'true';
@@ -132,7 +136,7 @@ class QuickOrderHandler {
   /**
    * Render trading controls UI
    */
-  renderTradingControls({ watchlistId, symbolId, symbol, exchange, symbolType, tradeMode, optionsLeg, quantity, expiries, selectedExpiry }) {
+  renderTradingControls({ watchlistId, symbolId, symbol, exchange, symbolType, tradeMode, optionsLeg, quantity, expiries, selectedExpiry, targetConfig }) {
     const availableModes = this.getAvailableTradeModes(symbolType);
     const showOptionsLeg = tradeMode === 'OPTIONS';
     const showExpirySelector = (tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') && expiries && expiries.length > 0;
@@ -216,6 +220,46 @@ class QuickOrderHandler {
         <div class="quick-order-actions">
           ${this.renderActionButtons(watchlistId, symbolId, symbol, exchange, tradeMode)}
         </div>
+      </div>
+
+      <!-- Target Configuration Section -->
+      <div class="target-config-section" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--color-neutral-200);">
+        <h4 style="font-size: 0.9rem; font-weight: 600; margin-bottom: 0.75rem; color: var(--color-neutral-700);">
+          📊 Target Monitoring (Analyzer Mode)
+        </h4>
+        <div style="display: grid; grid-template-columns: 1fr 1fr auto; gap: 1rem; align-items: end;">
+          <div>
+            <label class="form-label-sm">Target Type:</label>
+            <select id="target-type-${symbolId}" class="select-sm" style="width: 100%;">
+              <option value="NONE" ${!targetConfig || targetConfig.target_type === 'NONE' ? 'selected' : ''}>None</option>
+              <option value="POINTS" ${targetConfig?.target_type === 'POINTS' ? 'selected' : ''}>Points</option>
+              <option value="PERCENTAGE" ${targetConfig?.target_type === 'PERCENTAGE' ? 'selected' : ''}>Percentage</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label-sm">Target Value:</label>
+            <input
+              type="number"
+              id="target-value-${symbolId}"
+              class="input-sm"
+              value="${targetConfig?.target_value || ''}"
+              placeholder="e.g. 50 or 2"
+              min="0"
+              step="0.01"
+              style="width: 100%;">
+          </div>
+          <div>
+            <button
+              class="btn btn-primary btn-sm"
+              onclick="quickOrder.saveTargetConfig(${watchlistId}, ${symbolId})"
+              style="white-space: nowrap;">
+              💾 Save Target
+            </button>
+          </div>
+        </div>
+        <p class="text-xs text-neutral-600" style="margin-top: 0.5rem;">
+          📍 Target monitoring works in <strong>Analyzer mode only</strong>. Configure an instance in analyzer mode to test this feature.
+        </p>
       </div>
     `;
   }
@@ -615,6 +659,65 @@ class QuickOrderHandler {
         btn.disabled = false;
         btn.classList.remove('loading');
       });
+    }
+  }
+
+  /**
+   * Fetch target configuration for a symbol
+   */
+  async fetchTargetConfig(watchlistId, symbolId) {
+    try {
+      const response = await fetch(`/api/v1/watchlists/${watchlistId}/symbols/${symbolId}`);
+      if (!response.ok) {
+        console.warn('[QuickOrder] Failed to fetch target config:', response.statusText);
+        return null;
+      }
+      const data = await response.json();
+      return data.data || null;
+    } catch (error) {
+      console.error('[QuickOrder] Error fetching target config:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Save target configuration for a symbol
+   */
+  async saveTargetConfig(watchlistId, symbolId) {
+    try {
+      const targetType = document.getElementById(`target-type-${symbolId}`).value;
+      const targetValue = document.getElementById(`target-value-${symbolId}`).value;
+
+      // Validate
+      if (targetType !== 'NONE' && (!targetValue || parseFloat(targetValue) <= 0)) {
+        Utils.showToast('Please enter a valid target value', 'error');
+        return;
+      }
+
+      // Prepare update data
+      const updateData = {
+        target_type: targetType,
+        target_value: targetType === 'NONE' ? null : parseFloat(targetValue),
+      };
+
+      // Save to backend
+      const response = await fetch(`/api/v1/watchlists/${watchlistId}/symbols/${symbolId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(updateData),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to save target configuration');
+      }
+
+      Utils.showToast('Target configuration saved successfully', 'success');
+      console.log('[QuickOrder] Target config saved:', updateData);
+    } catch (error) {
+      console.error('[QuickOrder] Error saving target config:', error);
+      Utils.showToast(`Failed to save: ${error.message}`, 'error');
     }
   }
 }

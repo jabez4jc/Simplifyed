@@ -344,6 +344,10 @@ class OptionsResolutionService {
       return this._processOptionChain(options);
     } catch (error) {
       log.error('Failed to get option chain via search', error);
+      // If error is already a NotFoundError, just re-throw it to avoid duplication
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
       throw new NotFoundError(
         `Unable to fetch option chain for ${underlying} ${expiry}: ${error.message}`
       );

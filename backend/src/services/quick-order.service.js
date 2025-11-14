@@ -209,6 +209,22 @@ class QuickOrderService {
   async _executeOrderStrategy(strategy, symbol, instances, orderParams) {
     const results = [];
 
+    // For OPTIONS strategy, resolve option symbol ONCE using primary market data instance
+    let preResolvedOptionSymbol = null;
+    if (strategy === 'OPTIONS_WITH_RECONCILIATION') {
+      const marketDataInstance = await this._getMarketDataInstance(instances);
+      preResolvedOptionSymbol = await this._preResolveOptionSymbol(
+        marketDataInstance,
+        symbol,
+        orderParams
+      );
+      log.info('Pre-resolved option symbol for all instances', {
+        symbol: preResolvedOptionSymbol.optionSymbol.symbol,
+        strike: preResolvedOptionSymbol.optionSymbol.strike,
+        instances: instances.map(i => i.name),
+      });
+    }
+
     for (const instance of instances) {
       try {
         let result;
@@ -219,7 +235,12 @@ class QuickOrderService {
             break;
 
           case 'OPTIONS_WITH_RECONCILIATION':
-            result = await this._executeOptionsOrder(instance, symbol, orderParams);
+            result = await this._executeOptionsOrder(
+              instance,
+              symbol,
+              orderParams,
+              preResolvedOptionSymbol
+            );
             break;
 
           case 'CLOSE_POSITIONS':
@@ -430,45 +451,36 @@ class QuickOrderService {
    * Execute options order with position reconciliation
    * @private
    */
-  async _executeOptionsOrder(instance, symbol, orderParams) {
-    const { action, quantity, product, orderType, price, expiry: userExpiry, optionsLeg: userOptionsLeg } = orderParams;
+  async _executeOptionsOrder(instance, symbol, orderParams, preResolvedOptionSymbol = null) {
+    const { action, quantity, product, orderType, price } = orderParams;
 
     // Parse action to determine option type and side
     const optionType = action.includes('CE') ? 'CE' : 'PE';
     const side = action.startsWith('BUY') ? 'BUY' : 'SELL';
 
-    // Get underlying symbol and current LTP
-    // Try current instance first, fallback to any healthy instance if needed
-    const underlying = symbol.underlying_symbol || symbol.symbol;
-    const ltp = await this._getUnderlyingLTPWithFallback(instance, underlying, symbol.exchange);
+    // Use pre-resolved option symbol if provided (multi-instance case)
+    // Otherwise resolve it now (single-instance case)
+    let optionSymbol;
+    let expiry;
+    let underlying;
 
-    // Get expiry - use user-selected expiry if provided, otherwise auto-select nearest
-    let expiry = userExpiry;
-    if (!expiry) {
-      expiry = await expiryManagementService.getNearestExpiry(
-        underlying,
-        symbol.exchange,
-        instance
-      );
-      log.info('Auto-selected nearest expiry', { expiry });
+    if (preResolvedOptionSymbol) {
+      // Multi-instance: use pre-resolved symbol
+      optionSymbol = preResolvedOptionSymbol.optionSymbol;
+      expiry = preResolvedOptionSymbol.expiry;
+      underlying = preResolvedOptionSymbol.underlying;
+      log.debug('Using pre-resolved option symbol', {
+        instance_id: instance.id,
+        symbol: optionSymbol.symbol,
+        strike: optionSymbol.strike,
+      });
     } else {
-      log.info('Using user-selected expiry', { expiry });
+      // Single-instance: resolve now
+      const resolution = await this._resolveOptionSymbolForInstance(instance, symbol, orderParams);
+      optionSymbol = resolution.optionSymbol;
+      expiry = resolution.expiry;
+      underlying = resolution.underlying;
     }
-
-    // Get strike offset - use user-selected options leg if provided, otherwise use symbol default
-    const strikeOffset = userOptionsLeg || symbol.options_strike_selection || 'ATM';
-    log.info('Using strike offset', { strikeOffset, userSelected: !!userOptionsLeg });
-
-    // Resolve option symbol
-    const optionSymbol = await optionsResolutionService.resolveOptionSymbol({
-      underlying,
-      exchange: symbol.exchange,
-      expiry,
-      optionType,
-      strikeOffset,
-      ltp,
-      instance,
-    });
 
     // Determine the correct derivatives exchange
     // INDEX symbols are on NSE_INDEX but their options trade on NFO
@@ -1297,6 +1309,98 @@ class QuickOrderService {
     };
 
     return exchangeMap[exchange] || exchange;
+  }
+
+  /**
+   * Get market data instance from list of instances
+   * Prefers instances with market_data_role='primary', falls back to first instance
+   * @private
+   */
+  async _getMarketDataInstance(instances) {
+    // Try to find primary market data instance
+    const primaryInstance = instances.find(i => i.market_data_role === 'primary');
+    if (primaryInstance) {
+      log.debug('Using primary market data instance', {
+        instance_id: primaryInstance.id,
+        name: primaryInstance.name,
+      });
+      return primaryInstance;
+    }
+
+    // Fallback to first instance
+    log.debug('No primary market data instance, using first instance', {
+      instance_id: instances[0].id,
+      name: instances[0].name,
+    });
+    return instances[0];
+  }
+
+  /**
+   * Pre-resolve option symbol once for all instances
+   * @private
+   */
+  async _preResolveOptionSymbol(marketDataInstance, symbol, orderParams) {
+    const resolution = await this._resolveOptionSymbolForInstance(
+      marketDataInstance,
+      symbol,
+      orderParams
+    );
+    log.info('Option symbol resolved for multi-instance broadcast', {
+      underlying: resolution.underlying,
+      expiry: resolution.expiry,
+      symbol: resolution.optionSymbol.symbol,
+      strike: resolution.optionSymbol.strike,
+    });
+    return resolution;
+  }
+
+  /**
+   * Resolve option symbol for a single instance
+   * @private
+   */
+  async _resolveOptionSymbolForInstance(instance, symbol, orderParams) {
+    const { action, expiry: userExpiry, optionsLeg: userOptionsLeg } = orderParams;
+
+    // Parse action to determine option type
+    const optionType = action.includes('CE') ? 'CE' : 'PE';
+
+    // Get underlying symbol and current LTP
+    const underlying = symbol.underlying_symbol || symbol.symbol;
+    const ltp = await this._getUnderlyingLTPWithFallback(instance, underlying, symbol.exchange);
+
+    // Get expiry - use user-selected expiry if provided, otherwise auto-select nearest
+    let expiry = userExpiry;
+    if (!expiry) {
+      expiry = await expiryManagementService.getNearestExpiry(
+        underlying,
+        symbol.exchange,
+        instance
+      );
+      log.info('Auto-selected nearest expiry', { expiry });
+    } else {
+      log.info('Using user-selected expiry', { expiry });
+    }
+
+    // Get strike offset - use user-selected options leg if provided, otherwise use symbol default
+    const strikeOffset = userOptionsLeg || symbol.options_strike_selection || 'ATM';
+    log.info('Using strike offset', { strikeOffset, userSelected: !!userOptionsLeg });
+
+    // Resolve option symbol
+    const optionSymbol = await optionsResolutionService.resolveOptionSymbol({
+      underlying,
+      exchange: symbol.exchange,
+      expiry,
+      optionType,
+      strikeOffset,
+      ltp,
+      instance,
+    });
+
+    return {
+      underlying,
+      expiry,
+      optionSymbol,
+    };
   }
 }
 
