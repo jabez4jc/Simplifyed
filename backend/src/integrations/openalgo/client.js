@@ -47,9 +47,6 @@ class OpenAlgoClient {
           requestTls: {
             rejectUnauthorized,
           },
-          connect: {
-            rejectUnauthorized,
-          },
         });
       } catch (error) {
         log.error('Invalid proxy URL, proceeding without proxy', { error: error.message });
