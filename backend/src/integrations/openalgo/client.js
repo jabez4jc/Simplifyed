@@ -88,10 +88,13 @@ class OpenAlgoClient {
     const isOrderPlacement = ['placeorder', 'placesmartorder'].includes(endpoint);
 
     // Store initial position for order placement requests
+    // Track snapshot success separately from position value to enable dedup for new positions
     let initialPosition = null;
+    let initialPositionFetched = false;
     if (isOrderPlacement) {
       try {
         initialPosition = await this._getPositionForOrder(instance, data);
+        initialPositionFetched = true; // Snapshot succeeded (position may be null for new positions)
       } catch (error) {
         log.warn('Could not fetch initial position for order retry check', {
           endpoint,
@@ -131,18 +134,21 @@ class OpenAlgoClient {
         }
 
         // For order placement requests, check if order was actually placed before retrying
-        if (isOrderPlacement && attempt < maxRetries && initialPosition !== null) {
+        if (isOrderPlacement && attempt < maxRetries && initialPositionFetched) {
           try {
             const currentPosition = await this._getPositionForOrder(instance, data);
 
             // Check if position changed (order was likely placed)
             if (this._hasPositionChanged(initialPosition, currentPosition, data)) {
+              // Use consistent field access for logging (handle both netqty and net_qty)
+              const getNetQty = (pos) => pos?.netqty || pos?.net_qty || 0;
+
               log.info('Order appears to have been placed despite error - skipping retry', {
                 endpoint,
                 symbol: data.symbol,
                 exchange: data.exchange,
-                initialQty: initialPosition?.netqty || 0,
-                currentQty: currentPosition?.netqty || 0,
+                initialQty: getNetQty(initialPosition),
+                currentQty: getNetQty(currentPosition),
                 expectedChange: data.quantity || 0,
                 action: data.action,
               });
@@ -738,9 +744,14 @@ class OpenAlgoClient {
     try {
       const positions = await this.getPositionBook(instance);
 
-      // Find position matching this order's symbol and exchange
+      // Find position matching this order's symbol, exchange, and product
+      // Product matching is critical because brokers maintain separate positions
+      // for different product types (e.g., RELIANCE-MIS vs RELIANCE-CNC)
       const position = positions.find(
-        (pos) => pos.symbol === orderData.symbol && pos.exchange === orderData.exchange
+        (pos) =>
+          pos.symbol === orderData.symbol &&
+          pos.exchange === orderData.exchange &&
+          pos.product === (orderData.product || 'MIS') // Default to MIS if not specified
       );
 
       return position || null;
@@ -748,6 +759,7 @@ class OpenAlgoClient {
       log.warn('Failed to fetch position for order validation', {
         symbol: orderData.symbol,
         exchange: orderData.exchange,
+        product: orderData.product,
         error: error.message,
       });
       throw error;
@@ -764,6 +776,25 @@ class OpenAlgoClient {
    * @returns {boolean} - true if position changed consistent with order execution
    */
   _hasPositionChanged(initialPosition, currentPosition, orderData) {
+    // Validate action is strictly BUY or SELL
+    if (orderData.action !== 'BUY' && orderData.action !== 'SELL') {
+      log.warn('Invalid order action for position deduplication', {
+        action: orderData.action,
+        symbol: orderData.symbol,
+      });
+      return false;
+    }
+
+    // Validate quantity is a positive integer
+    const orderQty = parseInt(orderData.quantity, 10);
+    if (isNaN(orderQty) || orderQty <= 0) {
+      log.warn('Invalid order quantity for position deduplication', {
+        quantity: orderData.quantity,
+        symbol: orderData.symbol,
+      });
+      return false;
+    }
+
     // Handle different position field names (netqty vs net_qty)
     const getNetQty = (pos) => {
       if (!pos) return 0;
@@ -774,7 +805,6 @@ class OpenAlgoClient {
     const currentQty = getNetQty(currentPosition);
 
     // Calculate expected change based on action
-    const orderQty = parseInt(orderData.quantity, 10) || 0;
     let expectedChange = 0;
 
     if (orderData.action === 'BUY') {
@@ -785,6 +815,20 @@ class OpenAlgoClient {
 
     // Check if actual change matches expected change
     const actualChange = currentQty - initialQty;
+
+    // Enforce that position movement direction matches expected direction
+    if (expectedChange !== 0 && actualChange !== 0) {
+      if (Math.sign(actualChange) !== Math.sign(expectedChange)) {
+        log.debug('Position changed in opposite direction - not deduplicating', {
+          symbol: orderData.symbol,
+          exchange: orderData.exchange,
+          action: orderData.action,
+          expectedChange,
+          actualChange,
+        });
+        return false;
+      }
+    }
 
     // Allow for some tolerance in case of partial fills or broker-specific handling
     // Consider position changed if actual change is at least 80% of expected
