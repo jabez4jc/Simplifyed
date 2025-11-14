@@ -143,6 +143,17 @@ class OpenAlgoClient {
               // Use consistent field access for logging (handle both netqty and net_qty)
               const getNetQty = (pos) => pos?.netqty || pos?.net_qty || 0;
 
+              // Fetch actual order ID from order book
+              let actualOrderId = null;
+              try {
+                actualOrderId = await this._findOrderIdFromOrderBook(instance, data);
+              } catch (orderIdError) {
+                log.warn('Could not fetch actual order ID from order book', {
+                  symbol: data.symbol,
+                  error: orderIdError.message,
+                });
+              }
+
               log.info('Order appears to have been placed despite error - skipping retry', {
                 endpoint,
                 symbol: data.symbol,
@@ -151,13 +162,16 @@ class OpenAlgoClient {
                 currentQty: getNetQty(currentPosition),
                 expectedChange: data.quantity || 0,
                 action: data.action,
+                foundOrderId: actualOrderId,
               });
 
-              // Return a synthetic success response
+              // Return success response with actual order ID if found
               return {
                 status: 'success',
-                orderid: 'DEDUPED',
-                message: 'Order placed successfully (verified via position check)',
+                orderid: actualOrderId || 'UNKNOWN_DEDUPED',
+                message: actualOrderId
+                  ? 'Order placed successfully (verified via position check)'
+                  : 'Order placed successfully (verified via position check, order ID not found in order book)',
               };
             }
           } catch (posCheckError) {
@@ -851,6 +865,77 @@ class OpenAlgoClient {
     }
 
     return positionChanged;
+  }
+
+  /**
+   * Find actual order ID from order book for deduplication
+   * Fetches the most recent matching order from order book
+   * @private
+   * @param {Object} instance - Instance configuration
+   * @param {Object} orderData - Order data (symbol, exchange, product, action, quantity)
+   * @returns {Promise<string|null>} - Order ID or null if not found
+   */
+  async _findOrderIdFromOrderBook(instance, orderData) {
+    try {
+      const orderBookResponse = await this.getOrderBook(instance);
+      const orders = orderBookResponse?.orders || orderBookResponse || [];
+
+      if (!Array.isArray(orders) || orders.length === 0) {
+        log.warn('Order book empty or invalid for order ID lookup', {
+          symbol: orderData.symbol,
+        });
+        return null;
+      }
+
+      // Filter orders matching this order's characteristics
+      const matchingOrders = orders.filter((order) => {
+        return (
+          order.symbol === orderData.symbol &&
+          order.exchange === orderData.exchange &&
+          order.product === (orderData.product || 'MIS') &&
+          order.action === orderData.action
+        );
+      });
+
+      if (matchingOrders.length === 0) {
+        log.warn('No matching orders found in order book', {
+          symbol: orderData.symbol,
+          exchange: orderData.exchange,
+          action: orderData.action,
+        });
+        return null;
+      }
+
+      // Sort by timestamp descending (most recent first)
+      // Handle various timestamp formats
+      matchingOrders.sort((a, b) => {
+        const timeA = new Date(a.timestamp || 0).getTime();
+        const timeB = new Date(b.timestamp || 0).getTime();
+        return timeB - timeA; // Descending order
+      });
+
+      // Return the most recent order ID
+      const mostRecentOrder = matchingOrders[0];
+
+      log.debug('Found matching order ID from order book', {
+        orderid: mostRecentOrder.orderid,
+        symbol: mostRecentOrder.symbol,
+        exchange: mostRecentOrder.exchange,
+        action: mostRecentOrder.action,
+        quantity: mostRecentOrder.quantity,
+        order_status: mostRecentOrder.order_status,
+        timestamp: mostRecentOrder.timestamp,
+      });
+
+      return mostRecentOrder.orderid || null;
+    } catch (error) {
+      log.warn('Failed to fetch order ID from order book', {
+        symbol: orderData.symbol,
+        exchange: orderData.exchange,
+        error: error.message,
+      });
+      return null;
+    }
   }
 }
 
