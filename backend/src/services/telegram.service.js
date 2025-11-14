@@ -13,6 +13,8 @@ class TelegramService {
     this.botToken = process.env.TELEGRAM_BOT_TOKEN;
     this.botUsername = process.env.TELEGRAM_BOT_USERNAME;
     this.apiUrl = `https://api.telegram.org/bot${this.botToken}`;
+    this.pollingInterval = null;
+    this.lastUpdateId = 0;
 
     if (!this.botToken || this.botToken === 'your-telegram-bot-token-here') {
       log.warn('Telegram bot token not configured. Alerts will not be sent.');
@@ -374,6 +376,117 @@ You'll receive automatic alerts when:
         await this.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
       }
     }
+  }
+
+  /**
+   * Get updates from Telegram (for polling)
+   * @returns {Promise<Array>} - Array of updates
+   */
+  async getUpdates() {
+    if (!this.isConfigured) {
+      return [];
+    }
+
+    try {
+      const url = `${this.apiUrl}/getUpdates?offset=${this.lastUpdateId + 1}&timeout=30`;
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        log.error('Telegram API HTTP error', {
+          status: response.status,
+          statusText: response.statusText,
+        });
+        return [];
+      }
+
+      const result = await response.json();
+
+      if (result.ok && result.result.length > 0) {
+        // Update last update ID
+        this.lastUpdateId = result.result[result.result.length - 1].update_id;
+        log.debug('Received Telegram updates', { count: result.result.length });
+        return result.result;
+      }
+
+      return [];
+    } catch (error) {
+      log.error('Failed to get Telegram updates', {
+        error: error.message,
+        stack: error.stack,
+        code: error.code,
+      });
+      return [];
+    }
+  }
+
+  /**
+   * Start polling for Telegram updates
+   * @param {number} intervalMs - Polling interval in milliseconds (default: 2000)
+   */
+  async startPolling(intervalMs = 2000) {
+    if (!this.isConfigured) {
+      log.debug('Telegram not configured, skipping polling');
+      return;
+    }
+
+    if (this.pollingInterval) {
+      log.debug('Telegram polling already running');
+      return;
+    }
+
+    log.info('Starting Telegram polling', { interval_ms: intervalMs });
+
+    // Poll immediately on start
+    await this.poll();
+
+    // Then poll at intervals
+    this.pollingInterval = setInterval(async () => {
+      await this.poll();
+    }, intervalMs);
+  }
+
+  /**
+   * Poll for updates once
+   */
+  async poll() {
+    try {
+      const updates = await this.getUpdates();
+
+      for (const update of updates) {
+        await this.handleWebhook(update);
+      }
+    } catch (error) {
+      log.error('Error during Telegram polling', { error: error.message });
+    }
+  }
+
+  /**
+   * Stop polling for Telegram updates
+   */
+  stopPolling() {
+    if (this.pollingInterval) {
+      clearInterval(this.pollingInterval);
+      this.pollingInterval = null;
+      log.info('Telegram polling stopped');
+    }
+  }
+
+  /**
+   * Get polling status
+   * @returns {Object} - Polling status
+   */
+  getPollingStatus() {
+    return {
+      is_polling: !!this.pollingInterval,
+      is_configured: this.isConfigured,
+      last_update_id: this.lastUpdateId,
+    };
   }
 }
 

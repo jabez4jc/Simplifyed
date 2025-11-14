@@ -13,6 +13,7 @@ import { log } from './src/core/logger.js';
 import db from './src/core/database.js';
 import pollingService from './src/services/polling.service.js';
 import orderMonitorService from './src/services/order-monitor.service.js';
+import telegramService from './src/services/telegram.service.js';
 
 // Middleware
 import { configureSession, configurePassport, requireAuth } from './src/middleware/auth.js';
@@ -139,6 +140,10 @@ async function startServer() {
     await orderMonitorService.start();
     log.info('Order monitor service started');
 
+    // Start Telegram polling
+    await telegramService.startPolling();
+    log.info('Telegram polling started');
+
     // Start HTTP server
     app.listen(config.port, () => {
       log.info('Server started', {
@@ -175,6 +180,7 @@ async function startServer() {
       console.log(`║    - Market Data:       Every ${(config.polling.marketDataInterval / 1000).toString()}s (when active) ║`.padEnd(62) + '║');
       console.log('║    - Health Checks:     Every 5m                           ║');
       console.log('║    - Order Monitor:     Every 5s (Analyzer mode)           ║');
+      console.log('║    - Telegram Polling:  Every 2s                           ║');
       console.log('║                                                            ║');
       console.log('╚════════════════════════════════════════════════════════════╝');
       console.log('');
@@ -198,6 +204,10 @@ async function shutdown() {
   log.info('Shutting down server...');
 
   try {
+    // Stop Telegram polling
+    telegramService.stopPolling();
+    log.info('Telegram polling stopped');
+
     // Stop order monitor service
     orderMonitorService.stop();
     log.info('Order monitor service stopped');
