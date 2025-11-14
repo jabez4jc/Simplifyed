@@ -228,6 +228,44 @@ router.post('/test/apikey', async (req, res, next) => {
 });
 
 /**
+ * POST /api/v1/instances/bulk-update
+ * Bulk update instances (set active/inactive or analyzer mode)
+ * NOTE: Must be before /:id routes
+ */
+router.post('/bulk-update', async (req, res, next) => {
+  try {
+    const { instance_ids, is_active, is_analyzer_mode } = req.body;
+
+    if (!instance_ids || !Array.isArray(instance_ids) || instance_ids.length === 0) {
+      throw new ValidationError('instance_ids must be a non-empty array');
+    }
+
+    // At least one field must be provided
+    if (is_active === undefined && is_analyzer_mode === undefined) {
+      throw new ValidationError('At least one of is_active or is_analyzer_mode must be provided');
+    }
+
+    const updateData = {};
+    if (is_active !== undefined) {
+      updateData.is_active = Boolean(is_active);
+    }
+    if (is_analyzer_mode !== undefined) {
+      updateData.is_analyzer_mode = Boolean(is_analyzer_mode);
+    }
+
+    const results = await instanceService.bulkUpdateInstances(instance_ids, updateData);
+
+    res.json({
+      status: 'success',
+      message: `Successfully updated ${results.updated} instance(s)`,
+      data: results,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * POST /api/v1/instances/:id/refresh
  * Manually refresh instance data (bypasses cron)
  */
