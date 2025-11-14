@@ -101,6 +101,7 @@ class DashboardApp {
       watchlists: 'Watchlists',
       orders: 'Orders',
       positions: 'Positions',
+      settings: 'Settings',
     };
 
     document.getElementById('view-title').textContent =
@@ -127,6 +128,9 @@ class DashboardApp {
           break;
         case 'positions':
           await this.renderPositionsView();
+          break;
+        case 'settings':
+          await settings.renderSettingsView();
           break;
         default:
           contentArea.innerHTML = '<p>View not found</p>';
