@@ -13,6 +13,7 @@ import { parseIntSafe, parseFloatSafe } from '../utils/sanitizers.js';
 class OrderMonitorService {
   constructor() {
     this.isMonitoring = false;
+    this.isCycleRunning = false; // Guard against concurrent monitoring cycles
     this.monitorInterval = null;
     this.checkedPositions = new Map(); // Prevent duplicate triggers
     this.monitorIntervalMs = 5000; // 5 seconds
@@ -59,6 +60,13 @@ class OrderMonitorService {
    * Main monitoring loop
    */
   async monitorAllPositions() {
+    // Guard against concurrent monitoring cycles
+    if (this.isCycleRunning) {
+      log.debug('Skipping monitor cycle - previous cycle still running');
+      return;
+    }
+
+    this.isCycleRunning = true;
     try {
       const startTime = Date.now();
 
@@ -87,6 +95,8 @@ class OrderMonitorService {
       });
     } catch (error) {
       log.error('Monitor loop failed', error);
+    } finally {
+      this.isCycleRunning = false;
     }
   }
 
@@ -235,16 +245,25 @@ class OrderMonitorService {
    * Evaluate if target is hit
    */
   evaluateTarget(entryPrice, currentPrice, targetType, targetValue, side) {
+    // Parse targetValue to number to prevent string concatenation bugs
+    const numericTargetValue = parseFloat(targetValue);
+
+    // Validate targetValue is a valid positive number
+    if (isNaN(numericTargetValue) || !isFinite(numericTargetValue) || numericTargetValue <= 0) {
+      log.warn('Invalid target value', { targetValue, numericTargetValue });
+      return false;
+    }
+
     let targetPrice;
 
     if (targetType === 'POINTS') {
       targetPrice =
-        side === 'LONG' ? entryPrice + targetValue : entryPrice - targetValue;
+        side === 'LONG' ? entryPrice + numericTargetValue : entryPrice - numericTargetValue;
     } else if (targetType === 'PERCENTAGE') {
       targetPrice =
         side === 'LONG'
-          ? entryPrice * (1 + targetValue / 100)
-          : entryPrice * (1 - targetValue / 100);
+          ? entryPrice * (1 + numericTargetValue / 100)
+          : entryPrice * (1 - numericTargetValue / 100);
     } else {
       return false;
     }

@@ -26,8 +26,10 @@ This returns:
 
 1. Open Telegram and search for `@simplifyed_trading_bot`
 2. Send any message to the bot (e.g., "/start")
-3. Visit: https://api.telegram.org/bot8553728226:AAHoFt1zNM0DVd-KPxhPz8yGUmZMtRDZbJs/getUpdates
+3. Visit: `https://api.telegram.org/bot<YOUR_BOT_TOKEN>/getUpdates`
 4. Find your `chat_id` in the JSON response under `result[0].message.chat.id`
+
+**Note:** Replace `<YOUR_BOT_TOKEN>` with your actual bot token from the `.env` file (`TELEGRAM_BOT_TOKEN`).
 
 ## Step 3: Manually Link Account (Direct Database)
 
@@ -69,5 +71,7 @@ Should return:
 
 Send a test message to verify notifications work:
 ```bash
-curl "https://api.telegram.org/bot8553728226:AAHoFt1zNM0DVd-KPxhPz8yGUmZMtRDZbJs/sendMessage?chat_id=YOUR_CHAT_ID&text=Test%20from%20Simplifyed"
+curl "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/sendMessage?chat_id=YOUR_CHAT_ID&text=Test%20from%20Simplifyed"
 ```
+
+**Note:** Replace `<YOUR_BOT_TOKEN>` with your actual bot token from the `.env` file.

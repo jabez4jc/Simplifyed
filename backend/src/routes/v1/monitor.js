@@ -47,6 +47,22 @@ router.get('/history', async (req, res) => {
   try {
     const { limit = 50, offset = 0, instance_id } = req.query;
 
+    // Validate and clamp pagination parameters
+    let parsedLimit = parseInt(limit, 10);
+    let parsedOffset = parseInt(offset, 10);
+
+    // Clamp limit to safe range (1-200)
+    if (isNaN(parsedLimit) || parsedLimit < 1) {
+      parsedLimit = 50;
+    } else if (parsedLimit > 200) {
+      parsedLimit = 200;
+    }
+
+    // Clamp offset to non-negative
+    if (isNaN(parsedOffset) || parsedOffset < 0) {
+      parsedOffset = 0;
+    }
+
     let sql = `
       SELECT
         oml.*,
@@ -64,7 +80,7 @@ router.get('/history', async (req, res) => {
     }
 
     sql += ' ORDER BY oml.created_at DESC LIMIT ? OFFSET ?';
-    params.push(parseInt(limit), parseInt(offset));
+    params.push(parsedLimit, parsedOffset);
 
     const logs = await db.all(sql, params);
 
@@ -83,8 +99,8 @@ router.get('/history', async (req, res) => {
       data: {
         logs,
         total: countResult.total,
-        limit: parseInt(limit),
-        offset: parseInt(offset),
+        limit: parsedLimit,
+        offset: parsedOffset,
       },
     });
   } catch (error) {
@@ -103,6 +119,22 @@ router.get('/analyzer-trades', async (req, res) => {
   try {
     const { limit = 50, offset = 0, instance_id } = req.query;
 
+    // Validate and clamp pagination parameters
+    let parsedLimit = parseInt(limit, 10);
+    let parsedOffset = parseInt(offset, 10);
+
+    // Clamp limit to safe range (1-200)
+    if (isNaN(parsedLimit) || parsedLimit < 1) {
+      parsedLimit = 50;
+    } else if (parsedLimit > 200) {
+      parsedLimit = 200;
+    }
+
+    // Clamp offset to non-negative
+    if (isNaN(parsedOffset) || parsedOffset < 0) {
+      parsedOffset = 0;
+    }
+
     let sql = `
       SELECT
         at.*,
@@ -120,7 +152,7 @@ router.get('/analyzer-trades', async (req, res) => {
     }
 
     sql += ' ORDER BY at.simulated_at DESC LIMIT ? OFFSET ?';
-    params.push(parseInt(limit), parseInt(offset));
+    params.push(parsedLimit, parsedOffset);
 
     const trades = await db.all(sql, params);
 
@@ -140,8 +172,8 @@ router.get('/analyzer-trades', async (req, res) => {
         trades,
         total: summary.total,
         total_pnl: summary.total_pnl || 0,
-        limit: parseInt(limit),
-        offset: parseInt(offset),
+        limit: parsedLimit,
+        offset: parsedOffset,
       },
     });
   } catch (error) {

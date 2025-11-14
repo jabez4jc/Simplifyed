@@ -219,8 +219,8 @@ class QuickOrderService {
         orderParams
       );
       log.info('Pre-resolved option symbol for all instances', {
-        symbol: preResolvedOptionSymbol.symbol,
-        strike: preResolvedOptionSymbol.strike,
+        symbol: preResolvedOptionSymbol.optionSymbol.symbol,
+        strike: preResolvedOptionSymbol.optionSymbol.strike,
         instances: instances.map(i => i.name),
       });
     }

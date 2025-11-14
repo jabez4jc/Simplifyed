@@ -15,6 +15,7 @@ class TelegramService {
     this.apiUrl = `https://api.telegram.org/bot${this.botToken}`;
     this.pollingInterval = null;
     this.lastUpdateId = 0;
+    this.isPolling = false; // Guard against concurrent polling cycles
 
     if (!this.botToken || this.botToken === 'your-telegram-bot-token-here') {
       log.warn('Telegram bot token not configured. Alerts will not be sent.');
@@ -62,7 +63,7 @@ class TelegramService {
       const message = this.formatAlertMessage(alert);
 
       // Send via Telegram API
-      const result = await this.sendMessage(
+      const messageResult = await this.sendMessage(
         telegramConfig.telegram_chat_id,
         message,
         {
@@ -71,13 +72,16 @@ class TelegramService {
         }
       );
 
-      // Log message
+      // Log message - wrap result with ok flag for logging
       await this.logMessage(
         userId,
         telegramConfig.telegram_chat_id,
         alert.type,
         message,
-        result
+        {
+          ok: true,
+          message_id: messageResult.message_id,
+        }
       );
 
       // Update last message timestamp
@@ -89,10 +93,10 @@ class TelegramService {
       log.info('Telegram alert sent', {
         userId,
         alertType: alert.type,
-        messageId: result.message_id,
+        messageId: messageResult.message_id,
       });
 
-      return { status: 'sent', message_id: result.message_id };
+      return { status: 'sent', message_id: messageResult.message_id };
     } catch (error) {
       log.error('Telegram send failed', { userId, error: error.message });
 
@@ -455,6 +459,13 @@ You'll receive automatic alerts when:
    * Poll for updates once
    */
   async poll() {
+    // Guard against concurrent polling cycles
+    if (this.isPolling) {
+      log.debug('Skipping poll cycle - previous cycle still running');
+      return;
+    }
+
+    this.isPolling = true;
     try {
       const updates = await this.getUpdates();
 
@@ -463,6 +474,8 @@ You'll receive automatic alerts when:
       }
     } catch (error) {
       log.error('Error during Telegram polling', { error: error.message });
+    } finally {
+      this.isPolling = false;
     }
   }
 
