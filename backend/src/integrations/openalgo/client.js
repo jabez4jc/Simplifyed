@@ -154,25 +154,38 @@ class OpenAlgoClient {
                 });
               }
 
-              log.info('Order appears to have been placed despite error - skipping retry', {
-                endpoint,
-                symbol: data.symbol,
-                exchange: data.exchange,
-                initialQty: getNetQty(initialPosition),
-                currentQty: getNetQty(currentPosition),
-                expectedChange: data.quantity || 0,
-                action: data.action,
-                foundOrderId: actualOrderId,
-              });
+              // Only deduplicate if we successfully found the actual order ID
+              // Otherwise, continue with normal retry logic to avoid breaking downstream workflows
+              if (actualOrderId) {
+                log.info('Order appears to have been placed despite error - skipping retry', {
+                  endpoint,
+                  symbol: data.symbol,
+                  exchange: data.exchange,
+                  initialQty: getNetQty(initialPosition),
+                  currentQty: getNetQty(currentPosition),
+                  expectedChange: data.quantity || 0,
+                  action: data.action,
+                  foundOrderId: actualOrderId,
+                });
 
-              // Return success response with actual order ID if found
-              return {
-                status: 'success',
-                orderid: actualOrderId || 'UNKNOWN_DEDUPED',
-                message: actualOrderId
-                  ? 'Order placed successfully (verified via position check)'
-                  : 'Order placed successfully (verified via position check, order ID not found in order book)',
-              };
+                // Return success response with actual order ID
+                return {
+                  status: 'success',
+                  orderid: actualOrderId,
+                  message: 'Order placed successfully (verified via position check)',
+                };
+              } else {
+                // Position changed but couldn't find order ID - log and continue with retry
+                log.warn('Position changed but order ID not found in order book - continuing with retry', {
+                  endpoint,
+                  symbol: data.symbol,
+                  exchange: data.exchange,
+                  initialQty: getNetQty(initialPosition),
+                  currentQty: getNetQty(currentPosition),
+                  expectedChange: data.quantity || 0,
+                  action: data.action,
+                });
+              }
             }
           } catch (posCheckError) {
             log.warn('Position check failed during retry, proceeding with retry', {
@@ -851,7 +864,26 @@ class OpenAlgoClient {
 
     const positionChanged = Math.abs(actualChange) >= minExpectedChange;
 
+    // Calculate fill percentage for logging
+    const fillPercentage = Math.abs(expectedChange) > 0
+      ? (Math.abs(actualChange) / Math.abs(expectedChange)) * 100
+      : 0;
+
     if (positionChanged) {
+      // Warn if partial fill is between 50-80% threshold
+      if (fillPercentage >= 50 && fillPercentage < 80) {
+        log.warn('Partial fill detected near deduplication threshold', {
+          symbol: orderData.symbol,
+          exchange: orderData.exchange,
+          action: orderData.action,
+          orderQty,
+          actualChange,
+          expectedChange,
+          fillPercentage: fillPercentage.toFixed(2) + '%',
+          message: 'Order may have been partially filled - potential for duplicate on retry',
+        });
+      }
+
       log.debug('Position change detected', {
         symbol: orderData.symbol,
         exchange: orderData.exchange,
@@ -861,6 +893,7 @@ class OpenAlgoClient {
         currentQty,
         actualChange,
         expectedChange,
+        fillPercentage: fillPercentage.toFixed(2) + '%',
       });
     }
 
@@ -887,13 +920,29 @@ class OpenAlgoClient {
         return null;
       }
 
+      // Parse order quantity for validation
+      const requestedQty = parseInt(orderData.quantity, 10);
+      if (isNaN(requestedQty) || requestedQty <= 0) {
+        log.warn('Invalid quantity in order data for order ID lookup', {
+          quantity: orderData.quantity,
+        });
+        return null;
+      }
+
       // Filter orders matching this order's characteristics
+      // Include quantity validation with tolerance for partial fills (20% variance)
+      const quantityTolerance = 0.2; // 20% tolerance
       const matchingOrders = orders.filter((order) => {
+        const orderQty = parseInt(order.quantity, 10) || 0;
+        const qtyDiff = Math.abs(orderQty - requestedQty);
+        const qtyWithinTolerance = qtyDiff <= requestedQty * quantityTolerance;
+
         return (
           order.symbol === orderData.symbol &&
           order.exchange === orderData.exchange &&
           order.product === (orderData.product || 'MIS') &&
-          order.action === orderData.action
+          order.action === orderData.action &&
+          qtyWithinTolerance
         );
       });
 
