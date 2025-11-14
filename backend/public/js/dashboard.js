@@ -399,7 +399,7 @@ class DashboardApp {
         <tbody>
           ${instances.map(instance => `
             <tr>
-              ${showBulkActions ? `<td><input type="checkbox" class="instance-checkbox" data-instance-id="${instance.id}" onchange="app.updateBulkActionsState()"></td>` : ''}
+              ${showBulkActions ? `<td><input type="checkbox" class="instances-bulk-checkbox" data-instance-id="${instance.id}" onchange="app.updateBulkActionsState()"></td>` : ''}
               <td class="font-medium">${Utils.escapeHTML(instance.name)}</td>
               <td>${Utils.escapeHTML(instance.broker || 'N/A')}</td>
               <td>
@@ -1496,7 +1496,7 @@ class DashboardApp {
    * Toggle select all instances checkbox
    */
   toggleSelectAllInstances(checked) {
-    const checkboxes = document.querySelectorAll('.instance-checkbox');
+    const checkboxes = document.querySelectorAll('.instances-bulk-checkbox');
     checkboxes.forEach(checkbox => {
       checkbox.checked = checked;
     });
@@ -1507,7 +1507,7 @@ class DashboardApp {
    * Update bulk actions bar visibility and count
    */
   updateBulkActionsState() {
-    const checkboxes = document.querySelectorAll('.instance-checkbox:checked');
+    const checkboxes = document.querySelectorAll('.instances-bulk-checkbox:checked');
     const count = checkboxes.length;
     const bulkActionsBar = document.getElementById('bulk-actions-bar');
     const selectedCount = document.getElementById('selected-count');
@@ -2116,7 +2116,8 @@ class DashboardApp {
       if (inst.positions && inst.positions.length > 0) {
         inst.positions.forEach(pos => {
           const symbol = pos.symbol || pos.tradingsymbol;
-          const posRow = instanceDiv.querySelector(`[data-position-symbol="${symbol}"]`);
+          const escapedSymbol = Utils.escapeHTML(symbol);
+          const posRow = instanceDiv.querySelector(`[data-position-symbol="${escapedSymbol}"]`);
 
           if (posRow) {
             // Update quantity

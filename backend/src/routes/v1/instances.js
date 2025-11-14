@@ -13,6 +13,7 @@ import {
   ConflictError,
   ValidationError,
 } from '../../core/errors.js';
+import { parseBooleanSafe } from '../../utils/sanitizers.js';
 
 const router = express.Router();
 
@@ -245,21 +246,74 @@ router.post('/bulk-update', async (req, res, next) => {
       throw new ValidationError('At least one of is_active or is_analyzer_mode must be provided');
     }
 
-    const updateData = {};
-    if (is_active !== undefined) {
-      updateData.is_active = Boolean(is_active);
-    }
+    // If analyzer mode is being changed, use Safe-Switch workflow
     if (is_analyzer_mode !== undefined) {
-      updateData.is_analyzer_mode = Boolean(is_analyzer_mode);
+      const analyzerMode = parseBooleanSafe(is_analyzer_mode, false);
+
+      const results = {
+        updated: 0,
+        failed: 0,
+        errors: [],
+      };
+
+      // Process each instance individually through Safe-Switch workflow
+      for (const instanceId of instance_ids) {
+        try {
+          await instanceService.toggleAnalyzerMode(instanceId, analyzerMode);
+          results.updated++;
+        } catch (error) {
+          results.failed++;
+          results.errors.push({
+            instance_id: instanceId,
+            message: error.message,
+          });
+          log.error('Failed to toggle analyzer mode for instance', {
+            instance_id: instanceId,
+            error: error.message,
+          });
+        }
+      }
+
+      // Update is_active separately if provided
+      if (is_active !== undefined) {
+        const updateData = {
+          is_active: parseBooleanSafe(is_active, true),
+        };
+
+        // Only update instances that successfully toggled analyzer mode
+        const successfulIds = instance_ids.filter((id, index) =>
+          !results.errors.find(err => err.instance_id === id)
+        );
+
+        if (successfulIds.length > 0) {
+          await instanceService.bulkUpdateInstances(successfulIds, updateData);
+        }
+      }
+
+      const responseMessage = results.failed > 0
+        ? `Updated ${results.updated} instance(s), ${results.failed} failed`
+        : `Successfully updated ${results.updated} instance(s)`;
+
+      res.json({
+        status: results.failed > 0 ? 'partial' : 'success',
+        message: responseMessage,
+        data: results,
+      });
+    } else {
+      // Only updating is_active - safe to use bulk update
+      const updateData = {};
+      if (is_active !== undefined) {
+        updateData.is_active = parseBooleanSafe(is_active, true);
+      }
+
+      const results = await instanceService.bulkUpdateInstances(instance_ids, updateData);
+
+      res.json({
+        status: 'success',
+        message: `Successfully updated ${results.updated} instance(s)`,
+        data: results,
+      });
     }
-
-    const results = await instanceService.bulkUpdateInstances(instance_ids, updateData);
-
-    res.json({
-      status: 'success',
-      message: `Successfully updated ${results.updated} instance(s)`,
-      data: results,
-    });
   } catch (error) {
     next(error);
   }
