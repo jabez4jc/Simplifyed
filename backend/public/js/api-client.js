@@ -132,6 +132,13 @@ class APIClient {
     });
   }
 
+  async bulkUpdateInstances(data) {
+    return this.request('/instances/bulk-update', {
+      method: 'POST',
+      body: data,
+    });
+  }
+
   // Market Data Instance APIs
   async getMarketDataInstance() {
     return this.request('/instances/market-data/instance');

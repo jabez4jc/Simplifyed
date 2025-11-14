@@ -159,7 +159,7 @@ class QuickOrderHandler {
                   onclick="console.log('[QuickOrder] Button clicked:', ${symbolId}, '${mode}'); quickOrder.selectTradeMode(${symbolId}, '${mode}'); return false;"
                   ${!this.isModeAvailable(mode, symbolType) ? 'disabled' : ''}
                   title="${this.getTradeModeTooltip(mode, symbolType)}">
-                  ${mode}
+                  ${this.getTradeModeLabel(mode)}
                 </button>
               `).join('')}
             </div>
@@ -271,6 +271,18 @@ class QuickOrderHandler {
   }
 
   /**
+   * Get display label for trade mode
+   */
+  getTradeModeLabel(mode) {
+    const labels = {
+      'EQUITY': 'DIRECT',
+      'FUTURES': 'FUTURES',
+      'OPTIONS': 'OPTIONS',
+    };
+    return labels[mode] || mode;
+  }
+
+  /**
    * Get available trade modes based on symbol type
    */
   getAvailableTradeModes(symbolType) {
@@ -284,8 +296,8 @@ class QuickOrderHandler {
     const availability = {
       'EQUITY_ONLY': ['EQUITY'],
       'EQUITY_FNO': ['EQUITY', 'FUTURES', 'OPTIONS'],
-      'FUTURES': ['EQUITY'],    // Direct FUTURES symbols: only EQUITY mode (BUY/SELL/EXIT)
-      'OPTIONS': ['EQUITY'],    // Direct OPTIONS symbols: only EQUITY mode (BUY/SELL/EXIT)
+      'FUTURES': ['EQUITY'],    // Direct FUTURES symbols: only DIRECT mode (BUY/SELL/EXIT)
+      'OPTIONS': ['EQUITY'],    // Direct OPTIONS symbols: only DIRECT mode (BUY/SELL/EXIT)
       'INDEX': ['FUTURES', 'OPTIONS'],
       'UNKNOWN': ['EQUITY'],
     };
@@ -297,9 +309,10 @@ class QuickOrderHandler {
    */
   getTradeModeTooltip(mode, symbolType) {
     if (this.isModeAvailable(mode, symbolType)) {
-      return `Trade ${mode.toLowerCase()}`;
+      const label = this.getTradeModeLabel(mode).toLowerCase();
+      return `Trade ${label}`;
     }
-    return `${mode} not available for this symbol`;
+    return `${this.getTradeModeLabel(mode)} not available for this symbol`;
   }
 
   /**

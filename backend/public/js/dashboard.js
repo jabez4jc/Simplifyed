@@ -33,8 +33,9 @@ class DashboardApp {
       // Load initial view
       await this.loadView('dashboard');
 
-      // Start auto-refresh (every 15 seconds)
-      this.startAutoRefresh();
+      // Note: Auto-refresh disabled to prevent page flicker
+      // Individual polling mechanisms (quotes, positions) handle their own updates
+      // this.startAutoRefresh();
 
       console.log('✅ Dashboard initialized');
     } catch (error) {
@@ -172,6 +173,29 @@ class DashboardApp {
     this.instances = instancesRes.data;
     const metrics = metricsRes.data;
 
+    // Merge fund balance data into instances
+    const allMetricsInstances = [...metrics.live.instances, ...metrics.analyzer.instances];
+    const fundsMap = new Map();
+    allMetricsInstances.forEach(mi => {
+      fundsMap.set(mi.instance_id, {
+        available_balance: mi.available_balance,
+        realized_pnl: mi.realized_pnl,
+        unrealized_pnl: mi.unrealized_pnl,
+        total_pnl: mi.total_pnl,
+      });
+    });
+
+    // Add fund data to instances
+    this.instances = this.instances.map(instance => ({
+      ...instance,
+      ...(fundsMap.get(instance.id) || {
+        available_balance: 0,
+        realized_pnl: 0,
+        unrealized_pnl: 0,
+        total_pnl: 0,
+      }),
+    }));
+
     // Render
     contentArea.innerHTML = `
       <!-- Live Mode Stats (Primary) -->
@@ -271,9 +295,44 @@ class DashboardApp {
   async renderInstancesView() {
     const contentArea = document.getElementById('content-area');
 
-    // Fetch instances
-    const response = await api.getInstances();
-    this.instances = response.data;
+    // Fetch instances and metrics
+    const [instancesRes, metricsRes] = await Promise.all([
+      api.getInstances(),
+      api.getDashboardMetrics().catch(() => ({
+        data: {
+          live: { instances: [] },
+          analyzer: { instances: [] },
+        },
+      })),
+    ]);
+
+    this.instances = instancesRes.data;
+    const metrics = metricsRes.data;
+
+    // Merge fund balance data into active instances only
+    const allMetricsInstances = [...metrics.live.instances, ...metrics.analyzer.instances];
+    const fundsMap = new Map();
+    allMetricsInstances.forEach(mi => {
+      fundsMap.set(mi.instance_id, {
+        available_balance: mi.available_balance,
+        realized_pnl: mi.realized_pnl,
+        unrealized_pnl: mi.unrealized_pnl,
+        total_pnl: mi.total_pnl,
+      });
+    });
+
+    // Add fund data to active instances
+    this.instances = this.instances.map(instance => ({
+      ...instance,
+      ...(instance.is_active && fundsMap.has(instance.id)
+        ? fundsMap.get(instance.id)
+        : {
+            available_balance: null, // null indicates no data for inactive instances
+            realized_pnl: instance.realized_pnl || 0,
+            unrealized_pnl: instance.unrealized_pnl || 0,
+            total_pnl: instance.total_pnl || 0,
+          }),
+    }));
 
     contentArea.innerHTML = `
       <div class="card">
@@ -283,8 +342,30 @@ class DashboardApp {
             + Add Instance
           </button>
         </div>
+
+        <!-- Bulk Actions Bar -->
+        <div id="bulk-actions-bar" class="p-4 bg-neutral-50 border-b border-neutral-200" style="display: none;">
+          <div class="flex items-center gap-4">
+            <span id="selected-count" class="text-sm font-medium">0 selected</span>
+            <div class="flex gap-2">
+              <button class="btn btn-secondary btn-sm" onclick="app.bulkSetActive(true)">
+                Set Active
+              </button>
+              <button class="btn btn-secondary btn-sm" onclick="app.bulkSetActive(false)">
+                Set Inactive
+              </button>
+              <button class="btn btn-success btn-sm" onclick="app.bulkSetAnalyzerMode(false)">
+                Set Live Mode
+              </button>
+              <button class="btn btn-warning btn-sm" onclick="app.bulkSetAnalyzerMode(true)">
+                Set Analyzer Mode
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div class="table-container">
-          ${this.renderInstancesTable(this.instances)}
+          ${this.renderInstancesTable(this.instances, true)}
         </div>
       </div>
     `;
@@ -293,7 +374,7 @@ class DashboardApp {
   /**
    * Render instances table
    */
-  renderInstancesTable(instances) {
+  renderInstancesTable(instances, showBulkActions = false) {
     if (instances.length === 0) {
       return '<p class="text-center text-neutral-600">No instances found</p>';
     }
@@ -302,10 +383,13 @@ class DashboardApp {
       <table class="table">
         <thead>
           <tr>
+            ${showBulkActions ? '<th><input type="checkbox" id="select-all-instances" onchange="app.toggleSelectAllInstances(this.checked)"></th>' : ''}
             <th>Name</th>
             <th>Broker</th>
+            <th>Status</th>
             <th>Health</th>
             <th>Mode</th>
+            <th class="text-right">Balance</th>
             <th class="text-right">Total P&L</th>
             <th class="text-right">Realized</th>
             <th class="text-right">Unrealized</th>
@@ -315,13 +399,24 @@ class DashboardApp {
         <tbody>
           ${instances.map(instance => `
             <tr>
+              ${showBulkActions ? `<td><input type="checkbox" class="instance-checkbox" data-instance-id="${instance.id}" onchange="app.updateBulkActionsState()"></td>` : ''}
               <td class="font-medium">${Utils.escapeHTML(instance.name)}</td>
               <td>${Utils.escapeHTML(instance.broker || 'N/A')}</td>
+              <td>
+                ${instance.is_active
+                  ? '<span class="badge badge-success">Active</span>'
+                  : '<span class="badge badge-neutral">Inactive</span>'}
+              </td>
               <td>${Utils.getStatusBadge(instance.health_status || 'unknown')}</td>
               <td>
                 ${instance.is_analyzer_mode
                   ? '<span class="badge badge-warning">Analyzer</span>'
                   : '<span class="badge badge-success">Live</span>'}
+              </td>
+              <td class="text-right">
+                ${instance.available_balance != null
+                  ? Utils.formatCurrency(instance.available_balance)
+                  : '<span class="text-neutral-400">-</span>'}
               </td>
               <td class="text-right ${Utils.getPnLColorClass(instance.total_pnl)}">
                 ${Utils.formatCurrency(instance.total_pnl || 0)}
@@ -1398,6 +1493,112 @@ class DashboardApp {
   }
 
   /**
+   * Toggle select all instances checkbox
+   */
+  toggleSelectAllInstances(checked) {
+    const checkboxes = document.querySelectorAll('.instance-checkbox');
+    checkboxes.forEach(checkbox => {
+      checkbox.checked = checked;
+    });
+    this.updateBulkActionsState();
+  }
+
+  /**
+   * Update bulk actions bar visibility and count
+   */
+  updateBulkActionsState() {
+    const checkboxes = document.querySelectorAll('.instance-checkbox:checked');
+    const count = checkboxes.length;
+    const bulkActionsBar = document.getElementById('bulk-actions-bar');
+    const selectedCount = document.getElementById('selected-count');
+
+    if (bulkActionsBar && selectedCount) {
+      if (count > 0) {
+        bulkActionsBar.style.display = 'block';
+        selectedCount.textContent = `${count} selected`;
+      } else {
+        bulkActionsBar.style.display = 'none';
+      }
+    }
+
+    // Update select-all checkbox state
+    const selectAllCheckbox = document.getElementById('select-all-instances');
+    const allCheckboxes = document.querySelectorAll('.instance-checkbox');
+    if (selectAllCheckbox && allCheckboxes.length > 0) {
+      selectAllCheckbox.checked = checkboxes.length === allCheckboxes.length;
+      selectAllCheckbox.indeterminate = checkboxes.length > 0 && checkboxes.length < allCheckboxes.length;
+    }
+  }
+
+  /**
+   * Get selected instance IDs
+   */
+  getSelectedInstanceIds() {
+    const checkboxes = document.querySelectorAll('.instance-checkbox:checked');
+    return Array.from(checkboxes).map(cb => parseInt(cb.dataset.instanceId));
+  }
+
+  /**
+   * Bulk set active/inactive status
+   */
+  async bulkSetActive(isActive) {
+    const instanceIds = this.getSelectedInstanceIds();
+    if (instanceIds.length === 0) {
+      Utils.showToast('No instances selected', 'warning');
+      return;
+    }
+
+    const action = isActive ? 'activate' : 'deactivate';
+    const confirmed = await Utils.confirm(
+      `Are you sure you want to ${action} ${instanceIds.length} instance(s)?`,
+      `Confirm ${action.charAt(0).toUpperCase() + action.slice(1)}`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      await api.bulkUpdateInstances({
+        instance_ids: instanceIds,
+        is_active: isActive,
+      });
+      Utils.showToast(`${instanceIds.length} instance(s) ${isActive ? 'activated' : 'deactivated'}`, 'success');
+      await this.refreshCurrentView();
+    } catch (error) {
+      Utils.showToast(error.message, 'error');
+    }
+  }
+
+  /**
+   * Bulk set analyzer mode
+   */
+  async bulkSetAnalyzerMode(isAnalyzerMode) {
+    const instanceIds = this.getSelectedInstanceIds();
+    if (instanceIds.length === 0) {
+      Utils.showToast('No instances selected', 'warning');
+      return;
+    }
+
+    const mode = isAnalyzerMode ? 'Analyzer' : 'Live';
+    const confirmed = await Utils.confirm(
+      `Are you sure you want to set ${instanceIds.length} instance(s) to ${mode} mode?`,
+      `Confirm Set ${mode} Mode`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      await api.bulkUpdateInstances({
+        instance_ids: instanceIds,
+        is_analyzer_mode: isAnalyzerMode,
+      });
+      Utils.showToast(`${instanceIds.length} instance(s) set to ${mode} mode`, 'success');
+      await this.refreshCurrentView();
+    } catch (error) {
+      Utils.showToast(error.message, 'error');
+    }
+  }
+
+  /**
    * Show add symbol modal with search
    */
   async showAddSymbolModal(watchlistId) {
@@ -1781,42 +1982,60 @@ class DashboardApp {
       const response = await api.getAllPositions(true); // onlyOpen = true
       const data = response.data;
 
-      if (data.instances.length === 0) {
-        positionsPanel.innerHTML = '<div class="p-4"><p class="text-center text-neutral-600">No active instances found</p></div>';
-        return;
+      // Check if positions have been rendered before
+      const isInitialRender = !positionsPanel.hasAttribute('data-positions-initialized');
+
+      if (isInitialRender) {
+        // Initial render - create the full structure
+        this.renderPositionsTabInitial(positionsPanel, data);
+        positionsPanel.setAttribute('data-positions-initialized', 'true');
+      } else {
+        // Subsequent updates - only update changed values
+        this.updatePositionsTabData(positionsPanel, data);
       }
+    } catch (error) {
+      positionsPanel.innerHTML = `<div class="p-4"><p class="text-center text-error-600">Failed to load positions: ${error.message}</p></div>`;
+      positionsPanel.removeAttribute('data-positions-initialized');
+    }
+  }
 
-      // Render positions grouped by instance
-      positionsPanel.innerHTML = `
-        <div class="p-4">
-          <!-- Overall Summary -->
-          <div class="bg-neutral-50 rounded-lg p-4 mb-4 flex justify-between items-center">
-            <div>
-              <span class="text-sm text-neutral-600">Total Open Positions:</span>
-              <span class="font-semibold ml-2">${data.overall_open_positions}</span>
-            </div>
-            <div>
-              <span class="text-sm text-neutral-600">Overall P&L:</span>
-              <span class="font-semibold ml-2 ${Utils.getPnLColorClass(data.overall_total_pnl)}">
-                ${Utils.formatCurrency(data.overall_total_pnl)}
-              </span>
-            </div>
+  /**
+   * Initial render of positions tab (called once)
+   */
+  renderPositionsTabInitial(positionsPanel, data) {
+    if (data.instances.length === 0) {
+      positionsPanel.innerHTML = '<div class="p-4"><p class="text-center text-neutral-600">No active instances found</p></div>';
+      return;
+    }
+
+    // Render positions grouped by instance
+    positionsPanel.innerHTML = `
+      <div class="p-4">
+        <!-- Overall Summary -->
+        <div class="bg-neutral-50 rounded-lg p-4 mb-4 flex justify-between items-center">
+          <div>
+            <span class="text-sm text-neutral-600">Total Open Positions:</span>
+            <span class="font-semibold ml-2" data-overall-open-count>${data.overall_open_positions}</span>
           </div>
+          <div>
+            <span class="text-sm text-neutral-600">Overall P&L:</span>
+            <span class="font-semibold ml-2" data-overall-pnl>${Utils.formatCurrency(data.overall_total_pnl)}</span>
+          </div>
+        </div>
 
-          <!-- Instance Groups -->
+        <!-- Instance Groups -->
+        <div id="positions-instance-groups">
           ${data.instances.map(inst => `
-            <div class="border-b last:border-b-0 pb-4 mb-4">
+            <div class="border-b last:border-b-0 pb-4 mb-4" data-instance-id="${inst.instance_id}">
               <div class="flex items-center justify-between mb-3">
                 <div>
                   <h4 class="font-semibold text-lg">${Utils.escapeHTML(inst.instance_name)}</h4>
                   <div class="flex gap-4 mt-1">
                     <span class="text-sm text-neutral-600">
-                      Open: <span class="font-medium">${inst.open_positions_count}</span>
+                      Open: <span class="font-medium" data-open-count>${inst.open_positions_count}</span>
                     </span>
                     <span class="text-sm text-neutral-600">
-                      P&L: <span class="font-medium ${Utils.getPnLColorClass(inst.total_pnl)}">
-                        ${Utils.formatCurrency(inst.total_pnl)}
-                      </span>
+                      P&L: <span class="font-medium" data-pnl>${Utils.formatCurrency(inst.total_pnl)}</span>
                     </span>
                   </div>
                 </div>
@@ -1825,19 +2044,145 @@ class DashboardApp {
                   Close All Positions
                 </button>
               </div>
-              ${inst.error ?
-                `<p class="text-center text-error-600">${Utils.escapeHTML(inst.error)}</p>` :
-                (inst.positions.length > 0 ?
-                  this.renderPositionsTable(inst.positions) :
-                  '<p class="text-center text-neutral-600 py-4">No open positions</p>')
-              }
+              <div data-positions-container>
+                ${inst.error ?
+                  `<p class="text-center text-error-600">${Utils.escapeHTML(inst.error)}</p>` :
+                  (inst.positions.length > 0 ?
+                    this.renderPositionsTableWithIds(inst.positions) :
+                    '<p class="text-center text-neutral-600 py-4">No open positions</p>')
+                }
+              </div>
             </div>
           `).join('')}
         </div>
-      `;
-    } catch (error) {
-      positionsPanel.innerHTML = `<div class="p-4"><p class="text-center text-error-600">Failed to load positions: ${error.message}</p></div>`;
+      </div>
+    `;
+  }
+
+  /**
+   * Update positions tab data (targeted updates only)
+   */
+  updatePositionsTabData(positionsPanel, data) {
+    if (data.instances.length === 0) {
+      // If no instances, revert to initial state
+      positionsPanel.innerHTML = '<div class="p-4"><p class="text-center text-neutral-600">No active instances found</p></div>';
+      positionsPanel.removeAttribute('data-positions-initialized');
+      return;
     }
+
+    // Update overall summary
+    const overallOpenCountEl = positionsPanel.querySelector('[data-overall-open-count]');
+    const overallPnlEl = positionsPanel.querySelector('[data-overall-pnl]');
+
+    if (overallOpenCountEl && overallOpenCountEl.textContent !== String(data.overall_open_positions)) {
+      overallOpenCountEl.textContent = data.overall_open_positions;
+    }
+
+    if (overallPnlEl) {
+      const newPnlText = Utils.formatCurrency(data.overall_total_pnl);
+      if (overallPnlEl.textContent !== newPnlText) {
+        overallPnlEl.textContent = newPnlText;
+        // Update color class
+        overallPnlEl.className = `font-semibold ml-2 ${Utils.getPnLColorClass(data.overall_total_pnl)}`;
+      }
+    }
+
+    // Update each instance group
+    data.instances.forEach(inst => {
+      const instanceDiv = positionsPanel.querySelector(`[data-instance-id="${inst.instance_id}"]`);
+      if (!instanceDiv) {
+        // New instance appeared - need full re-render
+        this.renderPositionsTabInitial(positionsPanel, data);
+        return;
+      }
+
+      // Update instance summary
+      const openCountEl = instanceDiv.querySelector('[data-open-count]');
+      const pnlEl = instanceDiv.querySelector('[data-pnl]');
+
+      if (openCountEl && openCountEl.textContent !== String(inst.open_positions_count)) {
+        openCountEl.textContent = inst.open_positions_count;
+      }
+
+      if (pnlEl) {
+        const newPnlText = Utils.formatCurrency(inst.total_pnl);
+        if (pnlEl.textContent !== newPnlText) {
+          pnlEl.textContent = newPnlText;
+          pnlEl.className = `font-medium ${Utils.getPnLColorClass(inst.total_pnl)}`;
+        }
+      }
+
+      // Update positions table values
+      if (inst.positions && inst.positions.length > 0) {
+        inst.positions.forEach(pos => {
+          const symbol = pos.symbol || pos.tradingsymbol;
+          const posRow = instanceDiv.querySelector(`[data-position-symbol="${symbol}"]`);
+
+          if (posRow) {
+            // Update quantity
+            const qtyCell = posRow.querySelector('[data-position-qty]');
+            const newQty = pos.quantity || pos.netqty || pos.net_quantity || 0;
+            if (qtyCell && qtyCell.textContent !== String(newQty)) {
+              qtyCell.textContent = newQty;
+            }
+
+            // Update LTP
+            const ltpCell = posRow.querySelector('[data-position-ltp]');
+            const newLtp = Utils.formatCurrency(pos.ltp || pos.last_price || 0);
+            if (ltpCell && ltpCell.textContent !== newLtp) {
+              ltpCell.textContent = newLtp;
+            }
+
+            // Update P&L
+            const pnlCell = posRow.querySelector('[data-position-pnl]');
+            const pnl = parseFloat(pos.pnl || pos.unrealized_pnl || pos.mtm || 0);
+            const newPnlValue = Utils.formatCurrency(pnl);
+            if (pnlCell && pnlCell.textContent !== newPnlValue) {
+              pnlCell.textContent = newPnlValue;
+              pnlCell.className = `text-right ${Utils.getPnLColorClass(pnl)}`;
+            }
+          }
+        });
+      }
+    });
+  }
+
+  /**
+   * Render positions table with data attributes for targeted updates
+   */
+  renderPositionsTableWithIds(positions) {
+    return `
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Quantity</th>
+            <th>Product</th>
+            <th class="text-right">Avg Price</th>
+            <th class="text-right">LTP</th>
+            <th class="text-right">P&L</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${positions.map(pos => {
+            const pnl = parseFloat(pos.pnl || pos.unrealized_pnl || pos.mtm || 0);
+            const symbol = pos.symbol || pos.tradingsymbol;
+            return `
+              <tr data-position-symbol="${Utils.escapeHTML(symbol)}">
+                <td class="font-medium">${Utils.escapeHTML(symbol)}</td>
+                <td data-position-qty>${pos.quantity || pos.netqty || pos.net_quantity || 0}</td>
+                <td>${pos.product || pos.product_type || '-'}</td>
+                <td class="text-right">${Utils.formatCurrency(pos.average_price || pos.avg_price || 0)}</td>
+                <td class="text-right" data-position-ltp>${Utils.formatCurrency(pos.ltp || pos.last_price || 0)}</td>
+                <td class="text-right ${Utils.getPnLColorClass(pnl)}" data-position-pnl>
+                  ${Utils.formatCurrency(pnl)}
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    `;
   }
 
   /**
