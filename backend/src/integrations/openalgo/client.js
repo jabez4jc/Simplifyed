@@ -84,6 +84,24 @@ class OpenAlgoClient {
     const maxRetries = isCritical ? this.criticalRetries : this.nonCriticalRetries;
     const baseRetryDelay = isCritical ? this.criticalRetryDelay : this.nonCriticalRetryDelay;
 
+    // Check if this is an order placement endpoint
+    const isOrderPlacement = ['placeorder', 'placesmartorder'].includes(endpoint);
+
+    // Store initial position for order placement requests
+    let initialPosition = null;
+    if (isOrderPlacement) {
+      try {
+        initialPosition = await this._getPositionForOrder(instance, data);
+      } catch (error) {
+        log.warn('Could not fetch initial position for order retry check', {
+          endpoint,
+          symbol: data.symbol,
+          exchange: data.exchange,
+          error: error.message,
+        });
+      }
+    }
+
     log.debug('OpenAlgo API Request', {
       endpoint,
       url,
@@ -110,6 +128,38 @@ class OpenAlgoClient {
         // Don't retry on client errors (4xx)
         if (error.statusCode >= 400 && error.statusCode < 500) {
           throw error;
+        }
+
+        // For order placement requests, check if order was actually placed before retrying
+        if (isOrderPlacement && attempt < maxRetries && initialPosition !== null) {
+          try {
+            const currentPosition = await this._getPositionForOrder(instance, data);
+
+            // Check if position changed (order was likely placed)
+            if (this._hasPositionChanged(initialPosition, currentPosition, data)) {
+              log.info('Order appears to have been placed despite error - skipping retry', {
+                endpoint,
+                symbol: data.symbol,
+                exchange: data.exchange,
+                initialQty: initialPosition?.netqty || 0,
+                currentQty: currentPosition?.netqty || 0,
+                expectedChange: data.quantity || 0,
+                action: data.action,
+              });
+
+              // Return a synthetic success response
+              return {
+                status: 'success',
+                orderid: 'DEDUPED',
+                message: 'Order placed successfully (verified via position check)',
+              };
+            }
+          } catch (posCheckError) {
+            log.warn('Position check failed during retry, proceeding with retry', {
+              endpoint,
+              error: posCheckError.message,
+            });
+          }
         }
 
         // Log retry attempt
@@ -670,6 +720,93 @@ class OpenAlgoClient {
         'account_summary'
       );
     }
+  }
+
+  // ==========================================
+  // Private Helper Methods for Order Deduplication
+  // ==========================================
+
+  /**
+   * Get position for order validation
+   * Fetches the specific position that would be affected by this order
+   * @private
+   * @param {Object} instance - Instance configuration
+   * @param {Object} orderData - Order data (symbol, exchange, action, quantity)
+   * @returns {Promise<Object|null>} - Position object or null if not found
+   */
+  async _getPositionForOrder(instance, orderData) {
+    try {
+      const positions = await this.getPositionBook(instance);
+
+      // Find position matching this order's symbol and exchange
+      const position = positions.find(
+        (pos) => pos.symbol === orderData.symbol && pos.exchange === orderData.exchange
+      );
+
+      return position || null;
+    } catch (error) {
+      log.warn('Failed to fetch position for order validation', {
+        symbol: orderData.symbol,
+        exchange: orderData.exchange,
+        error: error.message,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Check if position changed based on order execution
+   * Compares initial and current positions to detect if order was placed
+   * @private
+   * @param {Object|null} initialPosition - Position before order attempt
+   * @param {Object|null} currentPosition - Position after order attempt
+   * @param {Object} orderData - Order data (action, quantity)
+   * @returns {boolean} - true if position changed consistent with order execution
+   */
+  _hasPositionChanged(initialPosition, currentPosition, orderData) {
+    // Handle different position field names (netqty vs net_qty)
+    const getNetQty = (pos) => {
+      if (!pos) return 0;
+      return pos.netqty || pos.net_qty || 0;
+    };
+
+    const initialQty = getNetQty(initialPosition);
+    const currentQty = getNetQty(currentPosition);
+
+    // Calculate expected change based on action
+    const orderQty = parseInt(orderData.quantity, 10) || 0;
+    let expectedChange = 0;
+
+    if (orderData.action === 'BUY') {
+      expectedChange = orderQty;
+    } else if (orderData.action === 'SELL') {
+      expectedChange = -orderQty;
+    }
+
+    // Check if actual change matches expected change
+    const actualChange = currentQty - initialQty;
+
+    // Allow for some tolerance in case of partial fills or broker-specific handling
+    // Consider position changed if actual change is at least 80% of expected
+    const tolerance = 0.8;
+    const minExpectedChange = Math.abs(expectedChange) * tolerance;
+
+    const positionChanged = Math.abs(actualChange) >= minExpectedChange;
+
+    if (positionChanged) {
+      log.debug('Position change detected', {
+        symbol: orderData.symbol,
+        exchange: orderData.exchange,
+        action: orderData.action,
+        orderQty,
+        initialQty,
+        currentQty,
+        actualChange,
+        expectedChange,
+      });
+    }
+
+    return positionChanged;
   }
 }
 
