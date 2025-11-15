@@ -6,6 +6,7 @@
 
 import instrumentsService from '../services/instruments.service.js';
 import { log } from '../core/logger.js';
+import { config } from '../core/config.js';
 
 /**
  * Global app readiness state
@@ -59,6 +60,20 @@ export async function checkInstrumentsRefresh(req, res, next) {
 
     // Allow auth endpoints without blocking
     if (req.path.startsWith('/auth/')) {
+      return next();
+    }
+
+    // Skip instruments refresh in test mode (test instances don't have valid instruments)
+    // This must come BEFORE authentication check since req.user exists in test mode
+    // Test mode is enabled when Google OAuth is not configured
+    if (!config.auth.googleClientId) {
+      if (!appReady) {
+        log.info('Test mode: Skipping instruments refresh, marking app as ready', {
+          user: req.user?.email,
+          path: req.path
+        });
+        appReady = true;
+      }
       return next();
     }
 

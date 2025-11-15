@@ -657,6 +657,14 @@ class OpenAlgoClient {
         let data;
         try {
           const text = await response.text();
+          // Handle empty or null responses
+          if (!text || text.trim() === '' || text.trim() === 'null') {
+            log.warn('Empty or null response from instruments API', {
+              exchange: exchange || 'ALL',
+              status: response.status
+            });
+            return [];
+          }
           data = JSON.parse(text);
         } catch (parseError) {
           throw new OpenAlgoError(
@@ -677,8 +685,11 @@ class OpenAlgoClient {
         // Handle response format - could be direct array or wrapped in {data: [...]}
         if (Array.isArray(data)) {
           return data;
-        } else if (data.data && Array.isArray(data.data)) {
+        } else if (data && data.data && Array.isArray(data.data)) {
           return data.data;
+        } else if (data === null || data === undefined) {
+          log.warn('Null or undefined instruments response', { exchange: exchange || 'ALL' });
+          return [];
         } else {
           throw new OpenAlgoError('Unexpected response format: expected array of instruments', 'instruments');
         }

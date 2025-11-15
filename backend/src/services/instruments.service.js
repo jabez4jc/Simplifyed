@@ -102,6 +102,19 @@ class InstrumentsService {
     const startTime = Date.now();
     let refreshLogId = null;
 
+    // Skip refresh in test mode (test instances don't have valid instruments)
+    if (process.env.TEST_MODE === 'true') {
+      log.info('Test mode: Skipping instruments refresh', {
+        exchange: exchange || 'ALL'
+      });
+      return {
+        count: 0,
+        duration_ms: 0,
+        skipped: true,
+        reason: 'TEST_MODE'
+      };
+    }
+
     try {
       // Get market data instance
       const instance = await this._getMarketDataInstance(instanceId);
