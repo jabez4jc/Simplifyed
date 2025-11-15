@@ -15,6 +15,7 @@ import quickOrderRoutes from './quickorders.js';
 import dashboardRoutes from './dashboard.js';
 import telegramRoutes from './telegram.js';
 import monitorRoutes from './monitor.js';
+import { getAppReadyStatus } from '../../middleware/instruments-refresh.middleware.js';
 
 const router = express.Router();
 
@@ -37,6 +38,30 @@ router.get('/health', (req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     version: '2.0.0',
+  });
+});
+
+// Ready check endpoint - shows if app is ready for trading
+// Returns 200 OK when ready, 503 Service Unavailable when not ready
+// Useful for infrastructure readiness probes (Kubernetes, load balancers, etc.)
+router.get('/ready', (req, res) => {
+  const status = getAppReadyStatus();
+
+  // Return 503 if not ready (for infrastructure readiness probes)
+  const httpStatus = status.ready ? 200 : 503;
+
+  res.status(httpStatus).json({
+    status: status.ready ? 'ready' : 'not_ready',
+    ready: status.ready,
+    refreshInProgress: status.refreshInProgress,
+    error: status.error,
+    lastRefreshDate: status.lastRefreshDate,
+    timestamp: new Date().toISOString(),
+    message: status.ready
+      ? 'App is ready for trading'
+      : status.refreshInProgress
+        ? 'Instruments cache is being loaded...'
+        : 'Instruments cache not loaded yet'
   });
 });
 

@@ -123,7 +123,33 @@ class InstrumentsService {
       refreshLogId = logResult.lastID;
 
       // Fetch instruments from OpenAlgo
-      const instruments = await openalgoClient.getInstruments(instance, exchange);
+      // If no exchange specified, fetch from all supported exchanges
+      let instruments = [];
+
+      if (exchange) {
+        // Single exchange
+        instruments = await openalgoClient.getInstruments(instance, exchange);
+      } else {
+        // All exchanges - fetch from each and combine
+        log.info('Fetching instruments from all exchanges', {
+          exchanges: SUPPORTED_EXCHANGES
+        });
+
+        for (const ex of SUPPORTED_EXCHANGES) {
+          try {
+            const exInstruments = await openalgoClient.getInstruments(instance, ex);
+            if (exInstruments && exInstruments.length > 0) {
+              instruments.push(...exInstruments);
+              log.info(`Fetched instruments from ${ex}`, { count: exInstruments.length });
+            }
+          } catch (error) {
+            // Log error but continue with other exchanges
+            log.warn(`Failed to fetch instruments from ${ex}`, {
+              error: error.message
+            });
+          }
+        }
+      }
 
       if (!instruments || instruments.length === 0) {
         throw new Error('No instruments returned from broker');
@@ -162,9 +188,9 @@ class InstrumentsService {
         for (let i = 0; i < batches.length; i++) {
           const batch = batches[i];
 
-          // Build VALUES clause with placeholders
+          // Build VALUES clause with placeholders (11 fields + 2 timestamps)
           const placeholders = batch
-            .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
+            .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
             .join(', ');
 
           // Flatten values for all instruments in batch
@@ -173,6 +199,7 @@ class InstrumentsService {
             inst.brsymbol || null,
             inst.name || null,
             inst.exchange ? inst.exchange.toUpperCase() : null,
+            inst.brexchange || null,
             inst.token || null,
             inst.expiry || null,
             inst.strike || null,
@@ -182,8 +209,8 @@ class InstrumentsService {
           ]);
 
           await db.run(
-            `INSERT INTO instruments (
-              symbol, brsymbol, name, exchange, token, expiry, strike,
+            `INSERT OR REPLACE INTO instruments (
+              symbol, brsymbol, name, exchange, brexchange, token, expiry, strike,
               lotsize, instrumenttype, tick_size, created_at, updated_at
             ) VALUES ${placeholders}`,
             values
@@ -528,7 +555,7 @@ class InstrumentsService {
   }
 
   /**
-   * Get market data instance (primary > secondary > any healthy)
+   * Get market data instance (primary admin > secondary admin ONLY)
    * @private
    */
   async _getMarketDataInstance(instanceId) {
@@ -537,31 +564,41 @@ class InstrumentsService {
       if (!instance) {
         throw new ValidationError(`Instance with ID ${instanceId} not found`);
       }
+      // Validate that it's a primary or secondary admin instance
+      if (!instance.is_primary_admin && !instance.is_secondary_admin) {
+        throw new ValidationError(
+          `Instance ${instanceId} must be a primary or secondary admin instance`
+        );
+      }
       return instance;
     }
 
-    // Prefer market data instances
-    const marketDataInstances = await instanceService.getMarketDataInstances();
-    if (marketDataInstances.length > 0) {
-      return marketDataInstances[0];
-    }
-
-    // Fallback to any healthy active instance
+    // Get all active instances
     const instances = await instanceService.getAllInstances({
       is_active: true
     });
 
-    const healthyInstances = instances.filter(
-      (inst) => inst.health_status === 'healthy'
+    // Filter for healthy primary or secondary admin instances
+    const adminInstances = instances.filter(
+      (inst) =>
+        inst.health_status === 'healthy' &&
+        (inst.is_primary_admin || inst.is_secondary_admin)
     );
 
-    if (healthyInstances.length === 0) {
+    if (adminInstances.length === 0) {
       throw new ValidationError(
-        'No healthy instances available for instruments refresh'
+        'No healthy primary or secondary admin instances available for instruments refresh'
       );
     }
 
-    return healthyInstances[0];
+    // Prefer primary admin over secondary admin
+    const primaryAdmin = adminInstances.find(inst => inst.is_primary_admin);
+    if (primaryAdmin) {
+      return primaryAdmin;
+    }
+
+    // Fallback to secondary admin
+    return adminInstances[0];
   }
 }
 

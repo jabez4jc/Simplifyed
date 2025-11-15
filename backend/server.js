@@ -16,7 +16,7 @@ import orderMonitorService from './src/services/order-monitor.service.js';
 import telegramService from './src/services/telegram.service.js';
 
 // Middleware
-import { configureSession, configurePassport, requireAuth } from './src/middleware/auth.js';
+import { configureSession, configurePassport, requireAuth, optionalAuth } from './src/middleware/auth.js';
 import { errorHandler, notFoundHandler } from './src/middleware/error-handler.js';
 import { requestLogger, bodyParserErrorHandler } from './src/middleware/request-logger.js';
 import { checkInstrumentsRefresh } from './src/middleware/instruments-refresh.middleware.js';
@@ -61,6 +61,9 @@ app.use(configureSession());
 // Passport authentication
 app.use(configurePassport());
 app.use(passport.session());
+
+// Optional auth (sets req.user in test mode)
+app.use(optionalAuth);
 
 // Instruments refresh check (runs in background after authentication)
 app.use(checkInstrumentsRefresh);

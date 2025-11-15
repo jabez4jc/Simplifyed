@@ -128,9 +128,26 @@ class OpenAlgoClient {
       } catch (error) {
         lastError = error;
 
-        // Don't retry on client errors (4xx)
+        // Don't retry on client errors (4xx) - these indicate bad requests
         if (error.statusCode >= 400 && error.statusCode < 500) {
+          log.error('OpenAlgo API Client Error (4xx) - not retrying', error, {
+            endpoint,
+            statusCode: error.statusCode,
+            isCritical
+          });
           throw error;
+        }
+
+        // Log 5xx server errors that will be retried
+        if (error.statusCode >= 500) {
+          log.warn('OpenAlgo API Server Error (5xx) - will retry', {
+            endpoint,
+            statusCode: error.statusCode,
+            attempt: attempt + 1,
+            maxRetries,
+            isCritical,
+            error: error.message
+          });
         }
 
         // For order placement requests, check if order was actually placed before retrying
@@ -576,14 +593,172 @@ class OpenAlgoClient {
 
   /**
    * Get instruments list (all available symbols from broker)
+   * This is a browser-accessible GET endpoint with query parameters
    * @param {Object} instance - Instance configuration
    * @param {string} [exchange] - Optional exchange filter (NSE, BSE, NFO, BFO, BCD, CDS, MCX, NSE_INDEX, BSE_INDEX)
    * @returns {Promise<Array>} - Array of instrument objects with symbol, name, exchange, token, lotsize, instrumenttype, etc.
    */
   async getInstruments(instance, exchange = null) {
-    const data = exchange ? { exchange } : {};
-    const response = await this.request(instance, 'instruments', data, 'POST', { isCritical: false });
-    return response.data || [];
+    const { host_url, api_key } = instance;
+
+    if (!host_url || !api_key) {
+      throw new OpenAlgoError('Instance host_url and api_key are required', 'instruments');
+    }
+
+    // Build query parameters
+    const params = new URLSearchParams({
+      apikey: api_key,
+      format: 'json'
+    });
+
+    if (exchange) {
+      params.append('exchange', exchange);
+    }
+
+    const url = `${host_url}/api/v1/instruments?${params.toString()}`;
+
+    const maxRetries = this.nonCriticalRetries;
+    const baseRetryDelay = this.nonCriticalRetryDelay;
+    let startTime;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        startTime = Date.now();
+
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'Accept': 'application/json',
+          },
+          signal: AbortSignal.timeout(this.timeout),
+          dispatcher: this.dispatcher,
+        });
+
+        const duration = Date.now() - startTime;
+
+        // Handle non-200 responses
+        if (!response.ok) {
+          const errorText = await response.text();
+          log.warn('Instruments API returned non-200 status', {
+            endpoint: 'instruments',
+            status: response.status,
+            statusText: response.statusText,
+            exchange: exchange || 'ALL'
+          });
+
+          throw new OpenAlgoError(
+            `HTTP ${response.status}: ${errorText.substring(0, 200)}`,
+            'instruments',
+            response.status
+          );
+        }
+
+        // Parse JSON response
+        let data;
+        try {
+          const text = await response.text();
+          data = JSON.parse(text);
+        } catch (parseError) {
+          throw new OpenAlgoError(
+            `Invalid JSON response: ${parseError.message}`,
+            'instruments'
+          );
+        }
+
+        log.info('OpenAlgo API Call', {
+          method: 'GET',
+          endpoint: 'instruments',
+          duration: `${duration}ms`,
+          success: true,
+          exchange: exchange || 'ALL',
+          count: Array.isArray(data) ? data.length : (data.data ? data.data.length : 0)
+        });
+
+        // Handle response format - could be direct array or wrapped in {data: [...]}
+        if (Array.isArray(data)) {
+          return data;
+        } else if (data.data && Array.isArray(data.data)) {
+          return data.data;
+        } else {
+          throw new OpenAlgoError('Unexpected response format: expected array of instruments', 'instruments');
+        }
+
+      } catch (error) {
+        const duration = Date.now() - startTime;
+
+        // Handle OpenAlgo API errors
+        if (error instanceof OpenAlgoError) {
+          // Don't retry on 4xx client errors (bad request, auth, etc.)
+          if (error.statusCode >= 400 && error.statusCode < 500) {
+            log.error('OpenAlgo API Client Error (4xx) - not retrying', error, {
+              method: 'GET',
+              endpoint: 'instruments',
+              duration: `${duration}ms`,
+              statusCode: error.statusCode,
+              exchange: exchange || 'ALL'
+            });
+            throw error;
+          }
+
+          // Retry on 5xx server errors (transient failures)
+          if (error.statusCode >= 500 && attempt < maxRetries) {
+            const delay = baseRetryDelay * Math.pow(2, attempt);
+            log.warn('OpenAlgo API Server Error (5xx) - retrying', {
+              method: 'GET',
+              endpoint: 'instruments',
+              statusCode: error.statusCode,
+              attempt: attempt + 1,
+              maxRetries,
+              retryDelay: `${delay}ms`,
+              error: error.message,
+              exchange: exchange || 'ALL'
+            });
+
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+
+          // All retries exhausted or non-retryable error
+          log.error('OpenAlgo API Error', error, {
+            method: 'GET',
+            endpoint: 'instruments',
+            duration: `${duration}ms`,
+            statusCode: error.statusCode,
+            exchange: exchange || 'ALL'
+          });
+          throw error;
+        }
+
+        // Retry on network/timeout errors
+        if (attempt < maxRetries) {
+          const delay = baseRetryDelay * Math.pow(2, attempt);
+          log.warn('Instruments fetch failed, retrying', {
+            endpoint: 'instruments',
+            attempt: attempt + 1,
+            maxRetries,
+            retryDelay: `${delay}ms`,
+            error: error.message,
+            exchange: exchange || 'ALL'
+          });
+
+          await new Promise(resolve => setTimeout(resolve, delay));
+          continue;
+        }
+
+        // All retries exhausted
+        log.error('Instruments fetch failed after retries', error, {
+          method: 'GET',
+          endpoint: 'instruments',
+          attempts: maxRetries + 1,
+          exchange: exchange || 'ALL'
+        });
+
+        throw new OpenAlgoError(
+          `Failed after ${maxRetries + 1} attempts: ${error.message}`,
+          'instruments'
+        );
+      }
+    }
   }
 
   /**
