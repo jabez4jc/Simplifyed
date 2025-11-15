@@ -123,7 +123,33 @@ class InstrumentsService {
       refreshLogId = logResult.lastID;
 
       // Fetch instruments from OpenAlgo
-      const instruments = await openalgoClient.getInstruments(instance, exchange);
+      // If no exchange specified, fetch from all supported exchanges
+      let instruments = [];
+
+      if (exchange) {
+        // Single exchange
+        instruments = await openalgoClient.getInstruments(instance, exchange);
+      } else {
+        // All exchanges - fetch from each and combine
+        log.info('Fetching instruments from all exchanges', {
+          exchanges: SUPPORTED_EXCHANGES
+        });
+
+        for (const ex of SUPPORTED_EXCHANGES) {
+          try {
+            const exInstruments = await openalgoClient.getInstruments(instance, ex);
+            if (exInstruments && exInstruments.length > 0) {
+              instruments.push(...exInstruments);
+              log.info(`Fetched instruments from ${ex}`, { count: exInstruments.length });
+            }
+          } catch (error) {
+            // Log error but continue with other exchanges
+            log.warn(`Failed to fetch instruments from ${ex}`, {
+              error: error.message
+            });
+          }
+        }
+      }
 
       if (!instruments || instruments.length === 0) {
         throw new Error('No instruments returned from broker');
@@ -182,7 +208,7 @@ class InstrumentsService {
           ]);
 
           await db.run(
-            `INSERT INTO instruments (
+            `INSERT OR REPLACE INTO instruments (
               symbol, brsymbol, name, exchange, token, expiry, strike,
               lotsize, instrumenttype, tick_size, created_at, updated_at
             ) VALUES ${placeholders}`,
