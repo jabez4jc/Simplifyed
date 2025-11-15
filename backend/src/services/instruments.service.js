@@ -279,13 +279,20 @@ class InstrumentsService {
       }
       validatedLimit = Math.min(Math.max(validatedLimit, 1), 500); // Clamp between 1 and 500
 
-      // Sanitize query for FTS5 (escape special characters)
-      const sanitizedQuery = query
-        .replace(/['"]/g, '') // Remove quotes
+      // Sanitize query for FTS5 to prevent operator injection
+      // Escape double-quotes by doubling them (FTS5 standard)
+      let sanitizedQuery = query
+        .replace(/"/g, '""') // Escape double-quotes
         .trim();
 
-      // Build FTS5 query with prefix matching
-      const ftsQuery = `${sanitizedQuery}*`;
+      // Check if query is empty after sanitization
+      if (sanitizedQuery.length === 0) {
+        throw new ValidationError('Search query must contain valid characters');
+      }
+
+      // Wrap as phrase prefix to prevent FTS5 operators (AND/OR/NOT) from being parsed
+      // The "*" inside quotes tells FTS5 to do phrase prefix matching
+      const ftsQuery = `"${sanitizedQuery}*"`;
 
       log.debug('Searching instruments', {
         query: sanitizedQuery,
