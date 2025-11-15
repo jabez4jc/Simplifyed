@@ -1,12 +1,21 @@
 /**
  * Fix instance admin configuration
  * Marks the first active instance as primary admin
+ *
+ * @description Automatically configures admin instances for instruments refresh.
+ * Helps users resolve "No healthy primary or secondary admin instances" error.
+ *
  * Usage: node fix-instance-admin.js
  */
 
 import db from './src/core/database.js';
-import { log } from './src/core/logger.js';
 
+/**
+ * Fix instance admin configuration
+ * Marks the first active instance as primary admin if none exist
+ *
+ * @returns {Promise<void>}
+ */
 async function fixInstanceAdmin() {
   try {
     await db.connect();
@@ -29,7 +38,6 @@ async function fixInstanceAdmin() {
     if (activeInstances.length === 0) {
       console.log('\n❌ No active instances found!');
       console.log('Please add an instance first or activate an existing one.');
-      await db.close();
       return;
     }
 
@@ -42,7 +50,6 @@ async function fixInstanceAdmin() {
         const role = inst.is_primary_admin === 1 ? 'Primary Admin' : 'Secondary Admin';
         console.log(`  - ${inst.name} (ID: ${inst.id}) - ${role}`);
       });
-      await db.close();
       return;
     }
 
@@ -51,19 +58,32 @@ async function fixInstanceAdmin() {
 
     console.log(`\n⚙️  Setting "${firstActive.name}" (ID: ${firstActive.id}) as primary admin...`);
 
-    await db.run(
+    const result = await db.run(
       'UPDATE instances SET is_primary_admin = 1 WHERE id = ?',
       [firstActive.id]
     );
 
+    // Verify update was successful
+    if (result.changes === 0) {
+      console.error(`\n❌ Failed to update instance ${firstActive.id}. No rows were modified.`);
+      process.exit(1);
+    }
+
     console.log('✅ Instance updated successfully!');
     console.log(`\n"${firstActive.name}" is now the primary admin instance.`);
     console.log('This instance will be used for fetching instruments data.');
-
-    await db.close();
   } catch (error) {
     console.error('❌ Error:', error.message);
+    console.error(error.stack);
     process.exit(1);
+  } finally {
+    // Ensure database connection is always closed
+    try {
+      await db.close();
+    } catch (closeError) {
+      // Ignore close errors if connection was never opened
+      console.error('Warning: Failed to close database connection:', closeError.message);
+    }
   }
 }
 
