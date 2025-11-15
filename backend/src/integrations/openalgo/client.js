@@ -128,9 +128,26 @@ class OpenAlgoClient {
       } catch (error) {
         lastError = error;
 
-        // Don't retry on client errors (4xx)
+        // Don't retry on client errors (4xx) - these indicate bad requests
         if (error.statusCode >= 400 && error.statusCode < 500) {
+          log.error('OpenAlgo API Client Error (4xx) - not retrying', error, {
+            endpoint,
+            statusCode: error.statusCode,
+            isCritical
+          });
           throw error;
+        }
+
+        // Log 5xx server errors that will be retried
+        if (error.statusCode >= 500) {
+          log.warn('OpenAlgo API Server Error (5xx) - will retry', {
+            endpoint,
+            statusCode: error.statusCode,
+            attempt: attempt + 1,
+            maxRetries,
+            isCritical,
+            error: error.message
+          });
         }
 
         // For order placement requests, check if order was actually placed before retrying
@@ -631,7 +648,8 @@ class OpenAlgoClient {
 
           throw new OpenAlgoError(
             `HTTP ${response.status}: ${errorText.substring(0, 200)}`,
-            'instruments'
+            'instruments',
+            response.status
           );
         }
 
@@ -668,12 +686,44 @@ class OpenAlgoClient {
       } catch (error) {
         const duration = Date.now() - startTime;
 
-        // Don't retry on certain errors
+        // Handle OpenAlgo API errors
         if (error instanceof OpenAlgoError) {
+          // Don't retry on 4xx client errors (bad request, auth, etc.)
+          if (error.statusCode >= 400 && error.statusCode < 500) {
+            log.error('OpenAlgo API Client Error (4xx) - not retrying', error, {
+              method: 'GET',
+              endpoint: 'instruments',
+              duration: `${duration}ms`,
+              statusCode: error.statusCode,
+              exchange: exchange || 'ALL'
+            });
+            throw error;
+          }
+
+          // Retry on 5xx server errors (transient failures)
+          if (error.statusCode >= 500 && attempt < maxRetries) {
+            const delay = baseRetryDelay * Math.pow(2, attempt);
+            log.warn('OpenAlgo API Server Error (5xx) - retrying', {
+              method: 'GET',
+              endpoint: 'instruments',
+              statusCode: error.statusCode,
+              attempt: attempt + 1,
+              maxRetries,
+              retryDelay: `${delay}ms`,
+              error: error.message,
+              exchange: exchange || 'ALL'
+            });
+
+            await new Promise(resolve => setTimeout(resolve, delay));
+            continue;
+          }
+
+          // All retries exhausted or non-retryable error
           log.error('OpenAlgo API Error', error, {
             method: 'GET',
             endpoint: 'instruments',
             duration: `${duration}ms`,
+            statusCode: error.statusCode,
             exchange: exchange || 'ALL'
           });
           throw error;

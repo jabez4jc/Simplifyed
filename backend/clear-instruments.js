@@ -9,13 +9,16 @@ async function clearInstruments() {
   try {
     await db.connect();
 
-    // Delete all instruments
-    await db.run('DELETE FROM instruments');
-    console.log('✅ Cleared all instruments');
+    // Wrap DELETE operations in a transaction for atomicity
+    await db.transaction(async () => {
+      // Delete all instruments
+      await db.run('DELETE FROM instruments');
+      console.log('✅ Cleared all instruments');
 
-    // Delete refresh log to force a fresh fetch
-    await db.run('DELETE FROM instruments_refresh_log');
-    console.log('✅ Cleared refresh log');
+      // Delete refresh log to force a fresh fetch
+      await db.run('DELETE FROM instruments_refresh_log');
+      console.log('✅ Cleared refresh log');
+    });
 
     // Verify
     const count = await db.get('SELECT COUNT(*) as count FROM instruments');

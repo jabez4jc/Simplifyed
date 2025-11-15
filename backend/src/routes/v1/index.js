@@ -42,10 +42,15 @@ router.get('/health', (req, res) => {
 });
 
 // Ready check endpoint - shows if app is ready for trading
+// Returns 200 OK when ready, 503 Service Unavailable when not ready
+// Useful for infrastructure readiness probes (Kubernetes, load balancers, etc.)
 router.get('/ready', (req, res) => {
   const status = getAppReadyStatus();
 
-  res.json({
+  // Return 503 if not ready (for infrastructure readiness probes)
+  const httpStatus = status.ready ? 200 : 503;
+
+  res.status(httpStatus).json({
     status: status.ready ? 'ready' : 'not_ready',
     ready: status.ready,
     refreshInProgress: status.refreshInProgress,

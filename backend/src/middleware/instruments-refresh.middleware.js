@@ -100,6 +100,22 @@ export async function checkInstrumentsRefresh(req, res, next) {
       return next();
     }
 
+    // Double-check that refresh isn't already in progress (race condition protection)
+    // Another request might have started refresh while we were awaiting needsRefresh()
+    if (refreshInProgress) {
+      log.info('Instruments refresh started by another request, blocking this request', {
+        path: req.path,
+        user: req.user?.email
+      });
+
+      return res.status(503).json({
+        status: 'error',
+        message: 'Instruments cache is being loaded. Please wait...',
+        error: 'SERVICE_UNAVAILABLE',
+        retry_after_seconds: 5
+      });
+    }
+
     // Start blocking refresh
     log.info('Starting BLOCKING instruments refresh - app not ready for trading', {
       user: req.user?.email,
