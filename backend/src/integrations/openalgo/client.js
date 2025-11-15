@@ -575,6 +575,18 @@ class OpenAlgoClient {
   }
 
   /**
+   * Get instruments list (all available symbols from broker)
+   * @param {Object} instance - Instance configuration
+   * @param {string} [exchange] - Optional exchange filter (NSE, BSE, NFO, BFO, BCD, CDS, MCX, NSE_INDEX, BSE_INDEX)
+   * @returns {Promise<Array>} - Array of instrument objects with symbol, name, exchange, token, lotsize, instrumenttype, etc.
+   */
+  async getInstruments(instance, exchange = null) {
+    const data = exchange ? { exchange } : {};
+    const response = await this.request(instance, 'instruments', data, 'POST', { isCritical: false });
+    return response.data || [];
+  }
+
+  /**
    * Place split order (splits large order into smaller chunks)
    * @param {Object} instance - Instance configuration
    * @param {Object} orderData - Order parameters with splitsize
