@@ -4,12 +4,23 @@
  */
 
 import express from 'express';
-import instrumentsService from '../../services/instruments.service.js';
+import instrumentsService, { SUPPORTED_EXCHANGES } from '../../services/instruments.service.js';
 import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
 import { sanitizeString } from '../../utils/sanitizers.js';
 
 const router = express.Router();
+
+/**
+ * Supported instrument types
+ */
+const SUPPORTED_INSTRUMENT_TYPES = ['EQ', 'FUT', 'CE', 'PE', 'INDEX'];
+
+/**
+ * Track active refresh operations to prevent concurrent refreshes
+ * Key: exchange (or 'ALL' for global refresh), Value: true
+ */
+const activeRefreshes = new Map();
 
 /**
  * GET /api/v1/instruments/search
@@ -23,13 +34,43 @@ router.get('/search', async (req, res, next) => {
       throw new ValidationError('query parameter is required');
     }
 
+    // Validate and clamp limit parameter
+    let parsedLimit = 50; // default
+    if (limit) {
+      parsedLimit = parseInt(limit, 10);
+      if (isNaN(parsedLimit) || parsedLimit < 1) {
+        throw new ValidationError('limit must be a positive number');
+      }
+      parsedLimit = Math.min(parsedLimit, 500); // cap at 500
+    }
+
+    // Validate exchange parameter
+    let validatedExchange = null;
+    if (exchange) {
+      const upperExchange = sanitizeString(exchange).toUpperCase();
+      if (!SUPPORTED_EXCHANGES.includes(upperExchange)) {
+        throw new ValidationError(`Invalid exchange. Supported exchanges: ${SUPPORTED_EXCHANGES.join(', ')}`);
+      }
+      validatedExchange = upperExchange;
+    }
+
+    // Validate instrumenttype parameter
+    let validatedInstrumentType = null;
+    if (instrumenttype) {
+      const upperType = sanitizeString(instrumenttype).toUpperCase();
+      if (!SUPPORTED_INSTRUMENT_TYPES.includes(upperType)) {
+        throw new ValidationError(`Invalid instrument type. Supported types: ${SUPPORTED_INSTRUMENT_TYPES.join(', ')}`);
+      }
+      validatedInstrumentType = upperType;
+    }
+
     // Search cached instruments
     const results = await instrumentsService.searchInstruments(
       sanitizeString(query),
       {
-        exchange: exchange ? sanitizeString(exchange).toUpperCase() : null,
-        instrumenttype: instrumenttype ? sanitizeString(instrumenttype).toUpperCase() : null,
-        limit: limit ? parseInt(limit, 10) : 50
+        exchange: validatedExchange,
+        instrumenttype: validatedInstrumentType,
+        limit: parsedLimit
       }
     );
 
@@ -151,17 +192,35 @@ router.post('/refresh', async (req, res, next) => {
   try {
     const { exchange, instanceId } = req.body;
 
+    const refreshKey = exchange ? sanitizeString(exchange).toUpperCase() : 'ALL';
+
+    // Check if refresh is already in progress for this exchange
+    if (activeRefreshes.has(refreshKey)) {
+      res.status(409).json({
+        status: 'error',
+        message: `Refresh is already in progress for ${refreshKey}`,
+        exchange: refreshKey
+      });
+      return;
+    }
+
     log.info('Manual instruments refresh triggered', {
-      exchange: exchange || 'ALL',
+      exchange: refreshKey,
       instanceId,
       user: req.user?.email
     });
+
+    // Mark refresh as active
+    activeRefreshes.set(refreshKey, true);
 
     // Start refresh (can be long-running, so we return immediately)
     const refreshPromise = instrumentsService.refreshInstruments(
       exchange ? sanitizeString(exchange).toUpperCase() : null,
       instanceId ? parseInt(instanceId, 10) : null
-    );
+    ).finally(() => {
+      // Clear active refresh flag when done
+      activeRefreshes.delete(refreshKey);
+    });
 
     // For smaller exchanges, wait for completion (up to 30 seconds)
     // For large refreshes, return immediately with 202 Accepted
@@ -176,7 +235,7 @@ router.post('/refresh', async (req, res, next) => {
       res.status(202).json({
         status: 'accepted',
         message: 'Instruments refresh is running in background',
-        exchange: exchange || 'ALL'
+        exchange: refreshKey
       });
     } else {
       // Refresh completed within timeout
@@ -199,9 +258,10 @@ router.get('/:exchange/:symbol', async (req, res, next) => {
   try {
     const { exchange, symbol } = req.params;
 
+    // Service handles case conversion
     const instrument = await instrumentsService.getInstrument(
-      sanitizeString(symbol).toUpperCase(),
-      sanitizeString(exchange).toUpperCase()
+      sanitizeString(symbol),
+      sanitizeString(exchange)
     );
 
     if (!instrument) {

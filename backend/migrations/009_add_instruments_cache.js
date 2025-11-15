@@ -1,7 +1,7 @@
 /**
  * Migration 009: Add Instruments Cache
  * Creates tables for caching complete broker instrument list
- * Supports daily refresh and fast local search via Elasticsearch
+ * Supports daily refresh and fast local search via SQLite FTS5
  */
 
 export const version = '009';

@@ -88,7 +88,7 @@ The system uses two polling intervals:
 
 ## 🎯 Instruments Cache (NEW)
 
-**High-performance symbol search with automatic daily refresh**
+### High-performance symbol search with automatic daily refresh
 
 ### Overview
 The app maintains a local cache of all broker instruments (typically 50K-500K symbols) to provide:

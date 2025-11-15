@@ -11,6 +11,7 @@ import pnlService from './pnl.service.js';
 import orderService from './order.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import { parseFloatSafe } from '../utils/sanitizers.js';
+import { cleanupSessionChecks } from '../middleware/instruments-refresh.middleware.js';
 
 class PollingService {
   constructor() {
@@ -253,6 +254,9 @@ class PollingService {
         failed,
         duration_ms: duration,
       });
+
+      // Cleanup old session refresh checks
+      cleanupSessionChecks();
     } catch (error) {
       log.error('Failed to poll health checks', error);
     }
