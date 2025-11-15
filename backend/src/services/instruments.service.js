@@ -555,7 +555,7 @@ class InstrumentsService {
   }
 
   /**
-   * Get market data instance (primary > secondary > any healthy)
+   * Get market data instance (primary admin > secondary admin ONLY)
    * @private
    */
   async _getMarketDataInstance(instanceId) {
@@ -564,31 +564,41 @@ class InstrumentsService {
       if (!instance) {
         throw new ValidationError(`Instance with ID ${instanceId} not found`);
       }
+      // Validate that it's a primary or secondary admin instance
+      if (!instance.is_primary_admin && !instance.is_secondary_admin) {
+        throw new ValidationError(
+          `Instance ${instanceId} must be a primary or secondary admin instance`
+        );
+      }
       return instance;
     }
 
-    // Prefer market data instances
-    const marketDataInstances = await instanceService.getMarketDataInstances();
-    if (marketDataInstances.length > 0) {
-      return marketDataInstances[0];
-    }
-
-    // Fallback to any healthy active instance
+    // Get all active instances
     const instances = await instanceService.getAllInstances({
       is_active: true
     });
 
-    const healthyInstances = instances.filter(
-      (inst) => inst.health_status === 'healthy'
+    // Filter for healthy primary or secondary admin instances
+    const adminInstances = instances.filter(
+      (inst) =>
+        inst.health_status === 'healthy' &&
+        (inst.is_primary_admin || inst.is_secondary_admin)
     );
 
-    if (healthyInstances.length === 0) {
+    if (adminInstances.length === 0) {
       throw new ValidationError(
-        'No healthy instances available for instruments refresh'
+        'No healthy primary or secondary admin instances available for instruments refresh'
       );
     }
 
-    return healthyInstances[0];
+    // Prefer primary admin over secondary admin
+    const primaryAdmin = adminInstances.find(inst => inst.is_primary_admin);
+    if (primaryAdmin) {
+      return primaryAdmin;
+    }
+
+    // Fallback to secondary admin
+    return adminInstances[0];
   }
 }
 
