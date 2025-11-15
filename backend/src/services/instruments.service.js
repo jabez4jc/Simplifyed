@@ -188,9 +188,9 @@ class InstrumentsService {
         for (let i = 0; i < batches.length; i++) {
           const batch = batches[i];
 
-          // Build VALUES clause with placeholders
+          // Build VALUES clause with placeholders (11 fields + 2 timestamps)
           const placeholders = batch
-            .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
+            .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
             .join(', ');
 
           // Flatten values for all instruments in batch
@@ -199,6 +199,7 @@ class InstrumentsService {
             inst.brsymbol || null,
             inst.name || null,
             inst.exchange ? inst.exchange.toUpperCase() : null,
+            inst.brexchange || null,
             inst.token || null,
             inst.expiry || null,
             inst.strike || null,
@@ -209,7 +210,7 @@ class InstrumentsService {
 
           await db.run(
             `INSERT OR REPLACE INTO instruments (
-              symbol, brsymbol, name, exchange, token, expiry, strike,
+              symbol, brsymbol, name, exchange, brexchange, token, expiry, strike,
               lotsize, instrumenttype, tick_size, created_at, updated_at
             ) VALUES ${placeholders}`,
             values
