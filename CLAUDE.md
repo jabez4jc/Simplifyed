@@ -173,9 +173,37 @@ SQLite with WAL mode enabled:
 
 ## 🔐 Authentication
 
+### Production Mode
 - **Google OAuth 2.0**: Production authentication via `/auth/google`
-- **Test Mode**: Development mode enabled via `TEST_MODE=true` for bypassing OAuth
 - **Session-based**: Express-session with Passport.js
+
+### Test Mode (Development)
+Test mode allows development without Google OAuth configuration by automatically setting a test user.
+
+**Enabling Test Mode:**
+Test mode is automatically enabled when Google OAuth is **not configured** (i.e., `GOOGLE_CLIENT_ID` is missing from environment). Alternatively, can be explicitly enabled via `TEST_MODE=true` environment variable.
+
+**Configuration:**
+```bash
+# In .env file
+TEST_MODE=true
+TEST_USER_EMAIL=test@simplifyed.in
+```
+
+**Test Mode Behavior:**
+- All requests use test user: `test@simplifyed.in` (ID: 1, admin)
+- Skips instruments refresh (no broker connection needed in test mode)
+- API calls return empty/mock data where appropriate
+- All authentication middleware checks bypassed
+- Server starts successfully without OAuth credentials
+
+**Implementation Details:**
+- **Detection**: Uses `config.testMode.enabled` consistently across all components
+- **Middleware**: `src/middleware/instruments-refresh.middleware.js` - Skips instruments refresh
+- **Service**: `src/services/instruments.service.js` - Returns early with skipped status
+- **Client**: `src/integrations/openalgo/client.js` - Enhanced error handling for test instances
+
+**Note:** Test mode is intended for development only. Production deployments must configure Google OAuth.
 
 ## 🔌 OpenAlgo Integration
 
