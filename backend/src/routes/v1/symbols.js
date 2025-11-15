@@ -6,6 +6,7 @@
 import express from 'express';
 import instanceService from '../../services/instance.service.js';
 import symbolValidationService from '../../services/symbol-validation.service.js';
+import instrumentsService from '../../services/instruments.service.js';
 import openalgoClient from '../../integrations/openalgo/client.js';
 import db from '../../core/database.js';
 import { log } from '../../core/logger.js';
@@ -16,17 +17,54 @@ const router = express.Router();
 
 /**
  * GET /api/v1/symbols/search
- * Search for symbols using OpenAlgo with classification
+ * Search for symbols - uses cached instruments if available, falls back to OpenAlgo API
  */
 router.get('/search', async (req, res, next) => {
   try {
-    const { query, instanceId } = req.query;
+    const { query, instanceId, exchange, instrumenttype } = req.query;
 
     if (!query) {
       throw new ValidationError('query parameter is required');
     }
 
-    // Use symbol validation service for search with classification
+    // Try cached instruments first (fast path)
+    try {
+      const cachedResults = await instrumentsService.searchInstruments(
+        query,
+        {
+          exchange: exchange ? sanitizeString(exchange).toUpperCase() : null,
+          instrumenttype: instrumenttype ? sanitizeString(instrumenttype).toUpperCase() : null,
+          limit: 50
+        }
+      );
+
+      if (cachedResults && cachedResults.length > 0) {
+        // Classify each result
+        const enrichedResults = cachedResults.map(instrument => ({
+          ...instrument,
+          symbol_type: symbolValidationService.classifySymbol(instrument),
+          tradingsymbol: instrument.symbol,
+          source: 'cache'
+        }));
+
+        log.debug('Symbol search using cache', {
+          query,
+          results: enrichedResults.length
+        });
+
+        return res.json({
+          status: 'success',
+          data: enrichedResults,
+          count: enrichedResults.length,
+          source: 'cache'
+        });
+      }
+    } catch (cacheError) {
+      log.warn('Cache search failed, falling back to API', cacheError, { query });
+    }
+
+    // Fallback to OpenAlgo API (slower path)
+    log.debug('Symbol search using OpenAlgo API', { query });
     const results = await symbolValidationService.searchSymbols(
       query,
       instanceId ? parseInt(instanceId, 10) : null
@@ -36,6 +74,7 @@ router.get('/search', async (req, res, next) => {
       status: 'success',
       data: results,
       count: results.length,
+      source: 'api'
     });
   } catch (error) {
     next(error);

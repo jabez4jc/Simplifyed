@@ -277,7 +277,7 @@ class OrderMonitorService {
   constructor() {
     this.isMonitoring = false;
     this.monitorInterval = null;
-    this.checkedPositions = new Map(); // Prevent duplicate triggers
+    this.checkedPositions = new Map(); // In-memory cache for recent checks
   }
 
   /**
@@ -291,6 +291,9 @@ class OrderMonitorService {
 
     this.isMonitoring = true;
 
+    // Load recent checked positions from database
+    await this.loadCheckedPositionsFromDB();
+
     // Run every 5 seconds
     this.monitorInterval = setInterval(
       () => this.monitorAllPositions(),
@@ -298,6 +301,35 @@ class OrderMonitorService {
     );
 
     log.info('Order monitor started');
+  }
+
+  /**
+   * Load checked positions from database (last 1 hour)
+   */
+  async loadCheckedPositionsFromDB() {
+    try {
+      const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+      const recentTriggers = await db.all(`
+        SELECT instance_id, symbol, exchange, created_at
+        FROM order_monitor_log
+        WHERE created_at > ?
+        ORDER BY created_at DESC
+      `, [oneHourAgo]);
+
+      // Populate in-memory cache
+      recentTriggers.forEach(trigger => {
+        const positionKey = `${trigger.instance_id}:${trigger.symbol}:${trigger.exchange}`;
+        const timestamp = new Date(trigger.created_at).getTime();
+        this.checkedPositions.set(positionKey, timestamp);
+      });
+
+      log.info('Loaded checked positions from database', {
+        count: recentTriggers.length
+      });
+    } catch (error) {
+      log.error('Failed to load checked positions', error);
+    }
   }
 
   /**
@@ -330,8 +362,12 @@ class OrderMonitorService {
    */
   async monitorInstance(instance) {
     try {
-      // Fetch position book
-      const positions = await openalgoClient.getPositionBook(instance);
+      // Fetch position book with 10-second timeout protection
+      const positions = await this._withTimeout(
+        openalgoClient.getPositionBook(instance),
+        10000,
+        'Position book fetch timed out'
+      );
 
       // Filter only open positions
       const openPositions = positions.filter(p => {
@@ -347,6 +383,18 @@ class OrderMonitorService {
     } catch (error) {
       log.error('Instance monitor failed', { instance: instance.id, error });
     }
+  }
+
+  /**
+   * Wrap a promise with timeout
+   */
+  _withTimeout(promise, timeoutMs, errorMessage) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(errorMessage)), timeoutMs)
+      )
+    ]);
   }
 
   /**
@@ -379,8 +427,30 @@ class OrderMonitorService {
     // Create position key to prevent duplicate triggers
     const positionKey = `${instance.id}:${symbol}:${exchange}`;
 
-    // Check if already triggered
+    // Check if already triggered (in-memory cache first, with timestamp validation)
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
     if (this.checkedPositions.has(positionKey)) {
+      const cachedTimestamp = this.checkedPositions.get(positionKey);
+      // Only skip if cached timestamp is within the 1-hour window
+      if (cachedTimestamp > oneHourAgo) {
+        return;
+      }
+      // Cached entry is stale, remove it and continue checking
+      this.checkedPositions.delete(positionKey);
+    }
+
+    // Double-check database for recent triggers (last 1 hour)
+    const oneHourAgoISO = new Date(oneHourAgo).toISOString();
+    const recentTrigger = await db.get(`
+      SELECT id FROM order_monitor_log
+      WHERE instance_id = ? AND symbol = ? AND exchange = ?
+      AND created_at > ?
+      LIMIT 1
+    `, [instance.id, symbol, exchange, oneHourAgoISO]);
+
+    if (recentTrigger) {
+      // Update cache and skip
+      this.checkedPositions.set(positionKey, Date.now());
       return;
     }
 
@@ -513,16 +583,47 @@ class OrderMonitorService {
    * Send Telegram alert (if configured)
    */
   async sendTelegramAlert(instance, alert) {
+    let userId = null;
+
     try {
-      // Get user ID from instance (assuming instance belongs to a user)
-      // For now, get first user (will need proper user association)
-      const user = await db.get('SELECT * FROM users LIMIT 1');
+      // Get user ID from instance relationship
+      // Query user via instance ownership (assumes instances.user_id FK exists)
+      const user = await db.get(`
+        SELECT u.*
+        FROM users u
+        INNER JOIN instances i ON u.id = i.user_id
+        WHERE i.id = ?
+      `, [instance.id]);
 
       if (user) {
+        userId = user.id;
         await telegramService.sendAlert(user.id, alert);
+      } else {
+        log.warn('No user associated with instance for Telegram alert', {
+          instance_id: instance.id,
+        });
       }
     } catch (error) {
       log.error('Telegram alert failed', error);
+      // Log failure to telegram_message_log for audit trail
+      // Only log if we have a valid user_id to maintain referential integrity
+      if (userId) {
+        try {
+          await db.run(`
+            INSERT INTO telegram_message_log
+            (user_id, message_type, message_text, send_status, error_message)
+            VALUES (?, ?, ?, ?, ?)
+          `, [
+            userId,
+            'ALERT',
+            JSON.stringify(alert),
+            'failed',
+            error.message
+          ]);
+        } catch (dbError) {
+          log.error('Failed to log Telegram error', dbError);
+        }
+      }
     }
   }
 
