@@ -9,6 +9,7 @@ import instanceService from './instance.service.js';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { ValidationError } from '../core/errors.js';
+import { config } from '../core/config.js';
 
 /**
  * Exchanges supported by OpenAlgo
@@ -101,6 +102,21 @@ class InstrumentsService {
   async refreshInstruments(exchange = null, instanceId = null) {
     const startTime = Date.now();
     let refreshLogId = null;
+
+    // Skip refresh in test mode (test instances don't have valid instruments)
+    // Use config.testMode.enabled for consistency across the application
+    if (config.testMode.enabled) {
+      log.info('Test mode: Skipping instruments refresh', {
+        exchange: exchange || 'ALL'
+      });
+      return {
+        success: true,
+        count: 0,
+        duration_ms: 0,
+        skipped: true,
+        reason: 'TEST_MODE'
+      };
+    }
 
     try {
       // Get market data instance
