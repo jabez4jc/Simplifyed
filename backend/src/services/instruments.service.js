@@ -1,7 +1,7 @@
 /**
  * Instruments Service
  * Manages broker instrument cache with daily refresh
- * Provides fast symbol search using SQLite FTS5 and optional Elasticsearch
+ * Provides fast symbol search using SQLite FTS5 (no external search engines)
  */
 
 import openalgoClient from '../integrations/openalgo/client.js';
