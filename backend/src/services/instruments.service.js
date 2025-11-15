@@ -54,7 +54,7 @@ class InstrumentsService {
       const lastRefresh = await db.get(
         `SELECT * FROM instruments_refresh_log
          WHERE status = 'completed'
-         ${exchange ? 'AND exchange = ?' : ''}
+         ${exchange ? 'AND (exchange = ? OR exchange IS NULL)' : ''}
          ORDER BY refresh_completed_at DESC
          LIMIT 1`,
         exchange ? [exchange] : []
@@ -164,20 +164,20 @@ class InstrumentsService {
 
           // Build VALUES clause with placeholders
           const placeholders = batch
-            .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
+            .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
             .join(', ');
 
           // Flatten values for all instruments in batch
           const values = batch.flatMap(inst => [
-            inst.symbol || null,
+            inst.symbol ? inst.symbol.toUpperCase() : null,
             inst.brsymbol || null,
             inst.name || null,
-            inst.exchange || null,
+            inst.exchange ? inst.exchange.toUpperCase() : null,
             inst.token || null,
             inst.expiry || null,
             inst.strike || null,
             inst.lotsize || 1,
-            inst.instrumenttype || null,
+            inst.instrumenttype ? inst.instrumenttype.toUpperCase() : null,
             inst.tick_size || null
           ]);
 
@@ -272,6 +272,13 @@ class InstrumentsService {
         limit = 50
       } = filters;
 
+      // Validate and clamp limit
+      let validatedLimit = parseInt(limit, 10);
+      if (isNaN(validatedLimit) || validatedLimit < 1) {
+        validatedLimit = 50;
+      }
+      validatedLimit = Math.min(Math.max(validatedLimit, 1), 500); // Clamp between 1 and 500
+
       // Sanitize query for FTS5 (escape special characters)
       const sanitizedQuery = query
         .replace(/['"]/g, '') // Remove quotes
@@ -284,7 +291,7 @@ class InstrumentsService {
         query: sanitizedQuery,
         exchange,
         instrumenttype,
-        limit
+        limit: validatedLimit
       });
 
       // Use FTS5 for fast search, then join with instruments table for full data
@@ -313,7 +320,7 @@ class InstrumentsService {
 
       // Order by FTS5 rank (relevance) and limit results
       sql += ' ORDER BY fts.rank LIMIT ?';
-      params.push(limit);
+      params.push(validatedLimit);
 
       const results = await db.all(sql, params);
 
@@ -519,7 +526,11 @@ class InstrumentsService {
    */
   async _getMarketDataInstance(instanceId) {
     if (instanceId) {
-      return await instanceService.getInstanceById(instanceId);
+      const instance = await instanceService.getInstanceById(instanceId);
+      if (!instance) {
+        throw new ValidationError(`Instance with ID ${instanceId} not found`);
+      }
+      return instance;
     }
 
     // Prefer market data instances
