@@ -10,11 +10,20 @@ Simplifyed Admin V2 is a Node.js/Express backend for a trading dashboard that ma
 
 The project uses a clean layered architecture:
 
+### Backend (Node.js/Express)
 1. **Core Infrastructure** (`src/core/`): Configuration, logging (Winston), database wrapper (SQLite), and custom errors
 2. **Integrations** (`src/integrations/openalgo/`): HTTP client with retry logic for all OpenAlgo API endpoints
-3. **Services** (`src/services/`): Business logic for instances, watchlists, orders, positions, P&L calculations, and polling orchestration
+3. **Services** (`src/services/`): Business logic for instances, watchlists, orders, positions, P&L calculations, polling orchestration, and instruments cache
 4. **Routes** (`src/routes/v1/`): REST API endpoints organized by resource
-5. **Middleware** (`src/middleware/`): Authentication (Google OAuth + test mode), error handling, request logging
+5. **Middleware** (`src/middleware/`): Authentication, error handling, request logging, instruments auto-refresh
+
+### Frontend (Vanilla JavaScript)
+- **Dashboard** (`public/js/dashboard.js`): Main application with view management and polling
+- **Quick Order** (`public/js/quick-order.js`): Inline trading controls in watchlists
+- **Settings** (`public/js/settings.js`): Application configuration management
+- **API Client** (`public/js/api-client.js`): HTTP client for backend communication
+- **Utils** (`public/js/utils.js`): Utility functions for formatting, validation, UI helpers
+- **Polling Strategy**: View-specific polling (watchlists: 10s, positions: 10s, others: 15s auto-refresh skipped for watchlists to prevent flickering)
 
 ## 🚀 Common Commands
 
@@ -54,19 +63,34 @@ cp .env.example .env
 
 ## 📂 Key Files & Components
 
+### Backend
 - **server.js**: Express application entry point with middleware setup and route registration
-- **migrations/**: Database migrations (currently 9+ migrations creating instruments cache with FTS5)
+- **migrations/**: Database migrations (9+ migrations including instruments cache with FTS5)
+- **migrations/migrate.js**: Migration runner with up/down/status commands
 - **src/integrations/openalgo/client.js**: HTTP client with retry logic for OpenAlgo API (40+ endpoints)
-- **src/services/**: Business logic services handling all trading operations
+- **src/services/**: Business logic services
   - `instance.service.js`: Instance CRUD and health checks
-  - `watchlist.service.js`: Watchlist management (720+ lines)
+  - `watchlist.service.js`: Watchlist management
   - `order.service.js`: Order placement using placesmartorder
   - `pnl.service.js`: P&L calculations
   - `polling.service.js`: Smart polling orchestration
-  - `instruments.service.js`: **NEW** - Broker instruments cache with daily refresh and SQLite FTS5 search
+  - `instruments.service.js`: Broker instruments cache with daily refresh and SQLite FTS5 search
 - **src/routes/v1/**: REST API endpoints for frontend integration
-- **src/middleware/instruments-refresh.middleware.js**: **NEW** - Automatic daily refresh on first login
-- **migrations/migrate.js**: Migration runner with up/down/status commands
+- **src/middleware/**: Authentication, error handling, request logging, instruments auto-refresh
+
+### Frontend
+- **public/dashboard.html**: Main HTML structure with sidebar navigation and tabbed interface
+- **public/js/dashboard.js**: Main application (2000+ lines) - view management, polling, watchlist rendering
+- **public/js/quick-order.js**: Inline trading controls, expandable row UI for watchlists
+- **public/js/settings.js**: Settings management and configuration UI
+- **public/js/api-client.js**: HTTP client for backend API communication
+- **public/js/utils.js**: Utility functions for formatting, validation, UI helpers (toasts, modals)
+- **public/css/styles.css**: Complete design system with trading-specific colors and components
+
+### Testing
+- **e2e/watchlist-flicker.spec.js**: Playwright E2E tests for watchlist polling (verifies fix for flickering)
+- **playwright.config.js**: Playwright configuration with 60s webServer timeout
+- **test-instance-crud.js**: Standalone test script for instance CRUD operations
 
 ## 🔌 API Endpoints
 
@@ -162,12 +186,67 @@ Complete integration with 40+ OpenAlgo endpoints including:
 - **Symbols**: search, symbol, quotes, depth, expiry, optionchain
 - Request timeout: 15s, Max retries: 3, Retry delay: 1s
 
+## 🎯 Watchlist Flickering Fix
+
+### Problem
+The watchlist view experienced flickering due to **conflicting polling mechanisms**:
+- Auto-refresh (15s) re-rendered entire watchlists view
+- Watchlist polling (10s) independently updated DOM elements
+- Race condition caused DOM elements to be destroyed while being updated
+
+### Solution
+**File**: `backend/public/js/dashboard.js`
+
+**Fix 1**: Skip auto-refresh for watchlists view (lines 1570-1589)
+```javascript
+this.pollingInterval = setInterval(() => {
+  if (this.currentView !== 'watchlists') {
+    this.refreshCurrentView();
+  }
+}, 15000);
+```
+
+**Fix 2**: Add DOM existence check before quote updates (lines 612-625)
+```javascript
+const table = document.getElementById(`watchlist-table-${watchlistId}`);
+if (!table) {
+  console.log(`Watchlist table ${watchlistId} not found in DOM, skipping quote update`);
+  return;
+}
+```
+
+### Result
+- ✅ Separated concerns: non-watchlist views use 15s auto-refresh, watchlists use dedicated 10s poller
+- ✅ No more flickering in watchlist quotes
+- ✅ Smooth, professional user experience
+- ✅ Clean console logs
+
+See `WATCHLIST_FLICKER_FIX.md` for detailed documentation.
+
 ## 🧪 Testing
 
+### Backend Testing
 Test framework is set up (Node.js built-in test runner) but tests are **pending implementation**:
 - Unit tests: `tests/unit/` (services, integrations, utils)
 - Integration tests: `tests/integration/` (API routes, database)
 - Test script for instance CRUD: `test-instance-crud.js` (can be run directly with `node test-instance-crud.js`)
+
+### Frontend Testing (Playwright)
+Playwright is configured for E2E testing:
+```bash
+# Run Playwright tests
+npx playwright test                    # All tests
+npx playwright test --reporter=line    # Run with line reporter
+npx playwright test --headed           # Run in headed mode
+npx playwright show-report             # Show HTML report
+```
+
+**Key E2E Test**: `e2e/watchlist-flicker.spec.js`
+- Tests the watchlist quotes flickering fix
+- Monitors for 25 seconds to catch polling conflicts
+- Verifies DOM stability and console errors
+- Uses `#current-user-email` selector for reliable login detection
+- Tests view transitions between different dashboard sections
 
 ## 📝 Development Notes
 
@@ -197,18 +276,25 @@ Key environment variables (see `.env.example`):
 **Backend Status**: ✅ Complete and functional
 - All core infrastructure implemented
 - All OpenAlgo endpoints integrated
-- Smart polling system active
+- Smart polling system active (15s for instances, 10s for watchlists/positions)
 - REST API with comprehensive error handling
-- Authentication system working
-- Database migrations complete
+- Authentication system working (Google OAuth + test mode)
+- Database migrations complete with instruments cache (FTS5)
+- Playwright E2E testing configured
 
-**Frontend Status**: ⏳ Pending implementation
-- Backend serves static files from `/public/` directory
-- Frontend application needs to be built
+**Frontend Status**: ✅ Complete and functional
+- Vanilla JavaScript dashboard with view management
+- Watchlist with real-time quote updates (10s polling, no flickering)
+- Inline quick-order trading interface
+- Settings management
+- Tabbed interface for positions and orders
+- No flickering - polling conflicts resolved
+- Static files served from `/public/` directory
 
 ## 📖 Additional Documentation
 
 - **README.md**: Comprehensive architecture documentation, database schema, progress tracker
+- **WATCHLIST_FLICKER_FIX.md**: Detailed documentation of the watchlist quotes flickering fix
 - **Requirements/OpenAlgo_v1_Developer_Reference_Clean.md**: OpenAlgo API reference (155KB)
 - **Requirements/Simplifyed_Watchlist_Enhancement_Spec_v1.1.md**: Watchlist feature specifications
 - **Requirements/openalgo-symbol-classification.md**: Symbol classification details
