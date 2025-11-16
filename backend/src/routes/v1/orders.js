@@ -146,8 +146,15 @@ router.post('/enhanced', async (req, res, next) => {
  * Get trade intents with optional filters
  *
  * Query parameters:
- * - status: Filter by status ('pending', 'failed', or omit for all pending)
+ * - status: Filter by status ('pending', 'failed', or omit for default behavior)
  * - instanceId: Filter by instance ID
+ *
+ * Current behavior:
+ * - status='pending': Returns pending intents (optionally filtered by instanceId)
+ * - status='failed': Returns failed intents (all instances)
+ * - status omitted or other value: Returns pending intents (default behavior)
+ *
+ * Note: Full status filtering implementation pending. Currently defaults to pending intents.
  */
 router.get('/intents', async (req, res, next) => {
   try {

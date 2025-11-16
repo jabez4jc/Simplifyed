@@ -104,15 +104,15 @@ const RiskExits = {
     `;
 
     // Load instances for filter
-    this.loadInstancesFilter();
+    RiskExits.loadInstancesFilter();
 
     // Load data
-    this.loadStats();
-    this.loadExits();
+    RiskExits.loadStats();
+    RiskExits.loadExits();
 
     // Setup auto-refresh
-    if (this.autoRefresh) {
-      this.startAutoRefresh();
+    if (RiskExits.autoRefresh) {
+      RiskExits.startAutoRefresh();
     }
   },
 
@@ -122,9 +122,16 @@ const RiskExits = {
   async loadInstancesFilter() {
     try {
       const response = await fetch('/api/v1/instances');
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
       const data = await response.json();
 
       const select = document.getElementById('re-filter-instance');
+      if (!select) return;
+
       select.innerHTML = '<option value="">All Instances</option>';
 
       if (data.data && data.data.length > 0) {
@@ -146,6 +153,11 @@ const RiskExits = {
   async loadStats() {
     try {
       const response = await fetch('/api/v1/risk-exits/stats/summary?days=7');
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
       const data = await response.json();
 
       if (data.status === 'success' && data.data) {
@@ -168,17 +180,21 @@ const RiskExits = {
 
         // Update first stat card with executor info
         const statChange = document.querySelector('.stat-card .stat-change');
-        if (stats.executor && stats.executor.is_running) {
-          statChange.textContent = `Executor running (${stats.executor.active_executions || 0} active)`;
-          statChange.className = 'stat-change text-success';
-        } else {
-          statChange.textContent = 'Executor stopped';
-          statChange.className = 'stat-change text-danger';
+        if (statChange) {
+          if (stats.executor && stats.executor.is_running) {
+            statChange.textContent = `Executor running (${stats.executor.active_executions || 0} active)`;
+            statChange.className = 'stat-change text-success';
+          } else {
+            statChange.textContent = 'Executor stopped';
+            statChange.className = 'stat-change text-danger';
+          }
         }
       }
     } catch (error) {
       console.error('Failed to load stats:', error);
-      showToast('Failed to load statistics', 'error');
+      if (typeof showToast === 'function') {
+        showToast('Failed to load statistics', 'error');
+      }
     }
   },
 
@@ -196,9 +212,15 @@ const RiskExits = {
       if (instanceId) url += `&instanceId=${instanceId}`;
 
       const response = await fetch(url);
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
       const data = await response.json();
 
       const container = document.getElementById('re-exits-container');
+      if (!container) return;
 
       if (!data.data || data.data.length === 0) {
         container.innerHTML = '<p class="text-neutral-600">No risk exits found</p>';
@@ -250,8 +272,13 @@ const RiskExits = {
 
     } catch (error) {
       console.error('Failed to load risk exits:', error);
-      document.getElementById('re-exits-container').innerHTML =
-        '<p class="text-danger">Failed to load risk exits</p>';
+      const container = document.getElementById('re-exits-container');
+      if (container) {
+        container.innerHTML = '<p class="text-danger">Failed to load risk exits</p>';
+      }
+      if (typeof showToast === 'function') {
+        showToast('Failed to load risk exits', 'error');
+      }
     }
   },
 
@@ -259,14 +286,14 @@ const RiskExits = {
    * Start auto-refresh
    */
   startAutoRefresh() {
-    if (this.refreshInterval) {
-      clearInterval(this.refreshInterval);
+    if (RiskExits.refreshInterval) {
+      clearInterval(RiskExits.refreshInterval);
     }
 
-    this.refreshInterval = setInterval(() => {
-      if (this.autoRefresh) {
-        this.loadStats();
-        this.loadExits();
+    RiskExits.refreshInterval = setInterval(() => {
+      if (RiskExits.autoRefresh) {
+        RiskExits.loadStats();
+        RiskExits.loadExits();
       }
     }, 5000); // 5 second refresh
   },
@@ -275,9 +302,9 @@ const RiskExits = {
    * Stop auto-refresh
    */
   stopAutoRefresh() {
-    if (this.refreshInterval) {
-      clearInterval(this.refreshInterval);
-      this.refreshInterval = null;
+    if (RiskExits.refreshInterval) {
+      clearInterval(RiskExits.refreshInterval);
+      RiskExits.refreshInterval = null;
     }
   },
 
@@ -285,11 +312,11 @@ const RiskExits = {
    * Toggle auto-refresh
    */
   toggleAutoRefresh(enabled) {
-    this.autoRefresh = enabled;
+    RiskExits.autoRefresh = enabled;
     if (enabled) {
-      this.startAutoRefresh();
+      RiskExits.startAutoRefresh();
     } else {
-      this.stopAutoRefresh();
+      RiskExits.stopAutoRefresh();
     }
   }
 };
@@ -297,18 +324,23 @@ const RiskExits = {
 // Utility functions
 function formatPrice(value) {
   if (!value && value !== 0) return '-';
-  return parseFloat(value).toFixed(2);
+  const numValue = parseFloat(value);
+  if (isNaN(numValue)) return '-';
+  return numValue.toFixed(2);
 }
 
 function formatCurrency(value) {
   if (!value && value !== 0) return '₹0.00';
-  const formatted = Math.abs(value).toFixed(2);
-  return value >= 0 ? `₹${formatted}` : `-₹${formatted}`;
+  const numValue = parseFloat(value);
+  if (isNaN(numValue)) return '₹0.00';
+  const formatted = Math.abs(numValue).toFixed(2);
+  return numValue >= 0 ? `₹${formatted}` : `-₹${formatted}`;
 }
 
 function formatDateTime(dateString) {
   if (!dateString) return '-';
   const date = new Date(dateString);
+  if (isNaN(date.getTime())) return '-';
   return date.toLocaleString('en-IN', {
     month: 'short',
     day: 'numeric',
