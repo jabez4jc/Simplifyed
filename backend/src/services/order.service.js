@@ -175,6 +175,7 @@ class OrderService {
 
         if (pyramidMode === 'ignore') {
           log.info('Pyramiding blocked by ignore mode', {
+            intent_id: intent.intent_id,
             symbol: resolved.resolved_symbol,
             current: currentPosition,
             target: targetQty,
@@ -261,7 +262,15 @@ class OrderService {
         throw error;
       }
     } catch (error) {
-      log.error('Failed to place order with intent', error, params);
+      // Log only whitelisted fields to avoid exposing sensitive data
+      log.error('Failed to place order with intent', {
+        error: error.message,
+        instanceId: params.instanceId,
+        symbol: params.symbol,
+        exchange: params.exchange,
+        targetQty: params.targetQty,
+        intentId: params.intentId,
+      });
       throw error;
     }
   }
@@ -380,7 +389,15 @@ class OrderService {
 
       return order;
     } catch (error) {
-      log.error('Failed to place order', error, { params });
+      // Log only whitelisted fields to avoid exposing sensitive data
+      log.error('Failed to place order', {
+        error: error.message,
+        instanceId: params.instanceId,
+        symbol: params.symbol,
+        exchange: params.exchange,
+        action: params.action,
+        quantity: params.quantity,
+      });
 
       // Save failed order to database
       try {

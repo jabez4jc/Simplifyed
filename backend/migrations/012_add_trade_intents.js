@@ -74,10 +74,7 @@ export async function up(db) {
   // ==========================================
   // Create Indexes for Performance
   // ==========================================
-  await db.run(`
-    CREATE INDEX IF NOT EXISTS idx_trade_intents_intent_id
-    ON trade_intents(intent_id)
-  `);
+  // Note: intent_id already has UNIQUE constraint, so no additional index needed
 
   await db.run(`
     CREATE INDEX IF NOT EXISTS idx_trade_intents_user_id
@@ -130,7 +127,7 @@ export async function down(db) {
   await db.run('DROP INDEX IF EXISTS idx_trade_intents_created_at');
   await db.run('DROP INDEX IF EXISTS idx_trade_intents_watchlist_id');
   await db.run('DROP INDEX IF EXISTS idx_trade_intents_user_id');
-  await db.run('DROP INDEX IF EXISTS idx_trade_intents_intent_id');
+  // Note: idx_trade_intents_intent_id was removed (redundant with UNIQUE constraint)
 
   // Drop the trade_intents table
   await db.run('DROP TABLE IF EXISTS trade_intents');

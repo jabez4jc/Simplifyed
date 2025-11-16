@@ -55,24 +55,6 @@ router.get('/', async (req, res, next) => {
 });
 
 /**
- * GET /api/v1/orders/:id
- * Get order by ID
- */
-router.get('/:id', async (req, res, next) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const order = await orderService.getOrderById(id);
-
-    res.json({
-      status: 'success',
-      data: order,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
  * POST /api/v1/orders
  * Place order (using placesmartorder)
  */
@@ -124,13 +106,25 @@ router.post('/enhanced', async (req, res, next) => {
       throw new ValidationError('targetQty is required');
     }
 
+    // Validate types and ranges
+    const instanceIdNum = parseInt(instanceId, 10);
+    const targetQtyNum = parseInt(targetQty, 10);
+
+    if (!Number.isFinite(instanceIdNum) || instanceIdNum <= 0) {
+      throw new ValidationError('instanceId must be a positive integer');
+    }
+
+    if (!Number.isFinite(targetQtyNum)) {
+      throw new ValidationError('targetQty must be a valid integer');
+    }
+
     const result = await orderService.placeOrderWithIntent({
       userId: req.user?.id || 1, // Use authenticated user or default to test user
-      instanceId: parseInt(instanceId, 10),
+      instanceId: instanceIdNum,
       watchlistId: watchlistId ? parseInt(watchlistId, 10) : null,
       symbol,
       exchange,
-      targetQty: parseInt(targetQty, 10),
+      targetQty: targetQtyNum,
       intentId,
       context: context || {},
     });
@@ -150,6 +144,10 @@ router.post('/enhanced', async (req, res, next) => {
 /**
  * GET /api/v1/orders/intents
  * Get trade intents with optional filters
+ *
+ * Query parameters:
+ * - status: Filter by status ('pending', 'failed', or omit for all pending)
+ * - instanceId: Filter by instance ID
  */
 router.get('/intents', async (req, res, next) => {
   try {
@@ -163,8 +161,7 @@ router.get('/intents', async (req, res, next) => {
     } else if (status === 'failed') {
       intents = await tradeIntentService.getFailedIntents();
     } else {
-      // For all intents, we'll need to query the database directly
-      // For now, just return pending intents
+      // Default to pending intents
       intents = await tradeIntentService.getPendingIntents(
         instanceId ? parseInt(instanceId, 10) : null
       );
@@ -258,25 +255,6 @@ router.post('/batch', async (req, res, next) => {
 });
 
 /**
- * POST /api/v1/orders/:id/cancel
- * Cancel order
- */
-router.post('/:id/cancel', async (req, res, next) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const order = await orderService.cancelOrder(id);
-
-    res.json({
-      status: 'success',
-      message: 'Order cancelled successfully',
-      data: order,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
  * POST /api/v1/orders/cancel-all
  * Cancel all orders for an instance
  */
@@ -316,6 +294,46 @@ router.post('/sync/:instanceId', async (req, res, next) => {
       status: 'success',
       message: `Synced order status: ${result.updated} updated`,
       data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/orders/:id
+ * Get order by ID
+ *
+ * Note: This route MUST be defined after all specific routes to avoid
+ * shadowing routes like /intents, /batch, etc.
+ */
+router.get('/:id', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const order = await orderService.getOrderById(id);
+
+    res.json({
+      status: 'success',
+      data: order,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/orders/:id/cancel
+ * Cancel order
+ */
+router.post('/:id/cancel', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const order = await orderService.cancelOrder(id);
+
+    res.json({
+      status: 'success',
+      message: 'Order cancelled successfully',
+      data: order,
     });
   } catch (error) {
     next(error);

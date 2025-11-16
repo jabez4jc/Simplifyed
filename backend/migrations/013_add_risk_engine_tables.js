@@ -137,10 +137,7 @@ export async function up(db) {
   // ==========================================
 
   // leg_state indexes
-  await db.run(`
-    CREATE INDEX IF NOT EXISTS idx_leg_state_symbol_exchange_instance
-    ON leg_state(symbol, exchange, instance_id)
-  `);
+  // Note: UNIQUE(symbol, exchange, instance_id) already creates an index, so idx_leg_state_symbol_exchange_instance is redundant
 
   await db.run(`
     CREATE INDEX IF NOT EXISTS idx_leg_state_instance_id
@@ -163,10 +160,7 @@ export async function up(db) {
   `);
 
   // risk_exits indexes
-  await db.run(`
-    CREATE INDEX IF NOT EXISTS idx_risk_exits_risk_trigger_id
-    ON risk_exits(risk_trigger_id)
-  `);
+  // Note: risk_trigger_id has UNIQUE constraint, so no additional index needed
 
   await db.run(`
     CREATE INDEX IF NOT EXISTS idx_risk_exits_leg_state_id
@@ -191,12 +185,12 @@ export async function down(db) {
   await db.run('DROP INDEX IF EXISTS idx_risk_exits_triggered_at');
   await db.run('DROP INDEX IF EXISTS idx_risk_exits_status');
   await db.run('DROP INDEX IF EXISTS idx_risk_exits_leg_state_id');
-  await db.run('DROP INDEX IF EXISTS idx_risk_exits_risk_trigger_id');
+  // Note: idx_risk_exits_risk_trigger_id was removed (redundant with UNIQUE constraint)
   await db.run('DROP INDEX IF EXISTS idx_leg_state_updated_at');
   await db.run('DROP INDEX IF EXISTS idx_leg_state_index_expiry');
   await db.run('DROP INDEX IF EXISTS idx_leg_state_risk_enabled');
   await db.run('DROP INDEX IF EXISTS idx_leg_state_instance_id');
-  await db.run('DROP INDEX IF EXISTS idx_leg_state_symbol_exchange_instance');
+  // Note: idx_leg_state_symbol_exchange_instance was removed (redundant with UNIQUE constraint)
 
   // Drop tables in reverse order (respecting foreign keys)
   await db.run('DROP TABLE IF EXISTS risk_exits');

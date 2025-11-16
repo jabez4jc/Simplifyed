@@ -13,12 +13,40 @@ import { NotFoundError } from '../../core/errors.js';
 const router = express.Router();
 
 /**
+ * Helper function to safely parse JSON with fallback
+ * @param {string} jsonString - JSON string to parse
+ * @param {*} fallback - Fallback value if parsing fails
+ * @returns {*} Parsed object or fallback value
+ */
+function safeJsonParse(jsonString, fallback = null) {
+  if (!jsonString) {
+    return fallback;
+  }
+
+  try {
+    return JSON.parse(jsonString);
+  } catch (error) {
+    log.warn('Failed to parse JSON field in risk exit', {
+      error: error.message,
+      jsonString: jsonString.substring(0, 100), // Log first 100 chars only
+    });
+    return fallback;
+  }
+}
+
+/**
  * GET /api/v1/risk-exits
  * Get risk exits with optional filters
  */
 router.get('/', async (req, res, next) => {
   try {
-    const { status, instanceId, limit = 100 } = req.query;
+    const { status, instanceId, limit } = req.query;
+
+    // Validate and clamp limit (default 100, max 500)
+    const parsedLimit = parseInt(limit, 10);
+    const validLimit = Number.isFinite(parsedLimit) && parsedLimit > 0
+      ? Math.min(parsedLimit, 500)
+      : 100;
 
     let query = `
       SELECT
@@ -43,20 +71,23 @@ router.get('/', async (req, res, next) => {
     }
 
     if (instanceId) {
-      query += ' AND ls.instance_id = ?';
-      params.push(parseInt(instanceId, 10));
+      const parsedInstanceId = parseInt(instanceId, 10);
+      if (Number.isFinite(parsedInstanceId) && parsedInstanceId > 0) {
+        query += ' AND ls.instance_id = ?';
+        params.push(parsedInstanceId);
+      }
     }
 
     query += ' ORDER BY re.triggered_at DESC LIMIT ?';
-    params.push(parseInt(limit, 10));
+    params.push(validLimit);
 
     const exits = await db.all(query, params);
 
-    // Parse JSON fields
+    // Parse JSON fields safely
     const parsedExits = exits.map(exit => ({
       ...exit,
-      exit_orders: exit.exit_orders_json ? JSON.parse(exit.exit_orders_json) : null,
-      execution_summary: exit.execution_summary ? JSON.parse(exit.execution_summary) : null,
+      exit_orders: safeJsonParse(exit.exit_orders_json, null),
+      execution_summary: safeJsonParse(exit.execution_summary, null),
     }));
 
     res.json({
@@ -99,9 +130,9 @@ router.get('/:riskTriggerId', async (req, res, next) => {
       throw new NotFoundError('Risk exit not found');
     }
 
-    // Parse JSON fields
-    exit.exit_orders = exit.exit_orders_json ? JSON.parse(exit.exit_orders_json) : null;
-    exit.execution_summary = exit.execution_summary ? JSON.parse(exit.execution_summary) : null;
+    // Parse JSON fields safely
+    exit.exit_orders = safeJsonParse(exit.exit_orders_json, null);
+    exit.execution_summary = safeJsonParse(exit.execution_summary, null);
 
     res.json({
       status: 'success',
@@ -113,12 +144,18 @@ router.get('/:riskTriggerId', async (req, res, next) => {
 });
 
 /**
- * GET /api/v1/risk-exits/stats
+ * GET /api/v1/risk-exits/stats/summary
  * Get risk exit statistics
  */
 router.get('/stats/summary', async (req, res, next) => {
   try {
-    const { instanceId, days = 7 } = req.query;
+    const { instanceId, days } = req.query;
+
+    // Validate and clamp days (default 7, max 365)
+    const parsedDays = parseInt(days, 10);
+    const validDays = Number.isFinite(parsedDays) && parsedDays > 0
+      ? Math.min(parsedDays, 365)
+      : 7;
 
     let query = `
       SELECT
@@ -137,11 +174,14 @@ router.get('/stats/summary', async (req, res, next) => {
       WHERE re.triggered_at > datetime('now', '-' || ? || ' days')
     `;
 
-    const params = [parseInt(days, 10)];
+    const params = [validDays];
 
     if (instanceId) {
-      query += ' AND ls.instance_id = ?';
-      params.push(parseInt(instanceId, 10));
+      const parsedInstanceId = parseInt(instanceId, 10);
+      if (Number.isFinite(parsedInstanceId) && parsedInstanceId > 0) {
+        query += ' AND ls.instance_id = ?';
+        params.push(parsedInstanceId);
+      }
     }
 
     const stats = await db.get(query, params);
@@ -154,7 +194,7 @@ router.get('/stats/summary', async (req, res, next) => {
       data: {
         ...stats,
         executor: executorStats,
-        period_days: parseInt(days, 10),
+        period_days: validDays,
       },
     });
   } catch (error) {
@@ -163,7 +203,7 @@ router.get('/stats/summary', async (req, res, next) => {
 });
 
 /**
- * GET /api/v1/risk-exits/pending
+ * GET /api/v1/risk-exits/pending/list
  * Get all pending risk exits
  */
 router.get('/pending/list', async (req, res, next) => {
