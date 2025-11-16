@@ -17,6 +17,7 @@ import telegramRoutes from './telegram.js';
 import monitorRoutes from './monitor.js';
 import settingsRoutes from './settings.routes.js';
 import riskExitsRoutes from './risk-exits.routes.js';
+import legStateRoutes from './leg-state.routes.js';
 import { getAppReadyStatus } from '../../middleware/instruments-refresh.middleware.js';
 
 const router = express.Router();
@@ -35,6 +36,7 @@ router.use('/telegram', telegramRoutes);
 router.use('/monitor', monitorRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/risk-exits', riskExitsRoutes);
+router.use('/leg-state', legStateRoutes);
 
 // Health check endpoint
 router.get('/health', (req, res) => {
