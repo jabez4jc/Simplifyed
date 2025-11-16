@@ -14,6 +14,9 @@ import db from './src/core/database.js';
 import pollingService from './src/services/polling.service.js';
 import orderMonitorService from './src/services/order-monitor.service.js';
 import telegramService from './src/services/telegram.service.js';
+import fillAggregatorService from './src/services/fill-aggregator.service.js';
+import quoteRouterService from './src/services/quote-router.service.js';
+import riskEngineService from './src/services/risk-engine.service.js';
 
 // Middleware
 import { configureSession, configurePassport, requireAuth, optionalAuth } from './src/middleware/auth.js';
@@ -151,6 +154,20 @@ async function startServer() {
     await telegramService.startPolling();
     log.info('Telegram polling started');
 
+    // Start risk engine services (if enabled)
+    if (config.features.enableFillAggregator) {
+      fillAggregatorService.start(2000); // Poll every 2 seconds
+      log.info('Fill aggregator started');
+    }
+
+    if (config.features.enableRiskEngine) {
+      quoteRouterService.start(200); // Poll every 200ms for real-time quotes
+      log.info('Quote router started');
+
+      riskEngineService.start(1000); // Check risk conditions every 1 second
+      log.info('Risk engine started');
+    }
+
     // Start HTTP server
     app.listen(config.port, () => {
       log.info('Server started', {
@@ -188,6 +205,13 @@ async function startServer() {
       console.log('║    - Health Checks:     Every 5m                           ║');
       console.log('║    - Order Monitor:     Every 5s (Analyzer mode)           ║');
       console.log('║    - Telegram Polling:  Every 2s                           ║');
+      if (config.features.enableFillAggregator) {
+        console.log('║    - Fill Aggregator:   Every 2s                           ║');
+      }
+      if (config.features.enableRiskEngine) {
+        console.log('║    - Quote Router:      Every 200ms                        ║');
+        console.log('║    - Risk Engine:       Every 1s                           ║');
+      }
       console.log('║                                                            ║');
       console.log('╚════════════════════════════════════════════════════════════╝');
       console.log('');
@@ -211,6 +235,20 @@ async function shutdown() {
   log.info('Shutting down server...');
 
   try {
+    // Stop risk engine services
+    if (config.features.enableRiskEngine) {
+      riskEngineService.stop();
+      log.info('Risk engine stopped');
+
+      quoteRouterService.stop();
+      log.info('Quote router stopped');
+    }
+
+    if (config.features.enableFillAggregator) {
+      fillAggregatorService.stop();
+      log.info('Fill aggregator stopped');
+    }
+
     // Stop Telegram polling
     telegramService.stopPolling();
     log.info('Telegram polling stopped');
