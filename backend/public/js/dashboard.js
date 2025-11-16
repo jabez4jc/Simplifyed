@@ -92,6 +92,13 @@ class DashboardApp {
       this.stopPositionsPolling();
     }
 
+    // Clean up risk exits auto-refresh when leaving that view
+    if (this.currentView === 'risk-exits' && viewName !== 'risk-exits') {
+      if (typeof RiskExits !== 'undefined') {
+        RiskExits.stopAutoRefresh();
+      }
+    }
+
     this.currentView = viewName;
 
     // Update title
@@ -99,8 +106,10 @@ class DashboardApp {
       dashboard: 'Dashboard',
       instances: 'Instances',
       watchlists: 'Watchlists',
+      'enhanced-order': 'Enhanced Order',
       orders: 'Orders',
       positions: 'Positions',
+      'risk-exits': 'Risk Exits',
       settings: 'Settings',
     };
 
@@ -123,11 +132,17 @@ class DashboardApp {
         case 'watchlists':
           await this.renderWatchlistsView();
           break;
+        case 'enhanced-order':
+          EnhancedOrder.renderForm();
+          break;
         case 'orders':
           await this.renderOrdersView();
           break;
         case 'positions':
           await this.renderPositionsView();
+          break;
+        case 'risk-exits':
+          RiskExits.renderDashboard();
           break;
         case 'settings':
           await settings.renderSettingsView();
