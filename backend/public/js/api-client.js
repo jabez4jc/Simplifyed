@@ -294,10 +294,6 @@ class APIClient {
     });
   }
 
-  async checkTargets(instanceId) {
-    return this.request(`/positions/${instanceId}/target-check`);
-  }
-
   // Symbol APIs
   async searchSymbols(query, instanceId = null) {
     const params = new URLSearchParams({ query });

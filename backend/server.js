@@ -12,7 +12,8 @@ import { config } from './src/core/config.js';
 import { log } from './src/core/logger.js';
 import db from './src/core/database.js';
 import pollingService from './src/services/polling.service.js';
-import orderMonitorService from './src/services/order-monitor.service.js';
+// Order monitor service removed - no longer needed after target/stoploss removal
+// import orderMonitorService from './src/services/order-monitor.service.js';
 import telegramService from './src/services/telegram.service.js';
 
 // Middleware
@@ -143,9 +144,9 @@ async function startServer() {
     await pollingService.start();
     log.info('Polling service started');
 
-    // Start order monitor service
-    await orderMonitorService.start();
-    log.info('Order monitor service started');
+    // Order monitor service removed - no longer needed after target/stoploss removal
+    // await orderMonitorService.start();
+    // log.info('Order monitor service started');
 
     // Start Telegram polling
     await telegramService.startPolling();
@@ -215,9 +216,9 @@ async function shutdown() {
     telegramService.stopPolling();
     log.info('Telegram polling stopped');
 
-    // Stop order monitor service
-    orderMonitorService.stop();
-    log.info('Order monitor service stopped');
+    // Order monitor service removed - no longer needed after target/stoploss removal
+    // orderMonitorService.stop();
+    // log.info('Order monitor service stopped');
 
     // Stop polling service
     pollingService.stop();

@@ -121,27 +121,4 @@ router.post('/:instanceId/close', async (req, res, next) => {
   }
 });
 
-/**
- * GET /api/v1/positions/:instanceId/target-check
- * Check if instance has hit profit/loss targets
- */
-router.get('/:instanceId/target-check', async (req, res, next) => {
-  try {
-    const instanceId = parseInt(req.params.instanceId, 10);
-    const instance = await instanceService.getInstanceById(instanceId);
-
-    const targetCheck = pnlService.checkTargets(
-      instance,
-      parseFloat(instance.total_pnl || 0)
-    );
-
-    res.json({
-      status: 'success',
-      data: targetCheck,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
 export default router;

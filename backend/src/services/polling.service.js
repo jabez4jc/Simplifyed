@@ -146,24 +146,6 @@ class PollingService {
       // Get updated instance
       const updated = await instanceService.getInstanceById(instanceId);
 
-      // Check if targets are hit
-      const targetCheck = pnlService.checkTargets(
-        updated,
-        parseFloatSafe(updated.total_pnl, 0)
-      );
-
-      if (targetCheck.hitTarget) {
-        log.warn('Instance hit target', {
-          instance_id: instanceId,
-          target_type: targetCheck.targetType,
-          target: targetCheck.target,
-          current: targetCheck.current,
-        });
-
-        // TODO: Trigger alert or auto-switch to analyzer mode
-        // This can be implemented in a separate alert service
-      }
-
       return updated;
     } catch (error) {
       log.error('Failed to poll instance', error, { instance_id: instanceId });
