@@ -9,13 +9,20 @@ export const name = 'add_brexchange_to_instruments';
 export async function up(db) {
   console.log('Running migration 010: Add brexchange to instruments');
 
-  // Add brexchange column
-  await db.run(`
-    ALTER TABLE instruments
-    ADD COLUMN brexchange TEXT
-  `);
+  // Check if column already exists
+  const columns = await db.all(`PRAGMA table_info(instruments)`);
+  const brexchangeExists = columns.some(col => col.name === 'brexchange');
 
-  console.log('  ✅ Added brexchange column to instruments table');
+  if (!brexchangeExists) {
+    // Add brexchange column
+    await db.run(`
+      ALTER TABLE instruments
+      ADD COLUMN brexchange TEXT
+    `);
+    console.log('  ✅ Added brexchange column to instruments table');
+  } else {
+    console.log('  ⊙ brexchange column already exists (skipping)');
+  }
 }
 
 export async function down(db) {

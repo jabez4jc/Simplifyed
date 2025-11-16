@@ -245,10 +245,6 @@ class WatchlistService {
           qty_value: symbol.qty_value,
           product_type: symbol.product_type,
           order_type: symbol.order_type,
-          target_type: symbol.target_type,
-          target_value: symbol.target_value,
-          sl_type: symbol.sl_type,
-          sl_value: symbol.sl_value,
           max_position_size: symbol.max_position_size,
           is_enabled: symbol.is_enabled,
           // Symbol metadata fields
@@ -317,11 +313,10 @@ class WatchlistService {
         `INSERT INTO watchlist_symbols (
           watchlist_id, exchange, symbol, token, lot_size,
           qty_type, qty_value, product_type, order_type,
-          target_type, target_value, sl_type, sl_value,
           max_position_size, is_enabled,
           symbol_type, expiry, strike, option_type,
           instrumenttype, name, tick_size, brsymbol, brexchange
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           watchlistId,
           normalized.exchange,
@@ -332,10 +327,6 @@ class WatchlistService {
           normalized.qty_value,
           normalized.product_type,
           normalized.order_type,
-          normalized.target_type,
-          normalized.target_value,
-          normalized.sl_type,
-          normalized.sl_value,
           normalized.max_position_size,
           normalized.is_enabled ? 1 : 0,
           normalized.symbol_type || null,
@@ -684,36 +675,6 @@ class WatchlistService {
         normalized.order_type = orderType;
       } else if (!isUpdate) {
         errors.push({ field: 'order_type', message: 'Invalid order_type' });
-      }
-    }
-
-    // Target configuration
-    if (data.target_type !== undefined) {
-      const targetType = sanitizeString(data.target_type);
-      if (['points', 'percentage'].includes(targetType)) {
-        normalized.target_type = targetType;
-      }
-    }
-
-    if (data.target_value !== undefined) {
-      const targetValue = parseFloatSafe(data.target_value, null);
-      if (targetValue !== null && targetValue > 0) {
-        normalized.target_value = targetValue;
-      }
-    }
-
-    // Stop loss configuration
-    if (data.sl_type !== undefined) {
-      const slType = sanitizeString(data.sl_type);
-      if (['points', 'percentage'].includes(slType)) {
-        normalized.sl_type = slType;
-      }
-    }
-
-    if (data.sl_value !== undefined) {
-      const slValue = parseFloatSafe(data.sl_value, null);
-      if (slValue !== null && slValue > 0) {
-        normalized.sl_value = slValue;
       }
     }
 

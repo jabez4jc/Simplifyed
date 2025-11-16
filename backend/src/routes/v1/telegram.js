@@ -75,7 +75,6 @@ router.put('/preferences', async (req, res, next) => {
     const userId = req.user.id;
     const {
       enabled,
-      notify_on_target,
       notify_on_sl,
       notify_on_tsl,
       notify_on_error,
@@ -96,7 +95,6 @@ router.put('/preferences', async (req, res, next) => {
       `
       UPDATE user_telegram_config
       SET enabled = COALESCE(?, enabled),
-          notify_on_target = COALESCE(?, notify_on_target),
           notify_on_sl = COALESCE(?, notify_on_sl),
           notify_on_tsl = COALESCE(?, notify_on_tsl),
           notify_on_error = COALESCE(?, notify_on_error),
@@ -106,7 +104,6 @@ router.put('/preferences', async (req, res, next) => {
     `,
       [
         enabled,
-        notify_on_target,
         notify_on_sl,
         notify_on_tsl,
         notify_on_error,

@@ -115,8 +115,8 @@ class InstanceService {
         `INSERT INTO instances (
           name, host_url, api_key, broker, strategy_tag,
           is_primary_admin, is_secondary_admin,
-          market_data_role, target_profit, target_loss
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          market_data_role
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           normalized.name,
           normalized.host_url,
@@ -126,8 +126,6 @@ class InstanceService {
           normalized.is_primary_admin ? 1 : 0,
           normalized.is_secondary_admin ? 1 : 0,
           normalized.market_data_role || 'none',
-          normalized.target_profit,
-          normalized.target_loss,
         ]
       );
 
@@ -721,21 +719,6 @@ class InstanceService {
 
     if (data.is_secondary_admin !== undefined) {
       normalized.is_secondary_admin = parseBooleanSafe(data.is_secondary_admin, false);
-    }
-
-    // Target profit/loss
-    if (data.target_profit !== undefined) {
-      const targetProfit = parseFloatSafe(data.target_profit, 5000);
-      if (targetProfit !== null) {
-        normalized.target_profit = targetProfit;
-      }
-    }
-
-    if (data.target_loss !== undefined) {
-      const targetLoss = parseFloatSafe(data.target_loss, 2000);
-      if (targetLoss !== null) {
-        normalized.target_loss = targetLoss;
-      }
     }
 
     // Status flags

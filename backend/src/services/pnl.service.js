@@ -374,47 +374,6 @@ class PnLService {
     }
   }
 
-  /**
-   * Check if instance has hit target profit or loss
-   *
-   * @param {Object} instance - Instance with target_profit and target_loss
-   * @param {number} totalPnL - Current total P&L
-   * @returns {Object} - { hitTarget: boolean, targetType: 'profit'|'loss'|null, action: string }
-   */
-  checkTargets(instance, totalPnL) {
-    const targetProfit = parseFloatSafe(instance.target_profit, null);
-    const targetLoss = parseFloatSafe(instance.target_loss, null);
-
-    // Check profit target
-    if (targetProfit !== null && totalPnL >= targetProfit) {
-      return {
-        hitTarget: true,
-        targetType: 'profit',
-        target: targetProfit,
-        current: totalPnL,
-        action: 'Switch to analyzer mode to lock profits',
-      };
-    }
-
-    // Check loss target
-    if (targetLoss !== null && totalPnL <= -Math.abs(targetLoss)) {
-      return {
-        hitTarget: true,
-        targetType: 'loss',
-        target: -Math.abs(targetLoss),
-        current: totalPnL,
-        action: 'Switch to analyzer mode to prevent further losses',
-      };
-    }
-
-    return {
-      hitTarget: false,
-      targetType: null,
-      target: null,
-      current: totalPnL,
-      action: null,
-    };
-  }
 }
 
 // Export singleton instance
