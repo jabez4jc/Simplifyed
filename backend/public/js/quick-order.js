@@ -222,6 +222,49 @@ class QuickOrderHandler {
         </div>
       </div>
 
+      <!-- Enhanced Trading Section (Target-Based) -->
+      <div class="enhanced-trading-section" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--color-neutral-200);">
+        <h4 style="font-size: 0.9rem; font-weight: 600; margin-bottom: 0.75rem; color: var(--color-neutral-700);">
+          🎯 Enhanced Trading (Server-Side Intelligence)
+        </h4>
+        <div style="display: grid; grid-template-columns: 1fr 1fr auto; gap: 1rem; align-items: end; margin-bottom: 0.75rem;">
+          <div>
+            <label class="form-label-sm">
+              <input type="checkbox" id="use-template-${symbolId}" onchange="quickOrder.toggleTemplateMode(${symbolId}, this.checked)">
+              Use Template Symbol
+            </label>
+            <select id="template-${symbolId}" class="select-sm" style="width: 100%; display: none; margin-top: 0.25rem;">
+              <option value="ATM_CE">ATM CE</option>
+              <option value="ATM_PE">ATM PE</option>
+              <option value="50ITM_CE">50 ITM CE</option>
+              <option value="100ITM_CE">100 ITM CE</option>
+              <option value="50OTM_CE">50 OTM CE</option>
+              <option value="100OTM_CE">100 OTM CE</option>
+              <option value="50ITM_PE">50 ITM PE</option>
+              <option value="100ITM_PE">100 ITM PE</option>
+              <option value="50OTM_PE">50 OTM PE</option>
+              <option value="100OTM_PE">100 OTM PE</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label-sm">Target Position:</label>
+            <input type="number" id="target-pos-${symbolId}" class="input-sm" value="0" step="1" style="width: 100%;" placeholder="50 (long), -50 (short), 0 (flat)">
+            <div class="text-xs text-neutral-600" style="margin-top: 0.25rem;">
+              Current: <span id="current-pos-${symbolId}">-</span> |
+              Delta: <span id="delta-preview-${symbolId}">-</span>
+            </div>
+          </div>
+          <div>
+            <button class="btn btn-primary btn-sm" onclick="quickOrder.placeEnhancedOrder(${watchlistId}, ${symbolId})" style="white-space: nowrap;">
+              ⚡ Execute Target
+            </button>
+          </div>
+        </div>
+        <p class="text-xs text-neutral-600">
+          ℹ️ Server calculates delta, resolves templates, applies pyramiding & risk management automatically.
+        </p>
+      </div>
+
       <!-- Target Configuration Section -->
       <div class="target-config-section" style="margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--color-neutral-200);">
         <h4 style="font-size: 0.9rem; font-weight: 600; margin-bottom: 0.75rem; color: var(--color-neutral-700);">
@@ -719,6 +762,175 @@ class QuickOrderHandler {
       console.error('[QuickOrder] Error saving target config:', error);
       Utils.showToast(`Failed to save: ${error.message}`, 'error');
     }
+  }
+
+  /**
+   * Toggle template symbol mode
+   */
+  toggleTemplateMode(symbolId, enabled) {
+    const templateSelect = document.getElementById(`template-${symbolId}`);
+    if (templateSelect) {
+      templateSelect.style.display = enabled ? 'block' : 'none';
+    }
+  }
+
+  /**
+   * Place enhanced order using server-side intelligence
+   */
+  async placeEnhancedOrder(watchlistId, symbolId) {
+    try {
+      // Get symbol data
+      const symbolRow = document.querySelector(`tr[data-symbol-id="${symbolId}"]`);
+      const symbol = symbolRow.dataset.symbol;
+      const exchange = symbolRow.dataset.exchange;
+
+      // Get target position
+      const targetPosInput = document.getElementById(`target-pos-${symbolId}`);
+      const targetQty = parseInt(targetPosInput.value);
+
+      if (isNaN(targetQty)) {
+        Utils.showToast('Please enter a valid target position', 'error');
+        return;
+      }
+
+      // Get instance ID (from dashboard context)
+      const instanceId = window.dashboard?.selectedInstanceId || 1;
+
+      // Check if using template symbol
+      const useTemplate = document.getElementById(`use-template-${symbolId}`)?.checked;
+      let finalSymbol = symbol;
+
+      if (useTemplate) {
+        const templateSelect = document.getElementById(`template-${symbolId}`);
+        const template = templateSelect?.value;
+        if (template) {
+          // Build template symbol: SYMBOL_TEMPLATE (e.g., NIFTY_ATM_CE)
+          finalSymbol = `${symbol}_${template}`;
+        }
+      }
+
+      // Get expiry if needed
+      const selectedExpiry = this.selectedExpiries.get(symbolId);
+
+      // Prepare enhanced order request
+      const orderData = {
+        instanceId,
+        watchlistId,
+        symbol: finalSymbol,
+        exchange,
+        targetQty,
+        intentId: this.generateIntentId(),
+        context: {
+          indexName: symbol, // For template resolution
+          expiry: selectedExpiry
+        }
+      };
+
+      console.log('[QuickOrder] Placing enhanced order:', orderData);
+
+      // Show loading
+      const executeBtn = document.querySelector(`#expansion-content-${symbolId} .btn-primary`);
+      if (executeBtn) {
+        executeBtn.disabled = true;
+        executeBtn.textContent = '⏳ Processing...';
+      }
+
+      // Call enhanced order API
+      const response = await fetch('/api/v1/orders/enhanced', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(orderData)
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const result = await response.json();
+
+      if (result.status === 'success') {
+        const data = result.data;
+        Utils.showToast(
+          result.message || `Order executed: delta ${data.delta}`,
+          data.delta === 0 ? 'info' : 'success'
+        );
+
+        // Update position display
+        await this.updatePositionDisplay(symbolId, instanceId, finalSymbol, exchange);
+      } else {
+        throw new Error(result.message || 'Order failed');
+      }
+
+    } catch (error) {
+      console.error('[QuickOrder] Enhanced order failed:', error);
+      Utils.showToast(`Order failed: ${error.message}`, 'error');
+    } finally {
+      // Reset button
+      const executeBtn = document.querySelector(`#expansion-content-${symbolId} .btn-primary`);
+      if (executeBtn) {
+        executeBtn.disabled = false;
+        executeBtn.textContent = '⚡ Execute Target';
+      }
+    }
+  }
+
+  /**
+   * Update position display for a symbol
+   */
+  async updatePositionDisplay(symbolId, instanceId, symbol, exchange) {
+    try {
+      // Fetch leg_state for current position
+      const response = await fetch(`/api/v1/leg-state?instanceId=${instanceId}&symbol=${symbol}&exchange=${exchange}`);
+
+      if (!response.ok) {
+        console.warn('[QuickOrder] Could not fetch position data');
+        return;
+      }
+
+      const data = await response.json();
+
+      const currentPosSpan = document.getElementById(`current-pos-${symbolId}`);
+      const deltaSpan = document.getElementById(`delta-preview-${symbolId}`);
+      const targetInput = document.getElementById(`target-pos-${symbolId}`);
+
+      if (data.status === 'success' && data.data && data.data.length > 0) {
+        const leg = data.data[0];
+        const currentQty = leg.net_qty || 0;
+
+        if (currentPosSpan) {
+          currentPosSpan.textContent = currentQty;
+        }
+
+        // Calculate delta preview
+        if (deltaSpan && targetInput) {
+          const targetQty = parseInt(targetInput.value) || 0;
+          const delta = targetQty - currentQty;
+
+          if (delta > 0) {
+            deltaSpan.textContent = `BUY ${delta}`;
+            deltaSpan.className = 'text-success';
+          } else if (delta < 0) {
+            deltaSpan.textContent = `SELL ${Math.abs(delta)}`;
+            deltaSpan.className = 'text-danger';
+          } else {
+            deltaSpan.textContent = 'No change';
+            deltaSpan.className = 'text-neutral-600';
+          }
+        }
+      } else {
+        if (currentPosSpan) currentPosSpan.textContent = '0';
+        if (deltaSpan) deltaSpan.textContent = '-';
+      }
+    } catch (error) {
+      console.error('[QuickOrder] Error updating position display:', error);
+    }
+  }
+
+  /**
+   * Generate a unique intent ID for idempotency
+   */
+  generateIntentId() {
+    return `intent_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 }
 
