@@ -731,6 +731,12 @@ class DashboardApp {
                       title="Risk Exit History">
                       📊
                     </button>
+                    <button
+                      class="btn btn-sm"
+                      onclick="app.showSettingsModal(${watchlistId}, ${sym.id})"
+                      title="Settings">
+                      ⚙️
+                    </button>
                     <button class="btn btn-error btn-sm" onclick="app.removeSymbol(${watchlistId}, ${sym.id})">
                       Remove
                     </button>
@@ -2925,6 +2931,213 @@ class DashboardApp {
    */
   closeRiskExitsModal() {
     const modal = document.getElementById('risk-exits-modal');
+    modal.style.display = 'none';
+  }
+
+  /**
+   * Show settings modal for a watchlist/symbol
+   */
+  async showSettingsModal(watchlistId, symbolId) {
+    const modal = document.getElementById('settings-modal');
+    const modalBody = document.getElementById('settings-modal-body');
+
+    // Show modal
+    modal.style.display = 'block';
+    modalBody.innerHTML = '<p class="text-neutral-600">Loading settings...</p>';
+
+    try {
+      // Fetch effective settings for this watchlist/symbol
+      const response = await fetch(`/api/v1/settings/effective?watchlistId=${watchlistId}&symbolId=${symbolId}`);
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (data.status === 'success') {
+        modalBody.innerHTML = this.renderSettingsForm(data.data, watchlistId, symbolId);
+
+        // Attach event listeners
+        this.attachSettingsEventListeners(watchlistId, symbolId);
+      } else {
+        throw new Error(data.message || 'Failed to load settings');
+      }
+    } catch (error) {
+      console.error('Failed to load settings:', error);
+      modalBody.innerHTML = `<p class="text-danger">Failed to load settings: ${error.message}</p>`;
+      Utils.showToast('Failed to load settings', 'error');
+    }
+  }
+
+  /**
+   * Render settings form
+   */
+  renderSettingsForm(settings, watchlistId, symbolId) {
+    const tslEnabled = settings.tsl_enabled || false;
+
+    return `
+      <form id="settings-form">
+        <h4>Risk Management</h4>
+
+        <div class="form-group">
+          <label for="tp_per_unit">Take Profit (per unit):</label>
+          <input type="number" id="tp_per_unit" name="tp_per_unit" class="form-control"
+                 value="${settings.tp_per_unit || ''}" step="0.05" placeholder="e.g., 10.00">
+          <small class="text-neutral-600">Set take profit target per unit</small>
+        </div>
+
+        <div class="form-group">
+          <label for="sl_per_unit">Stop Loss (per unit):</label>
+          <input type="number" id="sl_per_unit" name="sl_per_unit" class="form-control"
+                 value="${settings.sl_per_unit || ''}" step="0.05" placeholder="e.g., 5.00">
+          <small class="text-neutral-600">Set stop loss limit per unit</small>
+        </div>
+
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="tsl_enabled" name="tsl_enabled" ${tslEnabled ? 'checked' : ''}>
+            Enable Trailing Stop Loss
+          </label>
+        </div>
+
+        <div id="tsl-config" style="${tslEnabled ? '' : 'display:none'}">
+          <div class="form-group">
+            <label for="tsl_arm_threshold_per_unit">TSL Arm After (per unit):</label>
+            <input type="number" id="tsl_arm_threshold_per_unit" name="tsl_arm_threshold_per_unit"
+                   class="form-control" value="${settings.tsl_arm_threshold_per_unit || ''}"
+                   step="0.05" placeholder="e.g., 5.00">
+            <small class="text-neutral-600">Profit level to activate TSL</small>
+          </div>
+
+          <div class="form-group">
+            <label for="tsl_trail_by_per_unit">TSL Trail By (per unit):</label>
+            <input type="number" id="tsl_trail_by_per_unit" name="tsl_trail_by_per_unit"
+                   class="form-control" value="${settings.tsl_trail_by_per_unit || ''}"
+                   step="0.05" placeholder="e.g., 2.00">
+            <small class="text-neutral-600">Distance to trail below high</small>
+          </div>
+        </div>
+
+        <h4 style="margin-top: 1.5rem;">Pyramiding</h4>
+
+        <div class="form-group">
+          <label for="on_pyramid">On Pyramid:</label>
+          <select id="on_pyramid" name="on_pyramid" class="form-control">
+            <option value="reanchor" ${settings.on_pyramid === 'reanchor' ? 'selected' : ''}>Reanchor (adjust entry)</option>
+            <option value="scale" ${settings.on_pyramid === 'scale' ? 'selected' : ''}>Scale (proportional)</option>
+            <option value="ignore" ${settings.on_pyramid === 'ignore' ? 'selected' : ''}>Ignore (block adds)</option>
+          </select>
+          <small class="text-neutral-600">How to handle adding to existing positions</small>
+        </div>
+
+        <div class="form-group">
+          <label for="exit_scope">Exit Scope:</label>
+          <select id="exit_scope" name="exit_scope" class="form-control">
+            <option value="LEG" ${settings.exit_scope === 'LEG' ? 'selected' : ''}>Single Leg</option>
+            <option value="TYPE" ${settings.exit_scope === 'TYPE' ? 'selected' : ''}>All CE or All PE</option>
+            <option value="INDEX" ${settings.exit_scope === 'INDEX' ? 'selected' : ''}>All Index Options</option>
+          </select>
+          <small class="text-neutral-600">Scope of exits when risk triggers</small>
+        </div>
+
+        <div class="form-actions" style="margin-top: 1.5rem; display: flex; gap: 0.5rem;">
+          <button type="button" class="btn btn-primary" onclick="app.saveSettings('global', ${watchlistId}, ${symbolId})">
+            Save as Global Default
+          </button>
+          <button type="button" class="btn btn-secondary" onclick="app.saveSettings('watchlist', ${watchlistId}, ${symbolId})">
+            Save for Watchlist
+          </button>
+          <button type="button" class="btn btn-secondary" onclick="app.saveSettings('symbol', ${watchlistId}, ${symbolId})">
+            Save for Symbol
+          </button>
+        </div>
+      </form>
+    `;
+  }
+
+  /**
+   * Attach event listeners to settings form
+   */
+  attachSettingsEventListeners(watchlistId, symbolId) {
+    // Toggle TSL config visibility
+    const tslCheckbox = document.getElementById('tsl_enabled');
+    const tslConfig = document.getElementById('tsl-config');
+
+    if (tslCheckbox && tslConfig) {
+      tslCheckbox.addEventListener('change', (e) => {
+        tslConfig.style.display = e.target.checked ? 'block' : 'none';
+      });
+    }
+  }
+
+  /**
+   * Save settings at specified level
+   */
+  async saveSettings(level, watchlistId, symbolId) {
+    const form = document.getElementById('settings-form');
+    if (!form) return;
+
+    const formData = new FormData(form);
+    const settings = {};
+
+    // Convert form data to object
+    for (const [key, value] of formData.entries()) {
+      if (key === 'tsl_enabled') {
+        settings[key] = true; // Checkbox is checked
+      } else if (value !== '') {
+        settings[key] = value;
+      }
+    }
+
+    // If checkbox not in formData, it's unchecked
+    if (!formData.has('tsl_enabled')) {
+      settings.tsl_enabled = false;
+    }
+
+    try {
+      let endpoint;
+      let payload = { ...settings };
+
+      if (level === 'global') {
+        endpoint = '/api/v1/settings/global';
+      } else if (level === 'watchlist') {
+        endpoint = `/api/v1/settings/watchlist-overrides`;
+        payload.watchlist_id = watchlistId;
+      } else if (level === 'symbol') {
+        endpoint = `/api/v1/settings/symbol-overrides`;
+        payload.symbol_id = symbolId;
+      }
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (data.status === 'success') {
+        Utils.showToast(`Settings saved successfully (${level} level)`, 'success');
+        this.closeSettingsModal();
+      } else {
+        throw new Error(data.message || 'Failed to save settings');
+      }
+    } catch (error) {
+      console.error('Failed to save settings:', error);
+      Utils.showToast(`Failed to save settings: ${error.message}`, 'error');
+    }
+  }
+
+  /**
+   * Close settings modal
+   */
+  closeSettingsModal() {
+    const modal = document.getElementById('settings-modal');
     modal.style.display = 'none';
   }
 }
