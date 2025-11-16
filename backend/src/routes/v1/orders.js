@@ -5,6 +5,7 @@
 
 import express from 'express';
 import orderService from '../../services/order.service.js';
+import tradeIntentService from '../../services/trade-intent.service.js';
 import { log } from '../../core/logger.js';
 import {
   NotFoundError,
@@ -83,6 +84,139 @@ router.post('/', async (req, res, next) => {
       status: 'success',
       message: 'Order placed successfully',
       data: order,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/orders/enhanced
+ * Place order with server-side symbol resolution and delta calculation
+ * Supports template symbols (NIFTY_ATM_CE, etc.) and target positions
+ */
+router.post('/enhanced', async (req, res, next) => {
+  try {
+    const {
+      instanceId,
+      watchlistId,
+      symbol,
+      exchange,
+      targetQty,
+      intentId,
+      context,
+    } = req.body;
+
+    // Validate required fields
+    if (!instanceId) {
+      throw new ValidationError('instanceId is required');
+    }
+
+    if (!symbol) {
+      throw new ValidationError('symbol is required');
+    }
+
+    if (!exchange) {
+      throw new ValidationError('exchange is required');
+    }
+
+    if (targetQty === undefined || targetQty === null) {
+      throw new ValidationError('targetQty is required');
+    }
+
+    const result = await orderService.placeOrderWithIntent({
+      userId: req.user?.id || 1, // Use authenticated user or default to test user
+      instanceId: parseInt(instanceId, 10),
+      watchlistId: watchlistId ? parseInt(watchlistId, 10) : null,
+      symbol,
+      exchange,
+      targetQty: parseInt(targetQty, 10),
+      intentId,
+      context: context || {},
+    });
+
+    res.status(201).json({
+      status: 'success',
+      message: result.delta === 0
+        ? 'No order needed (already at target)'
+        : 'Order placed successfully',
+      data: result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/orders/intents
+ * Get trade intents with optional filters
+ */
+router.get('/intents', async (req, res, next) => {
+  try {
+    const { status, instanceId } = req.query;
+
+    let intents;
+    if (status === 'pending') {
+      intents = await tradeIntentService.getPendingIntents(
+        instanceId ? parseInt(instanceId, 10) : null
+      );
+    } else if (status === 'failed') {
+      intents = await tradeIntentService.getFailedIntents();
+    } else {
+      // For all intents, we'll need to query the database directly
+      // For now, just return pending intents
+      intents = await tradeIntentService.getPendingIntents(
+        instanceId ? parseInt(instanceId, 10) : null
+      );
+    }
+
+    res.json({
+      status: 'success',
+      data: intents,
+      count: intents.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/orders/intents/:intentId
+ * Get trade intent by ID with full execution summary
+ */
+router.get('/intents/:intentId', async (req, res, next) => {
+  try {
+    const { intentId } = req.params;
+
+    const summary = await tradeIntentService.getIntentSummary(intentId);
+
+    if (!summary) {
+      throw new NotFoundError('Trade intent not found');
+    }
+
+    res.json({
+      status: 'success',
+      data: summary,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/orders/intents/:intentId/retry
+ * Retry a failed trade intent
+ */
+router.post('/intents/:intentId/retry', async (req, res, next) => {
+  try {
+    const { intentId } = req.params;
+
+    const intent = await tradeIntentService.retryIntent(intentId);
+
+    res.json({
+      status: 'success',
+      message: 'Intent reset for retry',
+      data: intent,
     });
   } catch (error) {
     next(error);
