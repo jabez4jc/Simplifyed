@@ -724,9 +724,17 @@ class DashboardApp {
                   <span class="text-neutral-500">-</span>
                 </td>
                 <td>
-                  <button class="btn btn-error btn-sm" onclick="app.removeSymbol(${watchlistId}, ${sym.id})">
-                    Remove
-                  </button>
+                  <div class="flex gap-1">
+                    <button
+                      class="btn btn-sm"
+                      onclick="app.showRiskExitsModal('${Utils.escapeHTML(sym.symbol)}', '${Utils.escapeHTML(sym.exchange)}')"
+                      title="Risk Exit History">
+                      📊
+                    </button>
+                    <button class="btn btn-error btn-sm" onclick="app.removeSymbol(${watchlistId}, ${sym.id})">
+                      Remove
+                    </button>
+                  </div>
                 </td>
               </tr>
               <tr id="expansion-row-${sym.id}" class="expansion-row" style="display: none;">
@@ -2799,6 +2807,125 @@ class DashboardApp {
     } catch (error) {
       Utils.showToast('Failed to filter orders: ' + error.message, 'error');
     }
+  }
+
+  /**
+   * Show risk exits modal for a symbol
+   */
+  async showRiskExitsModal(symbol, exchange) {
+    const modal = document.getElementById('risk-exits-modal');
+    const modalTitle = document.getElementById('risk-exits-modal-title');
+    const modalBody = document.getElementById('risk-exits-modal-body');
+
+    // Show modal
+    modal.style.display = 'block';
+    modalTitle.textContent = `Risk Exit History: ${symbol}`;
+    modalBody.innerHTML = '<p class="text-neutral-600">Loading...</p>';
+
+    try {
+      // Fetch risk exits for this symbol
+      const response = await fetch(`/api/v1/risk-exits?symbol=${encodeURIComponent(symbol)}&exchange=${encodeURIComponent(exchange)}&limit=20`);
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      if (data.status === 'success') {
+        modalBody.innerHTML = this.renderRiskExitsTable(data.data);
+      } else {
+        throw new Error(data.message || 'Failed to load risk exits');
+      }
+    } catch (error) {
+      console.error('Failed to load risk exits:', error);
+      modalBody.innerHTML = `<p class="text-danger">Failed to load risk exits: ${error.message}</p>`;
+      Utils.showToast('Failed to load risk exits', 'error');
+    }
+  }
+
+  /**
+   * Render risk exits table
+   */
+  renderRiskExitsTable(exits) {
+    if (!exits || exits.length === 0) {
+      return '<p class="text-neutral-600">No risk exits found for this symbol</p>';
+    }
+
+    return `
+      <div class="table-responsive">
+        <table class="table table-sm">
+          <thead>
+            <tr>
+              <th>Trigger Type</th>
+              <th>Qty</th>
+              <th>Entry</th>
+              <th>Trigger Price</th>
+              <th>P&L/Unit</th>
+              <th>Total P&L</th>
+              <th>Status</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${exits.map(exit => this.renderRiskExitRow(exit)).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  /**
+   * Render a single risk exit row
+   */
+  renderRiskExitRow(exit) {
+    const statusClass = exit.status === 'completed' ? 'success' :
+                        exit.status === 'failed' ? 'danger' :
+                        exit.status === 'executing' ? 'warning' : 'secondary';
+
+    const triggerClass = exit.trigger_type === 'TP_HIT' ? 'success' :
+                         exit.trigger_type === 'SL_HIT' ? 'danger' : 'warning';
+
+    const pnlClass = (exit.pnl_per_unit || 0) >= 0 ? 'text-profit' : 'text-loss';
+    const totalPnlClass = (exit.total_pnl || 0) >= 0 ? 'text-profit' : 'text-loss';
+    const pnlSymbol = (exit.pnl_per_unit || 0) >= 0 ? '+' : '';
+    const totalPnlSymbol = (exit.total_pnl || 0) >= 0 ? '+' : '';
+
+    return `
+      <tr>
+        <td><span class="badge badge-${triggerClass}">${exit.trigger_type || 'UNKNOWN'}</span></td>
+        <td>${Math.abs(exit.qty_at_trigger || 0)}</td>
+        <td>₹${Utils.formatNumber(exit.entry_at_trigger || 0)}</td>
+        <td>₹${Utils.formatNumber(exit.trigger_price || 0)}</td>
+        <td class="${pnlClass}"><strong>${pnlSymbol}₹${Utils.formatNumber(Math.abs(exit.pnl_per_unit || 0))}</strong></td>
+        <td class="${totalPnlClass}"><strong>${totalPnlSymbol}₹${Utils.formatNumber(Math.abs(exit.total_pnl || 0))}</strong></td>
+        <td><span class="badge badge-${statusClass}">${exit.status || 'UNKNOWN'}</span></td>
+        <td class="text-sm">${this.formatDateTime(exit.triggered_at)}</td>
+      </tr>
+    `;
+  }
+
+  /**
+   * Format date/time for display
+   */
+  formatDateTime(dateString) {
+    if (!dateString) return '-';
+    const date = new Date(dateString);
+    if (isNaN(date.getTime())) return '-';
+    return date.toLocaleString('en-IN', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  }
+
+  /**
+   * Close risk exits modal
+   */
+  closeRiskExitsModal() {
+    const modal = document.getElementById('risk-exits-modal');
+    modal.style.display = 'none';
   }
 }
 

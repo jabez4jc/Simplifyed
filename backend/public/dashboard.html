@@ -84,6 +84,19 @@
     </main>
   </div>
 
+  <!-- Risk Exits Modal -->
+  <div id="risk-exits-modal" class="modal" style="display:none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title" id="risk-exits-modal-title"></h3>
+        <button class="modal-close" onclick="app.closeRiskExitsModal()">&times;</button>
+      </div>
+      <div class="modal-body" id="risk-exits-modal-body">
+        <p class="text-neutral-600">Loading...</p>
+      </div>
+    </div>
+  </div>
+
   <!-- Scripts -->
   <script>
     // Clear Service Workers and caches on page load
