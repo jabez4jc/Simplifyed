@@ -132,17 +132,11 @@ class DashboardApp {
         case 'watchlists':
           await this.renderWatchlistsView();
           break;
-        case 'enhanced-order':
-          EnhancedOrder.renderForm();
-          break;
         case 'orders':
           await this.renderOrdersView();
           break;
         case 'positions':
           await this.renderPositionsView();
-          break;
-        case 'risk-exits':
-          RiskExits.renderDashboard();
           break;
         case 'settings':
           await settings.renderSettingsView();
