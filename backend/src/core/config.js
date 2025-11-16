@@ -133,6 +133,30 @@ export const config = {
     windowMs: getEnvInt('RATE_LIMIT_WINDOW_MS', 60000),
     maxRequests: getEnvInt('RATE_LIMIT_MAX_REQUESTS', 100),
   },
+
+  // Feature Flags (Watchlist Trading Spec v3)
+  // Conservative approach: All features disabled by default
+  features: {
+    // Phase 2: Settings Service
+    enableSettingsHierarchy: getEnvBool('ENABLE_SETTINGS_HIERARCHY', true), // Safe to enable (read-only hierarchy)
+
+    // Phase 3: Risk Engine
+    enableRiskEngine: getEnvBool('ENABLE_RISK_ENGINE', false), // Disabled by default
+    enableFillAggregator: getEnvBool('ENABLE_FILL_AGGREGATOR', false),
+    enableQuoteRouter: getEnvBool('ENABLE_QUOTE_ROUTER', false),
+    enableTSLTrailing: getEnvBool('ENABLE_TSL_TRAILING', false),
+    enableScopeExits: getEnvBool('ENABLE_SCOPE_EXITS', false),
+
+    // Phase 4: Enhanced Orders
+    enableTradeIntents: getEnvBool('ENABLE_TRADE_INTENTS', false), // Disabled by default
+    enableServerResolution: getEnvBool('ENABLE_SERVER_RESOLUTION', false),
+    enableDeltaCalculation: getEnvBool('ENABLE_DELTA_CALCULATION', false),
+    enablePyramiding: getEnvBool('ENABLE_PYRAMIDING', false),
+
+    // Emergency kill switches
+    killRiskExits: getEnvBool('KILL_RISK_EXITS', false), // Emergency stop for all risk exits
+    killAutoTrading: getEnvBool('KILL_AUTO_TRADING', false), // Emergency stop for all automated trading
+  },
 };
 
 export default config;

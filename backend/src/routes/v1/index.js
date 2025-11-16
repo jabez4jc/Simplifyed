@@ -15,6 +15,7 @@ import quickOrderRoutes from './quickorders.js';
 import dashboardRoutes from './dashboard.js';
 import telegramRoutes from './telegram.js';
 import monitorRoutes from './monitor.js';
+import settingsRoutes from './settings.routes.js';
 import { getAppReadyStatus } from '../../middleware/instruments-refresh.middleware.js';
 
 const router = express.Router();
@@ -31,6 +32,7 @@ router.use('/quickorders', quickOrderRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/telegram', telegramRoutes);
 router.use('/monitor', monitorRoutes);
+router.use('/settings', settingsRoutes);
 
 // Health check endpoint
 router.get('/health', (req, res) => {
