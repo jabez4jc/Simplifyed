@@ -25,7 +25,7 @@ export async function up(db) {
       api_key TEXT NOT NULL,
       strategy_tag TEXT,
       broker TEXT,
-      market_data_role TEXT CHECK(market_data_role IN ('primary', 'secondary', 'disabled')) DEFAULT 'disabled',
+      market_data_role TEXT CHECK(market_data_role IN ('none', 'primary', 'secondary')) DEFAULT 'none',
 
       -- Admin designation
       is_primary_admin BOOLEAN DEFAULT 0,
@@ -52,6 +52,7 @@ export async function up(db) {
   `);
 
   // Copy data from old table (excluding target_profit and target_loss)
+  // Map 'disabled' to 'none' for market_data_role consistency
   await db.run(`
     INSERT INTO instances_new (
       id, name, host_url, api_key, strategy_tag, broker, market_data_role,
@@ -61,7 +62,8 @@ export async function up(db) {
       created_at, last_updated
     )
     SELECT
-      id, name, host_url, api_key, strategy_tag, broker, market_data_role,
+      id, name, host_url, api_key, strategy_tag, broker,
+      CASE WHEN market_data_role = 'disabled' THEN 'none' ELSE market_data_role END,
       is_primary_admin, is_secondary_admin, order_placement_enabled,
       current_balance, realized_pnl, unrealized_pnl, total_pnl,
       is_active, is_analyzer_mode, health_status, last_health_check, last_ping_at,

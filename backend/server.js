@@ -187,7 +187,6 @@ async function startServer() {
       console.log(`║    - Instance Updates:  Every ${(config.polling.instanceInterval / 1000).toString()}s ║`.padEnd(62) + '║');
       console.log(`║    - Market Data:       Every ${(config.polling.marketDataInterval / 1000).toString()}s (when active) ║`.padEnd(62) + '║');
       console.log('║    - Health Checks:     Every 5m                           ║');
-      console.log('║    - Order Monitor:     Every 5s (Analyzer mode)           ║');
       console.log('║    - Telegram Polling:  Every 2s                           ║');
       console.log('║                                                            ║');
       console.log('╚════════════════════════════════════════════════════════════╝');
