@@ -673,6 +673,10 @@ class DashboardApp {
               <th>LTP</th>
               <th>Change %</th>
               <th>Volume</th>
+              <th>Position</th>
+              <th>Avg Entry</th>
+              <th>Unrealized P&L</th>
+              <th>Risk Status</th>
               <th>Actions</th>
             </tr>
           </thead>
@@ -707,6 +711,18 @@ class DashboardApp {
                 <td class="volume-cell" data-symbol-id="${sym.id}">
                   <span class="text-neutral-500">-</span>
                 </td>
+                <td class="position-cell" data-symbol-id="${sym.id}">
+                  <span class="text-neutral-500">-</span>
+                </td>
+                <td class="avg-entry-cell" data-symbol-id="${sym.id}">
+                  <span class="text-neutral-500">-</span>
+                </td>
+                <td class="unrealized-pnl-cell" data-symbol-id="${sym.id}">
+                  <span class="text-neutral-500">-</span>
+                </td>
+                <td class="risk-status-cell" data-symbol-id="${sym.id}">
+                  <span class="text-neutral-500">-</span>
+                </td>
                 <td>
                   <button class="btn btn-error btn-sm" onclick="app.removeSymbol(${watchlistId}, ${sym.id})">
                     Remove
@@ -714,7 +730,7 @@ class DashboardApp {
                 </td>
               </tr>
               <tr id="expansion-row-${sym.id}" class="expansion-row" style="display: none;">
-                <td colspan="11" class="expansion-cell">
+                <td colspan="15" class="expansion-cell">
                   <div id="expansion-content-${sym.id}" class="expansion-content" data-loaded="false">
                     <p class="text-neutral-500 text-sm">Loading...</p>
                   </div>
@@ -750,12 +766,14 @@ class DashboardApp {
     // Stop existing poller if any
     this.stopWatchlistPolling(watchlistId);
 
-    // Fetch quotes immediately
+    // Fetch quotes and positions immediately
     await this.updateWatchlistQuotes(watchlistId);
+    await this.updateWatchlistPositions(watchlistId);
 
     // Start 10-second polling
     const intervalId = setInterval(async () => {
       await this.updateWatchlistQuotes(watchlistId);
+      await this.updateWatchlistPositions(watchlistId);
     }, 10000);
 
     this.watchlistPollers.set(watchlistId, intervalId);
@@ -985,6 +1003,138 @@ class DashboardApp {
 
     // Update cache
     this.quoteCache.set(cacheKey, cached);
+  }
+
+  /**
+   * Update position data for all symbols in a watchlist
+   */
+  async updateWatchlistPositions(watchlistId) {
+    try {
+      // Check if watchlist table exists in DOM
+      const table = document.getElementById(`watchlist-table-${watchlistId}`);
+      if (!table) {
+        console.log(`Watchlist table ${watchlistId} not found in DOM, skipping position update`);
+        return;
+      }
+
+      // Get instance ID from selected instance
+      const instanceId = this.selectedInstanceId;
+      if (!instanceId) {
+        console.log('No instance selected, skipping position update');
+        return;
+      }
+
+      // Fetch leg_state data for this instance
+      const response = await fetch(`/api/v1/leg-state?instanceId=${instanceId}`);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const positions = data.data || [];
+
+      // Get watchlist symbols to match positions
+      const symbolsResponse = await api.getWatchlistSymbols(watchlistId);
+      const symbols = symbolsResponse.data;
+
+      // Update position data for each symbol
+      symbols.forEach(sym => {
+        const leg = positions.find(p =>
+          p.symbol === sym.symbol && p.exchange === sym.exchange
+        );
+
+        this.updateSymbolPosition(watchlistId, sym.id, leg);
+      });
+    } catch (error) {
+      console.error('Failed to update watchlist positions', error);
+    }
+  }
+
+  /**
+   * Update position display for a specific symbol
+   */
+  updateSymbolPosition(watchlistId, symbolId, leg) {
+    // Find the table cells for this symbol
+    const positionCell = document.querySelector(
+      `#watchlist-table-${watchlistId} .position-cell[data-symbol-id="${symbolId}"]`
+    );
+    const avgEntryCell = document.querySelector(
+      `#watchlist-table-${watchlistId} .avg-entry-cell[data-symbol-id="${symbolId}"]`
+    );
+    const unrealizedPnlCell = document.querySelector(
+      `#watchlist-table-${watchlistId} .unrealized-pnl-cell[data-symbol-id="${symbolId}"]`
+    );
+    const riskStatusCell = document.querySelector(
+      `#watchlist-table-${watchlistId} .risk-status-cell[data-symbol-id="${symbolId}"]`
+    );
+
+    if (!positionCell || !avgEntryCell || !unrealizedPnlCell || !riskStatusCell) {
+      return; // Cells not found, skip update
+    }
+
+    if (!leg) {
+      // No position for this symbol
+      positionCell.innerHTML = '<span class="text-neutral-500">0</span>';
+      avgEntryCell.innerHTML = '<span class="text-neutral-500">-</span>';
+      unrealizedPnlCell.innerHTML = '<span class="text-neutral-500">-</span>';
+      riskStatusCell.innerHTML = '<span class="text-neutral-500">-</span>';
+      return;
+    }
+
+    // Update position quantity
+    const netQty = leg.net_qty || 0;
+    const qtyClass = netQty > 0 ? 'text-success' : netQty < 0 ? 'text-danger' : 'text-neutral-500';
+    positionCell.innerHTML = `<span class="${qtyClass} font-medium">${netQty}</span>`;
+
+    // Update average entry
+    const avgEntry = leg.weighted_avg_entry || 0;
+    if (avgEntry > 0) {
+      avgEntryCell.innerHTML = `<span class="font-medium">₹${Utils.formatNumber(avgEntry)}</span>`;
+    } else {
+      avgEntryCell.innerHTML = '<span class="text-neutral-500">-</span>';
+    }
+
+    // Update unrealized P&L
+    const unrealizedPnl = leg.unrealized_pnl || 0;
+    if (netQty !== 0) {
+      const pnlClass = unrealizedPnl >= 0 ? 'text-profit' : 'text-loss';
+      const pnlSymbol = unrealizedPnl >= 0 ? '+' : '';
+      unrealizedPnlCell.innerHTML = `<span class="${pnlClass} font-medium">${pnlSymbol}₹${Utils.formatNumber(Math.abs(unrealizedPnl))}</span>`;
+    } else {
+      unrealizedPnlCell.innerHTML = '<span class="text-neutral-500">-</span>';
+    }
+
+    // Update risk status badges
+    riskStatusCell.innerHTML = this.renderRiskBadges(leg);
+  }
+
+  /**
+   * Render risk management badges (TP/SL/TSL)
+   */
+  renderRiskBadges(leg) {
+    if (!leg || !leg.risk_enabled) {
+      return '<span class="text-neutral-500">-</span>';
+    }
+
+    const badges = [];
+
+    if (leg.tp_price) {
+      badges.push(`<span class="badge badge-success" title="Take Profit">TP: ₹${Utils.formatNumber(leg.tp_price)}</span>`);
+    }
+
+    if (leg.sl_price) {
+      badges.push(`<span class="badge badge-danger" title="Stop Loss">SL: ₹${Utils.formatNumber(leg.sl_price)}</span>`);
+    }
+
+    if (leg.tsl_enabled) {
+      badges.push(`<span class="badge badge-warning" title="Trailing Stop Loss">TSL</span>`);
+    }
+
+    if (badges.length === 0) {
+      return '<span class="text-neutral-500">Risk ON</span>';
+    }
+
+    return `<div class="flex gap-1 flex-wrap">${badges.join(' ')}</div>`;
   }
 
   /**
