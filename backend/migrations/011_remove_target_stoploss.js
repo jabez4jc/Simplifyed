@@ -75,6 +75,12 @@ export async function up(db) {
   await db.run('DROP TABLE instances');
   await db.run('ALTER TABLE instances_new RENAME TO instances');
 
+  // Recreate indexes for instances table
+  await db.run('CREATE INDEX IF NOT EXISTS idx_instances_is_active ON instances(is_active)');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_instances_is_primary_admin ON instances(is_primary_admin)');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_instances_is_secondary_admin ON instances(is_secondary_admin)');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_instances_health_status ON instances(health_status)');
+
   // ==========================================
   // 2. Recreate watchlist_symbols table without target/stoploss columns
   // ==========================================
@@ -168,6 +174,11 @@ export async function up(db) {
   // Drop old table and rename new one
   await db.run('DROP TABLE watchlist_symbols');
   await db.run('ALTER TABLE watchlist_symbols_new RENAME TO watchlist_symbols');
+
+  // Recreate indexes for watchlist_symbols table
+  await db.run('CREATE INDEX IF NOT EXISTS idx_watchlist_symbols_watchlist_id ON watchlist_symbols(watchlist_id)');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_watchlist_symbols_exchange_symbol ON watchlist_symbols(exchange, symbol)');
+  await db.run('CREATE INDEX IF NOT EXISTS idx_watchlist_symbols_is_enabled ON watchlist_symbols(is_enabled)');
 
   // ==========================================
   // 3. Recreate user_telegram_config without notify_on_target
