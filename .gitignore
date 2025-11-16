@@ -27,3 +27,4 @@ backend/logs/*.log
 # Testing
 test-results/
 playwright-report/
+*.backup
