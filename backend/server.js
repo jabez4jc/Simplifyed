@@ -17,6 +17,7 @@ import telegramService from './src/services/telegram.service.js';
 import fillAggregatorService from './src/services/fill-aggregator.service.js';
 import quoteRouterService from './src/services/quote-router.service.js';
 import riskEngineService from './src/services/risk-engine.service.js';
+import riskExitExecutorService from './src/services/risk-exit-executor.service.js';
 
 // Middleware
 import { configureSession, configurePassport, requireAuth, optionalAuth } from './src/middleware/auth.js';
@@ -166,6 +167,9 @@ async function startServer() {
 
       riskEngineService.start(1000); // Check risk conditions every 1 second
       log.info('Risk engine started');
+
+      riskExitExecutorService.start(2000); // Execute risk exits every 2 seconds
+      log.info('Risk exit executor started');
     }
 
     // Start HTTP server
@@ -211,6 +215,7 @@ async function startServer() {
       if (config.features.enableRiskEngine) {
         console.log('║    - Quote Router:      Every 200ms                        ║');
         console.log('║    - Risk Engine:       Every 1s                           ║');
+        console.log('║    - Risk Exit Exec:    Every 2s                           ║');
       }
       console.log('║                                                            ║');
       console.log('╚════════════════════════════════════════════════════════════╝');
@@ -237,6 +242,9 @@ async function shutdown() {
   try {
     // Stop risk engine services
     if (config.features.enableRiskEngine) {
+      riskExitExecutorService.stop();
+      log.info('Risk exit executor stopped');
+
       riskEngineService.stop();
       log.info('Risk engine stopped');
 

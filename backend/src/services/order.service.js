@@ -1,6 +1,12 @@
 /**
  * Order Service
  * Handles order placement (using placesmartorder), tracking, and management
+ *
+ * Enhanced with server-side logic for:
+ * - Symbol resolution (templates to actual symbols)
+ * - Delta calculation (target - current position)
+ * - Pyramiding logic (reanchor, scale, ignore)
+ * - Trade intent creation for idempotency
  */
 
 import db from '../core/database.js';
@@ -18,10 +24,251 @@ import {
   parseFloatSafe,
   parseIntSafe,
 } from '../utils/sanitizers.js';
+import symbolResolverService from './symbol-resolver.service.js';
+import tradeIntentService from './trade-intent.service.js';
+import settingsService from './settings.service.js';
+import fillAggregatorService from './fill-aggregator.service.js';
 
 class OrderService {
   /**
+   * Place order with server-side symbol resolution and delta calculation
+   * This is the enhanced method that supports templates and pyramiding
+   *
+   * @param {Object} params - Order parameters
+   * @param {number} params.userId - User ID
+   * @param {number} params.instanceId - Instance ID
+   * @param {number} params.watchlistId - Watchlist ID
+   * @param {string} params.symbol - Symbol or template (e.g., "NIFTY_ATM_CE")
+   * @param {string} params.exchange - Exchange
+   * @param {number} params.targetQty - Target position quantity (not delta)
+   * @param {string} params.intentId - Optional intent ID for idempotency
+   * @param {Object} params.context - Additional context
+   * @returns {Promise<Object>} - Order execution result
+   */
+  async placeOrderWithIntent(params) {
+    try {
+      const {
+        userId,
+        instanceId,
+        watchlistId,
+        symbol,
+        exchange,
+        targetQty,
+        intentId,
+        context = {},
+      } = params;
+
+      // Get instance
+      const instance = await db.get('SELECT * FROM instances WHERE id = ?', [
+        instanceId,
+      ]);
+
+      if (!instance) {
+        throw new NotFoundError('Instance');
+      }
+
+      if (instance.is_analyzer_mode) {
+        throw new ValidationError('Cannot place orders on analyzer instance');
+      }
+
+      // Resolve effective settings
+      const settings = await settingsService.getEffectiveSettings({
+        userId,
+        watchlistId,
+        indexName: context.indexName,
+        symbol,
+        exchange,
+      });
+
+      // 1. Resolve symbol (may be template)
+      const resolved = await symbolResolverService.resolveSymbol({
+        symbol,
+        exchange,
+        instance,
+        expiry: context.expiry,
+        strikePolicy: settings.default_strike_policy || 'FLOAT_OFS',
+      });
+
+      log.info('Symbol resolved', {
+        original: symbol,
+        resolved: resolved.resolved_symbol,
+        strike: resolved.strike,
+      });
+
+      // 2. Get or create leg_state for this symbol
+      let leg = await db.get(
+        `SELECT * FROM leg_state
+         WHERE symbol = ?
+         AND exchange = ?
+         AND instance_id = ?`,
+        [resolved.resolved_symbol, resolved.exchange, instanceId]
+      );
+
+      if (!leg) {
+        // Create leg_state if it doesn't exist
+        const result = await db.run(
+          `INSERT INTO leg_state (
+            symbol, exchange, token, instance_id,
+            index_name, expiry, option_type, strike_price,
+            instrument_type, net_qty
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+          [
+            resolved.resolved_symbol,
+            resolved.exchange,
+            resolved.token,
+            instanceId,
+            resolved.index_name,
+            resolved.expiry,
+            resolved.option_type,
+            resolved.strike,
+            resolved.instrument_type,
+          ]
+        );
+
+        leg = await db.get('SELECT * FROM leg_state WHERE id = ?', [
+          result.lastID,
+        ]);
+      }
+
+      // 3. Calculate delta (target - current position)
+      const currentPosition = leg.net_qty || 0;
+      const delta = targetQty - currentPosition;
+
+      if (delta === 0) {
+        log.info('No delta to execute (target = current)', {
+          symbol: resolved.resolved_symbol,
+          current: currentPosition,
+          target: targetQty,
+        });
+        return {
+          success: true,
+          delta: 0,
+          message: 'No order needed (target = current position)',
+        };
+      }
+
+      // 4. Create trade intent for idempotency
+      const intent = await tradeIntentService.createIntent({
+        intentId,
+        userId,
+        instanceId,
+        watchlistId,
+        symbol: resolved.resolved_symbol,
+        exchange: resolved.exchange,
+        action: delta > 0 ? 'BUY' : 'SELL',
+        targetQty,
+        intentType: 'MANUAL',
+        context: {
+          ...context,
+          resolvedSymbol: resolved.resolved_symbol,
+          indexName: resolved.index_name,
+          strike: resolved.strike,
+          optionType: resolved.option_type,
+          currentPosition,
+          delta,
+        },
+      });
+
+      // 5. Check pyramiding logic if adding to existing position
+      if (currentPosition !== 0 && Math.sign(delta) === Math.sign(currentPosition)) {
+        const pyramidMode = settings.on_pyramid || 'reanchor';
+
+        if (pyramidMode === 'ignore') {
+          log.info('Pyramiding blocked by ignore mode', {
+            symbol: resolved.resolved_symbol,
+            current: currentPosition,
+            target: targetQty,
+          });
+
+          await tradeIntentService.updateIntentStatus(intent.intent_id, 'completed', {
+            message: 'Blocked by pyramiding ignore mode',
+          });
+
+          return {
+            success: false,
+            delta: 0,
+            message: 'Pyramiding blocked by settings (ignore mode)',
+          };
+        }
+
+        // reanchor and scale modes allow pyramiding
+        log.info('Pyramiding allowed', {
+          mode: pyramidMode,
+          current: currentPosition,
+          delta,
+        });
+      }
+
+      // 6. Place order via OpenAlgo placesmartorder
+      try {
+        await tradeIntentService.updateIntentStatus(intent.intent_id, 'executing');
+
+        const orderResult = await this.placeOrder({
+          instanceId,
+          watchlistId,
+          symbol: resolved.resolved_symbol,
+          exchange: resolved.exchange,
+          action: delta > 0 ? 'BUY' : 'SELL',
+          quantity: Math.abs(delta),
+          position_size: targetQty, // Pass target as position_size for placesmartorder
+          product: settings.product_type || 'MIS',
+          pricetype: 'MARKET',
+        });
+
+        // Link intent to order
+        await tradeIntentService.linkIntentToOrder(intent.intent_id, orderResult.id);
+
+        // Sync fills immediately to update leg_state
+        await fillAggregatorService.syncInstanceFills(instanceId);
+
+        // Check if risk should be enabled
+        if (settings.tp_per_unit || settings.sl_per_unit || settings.tsl_enabled) {
+          await fillAggregatorService.enableRisk(leg.id, {
+            tp_per_unit: settings.tp_per_unit,
+            sl_per_unit: settings.sl_per_unit,
+            tsl_enabled: settings.tsl_enabled,
+            tsl_arm_after: settings.tsl_arm_after,
+            tsl_trail_by: settings.tsl_trail_by,
+            tsl_step: settings.tsl_step,
+            tsl_breakeven_after: settings.tsl_breakeven_after,
+            scope: settings.exit_scope || 'LEG',
+            on_pyramid: settings.on_pyramid || 'reanchor',
+          });
+
+          log.info('Risk enabled for leg', {
+            leg_id: leg.id,
+            symbol: resolved.resolved_symbol,
+          });
+        }
+
+        await tradeIntentService.updateIntentStatus(intent.intent_id, 'completed', {
+          order_id: orderResult.id,
+          delta_executed: delta,
+        });
+
+        return {
+          success: true,
+          intent_id: intent.intent_id,
+          order: orderResult,
+          delta,
+          resolved_symbol: resolved.resolved_symbol,
+        };
+      } catch (error) {
+        await tradeIntentService.updateIntentStatus(intent.intent_id, 'failed', {
+          error: error.message,
+        });
+
+        throw error;
+      }
+    } catch (error) {
+      log.error('Failed to place order with intent', error, params);
+      throw error;
+    }
+  }
+
+  /**
    * Place order using placesmartorder (position-aware)
+   * Legacy method - use placeOrderWithIntent() for new code
    * @param {Object} params - Order parameters
    * @returns {Promise<Object>} - Placed order record
    */
