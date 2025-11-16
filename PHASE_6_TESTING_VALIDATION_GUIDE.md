@@ -24,19 +24,21 @@ npm install
 # Verify Node version (>= 18.0.0)
 node --version
 
-# Create test database (optional - for isolated testing)
+# Create test database (for isolated testing to avoid corrupting production data)
 cp database/simplifyed.db database/simplifyed-test.db
 ```
 
+**IMPORTANT**: When testing, ensure `DATABASE_PATH` points to the test database to avoid corrupting your production data.
+
 ### 2. Environment Configuration
 
-Create `backend/.env` with test-safe settings:
+Create `backend/.env.test` for isolated testing:
 
 ```bash
 # Server
 NODE_ENV=development
 PORT=3000
-DATABASE_PATH=./database/simplifyed.db
+DATABASE_PATH=./database/simplifyed-test.db  # IMPORTANT: Use test database!
 
 # Session
 SESSION_SECRET=test-secret-change-in-production
@@ -62,6 +64,18 @@ OPENALGO_REQUEST_TIMEOUT_MS=15000
 
 # Logging
 LOG_LEVEL=debug
+```
+
+**Using the test environment**:
+```bash
+# Option 1: Copy .env.test to .env before testing
+cp backend/.env.test backend/.env
+
+# Option 2: Use environment variables directly
+DATABASE_PATH=./database/simplifyed-test.db npm run dev
+
+# Option 3: Specify environment file (if using dotenv-cli)
+npx dotenv -e .env.test -- npm run dev
 ```
 
 ### 3. Database Migrations
