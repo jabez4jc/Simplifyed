@@ -10,7 +10,8 @@ import positionsService from '../../services/positions.service.js';
 import openalgoClient from '../../integrations/openalgo/client.js';
 import marketDataFeedService from '../../services/market-data-feed.service.js';
 import { log } from '../../core/logger.js';
-import { NotFoundError } from '../../core/errors.js';
+import { NotFoundError, ValidationError } from '../../core/errors.js';
+import quickOrderService from '../../services/quick-order.service.js';
 
 const router = express.Router();
 
@@ -129,6 +130,42 @@ router.post('/:instanceId/close', async (req, res, next) => {
     res.json({
       status: 'success',
       message: 'Close position request sent',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/positions/:instanceId/close/position
+ * Close a single symbol on an instance
+ * Body: { symbol, exchange, tradeMode, product }
+ */
+router.post('/:instanceId/close/position', async (req, res, next) => {
+  try {
+    const instanceId = parseInt(req.params.instanceId, 10);
+    const instance = await instanceService.getInstanceById(instanceId);
+
+    const { symbol, exchange, tradeMode, product } = req.body;
+    if (!symbol || !exchange || !tradeMode) {
+      throw new ValidationError('symbol, exchange, and tradeMode are required');
+    }
+
+    const normalizedTradeMode = String(tradeMode).toUpperCase();
+    const normalizedProduct = (product || 'MIS').toUpperCase();
+
+    const result = await quickOrderService.closePosition(instance, {
+      symbol,
+      exchange,
+    }, {
+      tradeMode: normalizedTradeMode,
+      product: normalizedProduct,
+    });
+
+    res.json({
+      status: 'success',
+      message: 'Close request submitted',
+      data: result,
     });
   } catch (error) {
     next(error);

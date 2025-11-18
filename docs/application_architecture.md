@@ -224,9 +224,10 @@ Migrations live in `backend/migrations`.
 
 ### 5.6 Positions & Orders
 
-- Positions tab under watchlists auto-refreshes every 10 s using `api.getAllPositions(true)`, which is backed by the feed cache.
-- Orders tab fetches recent orders from `/orders` (limit applied client-side for display).
-- Dedicated `/positions/:instanceId/close` endpoint sends “Close all positions” to OpenAlgo for a specific instance.
+- The Watchlist “Positions” section now polls `/api/v1/positions/all?onlyOpen=true` every 10 s through `app.requestWatchlistRefresh`, but throttles repeated manual refreshes while still relying on the centralized market-data feed cache for accuracy.
+- A collapsible per-instance card layout groups live/analyzer exposures and exposes individual “Close” buttons per symbol plus a global “Close All” action; the backend offers `/positions/:instanceId/close/position` for single-symbol closes and `/positions/:instanceId/close` for full-instance exits.
+- The Orders tab still pulls from `/orders` (client-side limit) and shares the same cached feeds, with the quick-order service invalidating relevant snapshots after each trade so the UI stays in sync.
+- The Orders view now mirrors the positions layout: it groups live/analyzer instances, lists every active order returned by the OpenAlgo `/orders` endpoint (instance name, symbol, side, quantity, product, status, placed at, etc.), surfaces per-row “Cancel” buttons that call `/orders/cancel/{order_id}`, and provides filter controls so you can show only `pending`, `open`, `complete`, `cancelled`, or `rejected` orders for the selected instances.
 
 ---
 
@@ -236,6 +237,11 @@ Migrations live in `backend/migrations`.
 - **DB-first lookups**: Symbol search, validation, expiries, and option chains query the instruments cache first, only contacting OpenAlgo when data is missing.
 - **Cache invalidation**: Quick order placements trigger `marketDataFeedService.invalidatePositions`/`invalidateFunds` to refresh affected instances immediately.
 - **Fallback logic**: If feed snapshots are stale or unavailable, routes fall back to live OpenAlgo calls and seed the cache with the fresh data.
+
+### 6.1 Market Data Feed Settings
+
+- TTLs for quotes, positions, and funds are now configurable via `market_data_feed.quote_ttl_ms`, `.position_ttl_ms`, and `.funds_ttl_ms`, so you can adjust how long cached snapshots stay alive without redeploying.
+- The watchlist polling logic respects those TTLs and forces a refresh through `marketDataFeedService.refreshQuotes({ force: true })` when a symbol isn’t yet cached, ensuring watchlists never show stale or missing LTPs.
 
 ---
 

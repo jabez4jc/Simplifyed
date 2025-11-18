@@ -202,6 +202,13 @@ class Config {
       marketDataInterval: getEnvInt('MARKET_DATA_POLL_INTERVAL_MS', 5000),
     };
 
+    this.marketDataFeed = {
+      quoteTtlMs: getEnvInt('MARKET_DATA_QUOTE_TTL_MS', 2500),
+      positionTtlMs: getEnvInt('MARKET_DATA_POSITION_TTL_MS', 8000),
+      fundsTtlMs: getEnvInt('MARKET_DATA_FUNDS_TTL_MS', 20000),
+      orderbookTtlMs: getEnvInt('MARKET_DATA_ORDERBOOK_TTL_MS', 5000),
+    };
+
     this.openalgo = {
       requestTimeout: getEnvInt('OPENALGO_REQUEST_TIMEOUT_MS', 15000),
       critical: {
@@ -261,6 +268,10 @@ class Config {
 
       this.polling.instanceInterval = await getSettingInt('polling.instance_interval_ms', this.polling.instanceInterval);
       this.polling.marketDataInterval = await getSettingInt('polling.market_data_interval_ms', this.polling.marketDataInterval);
+      this.marketDataFeed.quoteTtlMs = await getSettingInt('market_data_feed.quote_ttl_ms', this.marketDataFeed.quoteTtlMs);
+      this.marketDataFeed.positionTtlMs = await getSettingInt('market_data_feed.position_ttl_ms', this.marketDataFeed.positionTtlMs);
+      this.marketDataFeed.fundsTtlMs = await getSettingInt('market_data_feed.funds_ttl_ms', this.marketDataFeed.fundsTtlMs);
+      this.marketDataFeed.orderbookTtlMs = await getSettingInt('market_data_feed.orderbook_ttl_ms', this.marketDataFeed.orderbookTtlMs);
 
       this.openalgo.requestTimeout = await getSettingInt('openalgo.request_timeout_ms', this.openalgo.requestTimeout);
       this.openalgo.critical.maxRetries = await getSettingInt('openalgo.critical.max_retries', this.openalgo.critical.maxRetries);

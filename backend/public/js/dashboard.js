@@ -5,7 +5,8 @@
 
 class DashboardApp {
   constructor() {
-    this.currentView = 'dashboard';
+    this.defaultView = 'dashboard';
+    this.currentView = null;
     this.currentUser = null;
     this.instances = [];
     this.watchlists = [];
@@ -21,6 +22,14 @@ class DashboardApp {
     this.watchlistQuoteSnapshots = new Map();
     this.isSidebarCollapsed = false;
     this.quickOrder = window.quickOrder || null;
+    this.validViews = ['dashboard', 'instances', 'watchlists', 'orders', 'positions', 'settings'];
+    this.suppressHashChange = false;
+    this._throttledWatchlistRefresh = Utils.throttle((opts = {}) => {
+      this.refreshWatchlistPositions(opts);
+    }, 2000);
+    this.watchlistPositionsExpanded = new Set();
+    this.latestWatchlistPositionsData = null;
+    this.currentOrderFilter = '';
   }
 
   /**
@@ -35,11 +44,13 @@ class DashboardApp {
       // Load current user
       await this.loadCurrentUser();
 
-      // Setup navigation
+      // Setup navigation and route listeners
       this.setupNavigation();
+      window.addEventListener('hashchange', () => this.handleHashChange());
 
-      // Load initial view
-      await this.loadView('dashboard');
+      // Load initial view based on stored state or hash
+      const initialView = this.determineInitialView();
+      this.switchView(initialView, { updateHash: false, forceReload: true });
 
       // Note: Auto-refresh disabled to prevent page flicker
       // Individual polling mechanisms (quotes, positions) handle their own updates
@@ -121,9 +132,91 @@ class DashboardApp {
   }
 
   /**
+   * Determine the initial view to render
+   */
+  determineInitialView() {
+    const hashView = this.parseViewFromHash();
+    if (hashView) {
+      return hashView;
+    }
+
+    const storedView = localStorage.getItem('lastView');
+    if (this.isValidView(storedView)) {
+      return storedView;
+    }
+
+    return this.defaultView;
+  }
+
+  /**
+   * Parse view from the URL hash
+   */
+  parseViewFromHash() {
+    if (!window.location.hash) {
+      return null;
+    }
+
+    const viewName = window.location.hash.replace('#', '').trim();
+    return this.isValidView(viewName) ? viewName : null;
+  }
+
+  /**
+   * Handle hash change events (browser navigation)
+   */
+  handleHashChange() {
+    if (this.suppressHashChange) {
+      this.suppressHashChange = false;
+      return;
+    }
+
+    const viewFromHash = this.parseViewFromHash();
+    if (!viewFromHash) {
+      return;
+    }
+
+    this.switchView(viewFromHash, { updateHash: false });
+  }
+
+  isValidView(viewName) {
+    return typeof viewName === 'string' && this.validViews.includes(viewName);
+  }
+
+  persistViewState(viewName) {
+    localStorage.setItem('lastView', viewName);
+  }
+
+  updateHash(viewName) {
+    const targetHash = `#${viewName}`;
+    if (window.location.hash !== targetHash) {
+      this.suppressHashChange = true;
+      window.location.hash = viewName;
+    }
+  }
+
+  /**
    * Switch view
    */
-  switchView(viewName) {
+  switchView(viewName, options = {}) {
+    const { updateHash = true, forceReload = false } = options;
+
+    if (!this.isValidView(viewName)) {
+      return;
+    }
+
+    // Avoid duplicate loads unless forced
+    if (!forceReload && this.currentView === viewName) {
+      if (updateHash) {
+        this.updateHash(viewName);
+      }
+      this.persistViewState(viewName);
+      return;
+    }
+
+    this.persistViewState(viewName);
+    if (updateHash) {
+      this.updateHash(viewName);
+    }
+
     // Update active state
     const navItems = document.querySelectorAll('[data-view]');
     navItems.forEach((item) => {
@@ -536,13 +629,13 @@ class DashboardApp {
       window.quickOrder.stopAllOptionPreviewPolling();
     }
 
-    // Fetch watchlists
-    const response = await api.getWatchlists();
-    this.watchlists = response.data;
+    // Fetch watchlists + instances in parallel to reduce latency
+    const [watchlistsRes, instancesRes] = await Promise.all([
+      api.getWatchlists(),
+      api.getInstances(),
+    ]);
+    this.watchlists = watchlistsRes.data;
     this.expandedWatchlists = this.expandedWatchlists || new Set();
-
-    // Fetch instances for quote polling
-    const instancesRes = await api.getInstances();
     this.instances = instancesRes.data;
 
     contentArea.innerHTML = `
@@ -575,23 +668,27 @@ class DashboardApp {
         </div>
 
         <div class="card">
-          <div class="card-header" style="border-bottom: 1px solid var(--color-neutral-200);">
-            <div class="tabs" id="positions-orders-tabs">
-              <button class="tab-button active" data-tab="positions" onclick="app.switchTab('positions')">
-                💼 Positions
+          <div class="card-header flex flex-wrap items-center gap-4">
+            <div class="flex-1 min-w-[200px] flex items-center gap-2">
+              <h3 class="card-title flex items-center gap-2 mb-0">
+                💼 Open Positions
+              </h3>
+              <p class="text-sm text-neutral-500">Showing open positions from all linked instances</p>
+            </div>
+            <div id="positions-summary-inline" class="flex min-w-[220px] justify-center text-center text-sm text-neutral-600 gap-8">
+              <span>Loading summary...</span>
+            </div>
+            <div class="flex items-center gap-2 ml-auto">
+              <button class="btn btn-outline btn-sm" onclick="app.requestWatchlistRefresh({ showLoader: true, force: true })">
+                Refresh
               </button>
-              <button class="tab-button" data-tab="orders" onclick="app.switchTab('orders')">
-                📝 Orders
+              <button class="btn btn-error btn-sm" onclick="app.closeAllOpenPositions()">
+                Close All
               </button>
             </div>
           </div>
-          <div class="tab-content">
-            <div id="tab-positions" class="tab-panel active">
-              <div class="p-4">Loading positions...</div>
-            </div>
-            <div id="tab-orders" class="tab-panel hidden">
-              <div class="p-4">Loading orders...</div>
-            </div>
+          <div id="watchlist-positions-panel">
+            <div class="p-4">Loading positions...</div>
           </div>
         </div>
       </section>
@@ -782,7 +879,7 @@ class DashboardApp {
                   data-tradable-equity="${sym.tradable_equity ? 1 : 0}"
                   data-tradable-futures="${sym.tradable_futures ? 1 : 0}"
                   data-tradable-options="${sym.tradable_options ? 1 : 0}"
-                  data-underlying="${Utils.escapeHTML(sym.underlying_symbol || sym.symbol)}">
+                  data-underlying="${Utils.escapeHTML(sym.underlying_symbol || sym.name || sym.symbol)}">
                 <td>
                   <button
                     class="btn-toggle-expansion"
@@ -955,9 +1052,9 @@ class DashboardApp {
 
   startPositionsPolling() {
     this.stopPositionsPolling();
-    this.refreshWatchlistPositions({ showLoader: true });
+    this.requestWatchlistRefresh({ showLoader: true, force: true });
     this.positionsPollingInterval = setInterval(() => {
-      this.refreshWatchlistPositions();
+      this.requestWatchlistRefresh();
     }, 10000);
   }
 
@@ -966,6 +1063,15 @@ class DashboardApp {
       clearInterval(this.positionsPollingInterval);
       this.positionsPollingInterval = null;
     }
+  }
+
+  requestWatchlistRefresh({ showLoader = false, force = false } = {}) {
+    if (force) {
+      this.refreshWatchlistPositions({ showLoader });
+      return;
+    }
+
+    this._throttledWatchlistRefresh({ showLoader });
   }
 
   async updateWatchlistQuotes(watchlistId, { force = false } = {}) {
@@ -1031,9 +1137,14 @@ class DashboardApp {
 
       // Update UI for each symbol
       quotes.forEach(quote => {
-        const symbol = symbols.find(s =>
-          s.exchange === quote.exchange && s.symbol === quote.symbol
-        );
+        const normalizedQuoteSymbol = this.normalizeQuoteSymbol(quote.symbol);
+        const symbol = symbols.find(s => {
+          const exactMatch = s.exchange === quote.exchange;
+          const normalizedMatch =
+            this.normalizeExchange(s.exchange) === this.normalizeExchange(quote.exchange);
+
+          return (exactMatch || normalizedMatch) && s.symbol === normalizedQuoteSymbol;
+        });
 
         if (symbol) {
           this.updateSymbolQuote(watchlistId, symbol.id, quote);
@@ -1045,6 +1156,24 @@ class DashboardApp {
         statusText: 'Quote refresh failed',
       });
     }
+  }
+
+  normalizeExchange(exchange = '') {
+    const normalized = (exchange || '').trim().toUpperCase();
+    if (!normalized) return '';
+    if (normalized.endsWith('_INDEX')) {
+      return normalized.replace('_INDEX', '');
+    }
+    return normalized;
+  }
+
+  normalizeQuoteSymbol(symbol = '') {
+    if (!symbol) return '';
+    const normalized = symbol.toUpperCase();
+    if (normalized.includes(':')) {
+      return normalized.split(':').pop();
+    }
+    return normalized;
   }
 
   /**
@@ -1222,81 +1351,272 @@ class DashboardApp {
    */
   async renderOrdersView() {
     const contentArea = document.getElementById('content-area');
-
-    // Fetch orders
-    const response = await api.getOrders();
-    const orders = response.data;
+    this.currentOrderFilter = this.currentOrderFilter || '';
 
     contentArea.innerHTML = `
-      <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">Orders</h3>
-          <div class="flex gap-2">
-            <select class="form-select" onchange="app.filterOrders(this.value)">
-              <option value="">All Status</option>
-              <option value="pending">Pending</option>
-              <option value="open">Open</option>
-              <option value="complete">Complete</option>
-              <option value="cancelled">Cancelled</option>
-              <option value="rejected">Rejected</option>
-            </select>
+      <div class="space-y-4">
+        <div class="card">
+          <div class="card-header flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 class="card-title">Orders</h3>
+              <p class="text-sm text-neutral-600">Live view of every OpenAlgo order grouped by instance category.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <select id="orders-filter" class="form-select" onchange="app.filterOrders(this.value)">
+                <option value="">All Status</option>
+                <option value="pending">Pending</option>
+                <option value="open">Open</option>
+                <option value="complete">Complete</option>
+                <option value="cancelled">Cancelled</option>
+                <option value="rejected">Rejected</option>
+              </select>
+              <button class="btn btn-outline btn-sm" onclick="app.loadOrders()">
+                Refresh
+              </button>
+            </div>
+          </div>
+          <div class="p-4" id="orders-panel">
+            <div class="text-center text-neutral-500">Loading orders…</div>
           </div>
         </div>
-        <div class="table-container">
-          ${this.renderOrdersTable(orders)}
+      </div>
+    `;
+
+    await this.loadOrders(this.currentOrderFilter);
+  }
+
+  async loadOrders(status = '') {
+    try {
+      const params = {};
+      if (status) params.status = status;
+      const response = await api.getOrderbook(status);
+      const payload = response.data || {};
+      this.orderbookPayload = payload;
+      this.renderOrdersPanel(payload);
+      const select = document.getElementById('orders-filter');
+      if (select) select.value = status || '';
+    } catch (error) {
+      console.error('Failed to load orders:', error);
+      const panel = document.getElementById('orders-panel');
+      if (panel) {
+        panel.innerHTML = `<p class="text-error text-center">${error.message}</p>`;
+      }
+    }
+  }
+
+  renderOrdersPanel(orders = []) {
+    const panel = document.getElementById('orders-panel');
+    if (!panel) return;
+
+    if (!orders || (!orders.liveInstances?.length && !orders.analyzerInstances?.length)) {
+      panel.innerHTML = '<p class="text-center text-neutral-600">No orders found</p>';
+      return;
+    }
+
+    panel.innerHTML = `
+      <div class="space-y-5">
+        ${this.renderOrdersSummary(orders)}
+        ${this.renderOrdersSection('Live Instances', orders.liveInstances)}
+        ${this.renderOrdersSection('Analyzer Mode Instances', orders.analyzerInstances)}
+      </div>
+    `;
+  }
+
+  renderOrdersSummary(payload) {
+    const stats = payload.statistics || {};
+    const liveOrders = payload.liveInstances?.flatMap(inst => inst.orders || []) || [];
+    const analyzerOrders = payload.analyzerInstances?.flatMap(inst => inst.orders || []) || [];
+    const allOrders = [...liveOrders, ...analyzerOrders];
+    const total = allOrders.length;
+    const statusCounts = {};
+    allOrders.forEach(order => {
+      statusCounts[order.status || 'unknown'] = (statusCounts[order.status || 'unknown'] || 0) + 1;
+    });
+
+    const badgeOrder = ['pending', 'open', 'complete', 'cancelled', 'rejected'];
+    const badges = badgeOrder
+      .filter(status => statusCounts[status])
+      .map(status => `
+        <span class="badge badge-sm ${status === 'open' ? 'badge-info' : status === 'pending' ? 'badge-warning' : status === 'complete' ? 'badge-success' : 'badge-neutral'}">
+          ${status}: ${statusCounts[status]}
+        </span>
+      `).join(' ');
+
+    return `
+      <div class="card border border-base-200 bg-base-100 p-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="text-sm text-neutral-600 uppercase tracking-wide">Total orders</div>
+            <div class="text-2xl font-semibold">${total}</div>
+          </div>
+            <div class="flex flex-wrap gap-2">
+              ${badges}
+            </div>
         </div>
       </div>
     `;
   }
 
-  /**
-   * Render orders table
-   */
-  renderOrdersTable(orders) {
-    if (orders.length === 0) {
-      return '<p class="text-center text-neutral-600">No orders found</p>';
+  renderOrdersSection(title, instances = []) {
+    if (!instances.length) {
+      return `
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h3 class="card-title">${title}</h3>
+              <p class="text-sm text-neutral-600">No orders in this category.</p>
+            </div>
+            <span class="badge">0</span>
+          </div>
+        </div>
+      `;
     }
 
+    const totalOrders = instances.reduce((acc, inst) => acc + (inst.orders?.length || 0), 0);
+
     return `
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Instance</th>
-            <th>Symbol</th>
-            <th>Side</th>
-            <th>Quantity</th>
-            <th>Type</th>
-            <th>Status</th>
-            <th>Placed At</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${orders.slice(0, 100).map(order => `
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">${title}</h3>
+            <p class="text-sm text-neutral-600">Orders executed per instance (live/analyzer)</p>
+          </div>
+          <span class="badge">${totalOrders}</span>
+        </div>
+        <div class="p-4 space-y-4">
+          ${instances.map(instance => this.renderOrderInstanceCard(instance)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  renderOrderInstanceCard(instanceEntry) {
+    const title = Utils.escapeHTML(instanceEntry.instance_name || `Instance ${instanceEntry.instance_id}`);
+    const broker = Utils.escapeHTML(instanceEntry.broker || 'N/A');
+    const orders = instanceEntry.orders || [];
+    const openOrders = orders.filter(o => ['open', 'pending'].includes(o.status)).length;
+
+    return `
+      <details class="rounded-lg border border-base-200 bg-base-100">
+        <summary class="flex flex-wrap cursor-pointer items-center justify-between gap-4 px-4 py-4">
+          <div>
+            <h4 class="font-semibold text-lg">${title}</h4>
+            <div class="text-sm text-neutral-600 flex gap-4 flex-wrap">
+              <span>Broker: ${broker}</span>
+              <span>Total orders: ${orders.length}</span>
+              <span>Open/pending: ${openOrders}</span>
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              class="btn btn-error btn-sm"
+              onclick="event.stopPropagation(); app.cancelAllOrders(${instanceEntry.instance_id})"
+            >
+              Cancel All Open Orders
+            </button>
+          </div>
+        </summary>
+        <div class="border-t border-base-200 p-4">
+          ${this.renderOrdersTable(orders)}
+        </div>
+      </details>
+    `;
+  }
+
+  renderOrdersTable(orders) {
+    const rows = orders.map(order => {
+      const safeValue = (...keys) => {
+        for (const key of keys) {
+          const parts = key.split('.');
+          let value = order;
+          for (const part of parts) {
+            if (value && Object.prototype.hasOwnProperty.call(value, part)) {
+              value = value[part];
+            } else {
+              value = undefined;
+              break;
+            }
+          }
+
+          if (value !== undefined && value !== null && value !== '') {
+            return value;
+          }
+        }
+        return '-';
+      };
+
+      const action = safeValue('action');
+      const cancelable = ['pending', 'open'].includes(order.status);
+      const orderId = order.id ? order.id.toString().replace(/'/g, "\\'") : '';
+      const exchange = Utils.escapeHTML(safeValue('exchange', 'metadata.exchange'));
+      const priceValue = safeValue('price', 'metadata.price', 'metadata.average_price');
+      const priceDisplay = priceValue !== '-' ? Utils.formatNumber(priceValue) : '-';
+      const strategy = Utils.escapeHTML(safeValue('strategy', 'metadata.strategy')) || '-';
+      const timestamp = safeValue('timestamp', 'metadata.timestamp', 'metadata.placed_at');
+      const placedAt = timestamp && timestamp !== '-' ? Utils.formatDateTime(timestamp, true) : '-';
+      const statusValue = (safeValue('status', 'metadata.order_status') || 'unknown').toLowerCase();
+      const rejectionReason = safeValue('metadata.rejection_reason', 'metadata.rejectionReason');
+      let statusBadge = Utils.getStatusBadge(statusValue);
+      if (statusValue === 'rejected' && rejectionReason) {
+        const escapedReason = Utils.escapeHTML(rejectionReason);
+        statusBadge = statusBadge.replace('>', ` title="${escapedReason}">`);
+      }
+      const rejectionLine = statusValue === 'rejected' && rejectionReason
+        ? `<div class="text-xs text-neutral-500 mt-1">${Utils.escapeHTML(rejectionReason)}</div>`
+        : '';
+
+      return `
+        <tr>
+          <td>${Utils.escapeHTML(safeValue('symbol', 'metadata.symbol'))}</td>
+          <td>${exchange}</td>
+          <td>
+            <span class="badge ${action === 'BUY' ? 'badge-success' : 'badge-error'}">
+              ${action}
+            </span>
+          </td>
+          <td>${priceDisplay !== '-' ? `₹${priceDisplay}` : priceDisplay}</td>
+          <td>${safeValue('quantity', 'metadata.quantity')}</td>
+          <td>${Utils.escapeHTML(safeValue('product', 'product_type', 'metadata.product'))}</td>
+          <td>${Utils.escapeHTML(safeValue('order_type', 'metadata.pricetype'))}</td>
+          <td>${strategy}</td>
+          <td>${statusBadge}${rejectionLine}</td>
+          <td class="text-right">${placedAt}</td>
+          <td class="text-center">
+            ${cancelable ? `
+              <button class="btn btn-sm btn-outline"
+                      onclick="app.cancelOrder('${orderId}')">
+                Cancel
+              </button>
+            ` : '-'}
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    return `
+      <div class="table-container overflow-x-auto">
+        <table class="table">
+          <thead>
             <tr>
-              <td class="font-medium">${Utils.escapeHTML(order.instance_name || 'N/A')}</td>
-              <td>${Utils.escapeHTML(order.symbol)}</td>
-              <td>
-                <span class="badge ${order.side === 'BUY' ? 'badge-success' : 'badge-error'}">
-                  ${order.side}
-                </span>
-              </td>
-              <td>${order.quantity}</td>
-              <td>${order.order_type}</td>
-              <td>${Utils.getStatusBadge(order.status)}</td>
-              <td>${Utils.formatRelativeTime(order.placed_at)}</td>
-              <td>
-                ${order.status === 'pending' || order.status === 'open' ? `
-                  <button class="btn btn-error btn-sm"
-                          onclick="app.cancelOrder(${order.id})">
-                    Cancel
-                  </button>
-                ` : '-'}
-              </td>
+              <th>Symbol</th>
+              <th>Exchange</th>
+              <th>Side</th>
+              <th>Price</th>
+              <th>Qty</th>
+              <th>Product</th>
+              <th>Type</th>
+              <th>Strategy</th>
+              <th>Status</th>
+              <th class="text-right">Timestamp</th>
+              <th class="text-center">Action</th>
             </tr>
-          `).join('')}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            ${rows}
+          </tbody>
+        </table>
+      </div>
     `;
   }
 
@@ -1365,10 +1685,10 @@ class DashboardApp {
               </button>
             </div>
             <div class="table-container">
-              ${inst.error ?
+                ${inst.error ?
                 `<p class="text-center text-error-600 p-4">${Utils.escapeHTML(inst.error)}</p>` :
                 (inst.positions.length > 0 ?
-                  this.renderPositionsTable(inst.positions) :
+                  this.renderPositionsTable(inst.positions, inst.instance_id) :
                   '<p class="text-center text-neutral-600 p-4">No positions</p>')
               }
             </div>
@@ -1382,43 +1702,6 @@ class DashboardApp {
         </div>
       `;
     }
-  }
-
-  /**
-   * Render positions table
-   */
-  renderPositionsTable(positions) {
-    return `
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Symbol</th>
-            <th>Quantity</th>
-            <th>Product</th>
-            <th class="text-right">Avg Price</th>
-            <th class="text-right">LTP</th>
-            <th class="text-right">P&L</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${positions.map(pos => {
-            const pnl = parseFloat(pos.pnl || pos.unrealized_pnl || pos.mtm || 0);
-            return `
-              <tr>
-                <td class="font-medium">${Utils.escapeHTML(pos.symbol || pos.tradingsymbol)}</td>
-                <td>${pos.quantity || pos.netqty || pos.net_quantity || 0}</td>
-                <td>${pos.product || pos.product_type || '-'}</td>
-                <td class="text-right">${Utils.formatCurrency(pos.average_price || pos.avg_price || 0)}</td>
-                <td class="text-right">${Utils.formatCurrency(pos.ltp || pos.last_price || 0)}</td>
-                <td class="text-right ${Utils.getPnLColorClass(pnl)}">
-                  ${Utils.formatCurrency(pnl)}
-                </td>
-              </tr>
-            `;
-          }).join('')}
-        </tbody>
-      </table>
-    `;
   }
 
   /**
@@ -1968,11 +2251,16 @@ class DashboardApp {
         return;
       }
 
+      const enrichedResults = results.map(sym => ({
+        ...sym,
+        underlying_symbol: sym.underlying_symbol || sym.name || sym.symbol,
+      }));
+
       resultsContainer.innerHTML = `
         <div class="space-y-2">
           <p class="text-sm text-neutral-700 font-semibold">${results.length} results found:</p>
           <div class="max-h-96 overflow-y-auto space-y-2">
-              ${results.map(sym => `
+              ${enrichedResults.map(sym => `
               <div class="p-3 border rounded cursor-pointer hover:bg-neutral-100"
                    data-symbol="${encodeURIComponent(JSON.stringify(sym))}"
                    onclick="app.selectSymbol(this.dataset.symbol)">
@@ -2008,6 +2296,8 @@ class DashboardApp {
       Utils.showToast('Failed to parse selected symbol', 'error');
       return;
     }
+
+    symbolData.underlying_symbol = symbolData.underlying_symbol || symbolData.name || symbolData.symbol;
 
     this.pendingSymbolData = symbolData;
     this.closeSymbolSearchModal();
@@ -2064,8 +2354,8 @@ class DashboardApp {
               <label class="flex items-center gap-3 p-3 border rounded cursor-pointer hover:bg-neutral-50">
                 <input type="checkbox" name="tradable_equity" ${defaults.equity ? 'checked' : ''}>
                 <div>
-                  <p class="font-semibold">Enable Direct (Equity) Trading</p>
-                  <p class="text-sm text-neutral-600">Use BUY/SELL/EXIT buttons for spot positions.</p>
+                  <p class="font-semibold">Enable Direct Trading</p>
+                  <p class="text-sm text-neutral-600">Use BUY/SELL/EXIT buttons directly for this symbol (spot, futures, or options).</p>
                 </div>
               </label>
               <label class="flex items-center gap-3 p-3 border rounded cursor-pointer hover:bg-neutral-50">
@@ -2131,6 +2421,7 @@ class DashboardApp {
     const underlyingSymbol =
       form.underlying_symbol.value.trim() ||
       this.pendingSymbolData.underlying_symbol ||
+      this.pendingSymbolData.name ||
       this.pendingSymbolData.tradingsymbol ||
       this.pendingSymbolData.symbol;
 
@@ -2329,6 +2620,23 @@ class DashboardApp {
     }
   }
 
+  async cancelAllOrders(instanceId) {
+    const confirmed = await Utils.confirm(
+      'Cancel all pending/open orders for this instance?',
+      'Confirm Cancel All'
+    );
+
+    if (!confirmed) return;
+
+    try {
+      await api.cancelAllOrders(instanceId);
+      Utils.showToast('Cancel-all request sent', 'success');
+      await this.loadOrders(this.currentOrderFilter);
+    } catch (error) {
+      Utils.showToast('Failed to cancel orders: ' + error.message, 'error');
+    }
+  }
+
   /**
    * Close all positions
    */
@@ -2377,44 +2685,8 @@ class DashboardApp {
     }, 15000);
   }
 
-  /**
-   * Switch between Positions and Orders tabs
-   */
-  async switchTab(tabName) {
-    // Update tab buttons
-    const tabs = document.querySelectorAll('.tab-button');
-    tabs.forEach(tab => {
-      if (tab.dataset.tab === tabName) {
-        tab.classList.add('active');
-      } else {
-        tab.classList.remove('active');
-      }
-    });
-
-    // Update tab panels
-    const panels = document.querySelectorAll('.tab-panel');
-    panels.forEach(panel => {
-      panel.classList.add('hidden');
-    });
-
-    const activePanel = document.getElementById(`tab-${tabName}`);
-    if (activePanel) {
-      activePanel.classList.remove('hidden');
-    }
-
-    // Load content and manage polling
-    if (tabName === 'positions') {
-      // Start positions auto-refresh (10 seconds)
-      this.startPositionsPolling();
-    } else if (tabName === 'orders') {
-      // Stop positions polling when switching away
-      this.stopPositionsPolling();
-      await this.loadOrdersTab();
-    }
-  }
-
   async refreshWatchlistPositions({ showLoader = false } = {}) {
-    const positionsPanel = document.getElementById('tab-positions');
+    const positionsPanel = document.getElementById('watchlist-positions-panel');
     if (!positionsPanel) return;
 
     if (showLoader) {
@@ -2422,53 +2694,202 @@ class DashboardApp {
     }
 
     try {
+      // Fetch the same aggregate payload as the Positions page
       const response = await api.getAllPositions(false);
       const normalized = this.prepareWatchlistPositions(response.data);
+      console.debug('[Watchlists] Positions payload', {
+        instances: response.data?.instances?.length,
+        normalizedLive: normalized.liveInstances.length,
+        normalizedAnalyzer: normalized.analyzerInstances.length,
+        rawSample: response.data?.instances?.slice?.(0, 2) || [],
+      });
+      this.latestWatchlistPositionsData = normalized;
+      this.updateWatchlistPositionsSummary(normalized);
       positionsPanel.innerHTML = this.renderWatchlistPositionsMarkup(normalized);
     } catch (error) {
+      console.error('Failed to refresh watchlist positions:', error);
       positionsPanel.innerHTML = `<div class="p-4"><p class="text-center text-error-600">Failed to load positions: ${error.message}</p></div>`;
     }
   }
 
-  prepareWatchlistPositions(data) {
-    const instances = (data.instances || []).map(inst => {
-      const openPositions = (inst.positions || []).filter(
-        pos => this.getNormalizedPositionQty(pos) !== 0
+  renderWatchlistPositionsPanel() {
+    const positionsPanel = document.getElementById('watchlist-positions-panel');
+    if (!positionsPanel || !this.latestWatchlistPositionsData) return;
+    positionsPanel.innerHTML = this.renderWatchlistPositionsMarkup(this.latestWatchlistPositionsData);
+  }
+
+  toggleWatchlistPositionInstance(instanceId) {
+    if (this.watchlistPositionsExpanded.has(instanceId)) {
+      this.watchlistPositionsExpanded.delete(instanceId);
+    } else {
+      this.watchlistPositionsExpanded.add(instanceId);
+    }
+    this.renderWatchlistPositionsPanel();
+  }
+
+  updateWatchlistPositionsSummary({ overallOpen, overallPnl, refreshedAt }) {
+    const summaryEl = document.getElementById('positions-summary-inline');
+    if (!summaryEl) return;
+
+    summaryEl.innerHTML = `
+      <div class="flex flex-col items-center gap-1">
+        <span class="text-xs uppercase tracking-wide text-neutral-500">Updated ${Utils.formatRelativeTime(refreshedAt)}</span>
+        <div class="flex items-center gap-10">
+          <span class="flex items-baseline gap-2">
+            <span class="text-xs text-neutral-500 uppercase tracking-wide">Total open</span>
+            <span class="text-lg font-semibold text-base-content">${overallOpen}</span>
+          </span>
+          <span class="flex items-baseline gap-2">
+            <span class="text-xs text-neutral-500 uppercase tracking-wide">Overall P&L</span>
+            <span class="text-lg font-semibold ${Utils.getPnLColorClass(overallPnl)}">
+              ${Utils.formatCurrency(overallPnl)}
+            </span>
+          </span>
+        </div>
+      </div>
+    `;
+  }
+
+  async closeAllOpenPositions() {
+    if (!this.latestWatchlistPositionsData) {
+      Utils.showToast('Positions not loaded yet', 'warning');
+      return;
+    }
+
+    const instances = (this.latestWatchlistPositionsData.allInstances || []).filter(
+      inst => (inst.positions && inst.positions.length > 0) ||
+        (typeof inst.open_positions_count === 'number' && inst.open_positions_count > 0)
+    );
+
+    if (instances.length === 0) {
+      Utils.showToast('No open positions to close', 'info');
+      return;
+    }
+
+    const confirmed = await Utils.confirm(
+      `Are you sure you want to close all open positions across ${instances.length} instance(s)?`,
+      'Confirm Global Close'
+    );
+    if (!confirmed) return;
+
+    try {
+      const responses = await Promise.allSettled(
+        instances.map(inst => api.closePositions(inst.instance_id))
       );
+
+      const successes = responses.filter(r => r.status === 'fulfilled').length;
+      const failures = responses
+        .map((result, idx) => (result.status === 'rejected'
+          ? { name: instances[idx].instance_name, error: result.reason?.message || 'Failed' }
+          : null))
+        .filter(Boolean);
+
+      if (failures.length > 0) {
+        Utils.showToast(
+          `Closed ${successes} instance(s); ${failures.length} failed (e.g., ${failures[0].name})`,
+          'warning',
+          5000
+        );
+      } else {
+        Utils.showToast(`Close-all request sent to ${successes} instance(s)`, 'success');
+      }
+    } catch (error) {
+      Utils.showToast('Failed to close all positions: ' + error.message, 'error');
+    }
+  }
+
+  async closePosition(instanceId, encodedSymbol, encodedExchange, encodedProduct) {
+    const symbol = decodeURIComponent(encodedSymbol || '');
+    const exchange = decodeURIComponent(encodedExchange || '');
+    const product = decodeURIComponent(encodedProduct || 'MIS');
+
+    if (!symbol || !exchange) {
+      Utils.showToast('Unable to determine symbol/exchange for closing position', 'error');
+      return;
+    }
+
+    const tradeMode = this.getTradeModeFromSymbol(symbol);
+    const confirmed = await Utils.confirm(
+      `Close position for ${symbol} on instance ${instanceId}?`,
+      'Confirm Close'
+    );
+    if (!confirmed) return;
+
+    try {
+      await api.closePosition(instanceId, {
+        symbol,
+        exchange,
+        tradeMode,
+        product,
+      });
+      Utils.showToast(`Close request submitted for ${symbol}`, 'success');
+      await this.refreshWatchlistPositions({ showLoader: false });
+    } catch (error) {
+      Utils.showToast(`Failed to close ${symbol}: ${error.message}`, 'error');
+    }
+  }
+
+  getTradeModeFromSymbol(symbol) {
+    const normalized = (symbol || '').toUpperCase();
+    if (normalized.includes('CE') || normalized.includes('PE')) {
+      return 'OPTIONS';
+    }
+    if (normalized.includes('FUT')) {
+      return 'FUTURES';
+    }
+    return 'EQUITY';
+  }
+
+  prepareWatchlistPositions(data = {}) {
+    const instances = (data.instances || []).map(inst => {
+      const rawPositions = Array.isArray(inst.positions) ? inst.positions : [];
+      let openPositions = rawPositions.filter(pos => this.getNormalizedPositionQty(pos) !== 0);
+
+      const serverReportedOpen = typeof inst.open_positions_count === 'number'
+        ? inst.open_positions_count
+        : openPositions.length;
+
+      if (openPositions.length === 0 && serverReportedOpen > 0) {
+        openPositions = rawPositions;
+      }
+
       return {
         ...inst,
         positions: openPositions,
-        open_positions_count: openPositions.length,
+        open_positions_count: serverReportedOpen,
       };
     });
 
     const liveInstances = instances
-      .filter(inst => !inst.is_analyzer_mode && inst.open_positions_count > 0);
+      .filter(inst => !inst.is_analyzer_mode && inst.positions.length > 0);
 
     const analyzerInstances = instances
-      .filter(inst => inst.is_analyzer_mode && inst.open_positions_count > 0);
+      .filter(inst => inst.is_analyzer_mode && inst.positions.length > 0);
 
-    const totalOpen = instances.reduce(
-      (sum, inst) => sum + inst.open_positions_count,
-      0
-    );
+    const totalOpen = typeof data.overall_open_positions === 'number'
+      ? data.overall_open_positions
+      : instances.reduce(
+          (sum, inst) => sum + (inst.open_positions_count ?? inst.positions.length),
+          0
+        );
 
     return {
       overallOpen: totalOpen,
-      overallPnl: data.overall_total_pnl,
+      overallPnl: data.overall_total_pnl ?? 0,
       liveInstances,
       analyzerInstances,
+      refreshedAt: data.refreshed_at || new Date().toISOString(),
+      allInstances: instances,
     };
   }
 
-  renderWatchlistPositionsMarkup({ overallOpen, overallPnl, liveInstances, analyzerInstances }) {
+  renderWatchlistPositionsMarkup({ overallOpen, overallPnl, liveInstances, analyzerInstances, refreshedAt }) {
     if (liveInstances.length === 0 && analyzerInstances.length === 0) {
       return '<div class="p-4"><p class="text-center text-neutral-600">No open positions across any instance.</p></div>';
     }
 
     return `
       <div class="space-y-6">
-        ${this.renderPositionsSummary(overallOpen, overallPnl)}
         ${this.renderPositionsSection(
           'Live Market Instances',
           'Instances actively executing trades',
@@ -2479,28 +2900,6 @@ class DashboardApp {
           'Instances running in analyzer/paper mode',
           analyzerInstances
         )}
-      </div>
-    `;
-  }
-
-  renderPositionsSummary(openCount, pnl) {
-    return `
-      <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">Open Positions Summary</h3>
-        </div>
-        <div class="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <div class="text-sm text-neutral-600">Total open positions</div>
-            <div class="text-2xl font-semibold">${openCount}</div>
-          </div>
-          <div>
-            <div class="text-sm text-neutral-600">Overall P&L</div>
-            <div class="text-2xl font-semibold ${Utils.getPnLColorClass(pnl)}">
-              ${Utils.formatCurrency(pnl)}
-            </div>
-          </div>
-        </div>
       </div>
     `;
   }
@@ -2541,35 +2940,48 @@ class DashboardApp {
 
   renderPositionsInstanceCard(inst) {
     const positions = inst.positions || [];
+    const openCount = typeof inst.open_positions_count === 'number'
+      ? inst.open_positions_count
+      : positions.length;
+    const isExpanded = this.watchlistPositionsExpanded.has(inst.instance_id);
+
     return `
-      <div class="rounded-lg border border-base-200 p-4">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <h4 class="font-semibold text-lg">${Utils.escapeHTML(inst.instance_name)}</h4>
-            <div class="flex gap-4 mt-1 text-sm text-neutral-600 flex-wrap">
-              <span>Broker: <span class="font-medium">${Utils.escapeHTML(inst.broker || 'N/A')}</span></span>
-              <span>Open positions: <span class="font-medium">${inst.open_positions_count}</span></span>
-            </div>
-          </div>
-          <div class="flex items-center gap-3">
-            <span class="font-semibold ${Utils.getPnLColorClass(inst.total_pnl)}">
-              ${Utils.formatCurrency(inst.total_pnl)}
+      <div class="rounded-lg border border-base-200">
+        <div class="flex flex-wrap items-center gap-3 p-3">
+          <button
+            class="flex flex-1 flex-wrap items-center gap-3 text-left focus:outline-none"
+            onclick="app.toggleWatchlistPositionInstance(${inst.instance_id})"
+            aria-expanded="${isExpanded}"
+            aria-controls="positions-body-${inst.instance_id}"
+          >
+            <span class="inline-flex items-center justify-center w-6 h-6 rounded-full border border-base-300 text-base-content/70 transform transition-transform ${isExpanded ? 'rotate-90' : ''}">
+              ▸
             </span>
-            <button class="btn btn-error btn-sm" onclick="app.closeAllPositions(${inst.instance_id})">
-              Close All
-            </button>
-          </div>
+            <span class="font-semibold text-base">${Utils.escapeHTML(inst.instance_name)}</span>
+            <span class="text-sm text-neutral-500">Broker: <span class="font-medium">${Utils.escapeHTML(inst.broker || 'N/A')}</span></span>
+            <span class="text-sm text-neutral-500">Open: <span class="font-medium">${openCount}</span></span>
+            <span class="text-sm text-neutral-500">P&L:
+              <span class="font-semibold ${Utils.getPnLColorClass(inst.total_pnl)}">
+                ${Utils.formatCurrency(inst.total_pnl)}
+              </span>
+            </span>
+          </button>
+          <button class="btn btn-error btn-sm ml-auto" onclick="app.closeAllPositions(${inst.instance_id})">
+            Close All
+          </button>
         </div>
-        <div class="mt-4">
-          ${positions.length > 0
-            ? this.renderPositionsTable(positions)
-            : '<p class="text-sm text-neutral-500">No open positions for this instance.</p>'}
+        <div id="positions-body-${inst.instance_id}" class="${isExpanded ? 'block' : 'hidden'} border-t border-base-200">
+          <div class="p-4">
+            ${positions.length > 0
+              ? this.renderPositionsTable(positions, inst.instance_id)
+              : '<p class="text-sm text-neutral-500">No open positions for this instance.</p>'}
+          </div>
         </div>
       </div>
     `;
   }
 
-  renderPositionsTable(positions) {
+  renderPositionsTable(positions, instanceId = null) {
     return `
       <div class="table-container overflow-x-auto">
         <table class="table">
@@ -2581,6 +2993,7 @@ class DashboardApp {
               <th class="text-right">Avg Price</th>
               <th class="text-right">LTP</th>
               <th class="text-right">P&L</th>
+              <th class="text-center">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -2595,6 +3008,16 @@ class DashboardApp {
                   <td class="text-right">${Utils.formatCurrency(pos.average_price || pos.avg_price || 0)}</td>
                   <td class="text-right">${Utils.formatCurrency(pos.ltp || pos.last_price || 0)}</td>
                   <td class="text-right ${Utils.getPnLColorClass(pnl)}">${Utils.formatCurrency(pnl)}</td>
+                  <td class="text-center">
+                    ${instanceId ? `
+                      <button
+                        class="btn btn-sm btn-outline"
+                        onclick="app.closePosition(${instanceId}, '${encodeURIComponent(pos.symbol || '')}', '${encodeURIComponent(pos.exchange || '')}', '${encodeURIComponent(pos.product || 'MIS')}')"
+                      >
+                        Close
+                      </button>
+                    ` : '-'}
+                  </td>
                 </tr>
               `;
             }).join('')}
@@ -2615,40 +3038,6 @@ class DashboardApp {
       0;
     const parsed = parseInt(rawQty, 10);
     return Number.isNaN(parsed) ? 0 : parsed;
-  }
-
-  /**
-   * Load orders content into tab
-   */
-  async loadOrdersTab() {
-    const ordersPanel = document.getElementById('tab-orders');
-    if (!ordersPanel) return;
-
-    try {
-      // Fetch orders
-      const response = await api.getOrders();
-      const orders = response.data;
-
-      ordersPanel.innerHTML = `
-        <div class="p-4">
-          <div class="flex justify-between items-center mb-4">
-            <div class="flex gap-2">
-              <select class="form-select" onchange="app.filterOrders(this.value)">
-                <option value="">All Status</option>
-                <option value="pending">Pending</option>
-                <option value="open">Open</option>
-                <option value="complete">Complete</option>
-                <option value="cancelled">Cancelled</option>
-                <option value="rejected">Rejected</option>
-              </select>
-            </div>
-          </div>
-          ${this.renderOrdersTable(orders)}
-        </div>
-      `;
-    } catch (error) {
-      ordersPanel.innerHTML = `<div class="p-4"><p class="text-center text-error-600">Failed to load orders: ${error.message}</p></div>`;
-    }
   }
 
   /**
@@ -3037,36 +3426,8 @@ class DashboardApp {
    * Filter orders by status
    */
   async filterOrders(status) {
-    try {
-      // Store current filter
-      this.currentOrderFilter = status;
-
-      // Fetch filtered orders
-      const filters = status ? { status } : {};
-      const response = await api.getOrders(filters);
-      const orders = response.data;
-
-      // Update the table
-      const tableContainer = document.querySelector('.table-container');
-      if (tableContainer) {
-        tableContainer.innerHTML = this.renderOrdersTable(orders);
-      }
-
-      // Update UI feedback
-      const selectElement = document.querySelector('select.form-select[onchange*="filterOrders"]');
-      if (selectElement) {
-        selectElement.value = status || '';
-      }
-
-      Utils.showToast(
-        status
-          ? `Showing ${orders.length} ${status} orders`
-          : `Showing all ${orders.length} orders`,
-        'info'
-      );
-    } catch (error) {
-      Utils.showToast('Failed to filter orders: ' + error.message, 'error');
-    }
+    this.currentOrderFilter = status || '';
+    await this.loadOrders(this.currentOrderFilter);
   }
 }
 

@@ -503,14 +503,37 @@ class InstrumentsService {
    * @param {string} [exchange] - Exchange code (default: NFO)
    * @returns {Promise<Array>} - Array of expiry dates
    */
-  async getExpiries(symbol, exchange = 'NFO') {
+  async getExpiries(symbol, exchange = 'NFO', options = {}) {
+    const instrumentTypes = Array.isArray(options.instrumentTypes)
+      ? options.instrumentTypes.filter(Boolean)
+      : (typeof options.instrumentTypes === 'string' && options.instrumentTypes.length > 0
+          ? options.instrumentTypes.split(',').map(type => type.trim()).filter(Boolean)
+          : []);
+    const matchField = options.matchField === 'name' ? 'name' : 'symbol';
+    const useName = matchField === 'name';
     try {
-      const expiries = await db.all(
-        `SELECT DISTINCT expiry
-         FROM instruments
-         WHERE symbol LIKE ? AND exchange = ? AND expiry IS NOT NULL`,
-        [`${symbol}%`, exchange]
-      );
+      const normalizedSymbol = String(symbol || '').toUpperCase();
+      let query = `
+        SELECT DISTINCT expiry
+        FROM instruments
+        WHERE UPPER(${matchField}) ${useName ? '=' : 'LIKE'} ? AND exchange = ? AND expiry IS NOT NULL
+      `;
+      const params = [
+        useName ? normalizedSymbol : `${normalizedSymbol}%`,
+        exchange,
+      ];
+
+      if (instrumentTypes.length > 0) {
+        const clauses = instrumentTypes.map(() => 'UPPER(instrumenttype) LIKE ?').join(' OR ');
+        query += ` AND (${clauses})`;
+        instrumentTypes.forEach(type => {
+          const normalized = type.toUpperCase();
+          const isExact = normalized === 'CE' || normalized === 'PE';
+          params.push(isExact ? normalized : `${normalized}%`);
+        });
+      }
+
+      const expiries = await db.all(query, params);
 
       if (!expiries || expiries.length === 0) {
         return [];

@@ -3,7 +3,7 @@
  * HTTP client with exponential backoff retry logic
  */
 
-import { ProxyAgent } from 'undici';
+import { Agent, ProxyAgent } from 'undici';
 import { log } from '../../core/logger.js';
 import { OpenAlgoError } from '../../core/errors.js';
 import config from '../../core/config.js';
@@ -21,8 +21,13 @@ class OpenAlgoClient {
     this.nonCriticalRetries = config.openalgo.nonCritical.maxRetries;
     this.nonCriticalRetryDelay = config.openalgo.nonCritical.retryDelay;
 
-    // Create undici ProxyAgent that uses environment proxy
-    // TLS verification can be disabled via PROXY_TLS_REJECT_UNAUTHORIZED=false (development only)
+    // Default dispatcher uses keep-alive sockets to reduce TLS handshakes.
+    this.dispatcher = new Agent({
+      keepAliveTimeout: 60000,
+      keepAliveMaxTimeout: 60000,
+    });
+
+    // Create undici ProxyAgent that uses environment proxy if configured
     const proxyUrl = process.env.https_proxy || process.env.HTTPS_PROXY ||
                      process.env.http_proxy || process.env.HTTP_PROXY;
 
@@ -50,11 +55,10 @@ class OpenAlgoClient {
         });
       } catch (error) {
         log.error('Invalid proxy URL, proceeding without proxy', { error: error.message });
-        this.dispatcher = null;
+        // Keep default dispatcher if proxy configuration fails
       }
     } else {
       log.info('No proxy configured for OpenAlgo requests');
-      this.dispatcher = null;
     }
   }
 
@@ -287,18 +291,32 @@ class OpenAlgoClient {
       try {
         responseData = await response.json();
       } catch (error) {
-        // Use the cloned response to get text for error message
         let responseText;
         try {
           responseText = await responseClone.text();
         } catch (textError) {
           responseText = 'Unable to read response body';
         }
-        throw new OpenAlgoError(
+
+        const contentType = response.headers.get('content-type') || '';
+        const trimmed = responseText.trim();
+        const looksHtml =
+          contentType.includes('text/html') ||
+          trimmed.startsWith('<!DOCTYPE html') ||
+          trimmed.startsWith('<html');
+
+        const jsonError = new OpenAlgoError(
           `Invalid JSON response: ${responseText.substring(0, 200)}`,
           url,
           response.status
         );
+
+        if (looksHtml) {
+          jsonError.isHtmlResponse = true;
+          jsonError.rawBody = trimmed.substring(0, 500);
+        }
+
+        throw jsonError;
       }
 
       // Check if request was successful

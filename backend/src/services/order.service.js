@@ -367,6 +367,8 @@ class OrderService {
         SELECT
           wo.*,
           i.name as instance_name,
+          i.broker as instance_broker,
+          i.is_analyzer_mode as instance_analyzer,
           w.name as watchlist_name
         FROM watchlist_orders wo
         JOIN instances i ON wo.instance_id = i.id

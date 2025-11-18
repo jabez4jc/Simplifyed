@@ -13,7 +13,14 @@ import marketDataFeedService from './market-data-feed.service.js';
 import { ValidationError, NotFoundError } from '../core/errors.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
 
+const NSE_INDEX_UNDERLYINGS = new Set(['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY']);
+const BSE_INDEX_UNDERLYINGS = new Set(['SENSEX', 'BANKEX']);
+
 class QuickOrderService {
+  constructor() {
+    this.symbolResolutionCache = new Map();
+    this.symbolResolutionCacheTtl = 60 * 1000;
+  }
   /**
    * Place quick order from watchlist
    * @param {Object} params - Order parameters
@@ -360,25 +367,22 @@ class QuickOrderService {
     let resolvedLotSize = symbol.lot_size;
 
     if (tradeMode === 'FUTURES') {
-      // For futures, we need to get the futures symbol
-      // This could be the symbol itself if it's a futures symbol
-      // or we need to resolve it from the underlying
-      if (symbol.symbol_type === 'FUTURES') {
-        finalSymbol = symbol.symbol;
-        finalExchange = symbol.exchange;
-      } else {
-        // Resolve futures symbol from underlying and expiry
-        if (!expiry) {
-          throw new ValidationError('Expiry is required for FUTURES trading on this symbol');
+      const derivativeExchange = symbol.symbol_type === 'FUTURES'
+        ? symbol.exchange
+        : this._getDerivativeExchange(symbol.exchange);
+      const underlying =
+        (symbol.underlying_symbol || symbol.name || symbol.symbol || '').toUpperCase();
+
+      if (expiry) {
+        if (!underlying) {
+          throw new ValidationError(
+            'Underlying symbol is required to resolve futures contracts. Set it in the watchlist symbol settings.'
+          );
         }
 
-        const underlying = symbol.underlying_symbol || symbol.symbol;
-        const derivativeExchange = this._getDerivativeExchange(symbol.exchange);
-
-        log.info('Resolving futures symbol', {
+        log.info('Resolving futures symbol for selected expiry', {
           underlying,
           expiry,
-          originalExchange: symbol.exchange,
           derivativeExchange,
         });
 
@@ -398,6 +402,12 @@ class QuickOrderService {
           exchange: finalExchange,
           lotSize: resolvedLotSize,
         });
+      } else if (symbol.symbol_type === 'FUTURES') {
+        // Fall back to the watchlist contract if no expiry was picked
+        finalSymbol = symbol.symbol;
+        finalExchange = symbol.exchange;
+      } else {
+        throw new ValidationError('Expiry is required for FUTURES trading on this symbol');
       }
     }
 
@@ -668,10 +678,10 @@ class QuickOrderService {
         const currentStrikePosition = position.netQty;
         const targetStrikePosition = this._computeTarget(currentStrikePosition, action, Qstep, writerGuard);
 
-        // Only place order if position changes
         if (targetStrikePosition !== currentStrikePosition) {
           const algoAction = this._determineAlgoAction(currentStrikePosition, targetStrikePosition);
           const quantity = Math.abs(targetStrikePosition - currentStrikePosition);
+          const parsed = this._parseOptionSymbol(position.symbol || '');
 
           log.info('FLOAT_OFS Order per strike', {
             symbol: position.symbol,
@@ -687,6 +697,7 @@ class QuickOrderService {
             quantity,
             position_size: targetStrikePosition,
             currentPosition: currentStrikePosition,
+            strike: parsed.strike,
           });
         } else {
           log.debug('Skipping position - no change needed', {
@@ -702,9 +713,7 @@ class QuickOrderService {
         throw new ValidationError('No position change needed - all positions already at target');
       }
 
-      // Place orders for each strike
-      const orderResults = [];
-      for (const order of ordersToPlace) {
+      const orderPromises = ordersToPlace.map(async order => {
         const orderDataToSend = {
           strategy: symbol.watchlist_name || 'default',
           exchange: derivativeExchange,
@@ -727,7 +736,6 @@ class QuickOrderService {
 
         const orderResult = await openalgoClient.placeSmartOrder(instance, orderDataToSend);
 
-        // Sync position to watchlist_options_state table
         await this._syncOptionsState(
           symbol.watchlist_id,
           symbol.id,
@@ -741,7 +749,6 @@ class QuickOrderService {
           product
         );
 
-        // Record order in database
         await this._recordQuickOrder({
           watchlist_id: symbol.watchlist_id,
           symbol_id: symbol.id,
@@ -765,15 +772,17 @@ class QuickOrderService {
           message: orderResult.message || `${operatingMode} mode: ${action} executed successfully`,
         });
 
-        orderResults.push({
+        return {
           order_id: orderResult.orderid,
           status: orderResult.status,
           symbol: order.symbol,
           strike: order.strike,
           quantity: order.quantity,
           action: order.action,
-        });
-      }
+        };
+      });
+
+      const orderResults = await Promise.all(orderPromises);
 
       log.info('FLOAT_OFS REDUCE/INCEASE: All orders placed successfully', {
         action,
@@ -957,23 +966,63 @@ class QuickOrderService {
   async _closePositions(instance, symbol, orderParams) {
     const { action, tradeMode, product, expiry: userExpiry } = orderParams;
 
-    const underlying = symbol.underlying_symbol || symbol.symbol;
+    const underlying = this._getUnderlyingForClosing(symbol);
 
     let positionsToClose = [];
 
-    if (action === 'EXIT_ALL' && tradeMode === 'OPTIONS') {
-      // Close all CE and PE positions for the underlying
-      // Use user-selected expiry if provided, otherwise auto-select nearest
-      let expiry = userExpiry;
+    const closeAllTypeMap = {
+      CLOSE_ALL_CE: 'CE',
+      CLOSE_ALL_PE: 'PE',
+    };
+
+    if (closeAllTypeMap[action] && tradeMode === 'OPTIONS') {
+      const optionType = closeAllTypeMap[action];
+      let expiry = userExpiry ? this._normalizeExpiryInput(userExpiry) : null;
       if (!expiry) {
         expiry = await expiryManagementService.getNearestExpiry(
           underlying,
           symbol.exchange,
           instance
         );
-        log.info('Auto-selected nearest expiry for EXIT_ALL', { expiry });
-      } else {
-        log.info('Using user-selected expiry for EXIT_ALL', { expiry });
+      }
+      if (expiry) {
+        expiry = this._normalizeExpiryInput(expiry);
+      }
+      log.info('Using expiry for close-all', { action, expiry });
+
+      if (!expiry) {
+        throw new ValidationError('Unable to determine expiry for close-all action');
+      }
+
+      const typePositions = await this._getOpenOptionsPositions(
+        instance,
+        underlying,
+        expiry,
+        optionType,
+        product
+      );
+
+      if (!expiry) {
+        throw new ValidationError('Unable to determine expiry for close-all action');
+      }
+
+      positionsToClose = typePositions;
+    } else if (action === 'EXIT_ALL' && tradeMode === 'OPTIONS') {
+      let expiry = userExpiry ? this._normalizeExpiryInput(userExpiry) : null;
+      if (!expiry) {
+        expiry = await expiryManagementService.getNearestExpiry(
+          underlying,
+          symbol.exchange,
+          instance
+        );
+      }
+      if (expiry) {
+        expiry = this._normalizeExpiryInput(expiry);
+      }
+      log.info('Using expiry for EXIT_ALL', { expiry });
+
+      if (!expiry) {
+        throw new ValidationError('Unable to determine expiry for EXIT_ALL');
       }
 
       const cePositions = await this._getOpenOptionsPositions(
@@ -1196,6 +1245,29 @@ class QuickOrderService {
       });
       return 0;
     }
+  }
+
+  /**
+   * Close a single position by symbol
+   * @param {Object} instance - Instance object
+   * @param {Object} symbol - Minimal symbol metadata (symbol, exchange)
+   * @param {Object} params - Additional order params (tradeMode, product)
+   * @returns {Promise<Object>}
+   */
+  async closePosition(instance, symbol, params = {}) {
+    const symbolPayload = {
+      ...symbol,
+      watchlist_name: params.watchlist_name || 'manual-close',
+    };
+
+    const orderParams = {
+      action: 'EXIT',
+      tradeMode: params.tradeMode || 'FUTURES',
+      product: params.product || 'MIS',
+      expiry: params.expiry || null,
+    };
+
+    return this._closePositions(instance, symbolPayload, orderParams);
   }
 
   /**
@@ -1693,10 +1765,12 @@ class QuickOrderService {
       const searchResults = await openalgoClient.searchSymbols(instance, underlying);
 
       const futuresSymbols = searchResults.filter(result => {
-        const isFutures = result.instrumenttype === 'FUT';
-        const matchesUnderlying = result.name === underlying;
+        const isFutures = (result.instrumenttype || '').toUpperCase().startsWith('FUT');
+        const matchesUnderlying = (result.name || '').toUpperCase() === underlying.toUpperCase();
         const matchesExpiry = result.expiry === openalgoExpiry;
-        return isFutures && matchesUnderlying && matchesExpiry;
+        const matchesExchange =
+          (result.exchange || '').toUpperCase() === (exchange || '').toUpperCase();
+        return isFutures && matchesUnderlying && matchesExpiry && matchesExchange;
       });
 
       if (futuresSymbols.length === 0) {
@@ -1768,6 +1842,61 @@ class QuickOrderService {
     };
 
     return exchangeMap[exchange] || exchange;
+  }
+
+  _getUnderlyingQuoteExchange(symbol = {}) {
+    const exchange = (symbol.exchange || '').toUpperCase();
+    const instrumentType = (symbol.instrumenttype || symbol.symbol_type || '').toUpperCase();
+    const brexchange = (symbol.brexchange || '').toUpperCase();
+    const underlying = (symbol.underlying_symbol || symbol.name || symbol.symbol || '').toUpperCase();
+
+    if (BSE_INDEX_UNDERLYINGS.has(underlying)) {
+      return 'BSE_INDEX';
+    }
+    if (NSE_INDEX_UNDERLYINGS.has(underlying)) {
+      return 'NSE_INDEX';
+    }
+
+    if (exchange === 'BSE_INDEX' || brexchange === 'BSE_INDEX') {
+      return 'BSE_INDEX';
+    }
+    if (exchange === 'NSE_INDEX' || brexchange === 'NSE_INDEX') {
+      return 'NSE_INDEX';
+    }
+
+    if (instrumentType === 'INDEX') {
+      return brexchange && brexchange.startsWith('BSE') ? 'BSE_INDEX' : 'NSE_INDEX';
+    }
+
+    if (symbol.exchange?.toUpperCase().includes('MCX') || brexchange === 'MCX' || instrumentType === 'COMMODITY') {
+      return 'MCX';
+    }
+
+    if (exchange === 'BFO') return 'BSE';
+    if (exchange === 'NFO') return 'NSE';
+
+    return exchange || brexchange || 'NSE';
+  }
+
+  _getUnderlyingQuoteSymbol(symbol = {}) {
+    const exchange = (symbol.exchange || '').toUpperCase();
+    if (exchange === 'MCX') {
+      return (symbol.symbol || symbol.trading_symbol || '').toUpperCase();
+    }
+
+    return (symbol.underlying_symbol || symbol.symbol || symbol.name || '').toUpperCase();
+  }
+
+  _getUnderlyingForClosing(symbol = {}) {
+    if (symbol.underlying_symbol) {
+      return symbol.underlying_symbol.toUpperCase();
+    }
+    if (symbol.name) {
+      return symbol.name.toUpperCase();
+    }
+    const candidate = (symbol.symbol || symbol.trading_symbol || '').toUpperCase();
+    const match = candidate.match(/^([A-Z]+)/);
+    return match ? match[1] : candidate;
   }
 
   /**
@@ -1897,33 +2026,48 @@ class QuickOrderService {
    */
   async _resolveOptionSymbolForInstance(instance, symbol, orderParams) {
     const { action, expiry: userExpiry, optionsLeg: userOptionsLeg } = orderParams;
-
-    // Parse action to determine option type
     const optionType = this._getOptionTypeFromAction(action);
 
-    // Get underlying symbol and current LTP
     const underlying = symbol.underlying_symbol || symbol.symbol;
-    const ltp = await this._getUnderlyingLTPWithFallback(instance, underlying, symbol.exchange);
+    const derivativeExchange = this._getDerivativeExchange(symbol.exchange);
+    const baseExchange = this._getUnderlyingQuoteExchange(symbol);
+    const quoteSymbol = this._getUnderlyingQuoteSymbol(symbol);
 
-    // Get expiry - use user-selected expiry if provided, otherwise auto-select nearest
-    let expiry = userExpiry;
-    if (!expiry) {
-      expiry = await expiryManagementService.getNearestExpiry(
-        underlying,
-        symbol.exchange,
-        instance
-      );
-      log.info('Auto-selected nearest expiry', { expiry });
-    } else {
-      log.info('Using user-selected expiry', { expiry });
+    const strikeOffset = userOptionsLeg || symbol.options_strike_selection || 'ATM';
+    const cacheKey = this._buildResolutionCacheKey(
+      symbol.id,
+      derivativeExchange,
+      optionType,
+      userExpiry || '',
+      strikeOffset
+    );
+
+    const now = Date.now();
+    const cached = this.symbolResolutionCache.get(cacheKey);
+    if (cached && now - cached.ts < this.symbolResolutionCacheTtl) {
+      log.debug('Using cached option resolution', { cacheKey });
+      return cached.value;
     }
 
-    // Get strike offset - use user-selected options leg if provided, otherwise use symbol default
-    const strikeOffset = userOptionsLeg || symbol.options_strike_selection || 'ATM';
-    log.info('Using strike offset', { strikeOffset, userSelected: !!userOptionsLeg });
+    await this._ensureQuoteAvailableForSymbol(instance, baseExchange, quoteSymbol);
 
-    // Resolve option symbol
-    const derivativeExchange = this._getDerivativeExchange(symbol.exchange);
+    const [ltp, expiry] = await Promise.all([
+      this._getUnderlyingLTPWithFallback(instance, quoteSymbol, baseExchange),
+      this._resolveExpiryForOption(instance, underlying, derivativeExchange, userExpiry),
+    ]);
+
+    if (!expiry) {
+      throw new ValidationError('Unable to determine expiry for options resolution');
+    }
+
+    log.info('Resolving option symbol', {
+      underlying,
+      expiry,
+      optionType,
+      strikeOffset,
+      baseExchange,
+      quoteSymbol,
+    });
 
     const optionSymbol = await optionsResolutionService.resolveOptionSymbol({
       underlying,
@@ -1935,11 +2079,9 @@ class QuickOrderService {
       instance,
     });
 
-    return {
-      underlying,
-      expiry,
-      optionSymbol,
-    };
+    const resolution = { underlying, expiry, optionSymbol };
+    this.symbolResolutionCache.set(cacheKey, { value: resolution, ts: now });
+    return resolution;
   }
 
   /**
@@ -1998,10 +2140,12 @@ class QuickOrderService {
     }
 
     const derivativeExchange = this._getDerivativeExchange(symbol.exchange);
+    const baseExchange = this._getUnderlyingQuoteExchange(symbol);
+    const quoteSymbol = this._getUnderlyingQuoteSymbol(symbol);
     const underlyingLtp = await this._getUnderlyingLTP(
       marketDataInstance,
-      underlying,
-      symbol.exchange
+      quoteSymbol,
+      baseExchange
     );
 
     const resolveParamsBase = {
@@ -2345,6 +2489,29 @@ class QuickOrderService {
     }
   }
 
+  _buildResolutionCacheKey(symbolId, exchange, optionType, expiry, strikeOffset) {
+    return `${symbolId}::${exchange}::${optionType}::${expiry || 'AUTO'}::${strikeOffset || 'ATM'}`;
+  }
+
+  async _resolveExpiryForOption(instance, underlying, derivativeExchange, userExpiry) {
+    if (userExpiry) {
+      return this._normalizeExpiryInput(userExpiry);
+    }
+    const expiry = await expiryManagementService.getNearestExpiry(
+      underlying,
+      derivativeExchange,
+      instance
+    );
+    return expiry ? this._normalizeExpiryInput(expiry) : null;
+  }
+
+  async _ensureQuoteAvailableForSymbol(instance, exchange, symbol) {
+    const snapshot = marketDataFeedService.getQuoteSnapshot(instance.id);
+    const cached = this._findQuoteInSnapshot(snapshot, exchange, symbol);
+    if (cached) return;
+    await marketDataFeedService.refreshQuotes({ force: true });
+  }
+
   /**
    * Get or create anchored strike for ANCHOR_OFS policy
    * @param {number} symbolId - Watchlist symbol ID
@@ -2455,14 +2622,18 @@ class QuickOrderService {
   }
 
   _invalidateInstanceCaches(instanceId, options = {}) {
-    const { positions = true, funds = true } = options;
+    const { positions = true, funds = true, orderbook = true } = options;
 
     if (positions) {
       marketDataFeedService.invalidatePositions(instanceId, { refresh: true })
         .catch(error => log.warn('Failed to refresh position cache', {
           instance_id: instanceId,
           error: error.message,
-        }));
+      }));
+    }
+
+    if (orderbook) {
+      marketDataFeedService.invalidateOrderbook(instanceId);
     }
 
     if (funds) {

@@ -83,6 +83,7 @@ class QuickOrderHandler {
 
       const symbol = symbolRow.dataset.symbol;
       const exchange = symbolRow.dataset.exchange;
+      const underlyingSymbol = symbolRow.dataset.underlying || symbol;
 
     let capabilities = { equity: true, futures: true, options: true, symbolType: 'UNKNOWN' };
     try {
@@ -135,7 +136,7 @@ class QuickOrderHandler {
         // INDEX and EQUITY symbols need to use NFO/BFO for their derivatives
         const derivativeExchange = this.getDerivativeExchange(exchange, symbolType);
         console.log(`[QuickOrder] Fetching expiries for symbol: ${symbol}, exchange: ${exchange} -> ${derivativeExchange}, mode: ${tradeMode}`);
-        expiries = await this.fetchAvailableExpiries(symbol, derivativeExchange);
+        expiries = await this.fetchAvailableExpiries(underlyingSymbol, derivativeExchange, tradeMode);
         console.log(`[QuickOrder] Received ${expiries.length} expiries:`, expiries.slice(0, 5));
         this.availableExpiries.set(symbolId, expiries);
       }
@@ -202,10 +203,8 @@ class QuickOrderHandler {
   renderTradingControls({ watchlistId, symbolId, symbol, exchange, symbolType, tradeMode, capabilities = {}, availableModes = [], optionsLeg, quantity, expiries, selectedExpiry, operatingMode, strikePolicy, writerGuard }) {
     const showOptionsLeg = tradeMode === 'OPTIONS' && capabilities.options;
     const showExpirySelector =
-      ((tradeMode === 'FUTURES' && capabilities.futures) ||
-        (tradeMode === 'OPTIONS' && capabilities.options)) &&
-      expiries &&
-      expiries.length > 0;
+      (tradeMode === 'FUTURES' && capabilities.futures) ||
+      (tradeMode === 'OPTIONS' && capabilities.options);
     const showOperatingMode = tradeMode === 'OPTIONS' && capabilities.options;
     const showStrikePolicy = tradeMode === 'OPTIONS' && capabilities.options;
 
@@ -263,16 +262,18 @@ class QuickOrderHandler {
       ? renderField(
           'Expiry',
           'Pick the contract month you want to trade. Futures and options require an expiry.',
-          `<select
-            class="select-expiry"
-            data-symbol-id="${symbolId}"
-            onchange="quickOrder.selectExpiry(${symbolId}, this.value)">
-            ${expiries.map(expiry => `
-              <option value="${expiry}" ${expiry === selectedExpiry ? 'selected' : ''}>
-                ${this.formatExpiryDate(expiry)}
-              </option>
-            `).join('')}
-          </select>`
+          expiries && expiries.length > 0
+            ? `<select
+                class="select-expiry"
+                data-symbol-id="${symbolId}"
+                onchange="quickOrder.selectExpiry(${symbolId}, this.value)">
+                ${expiries.map(expiry => `
+                  <option value="${expiry}" ${expiry === selectedExpiry ? 'selected' : ''}>
+                    ${this.formatExpiryDate(expiry)}
+                  </option>
+                `).join('')}
+              </select>`
+            : `<p class="text-sm text-warning">No expiries available for this symbol. Verify the instruments cache.</p>`
         )
       : '';
 
@@ -879,14 +880,17 @@ class QuickOrderHandler {
   /**
    * Fetch available expiries for a symbol
    */
-  async fetchAvailableExpiries(symbol, exchange) {
-    const underlying = this.extractUnderlying(symbol);
+  async fetchAvailableExpiries(underlyingSymbol, exchange, tradeMode) {
+    const normalizedUnderlying = (underlyingSymbol || '').trim() || this.extractUnderlying(underlyingSymbol);
     const derivativeExchange = this.getDerivativeExchange(exchange);
-    console.log(`[QuickOrder] fetchAvailableExpiries: underlying=${underlying}, exchange=${exchange}, derivative=${derivativeExchange}`);
+    const instrumentTypes = this.getInstrumentTypesForMode(tradeMode);
+    console.log(`[QuickOrder] fetchAvailableExpiries: underlying=${normalizedUnderlying}, exchange=${exchange}, derivative=${derivativeExchange}, instruments=${instrumentTypes.join('/') || 'any'}`);
 
     const attemptFetch = async (options = {}) => {
-      const response = await api.getExpiry(underlying, {
+      const response = await api.getExpiry(normalizedUnderlying, {
         exchange: derivativeExchange,
+        instrumentTypes,
+        matchField: 'name',
         ...options,
       });
       if (response?.data && Array.isArray(response.data)) {
@@ -961,6 +965,16 @@ class QuickOrderHandler {
     // Try to match pattern with numbers/dates
     const match = symbol.match(/^([A-Z]+)/);
     return match ? match[1] : symbol;
+  }
+
+  getInstrumentTypesForMode(tradeMode) {
+    if (tradeMode === 'FUTURES') {
+      return ['FUT'];
+    }
+    if (tradeMode === 'OPTIONS') {
+      return ['CE', 'PE'];
+    }
+    return [];
   }
 
   /**

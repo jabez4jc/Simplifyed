@@ -1,390 +1,155 @@
-# Simplifyed Admin V2 - Complete Rebuild
+# Simplifyed Admin
 
-## 🎯 Overview
-
-Simplifyed Admin V2 is a complete ground-up rebuild of the trading dashboard for managing multiple OpenAlgo instances. This version features:
-
-- **Clean Architecture**: Separation of concerns with clear layers
-- **HTTP Polling**: Smart polling instead of WebSockets (initially)
-- **Comprehensive Testing**: Unit and integration tests
-- **Production Ready**: Proper error handling, logging, and security
+Simplifyed Admin is the control plane for running multiple OpenAlgo broker instances from a single, responsive dashboard. It combines watchlist management, quick‑order execution (equity, futures, and Buyer/Writer options modes), live market data, and broker health monitoring without breaching OpenAlgo rate limits.
 
 ---
 
-## 📁 Project Structure
+## Highlights
+
+- **Unified dashboard** – Collapsible navigation, stacked watchlists, help affordances, and quick access to positions and orders.
+- **Buyer/Writer options workflow** – FLOAT_OFS strike selection, operating‑mode toggles, expiry management, option preview with auto‑resolved CE/PE symbols.
+- **Shared market‑data feed** – Quotes, positions, and funds are polled once per interval and cached for every admin session.
+- **SQLite + services layer** – Instruments cache, option chain builder, expiry calendar, quick‑order execution engine, and health monitoring.
+- **Docs as source of truth** – See `docs/application_architecture.md` for the in‑depth architecture guide and `docs/market_data_feed_service.md` for the rate‑limit strategy.
+
+---
+
+## Repository Layout
 
 ```
-simplifyed-v2/
+.
 ├── backend/
-│   ├── src/
-│   │   ├── core/              # Core infrastructure
-│   │   │   ├── config.js      # ✅ Configuration management
-│   │   │   ├── logger.js      # ✅ Winston logger
-│   │   │   ├── database.js    # ✅ SQLite wrapper
-│   │   │   └── errors.js      # ✅ Custom error classes
-│   │   ├── utils/
-│   │   │   └── sanitizers.js  # ✅ Input sanitization
-│   │   ├── integrations/
-│   │   │   └── openalgo/      # ✅ OpenAlgo API client
-│   │   ├── services/          # ✅ Business logic
-│   │   ├── routes/            # ✅ API endpoints
-│   │   └── middleware/        # ✅ Express middleware
-│   ├── migrations/            # ✅ Database migrations
-│   ├── tests/                 # ⏳ Test suites
-│   ├── server.js              # ✅ Entry point
-│   ├── public/                # ✅ Frontend application
-│   └── package.json           # ✅ Dependencies
-├── docs/                      # ⏳ API documentation
-
-Legend: ✅ Complete | 🔄 In Progress | ⏳ Pending
+│   ├── public/                 # Front-end assets (dashboard.html, JS, CSS)
+│   ├── src/                    # Express server, routes, services, integrations
+│   ├── migrations/             # SQLite migrations
+│   ├── scripts/                # Utility scripts (imports, maintenance)
+│   ├── package.json            # Backend dependencies + scripts
+│   └── server.js               # Entry point (starts feed service + Express)
+├── docs/                       # Living documentation (architecture, services, feeds)
+├── Requirements/               # Functional specs (options workflow, option-chain guide)
+├── import-instruments*.sh/py   # Helpers for seeding instruments cache
+└── README.md                   # This file
 ```
+
+> See `docs/application_architecture.md` for the complete component breakdown.
 
 ---
 
-## 🏗️ Architecture Layers
+## Getting Started
 
-### 1. Core Infrastructure (✅ Complete)
+### 1. Requirements
 
-**Purpose**: Foundation for the entire application
+- Node.js 18+
+- npm 9+
+- SQLite 3 (CLI optional but helpful)
 
-- **config.js**: Environment variable management with validation
-- **logger.js**: Structured logging using Winston
-- **database.js**: Promise-based SQLite interface with transaction support
-- **errors.js**: Custom error classes for better error handling
+### 2. Install dependencies
 
-**Key Features**:
-- Type-safe configuration loading
-- Structured JSON logging for production
-- Database connection pooling
-- Graceful error handling
-
-### 2. OpenAlgo Integration Layer (✅ Complete)
-
-**Purpose**: Clean interface to OpenAlgo API
-
-```javascript
-openalgo/
-├── client.js          # HTTP client with retry logic
-├── endpoints.js       # All API endpoints
-└── validators.js      # Request/response validation
-```
-
-**Endpoints to Implement**:
-- ✅ ping - Test connection
-- ✅ analyzer - Get/toggle analyzer mode
-- ✅ positionbook - Get positions
-- ✅ orderbook - Get orders
-- ✅ tradebook - Get trades
-- ✅ placeorder - Place order (will use placesmartorder)
-- ✅ cancelorder - Cancel order
-- ✅ cancelallorder - Cancel all orders
-- ✅ closeposition - Close positions
-- ✅ funds - Get account funds
-- ✅ holdings - Get holdings
-
-### 3. Service Layer (✅ Complete)
-
-**Purpose**: Business logic and data manipulation
-
-```javascript
-services/
-├── instance.service.js    # Instance CRUD, health checks
-├── watchlist.service.js   # Watchlist management
-├── order.service.js       # Order placement using placesmartorder
-├── position.service.js    # Position tracking
-├── pnl.service.js         # P&L calculations
-├── polling.service.js     # Smart polling orchestration
-└── alert.service.js       # Alert notifications
-```
-
-**Key Responsibilities**:
-- Data validation before database operations
-- Complex business logic
-- Integration with OpenAlgo client
-- Error handling and logging
-
-### 4. API Routes Layer (⏳ Pending)
-
-**Purpose**: HTTP endpoints for frontend
-
-```javascript
-routes/v1/
-├── index.js           # Router aggregator
-├── instances.js       # Instance management
-├── watchlists.js      # Watchlist operations
-├── orders.js          # Order operations
-├── positions.js       # Position operations
-├── symbols.js         # Symbol search
-└── admin.js           # Admin operations
-```
-
-### 5. Middleware Layer (⏳ Pending)
-
-**Purpose**: Request/response processing
-
-```javascript
-middleware/
-├── auth.js            # Authentication
-├── validation.js      # Request validation
-├── error-handler.js   # Global error handler
-└── rate-limiter.js    # Rate limiting
-```
-
----
-
-## 🔄 Smart Polling Strategy
-
-### Instance Polling (Every 15 seconds)
-```javascript
-// Updates:
-- P&L data (tradebook, positionbook)
-- Account balance (funds)
-- Order status (orderbook)
-- Health status (ping)
-```
-
-### Market Data Polling (Only on Watchlist Page)
-```javascript
-// When watchlist page is active:
-- Poll quotes every 5 seconds
-- Update LTP, change%, P&L
-
-// When page is inactive:
-- Stop polling
-- Resume on page load
-```
-
-### Manual Refresh
-```javascript
-// Bypass cron, update immediately:
-- Fetch all data
-- Update database
-- Broadcast to connected clients
-```
-
----
-
-## 🗄️ Database Schema
-
-### Core Tables
-```sql
--- Trading Instances
-instances (
-  id, name, host_url, api_key, strategy_tag,
-  is_primary_admin, is_secondary_admin,
-  target_profit, target_loss,
-  current_balance, realized_pnl, unrealized_pnl, total_pnl,
-  is_active, is_analyzer_mode,
-  health_status, last_health_check,
-  created_at, updated_at
-)
-
--- Watchlists
-watchlists (
-  id, name, description, is_active,
-  created_at, updated_at
-)
-
--- Watchlist Symbols
-watchlist_symbols (
-  id, watchlist_id, exchange, symbol, token,
-  qty_type, qty_value, product_type, order_type,
-  target_type, target_value,
-  sl_type, sl_value,
-  max_position_size,
-  is_enabled,
-  created_at, updated_at
-)
-
--- Instance Assignments
-watchlist_instances (
-  id, watchlist_id, instance_id,
-  assigned_at
-)
-
--- Orders
-watchlist_orders (
-  id, watchlist_id, instance_id, symbol_id,
-  exchange, symbol, side, quantity,
-  order_type, product_type, price, trigger_price,
-  status, order_id, broker_order_id,
-  message, metadata,
-  placed_at, updated_at
-)
-
--- Positions
-watchlist_positions (
-  id, watchlist_id, instance_id, symbol_id,
-  exchange, symbol, quantity, average_price,
-  current_price, realized_pnl, unrealized_pnl,
-  status, entered_at, exited_at
-)
-
--- Users
-users (
-  id, email, is_admin,
-  created_at
-)
-```
-
----
-
-## 🧪 Testing Strategy
-
-### Unit Tests
-```javascript
-tests/unit/
-├── services/
-│   ├── instance.service.test.js
-│   ├── pnl.service.test.js
-│   └── order.service.test.js
-├── integrations/
-│   └── openalgo.client.test.js
-└── utils/
-    └── sanitizers.test.js
-```
-
-### Integration Tests
-```javascript
-tests/integration/
-├── api/
-│   ├── instances.test.js
-│   ├── watchlists.test.js
-│   └── orders.test.js
-└── database/
-    └── migrations.test.js
-```
-
----
-
-## 🚀 Development Workflow
-
-### Setup
 ```bash
-cd simplifyed-v2/backend
+cd backend
 npm install
-cp .env.example .env
-# Edit .env with your configuration
 ```
 
-### Run Migrations
+### 3. Configure environment
+
+Copy `.env.example` (if provided) to `.env` and populate:
+
+```
+PORT=3000
+SESSION_SECRET=replace-me
+DATABASE_PATH=./database/simplifyed.db
+OPENALGO_PROXY=          # optional
+GOOGLE_CLIENT_ID=...     # optional (required for OAuth login)
+GOOGLE_CLIENT_SECRET=...
+TELEGRAM_BOT_TOKEN=...   # optional (alerting)
+```
+
+### 4. Run migrations
+
+The server expects schema tables such as `application_settings`, `users`, `watchlists`, etc. If you see startup errors like `SQLITE_ERROR: no such table: users`, run:
+
 ```bash
+cd backend
 npm run migrate
 ```
 
-### Start Development Server
+Re-run this command after pulling new migrations.
+
+### 5. Build styling (optional for dev)
+
 ```bash
-npm run dev
+npm run build:css
 ```
 
-### Run Tests
+During active development you can run Tailwind in watch mode via `npm run dev:css` (see `backend/package.json` if needed).
+
+### 6. Start the server
+
 ```bash
-npm test              # All tests
-npm run test:unit     # Unit tests only
-npm run test:integration  # Integration tests only
+npm start            # production style
+# or
+npm run dev          # rebuilds CSS + restarts on change (if configured)
 ```
 
----
-
-## 📊 Progress Tracker
-
-### Core Infrastructure ✅
-- [x] Project structure
-- [x] Package.json with dependencies
-- [x] Configuration management
-- [x] Logger (Winston)
-- [x] Database wrapper
-- [x] Custom errors
-- [x] Input sanitizers
-
-### OpenAlgo Integration ✅
-- [x] HTTP client with retry (566 lines)
-- [x] Endpoint definitions (40+ endpoints)
-- [x] Request/response validation
-- [ ] Unit tests
-
-### Database Layer ✅
-- [x] Migration system with up/down/status
-- [x] Initial schema (11 tables)
-- [x] Indexes (40+ indexes)
-- [x] SQLite with WAL mode
-
-### Services ✅
-- [x] Instance service (507 lines)
-- [x] Watchlist service (720+ lines)
-- [x] Order service (460+ lines)
-- [x] P&L service (460+ lines)
-- [x] Polling orchestrator (380+ lines)
-
-### API Routes ✅
-- [x] Instance endpoints (/api/v1/instances)
-- [x] Watchlist endpoints (/api/v1/watchlists)
-- [x] Order endpoints (/api/v1/orders)
-- [x] Position endpoints (/api/v1/positions)
-- [x] Symbol endpoints (/api/v1/symbols)
-- [x] Polling endpoints (/api/v1/polling)
-
-### Middleware ✅
-- [x] Error handler (comprehensive error types)
-- [x] Authentication (Google OAuth + test mode)
-- [x] Request logger
-- [x] Session management
-
-### Server ✅
-- [x] Express app setup (server.js)
-- [x] Database connection
-- [x] Polling service startup
-- [x] Graceful shutdown
-
-### Frontend ⏳
-- [ ] API client
-- [ ] Dashboard component
-- [ ] Instance manager
-- [ ] Watchlist editor
-- [ ] Order panel
-- [ ] Position viewer
-
-### Testing ⏳
-- [ ] Unit tests
-- [ ] Integration tests
-- [ ] E2E tests
+The dashboard is available at `http://localhost:3000`. Login is handled via the configured auth strategy (local/session or Google OAuth depending on environment).
 
 ---
 
-## 🎯 Next Steps
+## npm Scripts (backend)
 
-1. **Write Tests** - Unit tests for services, integration tests for API routes
-2. **API Documentation** - OpenAPI/Swagger spec for all REST endpoints
-3. **Deployment Guide** - Production deployment instructions (PM2, Docker, systemd)
-4. **Integration Testing** - End-to-end testing with live OpenAlgo instances
+| Script              | Description |
+| ------------------- | ----------- |
+| `npm start`         | Runs `server.js` once (production style). |
+| `npm run dev`       | Starts the dev server with optional file watching (configure per need). |
+| `npm run migrate`   | Runs pending SQLite migrations (`backend/migrations`). |
+| `npm run build:css` | Builds Tailwind/DaisyUI CSS for `public/css`. |
 
-## ✅ Backend Complete!
-
-The backend is **fully functional** with:
-- ✅ 40+ OpenAlgo API endpoints integrated
-- ✅ Complete CRUD operations for instances, watchlists, orders
-- ✅ Smart polling (15s for instances, 5s for market data)
-- ✅ P&L calculations (realized, unrealized, aggregated)
-- ✅ Safe-Switch workflow for analyzer mode
-- ✅ REST API with comprehensive error handling
-- ✅ Google OAuth + test mode authentication
-- ✅ Database migrations with SQLite
-- ✅ Structured logging with Winston
-
-**Start the server**: `cd backend && npm start`
+> Unit tests were removed in this branch; reintroduce them under `backend/tests/` if required.
 
 ---
 
-## 📝 Design Principles
+## Common Tasks
 
-1. **Simplicity**: Clear, readable code
-2. **Separation of Concerns**: Each layer has a single responsibility
-3. **Testability**: Easy to unit test and mock
-4. **Error Handling**: Graceful failures with proper logging
-5. **Security**: Input validation, sanitization, rate limiting
-6. **Performance**: Efficient queries, smart polling
-7. **Maintainability**: Well-documented, consistent patterns
+### Import instruments
+
+Use one of the helper scripts to populate the `instruments` table (required for option-chain resolution and symbol search). Example:
+
+```bash
+./import-instruments.sh --exchange NFO --instance-id 12
+```
+
+### Seed settings/users
+
+If you need default settings or an admin account, add seed data through migrations or SQLite CLI:
+
+```bash
+sqlite3 backend/database/simplifyed.db ".tables"
+```
+
+### Rebuild/refresh caches
+
+- **Market data feed** starts automatically (quotes/positions/funds). Restart the server if you change feed configuration.
+- **Expiry cache**: schedule auto-refresh via `expiry-management.service` or trigger manually via the `/symbols/expiry` route with `instanceId`.
 
 ---
 
-**Built with ❤️ by Simplifyed Team**
+## Troubleshooting
+
+| Symptom | Fix |
+| ------- | --- |
+| `SQLITE_ERROR: no such table: ...` on startup | Run `npm run migrate` to create the expected schema. |
+| Quotes or positions missing | Ensure at least one watchlist is expanded. Verify the market-data instance role is set (primary/secondary) and that the shared feed is running (check logs). |
+| Options quick order fails with “Symbol does not support options trading” | Edit the watchlist symbol and enable `tradable_options`, or ensure the underlying is mapped in the instruments cache. |
+| Unable to see options expiries | Refresh instruments cache (import script) or call `/symbols/expiry?symbol=...&instanceId=...` once to seed the DB. |
+
+Logs stream to stdout via Winston; check the console for `[info]`/`[warn]`/`[error]` entries. Market-data feed events also log each refresh cycle.
+
+---
+
+## Additional Documentation
+
+- `docs/application_architecture.md` – Full architecture reference (frontend modules, backend services, database schema, workflows).
+- `docs/market_data_feed_service.md` – Shared feed design and rate-limit inventory.
+- `Requirements/Options_Mode_Implementation_Guide_v1.4.md` – Functional specs for FLOAT_OFS / Buyer‑Writer options workflows.
+
+Keep these documents updated whenever you enhance the application—they are the canonical reference for new contributors. If you add new routes or services, document them under `docs/` and reference them here.

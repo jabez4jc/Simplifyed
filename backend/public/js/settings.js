@@ -100,6 +100,7 @@ class SettingsHandler {
   renderApplicationSettings() {
     return `
       <div class="settings-container">
+        ${this.renderCustomizableValuesLegend()}
         <!-- Category Tabs -->
         <div class="settings-tabs">
           ${this.categories.map(cat => `
@@ -150,7 +151,7 @@ class SettingsHandler {
       const inputId = `setting-${key.replace(/\./g, '-')}`;
       const isSensitive = setting.isSensitive;
       const displayValue = isSensitive ? setting.value : setting.value;
-      const inputValue = setting.rawValue || setting.value;
+      const inputValue = setting.pendingValue ?? setting.rawValue ?? setting.value;
 
       return `
         <div class="settings-field">
@@ -251,8 +252,7 @@ class SettingsHandler {
       this.settings[category][key] = { dataType, isSensitive: false };
     }
 
-    this.settings[category][key].value = input.value;
-    this.settings[category][key].rawValue = input.value;
+    this.settings[category][key].pendingValue = input.value;
 
     console.log(`[Settings] Setting changed: ${key} = ${input.value}`);
   }
@@ -272,9 +272,8 @@ class SettingsHandler {
 
       Object.entries(this.settings).forEach(([category, categorySettings]) => {
         Object.entries(categorySettings).forEach(([key, setting]) => {
-          const input = document.querySelector(`[data-key="${key}"]`);
-          if (input && input.value !== (setting.rawValue || setting.value)) {
-            settingsToUpdate[key] = this.parseValue(input.value, setting.dataType);
+          if (setting.pendingValue !== undefined && setting.pendingValue !== (setting.rawValue || setting.value)) {
+            settingsToUpdate[key] = this.parseValue(setting.pendingValue, setting.dataType);
           }
         });
       });
@@ -442,7 +441,8 @@ class SettingsHandler {
       'oauth': 'OAuth',
       'test': 'Test Mode',
       'proxy': 'Proxy',
-      'options': 'Options Trading'
+      'options': 'Options Trading',
+      'market_data_feed': 'Market Data Feed'
     };
     return names[category] || category.charAt(0).toUpperCase() + category.slice(1);
   }
@@ -451,7 +451,67 @@ class SettingsHandler {
    * Format setting name for display
    */
   formatSettingName(key) {
+    const overrides = {
+      'server.port': 'Server Port',
+      'polling.instance_interval_ms': 'Instance Polling Interval (ms)',
+      'polling.market_data_interval_ms': 'Market Data Poll Interval (ms)',
+      'openalgo.request_timeout_ms': 'OpenAlgo Request Timeout (ms)',
+      'openalgo.critical.max_retries': 'OpenAlgo Critical Retry Count',
+      'openalgo.critical.retry_delay_ms': 'OpenAlgo Critical Retry Delay (ms)',
+      'openalgo.noncritical.max_retries': 'OpenAlgo Non-Critical Retry Count',
+      'openalgo.noncritical.retry_delay_ms': 'OpenAlgo Non-Critical Retry Delay (ms)',
+      'session.max_age_ms': 'Session Max Age (ms)',
+      'rate_limit.window_ms': 'Rate Limit Window (ms)',
+      'rate_limit.max_requests': 'Rate Limit Max Requests',
+      'logging.level': 'Logging Level',
+      'test_mode.enabled': 'Test Mode Enabled',
+      'polling.market_data_interval_ms': 'Market Data Interval (ms)',
+    };
+
+    if (overrides[key]) {
+      return overrides[key];
+    }
+
     return key.split('.').pop().replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+  }
+
+  renderCustomizableValuesLegend() {
+    const entries = [];
+    Object.keys(this.settings).forEach(category => {
+      Object.entries(this.settings[category] || {}).forEach(([key, setting]) => {
+        entries.push({
+          key,
+          label: this.formatSettingName(key),
+          description: setting.description || 'No description available',
+          value: setting.value,
+        });
+      });
+    });
+
+    if (entries.length === 0) {
+      return '';
+    }
+
+    return `
+      <div class="mb-6">
+        <h4 class="font-semibold text-lg text-neutral-800 mb-2">Customizable Values Overview</h4>
+        <p class="text-sm text-neutral-600 mb-4">
+          Every setting below is editable via the tabs. This section summarizes the key knobs you can adjust and what they control.
+        </p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          ${entries.map(item => `
+            <div class="p-3 rounded-lg border border-base-200 bg-base-100 shadow-sm space-y-1">
+              <div class="flex items-center justify-between text-xs uppercase tracking-wide text-neutral-500">
+                <span>${item.key}</span>
+                <span class="font-semibold">${item.value}</span>
+              </div>
+              <p class="font-medium text-neutral-800">${item.label}</p>
+              <p class="text-sm text-neutral-600">${item.description}</p>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
   }
 
   /**

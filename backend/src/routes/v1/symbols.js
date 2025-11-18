@@ -133,18 +133,32 @@ router.post('/quotes', async (req, res, next) => {
     }
 
     const cache = marketDataFeedService.getQuoteSnapshot(parseInt(instanceId, 10));
-    if (cache?.data?.length) {
+    const cached = cache?.data || [];
+
+    const normalizeExchange = (value = '') => (value || '').toUpperCase().replace(/_INDEX$/, '');
+
+    const matchesSymbol = (quote, symbol) => {
+      const exchangeMatch =
+        quote.exchange === symbol.exchange ||
+        normalizeExchange(quote.exchange) === normalizeExchange(symbol.exchange);
+      const symbolMatch = quote.symbol === symbol.symbol;
+      return exchangeMatch && symbolMatch;
+    };
+
+    const matchingCache = symbols.map(sym => cached.find(quote => matchesSymbol(quote, sym)));
+    const hasFullCache = matchingCache.every(Boolean);
+
+    if (hasFullCache) {
       res.json({
         status: 'success',
-        data: cache.data,
-        count: cache.data.length,
+        data: matchingCache.filter(Boolean),
+        count: matchingCache.filter(Boolean).length,
         cachedAt: cache.fetchedAt,
         source: 'cache',
       });
       return;
     }
 
-    // Fallback to live OpenAlgo call if cache missing/stale
     const instance = await instanceService.getInstanceById(
       parseInt(instanceId, 10)
     );
@@ -199,14 +213,26 @@ router.get('/market-data/:exchange/:symbol', async (req, res, next) => {
  */
 router.get('/expiry', async (req, res, next) => {
   try {
-    const { symbol, exchange, instanceId } = req.query;
+    const { symbol, exchange, instanceId, instrumenttype, matchField } = req.query;
 
     if (!symbol) {
       throw new ValidationError('symbol parameter is required');
     }
 
     const normalizedExchange = (exchange || 'NFO').toUpperCase();
-    let expiries = await instrumentsService.getExpiries(symbol.toUpperCase(), normalizedExchange);
+    const instrumentTypes = instrumenttype
+      ? instrumenttype
+          .split(',')
+          .map(type => sanitizeString(type).toUpperCase())
+          .filter(Boolean)
+      : [];
+    const normalizedMatchField = matchField === 'name' ? 'name' : 'symbol';
+
+    let expiries = await instrumentsService.getExpiries(
+      symbol.toUpperCase(),
+      normalizedExchange,
+      { instrumentTypes, matchField: normalizedMatchField }
+    );
 
     if (expiries.length === 0) {
       if (!instanceId) {

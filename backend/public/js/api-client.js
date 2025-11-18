@@ -270,6 +270,12 @@ class APIClient {
     });
   }
 
+  async getOrderbook(status = '') {
+    const params = new URLSearchParams();
+    if (status) params.append('status', status);
+    return this.request(`/orders/orderbook?${params.toString()}`);
+  }
+
   // Position APIs
   async getAllPositions(onlyOpen = false) {
     const params = new URLSearchParams({ onlyOpen: onlyOpen.toString() });
@@ -291,6 +297,13 @@ class APIClient {
   async closePositions(instanceId) {
     return this.request(`/positions/${instanceId}/close`, {
       method: 'POST',
+    });
+  }
+
+  async closePosition(instanceId, payload) {
+    return this.request(`/positions/${instanceId}/close/position`, {
+      method: 'POST',
+      body: payload,
     });
   }
 
@@ -326,10 +339,24 @@ class APIClient {
   }
 
   async getExpiry(symbol, options = {}) {
-    const { exchange = 'NFO', instanceId = null } = options;
+    const {
+      exchange = 'NFO',
+      instanceId = null,
+      instrumentTypes = null,
+      matchField = null,
+    } = options;
     const params = new URLSearchParams({ symbol, exchange });
     if (instanceId) {
       params.append('instanceId', instanceId);
+    }
+    if (instrumentTypes && (Array.isArray(instrumentTypes) ? instrumentTypes.length : true)) {
+      const value = Array.isArray(instrumentTypes)
+        ? instrumentTypes.join(',')
+        : instrumentTypes;
+      params.append('instrumenttype', value);
+    }
+    if (matchField && typeof matchField === 'string') {
+      params.append('matchField', matchField);
     }
     return this.request(`/symbols/expiry?${params}`);
   }

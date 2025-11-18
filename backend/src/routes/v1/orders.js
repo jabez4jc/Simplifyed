@@ -5,6 +5,8 @@
 
 import express from 'express';
 import orderService from '../../services/order.service.js';
+import marketDataFeedService from '../../services/market-data-feed.service.js';
+import instanceService from '../../services/instance.service.js';
 import { log } from '../../core/logger.js';
 import {
   NotFoundError,
@@ -47,6 +49,98 @@ router.get('/', async (req, res, next) => {
       status: 'success',
       data: orders,
       count: orders.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/orders/orderbook
+ * Orderbook data grouped by live vs analyzer instances (cached)
+ */
+router.get('/orderbook', async (req, res, next) => {
+  try {
+    const statusFilter = req.query.status;
+
+    const instances = await instanceService.getAllInstances({ is_active: true });
+    const resultPayload = {
+      liveInstances: [],
+      analyzerInstances: [],
+      statistics: {
+        total_buy_orders: 0,
+        total_sell_orders: 0,
+        total_open_orders: 0,
+        total_completed_orders: 0,
+        total_cancelled_orders: 0,
+        total_rejected_orders: 0,
+      },
+    };
+
+    const normalizeOrder = (order) => {
+      const status = (order.order_status || order.status || 'pending').toLowerCase();
+      const side = (order.action || order.side || '').toUpperCase();
+      const orderType = order.pricetype || order.order_type || '';
+      if (side === 'BUY') resultPayload.statistics.total_buy_orders += 1;
+      if (side === 'SELL') resultPayload.statistics.total_sell_orders += 1;
+      if (status === 'open' || status === 'pending') {
+        resultPayload.statistics.total_open_orders += 1;
+      }
+      if (status === 'complete') resultPayload.statistics.total_completed_orders += 1;
+      if (status === 'cancelled') resultPayload.statistics.total_cancelled_orders += 1;
+      if (status === 'rejected') resultPayload.statistics.total_rejected_orders += 1;
+      return {
+        id: order.orderid || order.order_id || order.id,
+        order_id: order.orderid || order.order_id || order.id,
+        symbol: order.symbol,
+        exchange: order.exchange,
+        status,
+        action: side,
+        price: order.price,
+        quantity: order.quantity,
+        product: order.product || order.product_type,
+        timestamp: order.timestamp,
+        order_type: orderType,
+        strategy: order.strategy,
+        trade_value: order.trade_value,
+        metadata: order,
+      };
+    };
+
+    await Promise.all(instances.map(async (instance) => {
+      const snapshot = await marketDataFeedService.getOrderbookSnapshot(instance.id);
+      const snapshotData = snapshot?.data || {};
+      const normalizedPayload = Array.isArray(snapshotData) ? snapshotData : snapshotData.orders || snapshotData.data || [];
+
+      const normalizedOrders = normalizedPayload
+        .map(normalizeOrder)
+        .filter(order => {
+          if (!statusFilter) {
+            return true;
+          }
+          return order.status === statusFilter.toLowerCase();
+        });
+
+      const entry = {
+        instance_id: instance.id,
+        instance_name: instance.name,
+        broker: instance.broker,
+        market_data_role: instance.market_data_role,
+        is_analyzer_mode: !!instance.is_analyzer_mode,
+        orders: normalizedOrders,
+        fetchedAt: snapshot?.fetchedAt,
+      };
+
+      if (instance.is_analyzer_mode) {
+        resultPayload.analyzerInstances.push(entry);
+      } else {
+        resultPayload.liveInstances.push(entry);
+      }
+    }));
+
+    res.json({
+      status: 'success',
+      data: resultPayload,
     });
   } catch (error) {
     next(error);
