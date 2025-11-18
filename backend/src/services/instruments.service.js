@@ -508,12 +508,34 @@ class InstrumentsService {
       const expiries = await db.all(
         `SELECT DISTINCT expiry
          FROM instruments
-         WHERE symbol LIKE ? AND exchange = ? AND expiry IS NOT NULL
-         ORDER BY expiry ASC`,
+         WHERE symbol LIKE ? AND exchange = ? AND expiry IS NOT NULL`,
         [`${symbol}%`, exchange]
       );
 
-      return expiries.map(row => row.expiry);
+      if (!expiries || expiries.length === 0) {
+        return [];
+      }
+
+      const parsed = expiries
+        .map(row => {
+          const raw = row.expiry;
+          const normalized = this._normalizeExpiryDate(raw);
+          return {
+            raw,
+            normalized,
+            timestamp: normalized ? Date.parse(normalized) : null
+          };
+        })
+        .sort((a, b) => {
+          if (a.timestamp && b.timestamp) {
+            return a.timestamp - b.timestamp;
+          }
+          if (a.timestamp) return -1;
+          if (b.timestamp) return 1;
+          return String(a.raw).localeCompare(String(b.raw));
+        });
+
+      return parsed.map(item => item.raw);
     } catch (error) {
       log.error('Failed to get expiries', error, { symbol, exchange });
       return [];
@@ -570,6 +592,29 @@ class InstrumentsService {
     }
   }
 
+  _normalizeExpiryDate(expiry) {
+    if (!expiry) return null;
+    const trimmed = String(expiry).trim().toUpperCase();
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      return trimmed;
+    }
+
+    const match = trimmed.match(/^(\d{2})-([A-Z]{3})-(\d{2})$/);
+    if (match) {
+      const [, day, monthStr, year] = match;
+      const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+      const monthIndex = months.indexOf(monthStr);
+      if (monthIndex === -1) {
+        return null;
+      }
+      const isoMonth = String(monthIndex + 1).padStart(2, '0');
+      return `20${year}-${isoMonth}-${day}`;
+    }
+
+    return null;
+  }
+
   /**
    * Get market data instance (primary admin > secondary admin ONLY)
    * @private
@@ -615,6 +660,383 @@ class InstrumentsService {
 
     // Fallback to secondary admin
     return adminInstances[0];
+  }
+
+  /**
+   * Import instruments from CSV file
+   *
+   * @param {string} csvContent - CSV file content as string
+   * @returns {Promise<Object>} - Import result with counts and stats
+   */
+  async importFromCSV(csvContent) {
+    const startTime = Date.now();
+
+    try {
+      log.info('Starting CSV import');
+
+      // Parse CSV content
+      const lines = csvContent.trim().split('\n');
+
+      if (lines.length < 2) {
+        throw new ValidationError('CSV file is empty or invalid');
+      }
+
+      // Skip header
+      const header = lines.shift();
+      log.info('CSV header', { header });
+
+      const totalRecords = lines.length;
+      let inserted = 0;
+      let skipped = 0;
+      const BATCH_SIZE = 1000;
+
+      // Clear existing instruments
+      log.info('Clearing existing instruments');
+      await db.run('DELETE FROM instruments');
+
+      // Process in batches
+      for (let i = 0; i < lines.length; i += BATCH_SIZE) {
+        const batch = lines.slice(i, i + BATCH_SIZE);
+        const values = [];
+        const placeholders = [];
+
+        for (const line of batch) {
+          if (!line.trim()) {
+            skipped++;
+            continue;
+          }
+
+          // Parse CSV line (handle quoted fields)
+          const fields = this._parseCsvLine(line);
+
+          if (fields.length < 12) {
+            log.warn('Skipping invalid CSV line', { line: line.substring(0, 50) });
+            skipped++;
+            continue;
+          }
+
+          const [
+            id, symbol, brsymbol, name, exchange, brexchange,
+            token, expiry, strike, lotsize, instrumenttype, tick_size
+          ] = fields;
+
+          // Prepare values (convert empty strings to null)
+          const value = [
+            symbol || null,
+            brsymbol || null,
+            name || null,
+            exchange || null,
+            brexchange || null,
+            token || null,
+            expiry === '-1' || expiry === '' ? null : expiry,
+            strike === '-1' || strike === '' ? null : strike,
+            lotsize === '-1' || lotsize === '' ? 1 : parseInt(lotsize, 10),
+            instrumenttype || null,
+            tick_size === '-1' || tick_size === '' ? null : tick_size
+          ];
+
+          values.push(...value);
+          placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime("now"), datetime("now"))');
+        }
+
+        if (placeholders.length > 0) {
+          // Insert batch
+          const sql = `
+            INSERT INTO instruments (
+              symbol, brsymbol, name, exchange, brexchange, token, expiry, strike,
+              lotsize, instrumenttype, tick_size, created_at, updated_at
+            ) VALUES ${placeholders.join(', ')}
+          `;
+
+          await db.run(sql, values);
+          inserted += placeholders.length;
+
+          log.info('CSV import batch processed', {
+            batch: Math.floor(i / BATCH_SIZE) + 1,
+            inserted,
+            progress: `${((i + batch.length) / lines.length * 100).toFixed(1)}%`
+          });
+        }
+      }
+
+      // Rebuild FTS table
+      log.info('Rebuilding FTS table');
+      await db.run('DELETE FROM instruments_fts');
+      await db.run(`
+        INSERT INTO instruments_fts(rowid, symbol, name)
+        SELECT id, symbol, name FROM instruments
+      `);
+
+      const duration = Date.now() - startTime;
+
+      // Get final count
+      const countResult = await db.get('SELECT COUNT(*) as count FROM instruments');
+      const finalCount = countResult.count;
+
+      // Update refresh log
+      await db.run(`
+        INSERT INTO instruments_refresh_log (
+          exchange, status, instrument_count, refresh_started_at, refresh_completed_at
+        ) VALUES ('CSV_UPLOAD', 'completed', ?, datetime('now'), datetime('now'))
+      `, [finalCount]);
+
+      const result = {
+        total: totalRecords,
+        inserted,
+        skipped,
+        finalCount,
+        duration: `${(duration / 1000).toFixed(2)}s`,
+        rate: `${(finalCount / (duration / 1000)).toFixed(0)} records/sec`
+      };
+
+      log.info('CSV import completed', result);
+
+      return result;
+    } catch (error) {
+      log.error('CSV import failed', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Parse CSV line handling quoted fields
+   * @private
+   */
+  _parseCsvLine(line) {
+    const fields = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      const nextChar = line[i + 1];
+
+      if (char === '"') {
+        if (inQuotes && nextChar === '"') {
+          // Escaped quote
+          current += '"';
+          i++; // Skip next quote
+        } else {
+          // Toggle quote mode
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        // Field separator
+        fields.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+
+    // Add last field
+    fields.push(current.trim());
+
+    return fields;
+  }
+
+  /**
+   * Fetch instruments from an OpenAlgo instance for all exchanges
+   *
+   * @param {number} instanceId - Instance ID to fetch from
+   * @returns {Promise<Object>} - Fetch result with counts and stats
+   */
+  async fetchFromInstance(instanceId, onProgress = null) {
+    const startTime = Date.now();
+
+    try {
+      // Get instance details
+      const instance = await instanceService.getInstanceById(instanceId);
+      if (!instance) {
+        throw new ValidationError(`Instance ${instanceId} not found`);
+      }
+
+      log.info('Starting instruments fetch from instance', {
+        instanceId,
+        instance_name: instance.name
+      });
+
+      let totalInstruments = 0;
+      const exchangeStats = {};
+
+      // Clear existing instruments
+      log.info('Clearing existing instruments');
+      await db.run('DELETE FROM instruments');
+
+      // Notify progress callback
+      if (onProgress) {
+        onProgress({
+          status: 'clearing',
+          message: 'Clearing existing instruments...',
+          currentExchange: null,
+          completedExchanges: [],
+          totalInstruments: 0
+        });
+      }
+
+      // Fetch from each exchange
+      for (const exchange of SUPPORTED_EXCHANGES) {
+        try {
+          log.info(`Fetching instruments for exchange: ${exchange}`);
+
+          // Notify progress callback - starting exchange
+          if (onProgress) {
+            const completedExchanges = Object.keys(exchangeStats);
+            onProgress({
+              status: 'fetching',
+              message: `Fetching ${exchange}...`,
+              currentExchange: exchange,
+              completedExchanges,
+              totalInstruments
+            });
+          }
+
+          // Call OpenAlgo API
+          const response = await openalgoClient.getInstruments(
+            instance,
+            exchange
+          );
+
+          if (!response || !Array.isArray(response)) {
+            log.warn(`No instruments returned for ${exchange}`);
+            exchangeStats[exchange] = { count: 0, status: 'empty' };
+            continue;
+          }
+
+          // Insert instruments in batches
+          const BATCH_SIZE = 1000;
+          let inserted = 0;
+
+          for (let i = 0; i < response.length; i += BATCH_SIZE) {
+            const batch = response.slice(i, i + BATCH_SIZE);
+            const values = [];
+            const placeholders = [];
+
+            for (const instrument of batch) {
+              const value = [
+                instrument.symbol || null,
+                instrument.brsymbol || null,
+                instrument.name || null,
+                instrument.exchange || exchange,
+                instrument.brexchange || null,
+                instrument.token || null,
+                instrument.expiry === '-1' || !instrument.expiry ? null : instrument.expiry,
+                instrument.strike === '-1' || !instrument.strike ? null : instrument.strike,
+                instrument.lotsize === '-1' || !instrument.lotsize ? 1 : parseInt(instrument.lotsize, 10),
+                instrument.instrumenttype || null,
+                instrument.tick_size === '-1' || !instrument.tick_size ? null : instrument.tick_size
+              ];
+
+              values.push(...value);
+              placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime("now"), datetime("now"))');
+            }
+
+            if (placeholders.length > 0) {
+              const sql = `
+                INSERT INTO instruments (
+                  symbol, brsymbol, name, exchange, brexchange, token, expiry, strike,
+                  lotsize, instrumenttype, tick_size, created_at, updated_at
+                ) VALUES ${placeholders.join(', ')}
+              `;
+
+              await db.run(sql, values);
+              inserted += placeholders.length;
+            }
+          }
+
+          exchangeStats[exchange] = { count: inserted, status: 'success' };
+          totalInstruments += inserted;
+
+          // Notify progress callback - exchange completed
+          if (onProgress) {
+            const completedExchanges = Object.keys(exchangeStats);
+            onProgress({
+              status: 'completed',
+              message: `Completed ${exchange} (${inserted.toLocaleString()} instruments)`,
+              currentExchange: exchange,
+              completedExchanges,
+              totalInstruments
+            });
+          }
+
+          log.info(`Fetched ${inserted} instruments from ${exchange}`);
+        } catch (error) {
+          log.error(`Failed to fetch instruments from ${exchange}`, error);
+          exchangeStats[exchange] = { count: 0, status: 'error', error: error.message };
+
+          // Notify progress callback - exchange failed
+          if (onProgress) {
+            const completedExchanges = Object.keys(exchangeStats);
+            onProgress({
+              status: 'error',
+              message: `Failed ${exchange}: ${error.message}`,
+              currentExchange: exchange,
+              completedExchanges,
+              totalInstruments
+            });
+          }
+        }
+      }
+
+      // Rebuild FTS table
+      log.info('Rebuilding FTS table');
+
+      // Notify progress callback - rebuilding FTS
+      if (onProgress) {
+        onProgress({
+          status: 'rebuilding',
+          message: 'Rebuilding search index...',
+          currentExchange: null,
+          completedExchanges: SUPPORTED_EXCHANGES,
+          totalInstruments
+        });
+      }
+
+      await db.run('DELETE FROM instruments_fts');
+      await db.run(`
+        INSERT INTO instruments_fts(rowid, symbol, name)
+        SELECT id, symbol, name FROM instruments
+      `);
+
+      // Notify progress callback - completed
+      if (onProgress) {
+        onProgress({
+          status: 'completed',
+          message: 'All instruments fetched successfully!',
+          currentExchange: null,
+          completedExchanges: SUPPORTED_EXCHANGES,
+          totalInstruments
+        });
+      }
+
+      const duration = Date.now() - startTime;
+
+      // Get final count
+      const countResult = await db.get('SELECT COUNT(*) as count FROM instruments');
+      const finalCount = countResult.count;
+
+      // Update refresh log
+      await db.run(`
+        INSERT INTO instruments_refresh_log (
+          exchange, status, instrument_count, refresh_started_at, refresh_completed_at
+        ) VALUES ('INSTANCE_FETCH', 'completed', ?, datetime('now'), datetime('now'))
+      `, [finalCount]);
+
+      const result = {
+        totalInstruments,
+        finalCount,
+        exchangeStats,
+        duration: `${(duration / 1000).toFixed(2)}s`,
+        rate: `${(finalCount / (duration / 1000)).toFixed(0)} records/sec`
+      };
+
+      log.info('Instruments fetch from instance completed', result);
+
+      return result;
+    } catch (error) {
+      log.error('Instruments fetch from instance failed', error);
+      throw error;
+    }
   }
 }
 

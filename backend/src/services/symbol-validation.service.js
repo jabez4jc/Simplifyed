@@ -5,6 +5,7 @@
 
 import openalgoClient from '../integrations/openalgo/client.js';
 import instanceService from './instance.service.js';
+import instrumentsService from './instruments.service.js';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { ValidationError } from '../core/errors.js';
@@ -39,27 +40,38 @@ class SymbolValidationService {
       throw new ValidationError('Search query must be at least 2 characters');
     }
 
-    // Get market data instance
+    // Try internal instruments cache first
+    try {
+      const instrumentResults = await instrumentsService.searchInstruments(query, { limit: 50 });
+      if (instrumentResults.length > 0) {
+        log.debug('Symbol search resolved via instruments cache', {
+          query,
+          results: instrumentResults.length,
+        });
+        return instrumentResults.map((instrument) => this._transformInstrument(instrument, true));
+      }
+    } catch (error) {
+      log.warn('Instrument cache search failed, falling back to OpenAlgo search', {
+        query,
+        error: error.message,
+      });
+    }
+
+    // Fallback to OpenAlgo search
     const instance = await this._getMarketDataInstance(instanceId);
 
-    log.debug('Searching symbols', { query, instance_id: instance.id });
+    log.debug('Searching symbols via OpenAlgo', { query, instance_id: instance.id });
 
-    // Perform search via OpenAlgo
     const results = await openalgoClient.searchSymbols(instance, query);
 
-    // Classify and cache each result
     const enrichedResults = results.map((symbol) => {
       const classification = this.classifySymbol(symbol);
-
-      // Cache symbol
       this._cacheSymbol(symbol).catch((err) =>
         log.warn('Failed to cache symbol', err, { symbol: symbol.symbol })
       );
-
       return {
         ...symbol,
         symbol_type: classification,
-        // Normalize field names
         tradingsymbol: symbol.symbol || symbol.tradingsymbol,
         exchange: symbol.exchange,
         token: symbol.token,
@@ -70,9 +82,9 @@ class SymbolValidationService {
       };
     });
 
-    log.info('Symbol search complete', {
+    log.info('Symbol search complete via OpenAlgo', {
       query,
-      results: enrichedResults.length
+      results: enrichedResults.length,
     });
 
     return enrichedResults;
@@ -89,6 +101,13 @@ class SymbolValidationService {
   async validateSymbol(symbol, exchange, instanceId = null) {
     if (!symbol || !exchange) {
       throw new ValidationError('Symbol and exchange are required');
+    }
+
+    // Try instruments cache first
+    const instrument = await instrumentsService.getInstrument(symbol, exchange);
+    if (instrument) {
+      log.debug('Symbol validated via instruments cache', { symbol, exchange });
+      return this._transformInstrument(instrument, true);
     }
 
     // Check cache first
@@ -241,6 +260,27 @@ class SymbolValidationService {
     });
 
     return SymbolType.UNKNOWN;
+  }
+
+  _transformInstrument(instrument, fromCache = false) {
+    const classification = this.classifySymbol(instrument);
+    const symbol = instrument.symbol || instrument.tradingsymbol || '';
+    return {
+      symbol,
+      exchange: instrument.exchange,
+      token: instrument.token,
+      name: instrument.name || instrument.description || null,
+      instrumenttype: instrument.instrumenttype,
+      lotsize: instrument.lotsize || instrument.lot_size || instrument.lotSize || 1,
+      tick_size: instrument.tick_size || instrument.tickSize || null,
+      expiry: instrument.expiry || null,
+      strike: instrument.strike || null,
+      option_type: instrument.option_type || instrument.optionType || null,
+      brsymbol: instrument.brsymbol || null,
+      brexchange: instrument.brexchange || null,
+      symbol_type: classification,
+      from_cache: fromCache,
+    };
   }
 
   /**

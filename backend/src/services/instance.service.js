@@ -151,19 +151,32 @@ class InstanceService {
    */
   async updateInstance(id, updates) {
     try {
-      // Check if instance exists
-      await this.getInstanceById(id);
+      // Load existing instance (throws if not found)
+      const existing = await this.getInstanceById(id);
 
       // Normalize updates
       const normalized = this._normalizeInstanceData(updates, true);
 
-      // Broker field is immutable - prevent manual overwrites
-      if (normalized.broker !== undefined) {
-        log.warn('Attempted to update immutable broker field - ignoring', {
-          id,
-          attempted_broker: normalized.broker,
-        });
-        delete normalized.broker;
+      // If host URL or API key changed, re-test connection and auto-detect broker
+      const shouldRetestConnection =
+        normalized.host_url !== undefined ||
+        normalized.api_key !== undefined;
+
+      if (shouldRetestConnection) {
+        const connectionPayload = {
+          host_url: normalized.host_url || existing.host_url,
+          api_key: normalized.api_key || existing.api_key,
+        };
+
+        const connectionTest = await this.testConnection(connectionPayload);
+        if (!connectionTest.success) {
+          throw new ValidationError(connectionTest.message || 'Failed to connect to OpenAlgo instance');
+        }
+
+        // Auto-populate broker only if caller didn't explicitly override it
+        if (connectionTest.broker && normalized.broker === undefined) {
+          normalized.broker = connectionTest.broker;
+        }
       }
 
       // Build update query
@@ -210,9 +223,45 @@ class InstanceService {
       // Check if instance exists
       await this.getInstanceById(id);
 
-      await db.run('DELETE FROM instances WHERE id = ?', [id]);
+      // Delete instance using transaction for atomicity
+      await db.run('BEGIN TRANSACTION');
 
-      log.info('Instance deleted', { id });
+      try {
+        // 1. Remove instance from all watchlists (watchlist_instances)
+        await db.run('DELETE FROM watchlist_instances WHERE instance_id = ?', [id]);
+        log.info('Removed instance from watchlists', { instance_id: id });
+
+        // 2. Delete any orders for this instance (watchlist_orders)
+        await db.run('DELETE FROM watchlist_orders WHERE instance_id = ?', [id]);
+        log.info('Deleted orders for instance', { instance_id: id });
+
+        // 3. Delete any positions for this instance (watchlist_positions)
+        await db.run('DELETE FROM watchlist_positions WHERE instance_id = ?', [id]);
+        log.info('Deleted positions for instance', { instance_id: id });
+
+        // 4. Delete options state tracking
+        await this._safeDeleteByInstanceId('watchlist_options_state', id);
+
+        // 5. Delete quick order history
+        await this._safeDeleteByInstanceId('quick_orders', id);
+
+        // 6. Delete any order monitoring records (legacy + analyzer logs)
+        await this._safeDeleteByInstanceId('order_monitoring', id);
+        await this._safeDeleteByInstanceId('order_monitor_log', id);
+        await this._safeDeleteByInstanceId('analyzer_trades', id);
+
+        // 7. Delete websocket session traces
+        await this._safeDeleteByInstanceId('websocket_sessions', id);
+
+        // 8. Finally, delete the instance itself
+        await db.run('DELETE FROM instances WHERE id = ?', [id]);
+
+        await db.run('COMMIT');
+        log.info('Instance deleted successfully', { id });
+      } catch (error) {
+        await db.run('ROLLBACK');
+        throw error;
+      }
     } catch (error) {
       if (error instanceof NotFoundError) throw error;
       log.error('Failed to delete instance', error, { id });
@@ -735,6 +784,19 @@ class InstanceService {
     }
 
     return normalized;
+  }
+
+  async _safeDeleteByInstanceId(tableName, instanceId) {
+    try {
+      await db.run(`DELETE FROM ${tableName} WHERE instance_id = ?`, [instanceId]);
+      log.info(`Deleted ${tableName} rows for instance`, { instance_id: instanceId });
+    } catch (error) {
+      if (error.message && error.message.includes('no such table')) {
+        log.warn(`Skipping cleanup for missing table ${tableName}`, { instance_id: instanceId });
+        return;
+      }
+      throw error;
+    }
   }
 }
 

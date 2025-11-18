@@ -10,6 +10,7 @@ import instanceService from './instance.service.js';
 import pnlService from './pnl.service.js';
 import orderService from './order.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
+import marketDataFeedService from './market-data-feed.service.js';
 import { parseFloatSafe } from '../utils/sanitizers.js';
 
 class PollingService {
@@ -132,9 +133,15 @@ class PollingService {
     try {
       const instance = await instanceService.getInstanceById(instanceId);
 
-      // Skip if inactive or unhealthy
+      // Skip if inactive
       if (!instance.is_active) {
         return { skipped: true, reason: 'inactive' };
+      }
+
+      // Skip unhealthy instances during regular polling to prevent log spam
+      // Health checks run separately every 5 minutes (see healthCheckInterval)
+      if (instance.health_status === 'unhealthy') {
+        return { skipped: true, reason: 'unhealthy' };
       }
 
       // Update P&L
@@ -263,17 +270,8 @@ class PollingService {
     this.isMarketDataPolling = true;
 
     // Start polling interval
-    this.marketDataPollInterval = setInterval(
-      () => this.pollMarketData(watchlistId),
-      config.polling.marketDataInterval
-    );
-
-    // Initial poll
-    await this.pollMarketData(watchlistId);
-
-    log.info('Market data polling started', {
+    log.info('Market data polling disabled (handled by marketDataFeedService)', {
       watchlist_id: watchlistId,
-      interval: config.polling.marketDataInterval,
     });
   }
 
@@ -281,11 +279,6 @@ class PollingService {
    * Stop market data polling
    */
   stopMarketDataPolling() {
-    if (this.marketDataPollInterval) {
-      clearInterval(this.marketDataPollInterval);
-      this.marketDataPollInterval = null;
-    }
-
     this.watchlistPageActive = false;
     this.activeWatchlistId = null;
     this.isMarketDataPolling = false;
@@ -297,115 +290,8 @@ class PollingService {
    * Poll market data for watchlist symbols
    * @param {number} watchlistId - Watchlist ID
    */
-  async pollMarketData(watchlistId) {
-    try {
-      const startTime = Date.now();
-
-      // Get watchlist symbols
-      const symbols = await db.all(
-        'SELECT * FROM watchlist_symbols WHERE watchlist_id = ? AND is_enabled = 1',
-        [watchlistId]
-      );
-
-      if (symbols.length === 0) {
-        log.debug('No symbols in watchlist', { watchlist_id: watchlistId });
-        return;
-      }
-
-      // Get market data instances (primary or secondary role only)
-      // Try primary first, fallback to secondary
-      const marketDataInstances = await instanceService.getMarketDataInstances();
-
-      if (marketDataInstances.length === 0) {
-        log.debug('No market data instances available (primary or secondary)', {
-          watchlist_id: watchlistId,
-        });
-        return;
-      }
-
-      // Use the first available market data instance (ordered by priority: primary > secondary)
-      const instance = marketDataInstances[0];
-
-      log.debug('Using market data instance', {
-        watchlist_id: watchlistId,
-        instance_id: instance.id,
-        instance_name: instance.name,
-        market_data_role: instance.market_data_role,
-      });
-
-      // Group symbols by exchange for batch quote requests
-      const symbolsByExchange = {};
-      for (const symbol of symbols) {
-        if (!symbolsByExchange[symbol.exchange]) {
-          symbolsByExchange[symbol.exchange] = [];
-        }
-        symbolsByExchange[symbol.exchange].push(symbol.symbol);
-      }
-
-      // Fetch quotes for each exchange
-      for (const [exchange, exchangeSymbols] of Object.entries(
-        symbolsByExchange
-      )) {
-        try {
-          // Prepare symbols array for getQuotes API
-          const symbolsArray = exchangeSymbols.map(symbol => ({
-            exchange,
-            symbol
-          }));
-
-          const quotes = await openalgoClient.getQuotes(instance, symbolsArray);
-
-          // Update market_data table
-          for (const quote of quotes) {
-            const symbol = quote.symbol || quote.tradingsymbol;
-            const ltp = parseFloatSafe(quote.ltp || quote.last_price, 0);
-            const open = parseFloatSafe(quote.open, 0);
-            const high = parseFloatSafe(quote.high, 0);
-            const low = parseFloatSafe(quote.low, 0);
-            const close = parseFloatSafe(quote.close || quote.prev_close, 0);
-            const volume = parseFloatSafe(quote.volume, 0);
-
-            // Calculate change percent
-            let changePercent = 0;
-            if (close > 0 && ltp > 0) {
-              changePercent = ((ltp - close) / close) * 100;
-            }
-
-            // Upsert into market_data
-            await db.run(
-              `INSERT INTO market_data (
-                exchange, symbol, ltp, open, high, low, close, volume, change_percent
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT(exchange, symbol) DO UPDATE SET
-                ltp = excluded.ltp,
-                open = excluded.open,
-                high = excluded.high,
-                low = excluded.low,
-                close = excluded.close,
-                volume = excluded.volume,
-                change_percent = excluded.change_percent,
-                updated_at = CURRENT_TIMESTAMP`,
-              [exchange, symbol, ltp, open, high, low, close, volume, changePercent]
-            );
-          }
-        } catch (error) {
-          log.error('Failed to fetch quotes for exchange', error, {
-            exchange,
-            symbols: exchangeSymbols.length,
-          });
-        }
-      }
-
-      const duration = Date.now() - startTime;
-
-      log.debug('Market data polling completed', {
-        watchlist_id: watchlistId,
-        symbols: symbols.length,
-        duration_ms: duration,
-      });
-    } catch (error) {
-      log.error('Failed to poll market data', error, { watchlist_id: watchlistId });
-    }
+  async pollMarketData() {
+    log.warn('pollMarketData is handled by marketDataFeedService; this method is deprecated.');
   }
 
   /**

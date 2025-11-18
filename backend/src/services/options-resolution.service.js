@@ -7,6 +7,7 @@
 import { log } from '../core/logger.js';
 import db from '../core/database.js';
 import openalgoClient from '../integrations/openalgo/client.js';
+import instrumentsService from './instruments.service.js';
 import { NotFoundError, ValidationError } from '../core/errors.js';
 import { parseFloatSafe } from '../utils/sanitizers.js';
 
@@ -37,6 +38,26 @@ class OptionsResolutionService {
     }
 
     log.warn('Unknown expiry format in _convertToOpenAlgoExpiryFormat', { expiry });
+    return expiry;
+  }
+
+  _normalizeExpiryToISO(expiry) {
+    if (!expiry) return null;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
+      return expiry;
+    }
+    if (/^\d{2}-[A-Z]{3}-\d{2}$/.test(expiry)) {
+      const [day, monthStr, year] = expiry.split('-');
+      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+                          'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+      const monthIndex = monthNames.indexOf(monthStr);
+      if (monthIndex === -1) {
+        return null;
+      }
+      const fullYear = `20${year}`;
+      const paddedMonth = String(monthIndex + 1).padStart(2, '0');
+      return `${fullYear}-${paddedMonth}-${day}`;
+    }
     return expiry;
   }
 
@@ -146,11 +167,28 @@ class OptionsResolutionService {
    * @private
    */
   async _getOptionChain(underlying, exchange, expiry, instance) {
+    const isoExpiry = this._normalizeExpiryToISO(expiry);
+    if (isoExpiry) {
+      try {
+        const dbChain = await this._buildOptionChainFromDb(underlying, isoExpiry, exchange);
+        if (dbChain) {
+          return dbChain;
+        }
+      } catch (error) {
+        log.warn('Failed to build option chain from instruments cache', {
+          underlying,
+          expiry: isoExpiry,
+          exchange,
+          error: error.message,
+        });
+      }
+    }
+
     // Convert expiry to OpenAlgo format (DD-MMM-YY) for API calls and cache lookup
     const openalgoExpiry = this._convertToOpenAlgoExpiryFormat(expiry);
     log.debug('Expiry format conversion', {
       inputExpiry: expiry,
-      openalgoExpiry
+      openalgoExpiry,
     });
 
     // Try to get from cache first (using OpenAlgo format)
@@ -164,21 +202,17 @@ class OptionsResolutionService {
       return this._processOptionChain(cached);
     }
 
-    // Fetch from OpenAlgo
+    // Fetch from OpenAlgo as fallback
     log.debug('Fetching option chain from OpenAlgo', { underlying, expiry: openalgoExpiry });
 
     try {
-      // Use the getOptionChain method from OpenAlgo client
-      // Note: This might return different format depending on broker
-      // We'll need to normalize it
       const chainData = await openalgoClient.getOptionChain(
         instance,
         underlying,
-        openalgoExpiry,  // Use OpenAlgo format
+        openalgoExpiry, // Use OpenAlgo format
         exchange
       );
 
-      // Cache the option chain (using OpenAlgo format)
       await this._cacheOptionChain(underlying, exchange, openalgoExpiry, chainData);
 
       return this._processOptionChain(chainData);
@@ -352,6 +386,94 @@ class OptionsResolutionService {
         `Unable to fetch option chain for ${underlying} ${expiry}: ${error.message}`
       );
     }
+  }
+
+  async _buildOptionChainFromDb(underlying, expiry, exchange) {
+    try {
+      const chain = await instrumentsService.buildOptionChain(
+        underlying,
+        expiry,
+        exchange
+      );
+
+      if (!chain || !Array.isArray(chain.strikes) || chain.strikes.length === 0) {
+        return null;
+      }
+
+      const strikes = chain.strikes
+        .map(entry => entry.strike)
+        .filter(strike => typeof strike === 'number')
+        .sort((a, b) => a - b);
+
+      if (strikes.length === 0) {
+        return null;
+      }
+
+      const optionsByStrike = {};
+      chain.strikes.forEach(entry => {
+        if (typeof entry.strike !== 'number') return;
+        optionsByStrike[entry.strike] = optionsByStrike[entry.strike] || { CE: null, PE: null };
+        if (entry.ce) {
+          optionsByStrike[entry.strike].CE = this._normalizeInstrumentOption(entry.ce);
+        }
+        if (entry.pe) {
+          optionsByStrike[entry.strike].PE = this._normalizeInstrumentOption(entry.pe);
+        }
+      });
+
+      let strikeStep = 0;
+      if (strikes.length >= 2) {
+        const diffs = [];
+        for (let i = 1; i < strikes.length; i++) {
+          diffs.push(strikes[i] - strikes[i - 1]);
+        }
+        strikeStep = this._mostCommon(diffs);
+      }
+
+      log.debug('Option chain resolved from instruments cache', {
+        underlying,
+        expiry,
+        exchange,
+        strikes: strikes.length,
+      });
+
+      return {
+        strikes,
+        strikeStep,
+        optionsByStrike,
+      };
+    } catch (error) {
+      log.warn('Failed to build option chain from instruments cache', {
+        underlying,
+        expiry,
+        exchange,
+        error: error.message,
+      });
+      return null;
+    }
+  }
+
+  _normalizeInstrumentOption(option) {
+    if (!option) return null;
+    const symbol = option.symbol || option.tradingsymbol || '';
+    let optionType =
+      (option.instrumenttype || '').toUpperCase() ||
+      (symbol.toUpperCase().endsWith('PE') ? 'PE' : symbol.toUpperCase().endsWith('CE') ? 'CE' : null);
+
+    if (!optionType) {
+      optionType = 'CE';
+    }
+
+    return {
+      symbol,
+      trading_symbol: symbol,
+      strike: option.strike,
+      option_type: optionType,
+      lot_size: option.lotsize || option.lot_size || option.lotSize || 1,
+      tick_size: option.tick_size || option.tickSize || 0.05,
+      exchange: option.exchange,
+      token: option.token || null,
+    };
   }
 
   /**

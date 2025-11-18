@@ -17,6 +17,10 @@ class DashboardApp {
     // Cache for quote data to prevent unnecessary DOM updates
     // Structure: { watchlistId_symbolId: { ltp, changePercent, volume } }
     this.quoteCache = new Map();
+    // Track latest quote snapshot timestamp per watchlist
+    this.watchlistQuoteSnapshots = new Map();
+    this.isSidebarCollapsed = false;
+    this.quickOrder = window.quickOrder || null;
   }
 
   /**
@@ -24,6 +28,10 @@ class DashboardApp {
    */
   async init() {
     try {
+      this.loadSidebarState();
+      this.applySidebarState();
+      this.quickOrder = window.quickOrder || null;
+
       // Load current user
       await this.loadCurrentUser();
 
@@ -44,6 +52,34 @@ class DashboardApp {
     }
   }
 
+  loadSidebarState() {
+    const stored = localStorage.getItem('sidebarCollapsed');
+    this.isSidebarCollapsed = stored === 'true';
+  }
+
+  applySidebarState() {
+    document.body.classList.toggle('sidebar-collapsed', this.isSidebarCollapsed);
+    const drawerRoot = document.querySelector('.drawer');
+    if (drawerRoot) {
+      drawerRoot.classList.toggle('sidebar-collapsed', this.isSidebarCollapsed);
+    }
+
+    const toggleBtn = document.getElementById('sidebar-collapse-btn');
+    if (toggleBtn) {
+      toggleBtn.setAttribute('aria-pressed', this.isSidebarCollapsed);
+      toggleBtn.setAttribute(
+        'title',
+        this.isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'
+      );
+    }
+  }
+
+  toggleSidebarCollapse() {
+    this.isSidebarCollapsed = !this.isSidebarCollapsed;
+    this.applySidebarState();
+    localStorage.setItem('sidebarCollapsed', this.isSidebarCollapsed ? 'true' : 'false');
+  }
+
   /**
    * Load current user
    */
@@ -53,8 +89,16 @@ class DashboardApp {
       this.currentUser = response.data;
 
       // Update UI
-      document.getElementById('current-user-email').textContent =
-        this.currentUser.email;
+      const emailElement = document.getElementById('current-user-email');
+      if (emailElement) {
+        emailElement.textContent = this.currentUser.email;
+      }
+
+      // Update avatar
+      const avatarElement = document.getElementById('user-avatar');
+      if (avatarElement) {
+        avatarElement.textContent = this.currentUser.email.charAt(0).toUpperCase();
+      }
     } catch (error) {
       console.error('Failed to load user:', error);
     }
@@ -64,22 +108,42 @@ class DashboardApp {
    * Setup navigation
    */
   setupNavigation() {
-    const navItems = document.querySelectorAll('.nav-item');
+    const navItems = document.querySelectorAll('[data-view]');
 
     navItems.forEach((item) => {
       item.addEventListener('click', (e) => {
         e.preventDefault();
 
         const view = item.dataset.view;
-
-        // Update active state
-        navItems.forEach((i) => i.classList.remove('active'));
-        item.classList.add('active');
-
-        // Load view
-        this.loadView(view);
+        this.switchView(view);
       });
     });
+  }
+
+  /**
+   * Switch view
+   */
+  switchView(viewName) {
+    // Update active state
+    const navItems = document.querySelectorAll('[data-view]');
+    navItems.forEach((item) => {
+      if (item.dataset.view === viewName) {
+        item.classList.add('active', 'bg-primary', 'text-primary-content');
+        item.classList.remove('hover:bg-base-200');
+      } else {
+        item.classList.remove('active', 'bg-primary', 'text-primary-content');
+        item.classList.add('hover:bg-base-200');
+      }
+    });
+
+    // Close drawer on mobile
+    const drawerToggle = document.getElementById('drawer-toggle');
+    if (drawerToggle) {
+      drawerToggle.checked = false;
+    }
+
+    // Load view
+    this.loadView(viewName);
   }
 
   /**
@@ -90,6 +154,9 @@ class DashboardApp {
     if (this.currentView === 'watchlists' && viewName !== 'watchlists') {
       this.stopAllWatchlistPolling();
       this.stopPositionsPolling();
+      if (window.quickOrder && typeof window.quickOrder.stopAllOptionPreviewPolling === 'function') {
+        window.quickOrder.stopAllOptionPreviewPolling();
+      }
     }
 
     this.currentView = viewName;
@@ -465,6 +532,10 @@ class DashboardApp {
   async renderWatchlistsView() {
     const contentArea = document.getElementById('content-area');
 
+    if (window.quickOrder && typeof window.quickOrder.stopAllOptionPreviewPolling === 'function') {
+      window.quickOrder.stopAllOptionPreviewPolling();
+    }
+
     // Fetch watchlists
     const response = await api.getWatchlists();
     this.watchlists = response.data;
@@ -475,40 +546,55 @@ class DashboardApp {
     this.instances = instancesRes.data;
 
     contentArea.innerHTML = `
-      <!-- Watchlists Section -->
-      <div class="card mb-6">
-        <div class="card-header">
-          <h3 class="card-title">Watchlists</h3>
-          <button class="btn btn-primary" onclick="app.showAddWatchlistModal()">
-            + Add Watchlist
-          </button>
+      <section class="watchlists-page">
+        <div class="card">
+          <div class="watchlists-toolbar">
+            <div class="flex items-center gap-2">
+              <h3>Watchlists</h3>
+              <button class="field-help" title="Create collections of symbols, assign instances, and access quick orders per instrument.">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="12" y1="8" x2="12" y2="12"></line>
+                  <circle cx="12" cy="16" r="0.5"></circle>
+                </svg>
+              </button>
+            </div>
+            <div class="toolbar-actions">
+              <button class="btn btn-outline btn-sm" onclick="app.renderWatchlistsView()">
+                Refresh data
+              </button>
+              <button class="btn btn-primary" onclick="app.showAddWatchlistModal()">
+                + Add Watchlist
+              </button>
+            </div>
+          </div>
         </div>
-        <div id="watchlists-container" class="p-4 space-y-4">
-          ${await this.renderWatchlistsAccordion(this.watchlists)}
-        </div>
-      </div>
 
-      <!-- Positions & Orders Tabbed Section -->
-      <div class="card">
-        <div class="card-header" style="border-bottom: 1px solid var(--color-neutral-200);">
-          <div class="tabs" id="positions-orders-tabs">
-            <button class="tab-button active" data-tab="positions" onclick="app.switchTab('positions')">
-              💼 Positions
-            </button>
-            <button class="tab-button" data-tab="orders" onclick="app.switchTab('orders')">
-              📝 Orders
-            </button>
+        <div id="watchlists-container" class="watchlists-grid">
+          ${await this.renderWatchlistsAccordion(this.watchlists, true)}
+        </div>
+
+        <div class="card">
+          <div class="card-header" style="border-bottom: 1px solid var(--color-neutral-200);">
+            <div class="tabs" id="positions-orders-tabs">
+              <button class="tab-button active" data-tab="positions" onclick="app.switchTab('positions')">
+                💼 Positions
+              </button>
+              <button class="tab-button" data-tab="orders" onclick="app.switchTab('orders')">
+                📝 Orders
+              </button>
+            </div>
+          </div>
+          <div class="tab-content">
+            <div id="tab-positions" class="tab-panel active">
+              <div class="p-4">Loading positions...</div>
+            </div>
+            <div id="tab-orders" class="tab-panel hidden">
+              <div class="p-4">Loading orders...</div>
+            </div>
           </div>
         </div>
-        <div class="tab-content">
-          <div id="tab-positions" class="tab-panel active">
-            <div class="p-4">Loading positions...</div>
-          </div>
-          <div id="tab-orders" class="tab-panel hidden">
-            <div class="p-4">Loading orders...</div>
-          </div>
-        </div>
-      </div>
+      </section>
     `;
 
     // Load positions by default and start auto-refresh
@@ -518,11 +604,15 @@ class DashboardApp {
   /**
    * Render watchlists as accordion cards
    */
-  async renderWatchlistsAccordion(watchlists) {
+  async renderWatchlistsAccordion(watchlists, setupListeners = false) {
     if (watchlists.length === 0) {
       return `
-        <div class="text-center text-neutral-600 py-8">
-          <p>No watchlists found</p>
+        <div class="watchlists-empty">
+          <h4 class="text-lg font-semibold">No watchlists yet</h4>
+          <p>Create your first watchlist to start tracking instruments.</p>
+          <button class="btn btn-primary btn-sm mt-2" onclick="app.showAddWatchlistModal()">
+            + Create Watchlist
+          </button>
         </div>
       `;
     }
@@ -533,7 +623,20 @@ class DashboardApp {
       cardsHTML.push(await this.renderWatchlistCard(wl, isExpanded));
     }
 
-    return cardsHTML.join('');
+    const html = cardsHTML.join('');
+
+    // If requested, setup listeners for expanded watchlists
+    if (setupListeners) {
+      setTimeout(() => {
+        watchlists.forEach(wl => {
+          if (this.expandedWatchlists.has(wl.id)) {
+            this.setupExpansionToggleListeners(wl.id);
+          }
+        });
+      }, 100);
+    }
+
+    return html;
   }
 
   /**
@@ -543,58 +646,56 @@ class DashboardApp {
     const statusColor = wl.is_active ? 'success' : 'neutral';
 
     return `
-      <div class="card" style="border-left: 4px solid var(--color-${statusColor}-500);">
-        <!-- Header (Always Visible) -->
-        <div class="card-header cursor-pointer" onclick="app.toggleWatchlist(${wl.id})">
-          <div class="flex items-center justify-between w-full">
-            <div class="flex items-center gap-4">
-              <span class="text-2xl">
-                ${isExpanded ? '▼' : '▶'}
-              </span>
+      <article class="watchlist-card" data-watchlist-id="${wl.id}">
+        <div class="watchlist-card__header">
+          <button
+            id="watchlist-toggle-${wl.id}"
+            class="watchlist-card__toggle ${isExpanded ? 'is-open' : ''}"
+            aria-expanded="${isExpanded}"
+            onclick="app.toggleWatchlist(${wl.id})"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
+          <div class="watchlist-card__info">
+            <div class="flex items-center justify-between gap-4 flex-wrap">
               <div>
-                <h4 class="text-lg font-semibold">${Utils.escapeHTML(wl.name)}</h4>
-                <p class="text-sm text-neutral-600">${Utils.escapeHTML(wl.description || 'No description')}</p>
+                <h4>${Utils.escapeHTML(wl.name)}</h4>
+                <p>${Utils.escapeHTML(wl.description || 'No description provided')}</p>
               </div>
-            </div>
-            <div class="flex items-center gap-4">
-              <div class="text-right text-sm">
-                <span class="text-neutral-700">${wl.symbol_count || 0} symbols</span>
-                <span class="mx-2">•</span>
-                <span class="text-neutral-700">${wl.instance_count || 0} instances</span>
-              </div>
-              <span class="badge badge-${statusColor}">
-                ${wl.is_active ? 'Active' : 'Inactive'}
+              <span class="watchlist-card__status ${statusColor}">
+                ${wl.is_active ? 'Active' : 'Paused'}
               </span>
             </div>
-          </div>
-        </div>
-
-        <!-- Expanded Content -->
-        <div id="watchlist-content-${wl.id}" class="${isExpanded ? '' : 'hidden'}">
-          <div class="p-4 border-t">
-            <!-- Action Buttons -->
-            <div class="flex gap-2 mb-4">
-              <button class="btn btn-primary btn-sm" onclick="app.showAddSymbolModal(${wl.id})">
+            <div class="watchlist-card__meta">
+              <span>${wl.symbol_count || 0} symbols</span>
+              <span>•</span>
+              <span>${wl.instance_count || 0} instances</span>
+            </div>
+            <div class="watchlist-card__actions">
+              <button class="watchlist-actions__button" onclick="app.showAddSymbolModal(${wl.id})">
                 + Add Symbol
               </button>
-              <button class="btn btn-secondary btn-sm" onclick="app.showEditWatchlistModal(${wl.id})">
-                ✏️ Edit
+              <button class="watchlist-actions__button" onclick="app.showEditWatchlistModal(${wl.id})">
+                ✏️ Edit Watchlist
               </button>
-              <button class="btn btn-secondary btn-sm" onclick="app.manageWatchlistInstances(${wl.id})">
+              <button class="watchlist-actions__button" onclick="app.manageWatchlistInstances(${wl.id})">
                 🔗 Manage Instances
               </button>
-              <button class="btn btn-error btn-sm" onclick="app.deleteWatchlist(${wl.id})">
+              <button class="watchlist-actions__button danger" onclick="app.deleteWatchlist(${wl.id})">
                 🗑️ Delete
               </button>
             </div>
-
-            <!-- Symbols List -->
-            <div id="watchlist-symbols-${wl.id}">
-              ${isExpanded ? await this.renderWatchlistSymbols(wl.id) : '<p class="text-neutral-600">Loading...</p>'}
-            </div>
           </div>
         </div>
-      </div>
+
+        <div id="watchlist-content-${wl.id}" class="watchlist-card__body ${isExpanded ? 'is-visible' : ''}">
+          <div id="watchlist-symbols-${wl.id}">
+            ${isExpanded ? await this.renderWatchlistSymbols(wl.id) : '<p class="text-neutral-600">Loading...</p>'}
+          </div>
+        </div>
+      </article>
     `;
   }
 
@@ -604,27 +705,31 @@ class DashboardApp {
   async toggleWatchlist(watchlistId) {
     const contentDiv = document.getElementById(`watchlist-content-${watchlistId}`);
     const symbolsDiv = document.getElementById(`watchlist-symbols-${watchlistId}`);
-    const headerDiv = document.querySelector(`[onclick="app.toggleWatchlist(${watchlistId})"] span`);
+    const toggleButton = document.getElementById(`watchlist-toggle-${watchlistId}`);
 
-    if (!contentDiv) return;
+    if (!contentDiv || !toggleButton) return;
 
     if (this.expandedWatchlists.has(watchlistId)) {
       // Collapse
       this.expandedWatchlists.delete(watchlistId);
-      contentDiv.classList.add('hidden');
-      if (headerDiv) headerDiv.textContent = '▶';
+      contentDiv.classList.remove('is-visible');
+      toggleButton.classList.remove('is-open');
+      toggleButton.setAttribute('aria-expanded', 'false');
 
       // Stop polling for this watchlist
       this.stopWatchlistPolling(watchlistId);
     } else {
       // Expand
       this.expandedWatchlists.add(watchlistId);
-      contentDiv.classList.remove('hidden');
-      if (headerDiv) headerDiv.textContent = '▼';
+      contentDiv.classList.add('is-visible');
+      toggleButton.classList.add('is-open');
+      toggleButton.setAttribute('aria-expanded', 'true');
 
       // Render symbols if not already rendered
       if (symbolsDiv && symbolsDiv.innerHTML.includes('Loading...')) {
         symbolsDiv.innerHTML = await this.renderWatchlistSymbols(watchlistId);
+        // Setup event listeners for expansion toggles after symbols are rendered
+        this.setupExpansionToggleListeners(watchlistId);
       }
 
       // Start polling after DOM is ready
@@ -645,6 +750,12 @@ class DashboardApp {
       }
 
       return `
+        <div class="watchlist-feed-meta" data-watchlist-meta="${watchlistId}">
+          <span class="text-xs text-neutral-500">Quotes auto-refresh via the shared market data feed.</span>
+          <span class="text-xs text-neutral-500" data-watchlist-last-update="${watchlistId}">Last update: waiting for feed…</span>
+          <span class="text-xs text-neutral-500" data-watchlist-feed-source="${watchlistId}">Source: —</span>
+          <span class="text-xs text-neutral-500" data-watchlist-feed-coverage="${watchlistId}"></span>
+        </div>
         <table class="table watchlist-table" id="watchlist-table-${watchlistId}">
           <thead>
             <tr>
@@ -663,12 +774,22 @@ class DashboardApp {
           </thead>
           <tbody>
             ${symbols.map(sym => `
-              <tr class="symbol-row" data-symbol-id="${sym.id}" data-symbol="${sym.symbol}" data-exchange="${sym.exchange}">
+              <tr class="symbol-row"
+                  data-symbol-id="${sym.id}"
+                  data-symbol="${sym.symbol}"
+                  data-exchange="${sym.exchange}"
+                  data-symbol-type="${sym.symbol_type || 'UNKNOWN'}"
+                  data-tradable-equity="${sym.tradable_equity ? 1 : 0}"
+                  data-tradable-futures="${sym.tradable_futures ? 1 : 0}"
+                  data-tradable-options="${sym.tradable_options ? 1 : 0}"
+                  data-underlying="${Utils.escapeHTML(sym.underlying_symbol || sym.symbol)}">
                 <td>
                   <button
                     class="btn-toggle-expansion"
+                    data-watchlist-id="${watchlistId}"
+                    data-symbol-id="${sym.id}"
                     data-toggle-symbol="${sym.id}"
-                    onclick="quickOrder.toggleRowExpansion(${watchlistId}, ${sym.id})"
+                    type="button"
                     title="Expand trading controls">
                     ▼
                   </button>
@@ -729,6 +850,52 @@ class DashboardApp {
   }
 
   /**
+   * Setup event listeners for watchlist expansion toggles
+   */
+  setupExpansionToggleListeners(watchlistId) {
+    // Use event delegation on the table for better performance
+    const table = document.getElementById(`watchlist-table-${watchlistId}`);
+    if (!table) return;
+
+    // Remove existing listener if present to avoid duplicates
+    if (table._expansionListener) {
+      table.removeEventListener('click', table._expansionListener);
+    }
+
+    table._expansionListener = (event) => {
+      const button = event.target.closest('.btn-toggle-expansion');
+      if (button) {
+        const wlId = parseInt(button.dataset.watchlistId);
+        const symId = parseInt(button.dataset.symbolId);
+        console.log('[Watchlist] Expansion toggle clicked', { watchlistId: wlId, symbolId: symId });
+        this.handleSymbolToggle(wlId, symId);
+      }
+    };
+
+    table.addEventListener('click', table._expansionListener);
+  }
+
+  handleSymbolToggle(watchlistId, symbolId) {
+    const handler = window.quickOrder;
+    if (!handler || typeof handler.toggleRowExpansion !== 'function') {
+      console.error('[Watchlist] quickOrder handler not ready', { watchlistId, symbolId });
+      if (window.Utils && typeof Utils.showToast === 'function') {
+        Utils.showToast('Trading controls not ready yet. Please reload the page.', 'error');
+      }
+      return;
+    }
+
+    try {
+      handler.toggleRowExpansion(watchlistId, symbolId);
+    } catch (error) {
+      console.error('Failed to toggle symbol expansion', { watchlistId, symbolId, error });
+      if (window.Utils && typeof Utils.showToast === 'function') {
+        Utils.showToast(`Failed to open trading controls: ${error.message}`, 'error');
+      }
+    }
+  }
+
+  /**
    * Start polling quotes for a watchlist
    */
   async startWatchlistPolling(watchlistId) {
@@ -736,7 +903,7 @@ class DashboardApp {
     this.stopWatchlistPolling(watchlistId);
 
     // Fetch quotes immediately
-    await this.updateWatchlistQuotes(watchlistId);
+    await this.updateWatchlistQuotes(watchlistId, { force: true });
 
     // Start 10-second polling
     const intervalId = setInterval(async () => {
@@ -756,6 +923,8 @@ class DashboardApp {
     }
     // Clear quote cache for this watchlist
     this.clearWatchlistQuoteCache(watchlistId);
+    this.watchlistQuoteSnapshots.delete(watchlistId);
+    this.updateWatchlistQuoteMeta(watchlistId, { statusText: 'Quotes paused' });
   }
 
   /**
@@ -784,39 +953,22 @@ class DashboardApp {
     keysToDelete.forEach(key => this.quoteCache.delete(key));
   }
 
-  /**
-   * Start polling positions (10 second interval)
-   */
   startPositionsPolling() {
-    // Clear existing interval if any
     this.stopPositionsPolling();
-
-    // Load positions immediately
-    this.loadPositionsTab();
-
-    // Set up polling interval (10 seconds)
+    this.refreshWatchlistPositions({ showLoader: true });
     this.positionsPollingInterval = setInterval(() => {
-      this.loadPositionsTab();
+      this.refreshWatchlistPositions();
     }, 10000);
-
-    console.log('Positions polling started (10s interval)');
   }
 
-  /**
-   * Stop polling positions
-   */
   stopPositionsPolling() {
     if (this.positionsPollingInterval) {
       clearInterval(this.positionsPollingInterval);
       this.positionsPollingInterval = null;
-      console.log('Positions polling stopped');
     }
   }
 
-  /**
-   * Update quotes for all symbols in a watchlist
-   */
-  async updateWatchlistQuotes(watchlistId) {
+  async updateWatchlistQuotes(watchlistId, { force = false } = {}) {
     try {
       // Check if watchlist table exists in DOM (view might be re-rendering)
       const table = document.getElementById(`watchlist-table-${watchlistId}`);
@@ -829,7 +981,10 @@ class DashboardApp {
       const response = await api.getWatchlistSymbols(watchlistId);
       const symbols = response.data;
 
-      if (symbols.length === 0) return;
+      if (symbols.length === 0) {
+        this.updateWatchlistQuoteMeta(watchlistId, { statusText: 'No symbols configured' });
+        return;
+      }
 
       // Get the designated market data instance (primary with failover to secondary)
       // This instance does not need to be mapped to the watchlist
@@ -840,6 +995,12 @@ class DashboardApp {
         console.log(`Using market data instance: ${marketDataInstance.name} (${marketDataInstance.market_data_role})`);
       } catch (error) {
         console.warn('No healthy market data instance available for quotes:', error.message);
+        this.updateWatchlistQuoteMeta(watchlistId, {
+          statusText: 'Market data feed unavailable',
+          source: null,
+          total: symbols.length,
+          filled: 0,
+        });
         return;
       }
 
@@ -851,7 +1012,22 @@ class DashboardApp {
 
       // Fetch quotes from the market data instance
       const quotesResponse = await api.getQuotes(symbolsForQuotes, marketDataInstance.id);
-      const quotes = quotesResponse.data;
+      const quotes = quotesResponse.data || [];
+      const snapshotTimestamp = quotesResponse.cachedAt || Date.now();
+
+      this.updateWatchlistQuoteMeta(watchlistId, {
+        timestamp: snapshotTimestamp,
+        source: quotesResponse.source || 'live',
+        total: symbols.length,
+        filled: quotes.length,
+      });
+
+      const lastSnapshotTs = this.watchlistQuoteSnapshots.get(watchlistId);
+      if (!force && lastSnapshotTs && snapshotTimestamp && snapshotTimestamp <= lastSnapshotTs) {
+        return;
+      }
+
+      this.watchlistQuoteSnapshots.set(watchlistId, snapshotTimestamp);
 
       // Update UI for each symbol
       quotes.forEach(quote => {
@@ -865,6 +1041,9 @@ class DashboardApp {
       });
     } catch (error) {
       console.error('Failed to update watchlist quotes', error);
+      this.updateWatchlistQuoteMeta(watchlistId, {
+        statusText: 'Quote refresh failed',
+      });
     }
   }
 
@@ -970,6 +1149,72 @@ class DashboardApp {
 
     // Update cache
     this.quoteCache.set(cacheKey, cached);
+  }
+
+  updateWatchlistQuoteMeta(
+    watchlistId,
+    {
+      timestamp = null,
+      source = null,
+      total = null,
+      filled = null,
+      statusText = null,
+    } = {}
+  ) {
+    const lastUpdateEl = document.querySelector(
+      `[data-watchlist-last-update="${watchlistId}"]`
+    );
+    const sourceEl = document.querySelector(
+      `[data-watchlist-feed-source="${watchlistId}"]`
+    );
+    const coverageEl = document.querySelector(
+      `[data-watchlist-feed-coverage="${watchlistId}"]`
+    );
+
+    if (lastUpdateEl) {
+      if (statusText) {
+        lastUpdateEl.textContent = statusText;
+        lastUpdateEl.removeAttribute('title');
+      } else if (timestamp) {
+        const parsedTs = typeof timestamp === 'number'
+          ? timestamp
+          : Date.parse(timestamp);
+        if (!Number.isNaN(parsedTs)) {
+          const iso = new Date(parsedTs).toISOString();
+          lastUpdateEl.textContent = `Last update: ${Utils.formatRelativeTime(iso)}`;
+          lastUpdateEl.title = `Cached at ${Utils.formatDateTime(iso, true)}`;
+        } else {
+          lastUpdateEl.textContent = 'Last update: waiting for feed…';
+          lastUpdateEl.removeAttribute('title');
+        }
+      } else {
+        lastUpdateEl.textContent = 'Last update: waiting for feed…';
+        lastUpdateEl.removeAttribute('title');
+      }
+    }
+
+    if (sourceEl) {
+      if (statusText) {
+        sourceEl.textContent = 'Source: —';
+      } else if (source === 'cache') {
+        sourceEl.textContent = 'Source: Shared feed cache';
+      } else if (source) {
+        sourceEl.textContent = 'Source: Live broker fallback';
+      } else {
+        sourceEl.textContent = 'Source: —';
+      }
+    }
+
+    if (coverageEl) {
+      if (statusText && statusText.toLowerCase().includes('paused')) {
+        coverageEl.textContent = '';
+      } else if (typeof total === 'number') {
+        const updatedCount = typeof filled === 'number' ? filled : 0;
+        coverageEl.textContent = `Symbols updated: ${updatedCount}/${total}`;
+      } else {
+        coverageEl.textContent = '';
+      }
+    }
   }
 
   /**
@@ -1181,7 +1426,7 @@ class DashboardApp {
    */
   showAddInstanceModal() {
     const modal = document.createElement('div');
-    modal.className = 'modal-overlay';
+    modal.className = 'modal-overlay symbol-search-modal';
     modal.innerHTML = `
       <div class="modal-content">
         <div class="modal-header">
@@ -1344,6 +1589,52 @@ class DashboardApp {
   }
 
   /**
+   * Test connection in edit modal
+   */
+  async testEditInstanceConnection() {
+    const hostUrlInput = document.getElementById('edit-instance-host-url');
+    const apiKeyInput = document.getElementById('edit-instance-api-key');
+    const statusEl = document.getElementById('edit-connection-status');
+    const brokerField = document.getElementById('edit-instance-broker');
+
+    if (!hostUrlInput || !apiKeyInput || !statusEl || !brokerField) {
+      console.warn('Edit instance connection fields missing');
+      return;
+    }
+
+    const hostUrl = hostUrlInput.value;
+    const apiKey = apiKeyInput.value;
+
+    if (!hostUrl || !apiKey) {
+      statusEl.textContent = '⚠️ Please enter Host URL and API Key first';
+      statusEl.style.color = 'var(--color-warning)';
+      return;
+    }
+
+    statusEl.textContent = '⏳ Testing connection...';
+    statusEl.style.color = 'var(--color-info)';
+
+    try {
+      const response = await api.testConnection(hostUrl, apiKey);
+
+      if (response.status === 'success' && response.data?.broker) {
+        brokerField.value = response.data.broker;
+        statusEl.textContent = `✅ Connection successful! Broker: ${response.data.broker}`;
+        statusEl.style.color = 'var(--color-profit)';
+        Utils.showToast(`Connected successfully to ${response.data.broker}`, 'success');
+      } else {
+        statusEl.textContent = '❌ ' + (response.message || 'Connection failed');
+        statusEl.style.color = 'var(--color-loss)';
+        Utils.showToast(response.message || 'Connection test failed', 'error');
+      }
+    } catch (error) {
+      statusEl.textContent = '❌ ' + error.message;
+      statusEl.style.color = 'var(--color-loss)';
+      Utils.showToast('Connection test failed: ' + error.message, 'error');
+    }
+  }
+
+  /**
    * Test API key validity with funds endpoint
    */
   async testInstanceApiKey() {
@@ -1386,7 +1677,7 @@ class DashboardApp {
    */
   showAddWatchlistModal() {
     const modal = document.createElement('div');
-    modal.className = 'modal-overlay';
+    modal.className = 'modal-overlay symbol-search-modal';
     modal.innerHTML = `
       <div class="modal-content">
         <div class="modal-header">
@@ -1609,7 +1900,7 @@ class DashboardApp {
     this.currentWatchlistId = watchlistId;
 
     const modal = document.createElement('div');
-    modal.className = 'modal-overlay';
+    modal.className = 'modal-overlay symbol-search-modal';
     modal.innerHTML = `
       <div class="modal-content" style="max-width: 700px;">
         <div class="modal-header">
@@ -1628,7 +1919,7 @@ class DashboardApp {
           <div id="symbol-search-results" class="mt-4"></div>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">
+          <button class="btn btn-secondary" onclick="app.closeSymbolSearchModal()">
             Cancel
           </button>
         </div>
@@ -1636,7 +1927,16 @@ class DashboardApp {
     `;
 
     document.body.appendChild(modal);
+    this.symbolSearchModal = modal;
     document.getElementById('symbol-search-input').focus();
+  }
+
+  closeSymbolSearchModal() {
+    const modal = this.symbolSearchModal || document.querySelector('.symbol-search-modal');
+    if (modal) {
+      modal.remove();
+    }
+    this.symbolSearchModal = null;
   }
 
   /**
@@ -1672,9 +1972,10 @@ class DashboardApp {
         <div class="space-y-2">
           <p class="text-sm text-neutral-700 font-semibold">${results.length} results found:</p>
           <div class="max-h-96 overflow-y-auto space-y-2">
-            ${results.map(sym => `
+              ${results.map(sym => `
               <div class="p-3 border rounded cursor-pointer hover:bg-neutral-100"
-                   onclick="app.selectSymbol(${JSON.stringify(sym).replace(/"/g, '&quot;')})">
+                   data-symbol="${encodeURIComponent(JSON.stringify(sym))}"
+                   onclick="app.selectSymbol(this.dataset.symbol)">
                 <div class="flex items-center justify-between">
                   <div>
                     <span class="font-semibold">${Utils.escapeHTML(sym.tradingsymbol || sym.symbol)}</span>
@@ -1696,35 +1997,173 @@ class DashboardApp {
   }
 
   /**
-   * Select symbol from search results
+   * Select symbol from search results and open configuration
    */
-  async selectSymbol(symbolData) {
+  selectSymbol(encodedSymbol) {
+    let symbolData;
+    try {
+      symbolData = JSON.parse(decodeURIComponent(encodedSymbol));
+    } catch (error) {
+      console.error('Failed to decode symbol', error);
+      Utils.showToast('Failed to parse selected symbol', 'error');
+      return;
+    }
+
+    this.pendingSymbolData = symbolData;
+    this.closeSymbolSearchModal();
+    this.showSymbolConfigModal(symbolData);
+  }
+
+  getSymbolTradableDefaults(symbolData) {
+    const type = (symbolData.symbol_type || '').toUpperCase();
+    return {
+      equity:
+        symbolData.tradable_equity === true ||
+        type === 'EQUITY' ||
+        type === 'EQUITY_FNO' ||
+        type === 'UNKNOWN',
+      futures:
+        symbolData.tradable_futures === true ||
+        type === 'FUTURES' ||
+        type === 'EQUITY_FNO' ||
+        type === 'INDEX',
+      options:
+        symbolData.tradable_options === true ||
+        type === 'OPTIONS' ||
+        type === 'INDEX',
+    };
+  }
+
+  showSymbolConfigModal(symbolData) {
+    const defaults = this.getSymbolTradableDefaults(symbolData);
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+      <div class="modal-content" style="max-width: 560px;">
+        <div class="modal-header">
+          <h3>Configure Symbol</h3>
+        </div>
+        <div class="modal-body">
+          <p class="text-sm text-neutral-600 mb-4">
+            Choose which trade modes should be enabled for <strong>${Utils.escapeHTML(symbolData.tradingsymbol || symbolData.symbol)}</strong>.
+          </p>
+          <form id="symbol-config-form" class="space-y-4">
+            <div class="p-3 border rounded-lg bg-neutral-50">
+              <div class="flex items-center justify-between">
+                <div>
+                  <p class="font-semibold">${Utils.escapeHTML(symbolData.tradingsymbol || symbolData.symbol)}</p>
+                  <p class="text-sm text-neutral-600">${Utils.escapeHTML(symbolData.exchange || '')}</p>
+                </div>
+                <span class="badge ${this.getSymbolTypeBadgeClass(symbolData.symbol_type || 'UNKNOWN')}">
+                  ${(symbolData.symbol_type || 'UNKNOWN').toUpperCase()}
+                </span>
+              </div>
+            </div>
+
+            <div class="space-y-3">
+              <label class="flex items-center gap-3 p-3 border rounded cursor-pointer hover:bg-neutral-50">
+                <input type="checkbox" name="tradable_equity" ${defaults.equity ? 'checked' : ''}>
+                <div>
+                  <p class="font-semibold">Enable Direct (Equity) Trading</p>
+                  <p class="text-sm text-neutral-600">Use BUY/SELL/EXIT buttons for spot positions.</p>
+                </div>
+              </label>
+              <label class="flex items-center gap-3 p-3 border rounded cursor-pointer hover:bg-neutral-50">
+                <input type="checkbox" name="tradable_futures" ${defaults.futures ? 'checked' : ''}>
+                <div>
+                  <p class="font-semibold">Enable Futures Trading</p>
+                  <p class="text-sm text-neutral-600">Route BUY/SELL/EXIT to futures contracts.</p>
+                </div>
+              </label>
+              <label class="flex items-center gap-3 p-3 border rounded cursor-pointer hover:bg-neutral-50">
+                <input type="checkbox" name="tradable_options" ${defaults.options ? 'checked' : ''}>
+                <div>
+                  <p class="font-semibold">Enable Options Trading</p>
+                  <p class="text-sm text-neutral-600">Show the documented Options workflow.</p>
+                </div>
+              </label>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">Underlying Symbol (for derivatives)</label>
+              <input type="text" name="underlying_symbol" class="form-input"
+                     value="${Utils.escapeHTML(symbolData.underlying_symbol || symbolData.symbol || '')}"
+                     placeholder="e.g., NIFTY, BANKNIFTY">
+              <p class="text-xs text-neutral-500 mt-1">
+                Used to resolve futures/options via the instruments cache or option-chain API.
+              </p>
+            </div>
+          </form>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" onclick="app.cancelSymbolConfig()">
+            Cancel
+          </button>
+          <button class="btn btn-primary" onclick="app.confirmAddSymbol()">
+            Add Symbol
+          </button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+    this.symbolConfigModal = modal;
+  }
+
+  cancelSymbolConfig() {
+    if (this.symbolConfigModal) {
+      this.symbolConfigModal.remove();
+      this.symbolConfigModal = null;
+    }
+    this.pendingSymbolData = null;
+  }
+
+  async confirmAddSymbol() {
+    const form = document.getElementById('symbol-config-form');
+    if (!form || !this.pendingSymbolData) {
+      Utils.showToast('No symbol selected', 'error');
+      return;
+    }
+
+    const tradableEquity = form.tradable_equity.checked;
+    const tradableFutures = form.tradable_futures.checked;
+    const tradableOptions = form.tradable_options.checked;
+    const underlyingSymbol =
+      form.underlying_symbol.value.trim() ||
+      this.pendingSymbolData.underlying_symbol ||
+      this.pendingSymbolData.tradingsymbol ||
+      this.pendingSymbolData.symbol;
+
     try {
       Utils.showToast('Adding symbol...', 'info');
-
-      // Add symbol to watchlist with complete metadata
       await api.addSymbol(this.currentWatchlistId, {
-        symbol: symbolData.tradingsymbol || symbolData.symbol,
-        exchange: symbolData.exchange,
-        token: symbolData.token,
-        lotsize: symbolData.lotsize || 1,
-        symbol_type: symbolData.symbol_type,
-        expiry: symbolData.expiry || null,
-        strike: symbolData.strike || null,
-        option_type: symbolData.option_type || null,
-        instrumenttype: symbolData.instrumenttype || null,
-        name: symbolData.name || null,
-        tick_size: symbolData.tick_size || symbolData.tickSize || null,
-        brsymbol: symbolData.brsymbol || null,
-        brexchange: symbolData.brexchange || null,
+        symbol: this.pendingSymbolData.tradingsymbol || this.pendingSymbolData.symbol,
+        exchange: this.pendingSymbolData.exchange,
+        token: this.pendingSymbolData.token,
+        lotsize: this.pendingSymbolData.lotsize || this.pendingSymbolData.lot_size || 1,
+        symbol_type: this.pendingSymbolData.symbol_type,
+        expiry: this.pendingSymbolData.expiry || null,
+        strike: this.pendingSymbolData.strike || null,
+        option_type: this.pendingSymbolData.option_type || null,
+        instrumenttype: this.pendingSymbolData.instrumenttype || null,
+        name: this.pendingSymbolData.name || null,
+        tick_size: this.pendingSymbolData.tick_size || this.pendingSymbolData.tickSize || null,
+        brsymbol: this.pendingSymbolData.brsymbol || null,
+        brexchange: this.pendingSymbolData.brexchange || null,
+        tradable_equity: tradableEquity,
+        tradable_futures: tradableFutures,
+        tradable_options: tradableOptions,
+        underlying_symbol: underlyingSymbol,
       });
 
       Utils.showToast('Symbol added successfully', 'success');
 
-      // Close modal
-      document.querySelector('.modal-overlay').remove();
+      if (this.symbolConfigModal) {
+        this.symbolConfigModal.remove();
+        this.symbolConfigModal = null;
+      }
+      this.pendingSymbolData = null;
 
-      // Refresh watchlist view
       await this.renderWatchlistsView();
     } catch (error) {
       Utils.showToast(error.message, 'error');
@@ -1974,220 +2413,208 @@ class DashboardApp {
     }
   }
 
-  /**
-   * Load positions content into tab (watchlist positions - only open positions)
-   */
-  async loadPositionsTab() {
+  async refreshWatchlistPositions({ showLoader = false } = {}) {
     const positionsPanel = document.getElementById('tab-positions');
     if (!positionsPanel) return;
 
+    if (showLoader) {
+      positionsPanel.innerHTML = '<div class="p-4"><p class="text-center text-neutral-600">Loading positions…</p></div>';
+    }
+
     try {
-      // Fetch positions from all active instances (only open positions)
-      const response = await api.getAllPositions(true); // onlyOpen = true
-      const data = response.data;
-
-      // Check if positions have been rendered before
-      const isInitialRender = !positionsPanel.hasAttribute('data-positions-initialized');
-
-      if (isInitialRender) {
-        // Initial render - create the full structure
-        this.renderPositionsTabInitial(positionsPanel, data);
-        positionsPanel.setAttribute('data-positions-initialized', 'true');
-      } else {
-        // Subsequent updates - only update changed values
-        this.updatePositionsTabData(positionsPanel, data);
-      }
+      const response = await api.getAllPositions(false);
+      const normalized = this.prepareWatchlistPositions(response.data);
+      positionsPanel.innerHTML = this.renderWatchlistPositionsMarkup(normalized);
     } catch (error) {
       positionsPanel.innerHTML = `<div class="p-4"><p class="text-center text-error-600">Failed to load positions: ${error.message}</p></div>`;
-      positionsPanel.removeAttribute('data-positions-initialized');
     }
   }
 
-  /**
-   * Initial render of positions tab (called once)
-   */
-  renderPositionsTabInitial(positionsPanel, data) {
-    if (data.instances.length === 0) {
-      positionsPanel.innerHTML = '<div class="p-4"><p class="text-center text-neutral-600">No active instances found</p></div>';
-      return;
+  prepareWatchlistPositions(data) {
+    const instances = (data.instances || []).map(inst => {
+      const openPositions = (inst.positions || []).filter(
+        pos => this.getNormalizedPositionQty(pos) !== 0
+      );
+      return {
+        ...inst,
+        positions: openPositions,
+        open_positions_count: openPositions.length,
+      };
+    });
+
+    const liveInstances = instances
+      .filter(inst => !inst.is_analyzer_mode && inst.open_positions_count > 0);
+
+    const analyzerInstances = instances
+      .filter(inst => inst.is_analyzer_mode && inst.open_positions_count > 0);
+
+    const totalOpen = instances.reduce(
+      (sum, inst) => sum + inst.open_positions_count,
+      0
+    );
+
+    return {
+      overallOpen: totalOpen,
+      overallPnl: data.overall_total_pnl,
+      liveInstances,
+      analyzerInstances,
+    };
+  }
+
+  renderWatchlistPositionsMarkup({ overallOpen, overallPnl, liveInstances, analyzerInstances }) {
+    if (liveInstances.length === 0 && analyzerInstances.length === 0) {
+      return '<div class="p-4"><p class="text-center text-neutral-600">No open positions across any instance.</p></div>';
     }
 
-    // Render positions grouped by instance
-    positionsPanel.innerHTML = `
-      <div class="p-4">
-        <!-- Overall Summary -->
-        <div class="bg-neutral-50 rounded-lg p-4 mb-4 flex justify-between items-center">
-          <div>
-            <span class="text-sm text-neutral-600">Total Open Positions:</span>
-            <span class="font-semibold ml-2" data-overall-open-count>${data.overall_open_positions}</span>
-          </div>
-          <div>
-            <span class="text-sm text-neutral-600">Overall P&L:</span>
-            <span class="font-semibold ml-2" data-overall-pnl>${Utils.formatCurrency(data.overall_total_pnl)}</span>
-          </div>
-        </div>
+    return `
+      <div class="space-y-6">
+        ${this.renderPositionsSummary(overallOpen, overallPnl)}
+        ${this.renderPositionsSection(
+          'Live Market Instances',
+          'Instances actively executing trades',
+          liveInstances
+        )}
+        ${this.renderPositionsSection(
+          'Analyzer Mode Instances',
+          'Instances running in analyzer/paper mode',
+          analyzerInstances
+        )}
+      </div>
+    `;
+  }
 
-        <!-- Instance Groups -->
-        <div id="positions-instance-groups">
-          ${data.instances.map(inst => `
-            <div class="border-b last:border-b-0 pb-4 mb-4" data-instance-id="${inst.instance_id}">
-              <div class="flex items-center justify-between mb-3">
-                <div>
-                  <h4 class="font-semibold text-lg">${Utils.escapeHTML(inst.instance_name)}</h4>
-                  <div class="flex gap-4 mt-1">
-                    <span class="text-sm text-neutral-600">
-                      Open: <span class="font-medium" data-open-count>${inst.open_positions_count}</span>
-                    </span>
-                    <span class="text-sm text-neutral-600">
-                      P&L: <span class="font-medium" data-pnl>${Utils.formatCurrency(inst.total_pnl)}</span>
-                    </span>
-                  </div>
-                </div>
-                <button class="btn btn-error btn-sm"
-                        onclick="app.closeAllPositions(${inst.instance_id})">
-                  Close All Positions
-                </button>
-              </div>
-              <div data-positions-container>
-                ${inst.error ?
-                  `<p class="text-center text-error-600">${Utils.escapeHTML(inst.error)}</p>` :
-                  (inst.positions.length > 0 ?
-                    this.renderPositionsTableWithIds(inst.positions) :
-                    '<p class="text-center text-neutral-600 py-4">No open positions</p>')
-                }
-              </div>
+  renderPositionsSummary(openCount, pnl) {
+    return `
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">Open Positions Summary</h3>
+        </div>
+        <div class="p-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <div class="text-sm text-neutral-600">Total open positions</div>
+            <div class="text-2xl font-semibold">${openCount}</div>
+          </div>
+          <div>
+            <div class="text-sm text-neutral-600">Overall P&L</div>
+            <div class="text-2xl font-semibold ${Utils.getPnLColorClass(pnl)}">
+              ${Utils.formatCurrency(pnl)}
             </div>
-          `).join('')}
+          </div>
         </div>
       </div>
     `;
   }
 
-  /**
-   * Update positions tab data (targeted updates only)
-   */
-  updatePositionsTabData(positionsPanel, data) {
-    if (data.instances.length === 0) {
-      // If no instances, revert to initial state
-      positionsPanel.innerHTML = '<div class="p-4"><p class="text-center text-neutral-600">No active instances found</p></div>';
-      positionsPanel.removeAttribute('data-positions-initialized');
-      return;
+  renderPositionsSection(title, subtitle, instances) {
+    if (!instances || instances.length === 0) {
+      return `
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h3 class="card-title">${title}</h3>
+              <p class="text-sm text-neutral-600">${subtitle}</p>
+            </div>
+            <span class="badge">0</span>
+          </div>
+          <div class="p-4">
+            <p class="text-sm text-neutral-500">No open positions in this category.</p>
+          </div>
+        </div>
+      `;
     }
 
-    // Update overall summary
-    const overallOpenCountEl = positionsPanel.querySelector('[data-overall-open-count]');
-    const overallPnlEl = positionsPanel.querySelector('[data-overall-pnl]');
-
-    if (overallOpenCountEl && overallOpenCountEl.textContent !== String(data.overall_open_positions)) {
-      overallOpenCountEl.textContent = data.overall_open_positions;
-    }
-
-    if (overallPnlEl) {
-      const newPnlText = Utils.formatCurrency(data.overall_total_pnl);
-      if (overallPnlEl.textContent !== newPnlText) {
-        overallPnlEl.textContent = newPnlText;
-        // Update color class
-        overallPnlEl.className = `font-semibold ml-2 ${Utils.getPnLColorClass(data.overall_total_pnl)}`;
-      }
-    }
-
-    // Update each instance group
-    data.instances.forEach(inst => {
-      const instanceDiv = positionsPanel.querySelector(`[data-instance-id="${inst.instance_id}"]`);
-      if (!instanceDiv) {
-        // New instance appeared - need full re-render
-        this.renderPositionsTabInitial(positionsPanel, data);
-        return;
-      }
-
-      // Update instance summary
-      const openCountEl = instanceDiv.querySelector('[data-open-count]');
-      const pnlEl = instanceDiv.querySelector('[data-pnl]');
-
-      if (openCountEl && openCountEl.textContent !== String(inst.open_positions_count)) {
-        openCountEl.textContent = inst.open_positions_count;
-      }
-
-      if (pnlEl) {
-        const newPnlText = Utils.formatCurrency(inst.total_pnl);
-        if (pnlEl.textContent !== newPnlText) {
-          pnlEl.textContent = newPnlText;
-          pnlEl.className = `font-medium ${Utils.getPnLColorClass(inst.total_pnl)}`;
-        }
-      }
-
-      // Update positions table values
-      if (inst.positions && inst.positions.length > 0) {
-        inst.positions.forEach(pos => {
-          const symbol = pos.symbol || pos.tradingsymbol;
-          const escapedSymbol = Utils.escapeHTML(symbol);
-          const posRow = instanceDiv.querySelector(`[data-position-symbol="${escapedSymbol}"]`);
-
-          if (posRow) {
-            // Update quantity
-            const qtyCell = posRow.querySelector('[data-position-qty]');
-            const newQty = pos.quantity || pos.netqty || pos.net_quantity || 0;
-            if (qtyCell && qtyCell.textContent !== String(newQty)) {
-              qtyCell.textContent = newQty;
-            }
-
-            // Update LTP
-            const ltpCell = posRow.querySelector('[data-position-ltp]');
-            const newLtp = Utils.formatCurrency(pos.ltp || pos.last_price || 0);
-            if (ltpCell && ltpCell.textContent !== newLtp) {
-              ltpCell.textContent = newLtp;
-            }
-
-            // Update P&L
-            const pnlCell = posRow.querySelector('[data-position-pnl]');
-            const pnl = parseFloat(pos.pnl || pos.unrealized_pnl || pos.mtm || 0);
-            const newPnlValue = Utils.formatCurrency(pnl);
-            if (pnlCell && pnlCell.textContent !== newPnlValue) {
-              pnlCell.textContent = newPnlValue;
-              pnlCell.className = `text-right ${Utils.getPnLColorClass(pnl)}`;
-            }
-          }
-        });
-      }
-    });
+    return `
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">${title}</h3>
+            <p class="text-sm text-neutral-600">${subtitle}</p>
+          </div>
+          <span class="badge">${instances.length}</span>
+        </div>
+        <div class="p-4 space-y-4">
+          ${instances.map(inst => this.renderPositionsInstanceCard(inst)).join('')}
+        </div>
+      </div>
+    `;
   }
 
-  /**
-   * Render positions table with data attributes for targeted updates
-   */
-  renderPositionsTableWithIds(positions) {
+  renderPositionsInstanceCard(inst) {
+    const positions = inst.positions || [];
     return `
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Symbol</th>
-            <th>Quantity</th>
-            <th>Product</th>
-            <th class="text-right">Avg Price</th>
-            <th class="text-right">LTP</th>
-            <th class="text-right">P&L</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${positions.map(pos => {
-            const pnl = parseFloat(pos.pnl || pos.unrealized_pnl || pos.mtm || 0);
-            const symbol = pos.symbol || pos.tradingsymbol;
-            return `
-              <tr data-position-symbol="${Utils.escapeHTML(symbol)}">
-                <td class="font-medium">${Utils.escapeHTML(symbol)}</td>
-                <td data-position-qty>${pos.quantity || pos.netqty || pos.net_quantity || 0}</td>
-                <td>${pos.product || pos.product_type || '-'}</td>
-                <td class="text-right">${Utils.formatCurrency(pos.average_price || pos.avg_price || 0)}</td>
-                <td class="text-right" data-position-ltp>${Utils.formatCurrency(pos.ltp || pos.last_price || 0)}</td>
-                <td class="text-right ${Utils.getPnLColorClass(pnl)}" data-position-pnl>
-                  ${Utils.formatCurrency(pnl)}
-                </td>
-              </tr>
-            `;
-          }).join('')}
-        </tbody>
-      </table>
+      <div class="rounded-lg border border-base-200 p-4">
+        <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h4 class="font-semibold text-lg">${Utils.escapeHTML(inst.instance_name)}</h4>
+            <div class="flex gap-4 mt-1 text-sm text-neutral-600 flex-wrap">
+              <span>Broker: <span class="font-medium">${Utils.escapeHTML(inst.broker || 'N/A')}</span></span>
+              <span>Open positions: <span class="font-medium">${inst.open_positions_count}</span></span>
+            </div>
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="font-semibold ${Utils.getPnLColorClass(inst.total_pnl)}">
+              ${Utils.formatCurrency(inst.total_pnl)}
+            </span>
+            <button class="btn btn-error btn-sm" onclick="app.closeAllPositions(${inst.instance_id})">
+              Close All
+            </button>
+          </div>
+        </div>
+        <div class="mt-4">
+          ${positions.length > 0
+            ? this.renderPositionsTable(positions)
+            : '<p class="text-sm text-neutral-500">No open positions for this instance.</p>'}
+        </div>
+      </div>
     `;
+  }
+
+  renderPositionsTable(positions) {
+    return `
+      <div class="table-container overflow-x-auto">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Quantity</th>
+              <th>Product</th>
+              <th class="text-right">Avg Price</th>
+              <th class="text-right">LTP</th>
+              <th class="text-right">P&L</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${positions.map(pos => {
+              const qty = this.getNormalizedPositionQty(pos);
+              const pnl = parseFloat(pos.pnl || pos.unrealized_pnl || pos.mtm || 0);
+              return `
+                <tr>
+                  <td class="font-medium">${Utils.escapeHTML(pos.symbol || pos.tradingsymbol || '-')}</td>
+                  <td>${qty}</td>
+                  <td>${Utils.escapeHTML(pos.product || pos.product_type || '-')}</td>
+                  <td class="text-right">${Utils.formatCurrency(pos.average_price || pos.avg_price || 0)}</td>
+                  <td class="text-right">${Utils.formatCurrency(pos.ltp || pos.last_price || 0)}</td>
+                  <td class="text-right ${Utils.getPnLColorClass(pnl)}">${Utils.formatCurrency(pnl)}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  getNormalizedPositionQty(pos) {
+    if (!pos) return 0;
+    const rawQty =
+      pos.quantity ??
+      pos.netqty ??
+      pos.net_quantity ??
+      pos.netQty ??
+      pos.net ??
+      0;
+    const parsed = parseInt(rawQty, 10);
+    return Number.isNaN(parsed) ? 0 : parsed;
   }
 
   /**
@@ -2265,13 +2692,13 @@ class DashboardApp {
 
               <div class="form-group">
                 <label class="form-label">Host URL *</label>
-                <input type="url" name="host_url" class="form-input"
+                <input type="url" name="host_url" id="edit-instance-host-url" class="form-input"
                        value="${Utils.escapeHTML(instance.host_url)}" required>
               </div>
 
               <div class="form-group">
                 <label class="form-label">API Key *</label>
-                <input type="text" name="api_key" class="form-input"
+                <input type="text" name="api_key" id="edit-instance-api-key" class="form-input"
                        value="${Utils.escapeHTML(instance.api_key)}" required>
                 <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
                   Update API key if credentials have changed
@@ -2280,11 +2707,17 @@ class DashboardApp {
 
               <div class="form-group">
                 <label class="form-label">Broker (auto-detected, read-only)</label>
-                <input type="text" name="broker" class="form-input" readonly
-                       value="${Utils.escapeHTML(instance.broker || 'N/A')}"
-                       style="background-color: var(--color-neutral-100); cursor: not-allowed;">
-                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                  Broker field is immutable after instance creation
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                  <input type="text" name="broker" id="edit-instance-broker" class="form-input" readonly
+                        value="${Utils.escapeHTML(instance.broker || 'N/A')}"
+                        style="background-color: var(--color-neutral-100); cursor: not-allowed;">
+                  <button type="button" class="btn btn-secondary btn-sm"
+                          onclick="app.testEditInstanceConnection()">
+                    Test Connection
+                  </button>
+                </div>
+                <small id="edit-connection-status" class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
+                  Broker is auto-detected from the OpenAlgo ping response
                 </small>
               </div>
 

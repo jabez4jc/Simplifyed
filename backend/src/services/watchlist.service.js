@@ -76,12 +76,12 @@ class WatchlistService {
         [id]
       );
 
-      // Get assigned instances
+      // Get assigned instances (only active instances)
       const instances = await db.all(
         `SELECT i.*
          FROM instances i
          JOIN watchlist_instances wi ON i.id = wi.instance_id
-         WHERE wi.watchlist_id = ?`,
+         WHERE wi.watchlist_id = ? AND i.is_active = 1`,
         [id]
       );
 
@@ -313,10 +313,11 @@ class WatchlistService {
         `INSERT INTO watchlist_symbols (
           watchlist_id, exchange, symbol, token, lot_size,
           qty_type, qty_value, product_type, order_type,
-          max_position_size, is_enabled,
+          max_position_size, tradable_equity, tradable_futures, tradable_options, underlying_symbol,
+          is_enabled,
           symbol_type, expiry, strike, option_type,
           instrumenttype, name, tick_size, brsymbol, brexchange
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           watchlistId,
           normalized.exchange,
@@ -328,6 +329,10 @@ class WatchlistService {
           normalized.product_type,
           normalized.order_type,
           normalized.max_position_size,
+          normalized.tradable_equity !== undefined ? normalized.tradable_equity : 1,
+          normalized.tradable_futures !== undefined ? normalized.tradable_futures : 0,
+          normalized.tradable_options !== undefined ? normalized.tradable_options : 0,
+          normalized.underlying_symbol || normalized.symbol || null,
           normalized.is_enabled ? 1 : 0,
           normalized.symbol_type || null,
           normalized.expiry || null,
@@ -572,6 +577,65 @@ class WatchlistService {
   }
 
   /**
+   * Get distinct symbols being tracked across active watchlists
+   * Used by the market data feed service to know which quotes to poll
+   * @param {Object} options - Filter options
+   * @param {boolean} options.onlyActiveWatchlists - Require parent watchlist to be active
+   * @param {boolean} options.onlyEnabledSymbols - Require the symbol row to be enabled
+   * @param {boolean} options.requireAssignedInstances - Require at least one active instance assignment
+   * @returns {Promise<Array<{exchange: string, symbol: string}>>}
+   */
+  async getTrackedSymbols(options = {}) {
+    const {
+      onlyActiveWatchlists = true,
+      onlyEnabledSymbols = true,
+      requireAssignedInstances = false,
+    } = options;
+
+    try {
+      let query = `
+        SELECT DISTINCT
+          UPPER(ws.exchange) as exchange,
+          UPPER(ws.symbol) as symbol
+        FROM watchlist_symbols ws
+        JOIN watchlists w ON ws.watchlist_id = w.id
+      `;
+
+      const conditions = [
+        "ws.symbol IS NOT NULL AND ws.symbol != ''",
+        "ws.exchange IS NOT NULL AND ws.exchange != ''",
+      ];
+
+      if (requireAssignedInstances) {
+        query += `
+          JOIN watchlist_instances wi ON wi.watchlist_id = ws.watchlist_id
+          JOIN instances inst ON inst.id = wi.instance_id
+        `;
+        conditions.push('inst.is_active = 1');
+      }
+
+      if (onlyActiveWatchlists) {
+        conditions.push('w.is_active = 1');
+      }
+
+      if (onlyEnabledSymbols) {
+        conditions.push('ws.is_enabled = 1');
+      }
+
+      if (conditions.length > 0) {
+        query += ` WHERE ${conditions.join(' AND ')}`;
+      }
+
+      query += ' ORDER BY exchange, symbol';
+
+      return await db.all(query);
+    } catch (error) {
+      log.error('Failed to get tracked symbols', error);
+      return [];
+    }
+  }
+
+  /**
    * Normalize and validate watchlist data
    * @private
    */
@@ -684,6 +748,23 @@ class WatchlistService {
       if (maxSize !== null && maxSize > 0) {
         normalized.max_position_size = maxSize;
       }
+    }
+
+    if (data.tradable_equity !== undefined) {
+      normalized.tradable_equity = parseBooleanSafe(data.tradable_equity, true) ? 1 : 0;
+    }
+
+    if (data.tradable_futures !== undefined) {
+      normalized.tradable_futures = parseBooleanSafe(data.tradable_futures, false) ? 1 : 0;
+    }
+
+    if (data.tradable_options !== undefined) {
+      normalized.tradable_options = parseBooleanSafe(data.tradable_options, false) ? 1 : 0;
+    }
+
+    if (data.underlying_symbol !== undefined) {
+      const underlying = sanitizeSymbol(data.underlying_symbol);
+      normalized.underlying_symbol = underlying || null;
     }
 
     // Is enabled

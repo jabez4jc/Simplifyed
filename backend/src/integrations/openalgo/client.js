@@ -129,12 +129,25 @@ class OpenAlgoClient {
         lastError = error;
 
         // Don't retry on client errors (4xx) - these indicate bad requests
+        // Log at WARN level for invalid API keys (not ERROR) to reduce log spam
         if (error.statusCode >= 400 && error.statusCode < 500) {
-          log.error('OpenAlgo API Client Error (4xx) - not retrying', error, {
-            endpoint,
-            statusCode: error.statusCode,
-            isCritical
-          });
+          const isInvalidApiKey = error.message && error.message.toLowerCase().includes('invalid apikey');
+
+          if (isInvalidApiKey) {
+            log.warn('OpenAlgo API Key Invalid - Instance may be down', {
+              endpoint,
+              statusCode: error.statusCode,
+              isCritical,
+              error: error.message
+            });
+          } else {
+            log.warn('OpenAlgo API Client Error (4xx) - not retrying', {
+              endpoint,
+              statusCode: error.statusCode,
+              isCritical,
+              error: error.message
+            });
+          }
           throw error;
         }
 
@@ -630,8 +643,7 @@ class OpenAlgoClient {
           headers: {
             'Accept': 'application/json',
           },
-          signal: AbortSignal.timeout(this.timeout),
-          dispatcher: this.dispatcher,
+          signal: AbortSignal.timeout(this.timeout)
         });
 
         const duration = Date.now() - startTime;

@@ -12,6 +12,7 @@ import { config } from './src/core/config.js';
 import { log } from './src/core/logger.js';
 import db from './src/core/database.js';
 import pollingService from './src/services/polling.service.js';
+import marketDataFeedService from './src/services/market-data-feed.service.js';
 // Order monitor service removed - no longer needed after target/stoploss removal
 // import orderMonitorService from './src/services/order-monitor.service.js';
 import telegramService from './src/services/telegram.service.js';
@@ -128,6 +129,10 @@ async function startServer() {
     await db.connect();
     log.info('Database connected');
 
+    // Load configuration from database
+    await config.loadFromDatabase();
+    log.info('Configuration loaded from database');
+
     // Ensure test user exists in development
     if (config.env === 'development' && !config.auth.googleClientId) {
       const testUser = await db.get('SELECT * FROM users WHERE id = 1');
@@ -139,6 +144,12 @@ async function startServer() {
         log.info('Test user created');
       }
     }
+
+    // Start shared market data feed service (quotes/positions/funds cache)
+    await marketDataFeedService.start({
+      quoteInterval: config.polling.marketDataInterval || undefined,
+    });
+    log.info('Market data feed service started');
 
     // Start polling service
     await pollingService.start();
@@ -167,10 +178,10 @@ async function startServer() {
       console.log('║         Simplifyed Admin V2 - Server Running              ║');
       console.log('║                                                            ║');
       console.log('╠════════════════════════════════════════════════════════════╣');
-      console.log(`║  Environment:  ${config.env.padEnd(43)} ║`);
-      console.log(`║  Port:         ${config.port.toString().padEnd(43)} ║`);
-      console.log(`║  Base URL:     ${config.baseUrl.padEnd(43)} ║`);
-      console.log(`║  Test Mode:    ${(!config.auth.googleClientId ? 'Yes' : 'No').padEnd(43)} ║`);
+      console.log(`║  Environment:  ${String(config.env || 'unknown').padEnd(43)} ║`);
+      console.log(`║  Port:         ${String(config.port || 3000).padEnd(43)} ║`);
+      console.log(`║  Base URL:     ${String(config.baseUrl || 'unknown').padEnd(43)} ║`);
+      console.log(`║  Test Mode:    ${String(!config.auth.googleClientId ? 'Yes' : 'No').padEnd(43)} ║`);
       console.log('║                                                            ║');
       console.log('╠════════════════════════════════════════════════════════════╣');
       console.log('║  API Endpoints:                                            ║');

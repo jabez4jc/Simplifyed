@@ -9,6 +9,7 @@ import db from '../core/database.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import optionsResolutionService from './options-resolution.service.js';
 import expiryManagementService from './expiry-management.service.js';
+import marketDataFeedService from './market-data-feed.service.js';
 import { ValidationError, NotFoundError } from '../core/errors.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
 
@@ -38,15 +39,64 @@ class QuickOrderService {
       price = 0,
       expiry = null,  // User-selected expiry date
       optionsLeg = null,  // User-selected options leg (ITM2, ATM, OTM1, etc.)
+      operatingMode = 'BUYER',  // Buyer or Writer mode for OPTIONS
+      strikePolicy = 'FLOAT_OFS',  // FLOAT_OFS or ANCHOR_OFS for OPTIONS
+      stepLots = 1,  // Step size in lots for OPTIONS
     } = params;
 
-    log.info('Placing quick order', { symbolId, instanceId, action, tradeMode, quantity, expiry, optionsLeg });
+    log.info('Placing quick order', {
+      symbolId,
+      instanceId,
+      action,
+      tradeMode,
+      quantity,
+      expiry,
+      optionsLeg,
+      operatingMode,
+      strikePolicy,
+      stepLots,
+    });
 
     // Validate inputs
     this._validateOrderParams(params);
 
     // Get symbol configuration
     const symbol = await this._getSymbolConfig(symbolId);
+
+    // Validate OPTIONS actions require a symbol that supports options trading
+    const optionsActions = [
+      'BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE', 'EXIT_ALL',
+      'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE',
+      'CLOSE_ALL_CE', 'CLOSE_ALL_PE',
+    ];
+    if (optionsActions.includes(action)) {
+      const supportsOptions =
+        symbol.symbol_type === 'OPTIONS' ||
+        symbol.tradable_options === 1 ||
+        (await this._ensureOptionsTradability(symbol));
+
+      if (!supportsOptions) {
+        throw new ValidationError(
+          `Symbol ${symbol.symbol} (type: ${symbol.symbol_type}) does not support options trading. ` +
+            `Enable options trading in the watchlist symbol settings or map it to an OPTIONS instrument.`
+        );
+      }
+    }
+
+    // Validate FUTURES mode symbols
+    if (tradeMode === 'FUTURES') {
+      const supportsFutures =
+        symbol.symbol_type === 'FUTURES' ||
+        symbol.tradable_futures === 1 ||
+        (await this._ensureFuturesTradability(symbol));
+
+      if (!supportsFutures) {
+        throw new ValidationError(
+          `Symbol ${symbol.symbol} (type: ${symbol.symbol_type}) does not support futures trading. ` +
+            `Enable futures trading in the watchlist symbol settings or map it to a futures instrument.`
+        );
+      }
+    }
 
     // Get instances (single or all assigned)
     const instances = await this._getTargetInstances(instanceId, symbol.watchlist_id);
@@ -59,7 +109,7 @@ class QuickOrderService {
       strategy,
       symbol,
       instances,
-      { action, tradeMode, quantity, product, orderType, price, expiry, optionsLeg }
+      { action, tradeMode, quantity, product, orderType, price, expiry, optionsLeg, operatingMode, strikePolicy, stepLots }
     );
 
     log.info('Quick order completed', {
@@ -96,7 +146,13 @@ class QuickOrderService {
       throw new ValidationError('action is required');
     }
 
-    const validActions = ['BUY', 'SELL', 'EXIT', 'BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE', 'EXIT_ALL'];
+    const validActions = [
+      'BUY', 'SELL', 'EXIT',  // Direct/Futures actions
+      'BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE', 'EXIT_ALL',  // Existing options actions
+      'REDUCE_CE', 'REDUCE_PE',  // Buyer mode: reduce longs
+      'INCREASE_CE', 'INCREASE_PE',  // Writer mode: cover shorts
+      'CLOSE_ALL_CE', 'CLOSE_ALL_PE'  // Type-specific close
+    ];
     if (!validActions.includes(action)) {
       throw new ValidationError(`action must be one of: ${validActions.join(', ')}`);
     }
@@ -115,10 +171,17 @@ class QuickOrderService {
     }
 
     // Validate action compatibility with trade mode
-    const optionsActions = ['BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE', 'EXIT_ALL'];
+    const optionsActions = [
+      'BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE', 'EXIT_ALL',
+      'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE',
+      'CLOSE_ALL_CE', 'CLOSE_ALL_PE'
+    ];
     if (optionsActions.includes(action) && tradeMode !== 'OPTIONS') {
       throw new ValidationError(`Action ${action} is only valid for OPTIONS trade mode`);
     }
+
+    // NEW: Validate that the symbol supports options trading if using OPTIONS actions
+    // This check is deferred to _getSymbolConfig which has access to symbol details
   }
 
   /**
@@ -187,14 +250,25 @@ class QuickOrderService {
    * @private
    */
   _determineOrderStrategy(action, tradeMode) {
+    // Exit actions always close positions
     if (action === 'EXIT' || action === 'EXIT_ALL') {
       return 'CLOSE_POSITIONS';
     }
 
-    if (tradeMode === 'OPTIONS' && ['BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE'].includes(action)) {
+    // Type-specific close actions (CLOSE_ALL_CE, CLOSE_ALL_PE)
+    if (action.startsWith('CLOSE_ALL_')) {
+      return 'CLOSE_POSITIONS';
+    }
+
+    // All OPTIONS mode actions (including Buyer/Writer paradigm)
+    if (tradeMode === 'OPTIONS' && [
+      'BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE',
+      'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE'
+    ].includes(action)) {
       return 'OPTIONS_WITH_RECONCILIATION';
     }
 
+    // Direct/Futures BUY/SELL actions
     if (action === 'BUY' || action === 'SELL') {
       return 'DIRECT_ORDER';
     }
@@ -207,8 +281,6 @@ class QuickOrderService {
    * @private
    */
   async _executeOrderStrategy(strategy, symbol, instances, orderParams) {
-    const results = [];
-
     // For OPTIONS strategy, resolve option symbol ONCE using primary market data instance
     let preResolvedOptionSymbol = null;
     if (strategy === 'OPTIONS_WITH_RECONCILIATION') {
@@ -225,7 +297,7 @@ class QuickOrderService {
       });
     }
 
-    for (const instance of instances) {
+    const perInstanceTasks = instances.map(async (instance) => {
       try {
         let result;
 
@@ -251,28 +323,28 @@ class QuickOrderService {
             throw new ValidationError(`Unknown strategy: ${strategy}`);
         }
 
-        results.push({
+        return {
           success: true,
           instance_id: instance.id,
           instance_name: instance.name,
           ...result,
-        });
+        };
       } catch (error) {
         log.error('Failed to execute order on instance', error, {
           instance_id: instance.id,
           symbol_id: symbol.id,
         });
 
-        results.push({
+        return {
           success: false,
           instance_id: instance.id,
           instance_name: instance.name,
           error: error.message,
-        });
+        };
       }
-    }
+    });
 
-    return results;
+    return Promise.all(perInstanceTasks);
   }
 
   /**
@@ -438,6 +510,8 @@ class QuickOrderService {
       message: orderResult.message || 'Order placed successfully',
     });
 
+    this._invalidateInstanceCaches(instance.id);
+
     return {
       order_id: orderResult.orderid,
       status: orderResult.status,
@@ -448,113 +522,392 @@ class QuickOrderService {
   }
 
   /**
-   * Execute options order with position reconciliation
+   * Execute options order with Buyer/Writer position-aware targeting
+   * Implements Options Mode Implementation Guide v1.4
    * @private
    */
   async _executeOptionsOrder(instance, symbol, orderParams, preResolvedOptionSymbol = null) {
-    const { action, quantity, product, orderType, price } = orderParams;
+    const {
+      action,
+      product,
+      orderType,
+      price,
+      operatingMode = 'BUYER',
+      strikePolicy = 'FLOAT_OFS',
+      stepLots = 1,
+    } = orderParams;
 
-    // Parse action to determine option type and side
-    const optionType = action.includes('CE') ? 'CE' : 'PE';
-    const side = action.startsWith('BUY') ? 'BUY' : 'SELL';
+    // Get writer guard from symbol configuration (optional)
+    const writerGuard = symbol.writer_guard_enabled !== 0;  // Default true
+
+    log.info('Executing options order with Buyer/Writer mode', {
+      action,
+      operatingMode,
+      strikePolicy,
+      stepLots,
+      writerGuard,
+    });
+
+    // Determine option type from action
+    const optionType = this._getOptionTypeFromAction(action);
 
     // Use pre-resolved option symbol if provided (multi-instance case)
     // Otherwise resolve it now (single-instance case)
+    // EXCEPTION: For REDUCE/INCREASE actions in FLOAT_OFS mode, resolve per-instance
+    // to target the ACTUAL open strikes instead of a new resolved strike
+    const isReduceAction = ['REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE'].includes(action);
+    const shouldSkipPreResolution = isReduceAction && strikePolicy === 'FLOAT_OFS';
+
     let optionSymbol;
     let expiry;
     let underlying;
+    let strike;
 
-    if (preResolvedOptionSymbol) {
-      // Multi-instance: use pre-resolved symbol
+    if (preResolvedOptionSymbol && !shouldSkipPreResolution) {
+      // Multi-instance: use pre-resolved symbol (for BUY/SELL actions)
       optionSymbol = preResolvedOptionSymbol.optionSymbol;
       expiry = preResolvedOptionSymbol.expiry;
       underlying = preResolvedOptionSymbol.underlying;
+      strike = optionSymbol.targetStrike || optionSymbol.strike;
+
       log.debug('Using pre-resolved option symbol', {
         instance_id: instance.id,
         symbol: optionSymbol.symbol,
-        strike: optionSymbol.strike,
+        strike,
       });
     } else {
-      // Single-instance: resolve now
+      // Single-instance OR REDUCE in FLOAT_OFS mode: resolve now
+      log.info('Resolving option symbol per-instance', {
+        action,
+        isReduceAction,
+        strikePolicy,
+        shouldSkipPreResolution,
+        instance_id: instance.id,
+      });
+      // For ANCHOR_OFS, check if strike is already anchored
+      const anchoredStrike = strikePolicy === 'ANCHOR_OFS'
+        ? await this._manageAnchoredStrike(symbol.id, optionType, orderParams.expiry || null)
+        : null;
+
+      if (anchoredStrike) {
+        // Use anchored strike - resolve symbol with specific strike
+        log.info('Using anchored strike', { optionType, strike: anchoredStrike });
+        // TODO: Implement strike-specific resolution
+        // For now, resolve normally and we'll anchor after first resolution
+      }
+
       const resolution = await this._resolveOptionSymbolForInstance(instance, symbol, orderParams);
       optionSymbol = resolution.optionSymbol;
       expiry = resolution.expiry;
       underlying = resolution.underlying;
+      strike = optionSymbol.targetStrike || optionSymbol.strike;
+
+      // For ANCHOR_OFS on first add action, anchor this strike
+      if (strikePolicy === 'ANCHOR_OFS' && !anchoredStrike &&
+          (action === 'BUY_CE' || action === 'BUY_PE' || action === 'SELL_CE' || action === 'SELL_PE')) {
+        await this._manageAnchoredStrike(symbol.id, optionType, expiry, strike, true);
+        log.info('Anchored strike for ANCHOR_OFS', { optionType, strike, expiry });
+      }
     }
 
     // Determine the correct derivatives exchange
-    // INDEX symbols are on NSE_INDEX but their options trade on NFO
     const derivativeExchange = this._getDerivativeExchange(symbol.exchange);
-    log.info('Exchange mapping for options', {
-      originalExchange: symbol.exchange,
-      derivativeExchange
-    });
 
-    // Get open positions for this underlying and expiry
-    const openPositions = await this._getOpenOptionsPositions(
-      instance,
-      underlying,
-      expiry,
-      optionType,
-      product
-    );
+    // Determine scope: TYPE-level or LEG-level position calculation
+    // FLOAT_OFS + reduce/close actions → TYPE scope (aggregate across strikes)
+    // ANCHOR_OFS or add actions → LEG scope (single strike)
+    const isReduceOrClose = [
+      'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE',
+      'CLOSE_ALL_CE', 'CLOSE_ALL_PE', 'EXIT_ALL'
+    ].includes(action);
+    const useTypeScope = strikePolicy === 'FLOAT_OFS' && isReduceOrClose;
 
-    // Reconcile positions (close opposite positions)
-    const closeResults = await this._reconcileOptionsPositions(
-      instance,
-      openPositions,
-      side,
-      optionType,
-      product,
-      symbol.watchlist_name
-    );
+    // For REDUCE/INCREASE in FLOAT_OFS mode, handle each open position separately
+    if (strikePolicy === 'FLOAT_OFS' && isReduceOrClose) {
+      log.info('FLOAT_OFS REDUCE/INCREASE: Handling each open position separately', {
+        action,
+        optionType,
+        expiry,
+        underlying,
+      });
 
-    // Calculate trade quantity from lots
-    const lotSize = optionSymbol.lot_size || symbol.lot_size || 1;
-    const tradeQuantity = quantity * lotSize;
+      // Get all open positions for this underlying+expiry+optionType
+      const allOpenPositions = await this._getAllOpenPositions(
+        instance,
+        underlying,
+        expiry,
+        optionType,
+        product
+      );
 
-    // Get current position for the resolved option symbol
-    const currentPosition = await this._getCurrentPositionSize(
-      instance,
-      optionSymbol.symbol,
-      derivativeExchange,
-      product
-    );
+      if (allOpenPositions.length === 0) {
+        log.warn('No open positions found for REDUCE/INCREASE', {
+          action,
+          underlying,
+          expiry,
+          optionType,
+        });
+        throw new ValidationError(`No open ${optionType} positions found to ${action.split('_')[0].toLowerCase()}`);
+      }
 
-    // Calculate target position_size based on action
-    let targetPosition;
-    if (side === 'BUY') {
-      // BUY: Add to position
-      targetPosition = currentPosition + tradeQuantity;
-    } else {
-      // SELL: Reduce position
-      targetPosition = currentPosition - tradeQuantity;
-      // Ensure target position doesn't go below 0
-      if (targetPosition < 0) targetPosition = 0;
+      // Calculate Qstep = step_lots × lotsize
+      const lotSize = optionSymbol.lot_size || symbol.lot_size || 1;
+      const Qstep = stepLots * lotSize;
+
+      log.info('FLOAT_OFS REDUCE/INCREASE: Calculating per-position reductions', {
+        Qstep,
+        stepLots,
+        lotSize,
+        openPositionCount: allOpenPositions.length,
+      });
+
+      // For each open position, determine how much to reduce/increase
+      const ordersToPlace = [];
+
+      for (const position of allOpenPositions) {
+        const currentStrikePosition = position.netQty;
+        const targetStrikePosition = this._computeTarget(currentStrikePosition, action, Qstep, writerGuard);
+
+        // Only place order if position changes
+        if (targetStrikePosition !== currentStrikePosition) {
+          const algoAction = this._determineAlgoAction(currentStrikePosition, targetStrikePosition);
+          const quantity = Math.abs(targetStrikePosition - currentStrikePosition);
+
+          log.info('FLOAT_OFS Order per strike', {
+            symbol: position.symbol,
+            currentPosition: currentStrikePosition,
+            targetPosition: targetStrikePosition,
+            action: algoAction,
+            quantity,
+          });
+
+          ordersToPlace.push({
+            symbol: position.symbol,
+            action: algoAction,
+            quantity,
+            position_size: targetStrikePosition,
+            currentPosition: currentStrikePosition,
+          });
+        } else {
+          log.debug('Skipping position - no change needed', {
+            symbol: position.symbol,
+            currentPosition: currentStrikePosition,
+            targetPosition: currentStrikePosition,
+          });
+        }
+      }
+
+      if (ordersToPlace.length === 0) {
+        log.warn('No orders to place - all positions already at target', { action });
+        throw new ValidationError('No position change needed - all positions already at target');
+      }
+
+      // Place orders for each strike
+      const orderResults = [];
+      for (const order of ordersToPlace) {
+        const orderDataToSend = {
+          strategy: symbol.watchlist_name || 'default',
+          exchange: derivativeExchange,
+          symbol: order.symbol,
+          action: order.action,
+          quantity: order.quantity,
+          position_size: order.position_size,
+          product,
+          pricetype: orderType,
+          price: price.toString(),
+        };
+
+        log.info('FLOAT_OFS: Placing order for strike', {
+          strike: order.strike,
+          symbol: order.symbol,
+          action: order.action,
+          quantity: order.quantity,
+          position_size: order.position_size,
+        });
+
+        const orderResult = await openalgoClient.placeSmartOrder(instance, orderDataToSend);
+
+        // Sync position to watchlist_options_state table
+        await this._syncOptionsState(
+          symbol.watchlist_id,
+          symbol.id,
+          instance.id,
+          underlying,
+          expiry,
+          optionType,
+          order.strike,
+          order.position_size,
+          0,
+          product
+        );
+
+        // Record order in database
+        await this._recordQuickOrder({
+          watchlist_id: symbol.watchlist_id,
+          symbol_id: symbol.id,
+          instance_id: instance.id,
+          underlying,
+          symbol: order.symbol,
+          exchange: derivativeExchange,
+          action: order.action,
+          trade_mode: 'OPTIONS',
+          options_leg: symbol.options_strike_selection,
+          quantity: order.quantity,
+          product,
+          order_type: orderType,
+          price,
+          resolved_symbol: optionSymbol.symbol,
+          strike_price: order.strike,
+          option_type: optionType,
+          expiry_date: expiry,
+          order_id: orderResult.orderid,
+          status: orderResult.status,
+          message: orderResult.message || `${operatingMode} mode: ${action} executed successfully`,
+        });
+
+        orderResults.push({
+          order_id: orderResult.orderid,
+          status: orderResult.status,
+          symbol: order.symbol,
+          strike: order.strike,
+          quantity: order.quantity,
+          action: order.action,
+        });
+      }
+
+      log.info('FLOAT_OFS REDUCE/INCEASE: All orders placed successfully', {
+        action,
+        orderCount: orderResults.length,
+        orders: orderResults,
+      });
+      this._invalidateInstanceCaches(instance.id);
+
+      return {
+        orders: orderResults,
+        action,
+        operating_mode: operatingMode,
+        strike_policy: strikePolicy,
+        position_count: allOpenPositions.length,
+        orders_placed: orderResults.length,
+      };
     }
 
-    log.info('Calculated position for options order', {
-      action,
-      side,
-      optionSymbol: optionSymbol.symbol,
-      currentPosition,
-      tradeQuantity,
-      targetPosition,
+    // For all other cases (BUY/SELL actions, ANCHOR_OFS, CLOSE_ALL in FLOAT_OFS), use legacy logic
+    // Get current position
+    let currentPosition;
+    if (useTypeScope) {
+      // Aggregate across all strikes for this TYPE and expiry
+      currentPosition = await this._getAggregatedTypePosition(
+        instance,
+        underlying,
+        expiry,
+        optionType,
+        product
+      );
+      log.info('Using TYPE-scoped position (FLOAT_OFS)', {
+        optionType,
+        expiry,
+        currentPosition,
+      });
+    } else {
+      // Single leg position
+      currentPosition = await this._getCurrentPositionSize(
+        instance,
+        optionSymbol.symbol,
+        derivativeExchange,
+        product
+      );
+      log.info('Using LEG-scoped position', {
+        symbol: optionSymbol.symbol,
+        currentPosition,
+      });
+    }
+
+    // Calculate Qstep = step_lots × lotsize
+    const lotSize = optionSymbol.lot_size || symbol.lot_size || 1;
+    const Qstep = stepLots * lotSize;
+
+    log.info('Calculated Qstep', {
+      stepLots,
       lotSize,
+      Qstep,
     });
 
-    // Place new order
-    const orderResult = await openalgoClient.placeSmartOrder(instance, {
-      strategy: symbol.watchlist_name || 'default',
-      exchange: derivativeExchange,  // Use derivative exchange (NFO, not NSE_INDEX)
+    // Compute target position using Implementation Guide algorithm
+    const targetPosition = this._computeTarget(currentPosition, action, Qstep, writerGuard);
+
+    log.info('Computed target position', {
+      action,
+      currentPosition,
+      Qstep,
+      targetPosition,
+      delta: targetPosition - currentPosition,
+    });
+
+    // Check if there's any position change needed
+    if (targetPosition === currentPosition) {
+      log.warn('No position change needed - target equals current', {
+        action,
+        currentPosition,
+        targetPosition,
+      });
+      throw new ValidationError('No position change needed - already at target position');
+    }
+
+    // Determine OpenAlgo action (BUY/SELL) from delta
+    const algoAction = this._determineAlgoAction(currentPosition, targetPosition);
+    const quantity = Math.abs(targetPosition - currentPosition);
+
+    log.info('Order - Full calculation details', {
+      action,
+      algoAction,
+      currentPosition,
+      targetPosition,
+      quantity: Math.abs(targetPosition - currentPosition),
       symbol: optionSymbol.symbol,
-      action: side,
-      quantity: tradeQuantity,
+      strike,
+      position_size: targetPosition,
+    });
+
+    log.info('Order details', {
+      algoAction,
+      quantity,
+      targetPosition,
+      symbol: optionSymbol.symbol,
+      strike,
+    });
+
+    // Prepare order data for OpenAlgo
+    const orderDataToSend = {
+      strategy: symbol.watchlist_name || 'default',
+      exchange: derivativeExchange,
+      symbol: optionSymbol.symbol,
+      action: algoAction,
+      quantity,
       position_size: targetPosition,
       product,
       pricetype: orderType,
       price: price.toString(),
-    });
+    };
+
+    log.info('Data being sent to OpenAlgo placesmartorder', orderDataToSend);
+
+    // Place order using placesmartorder
+    const orderResult = await openalgoClient.placeSmartOrder(instance, orderDataToSend);
+
+    // Sync position to watchlist_options_state table
+    await this._syncOptionsState(
+      symbol.watchlist_id,
+      symbol.id,
+      instance.id,
+      underlying,
+      expiry,
+      optionType,
+      strike,
+      targetPosition,  // New net position
+      0,  // We don't have avg price yet, will be updated by polling
+      product
+    );
 
     // Record order in database
     await this._recordQuickOrder({
@@ -563,32 +916,37 @@ class QuickOrderService {
       instance_id: instance.id,
       underlying,
       symbol: optionSymbol.symbol,
-      exchange: derivativeExchange,  // Use derivative exchange
-      action: side,
+      exchange: derivativeExchange,
+      action: algoAction,
       trade_mode: 'OPTIONS',
       options_leg: symbol.options_strike_selection,
-      quantity: tradeQuantity,
+      quantity,
       product,
       order_type: orderType,
       price,
       resolved_symbol: optionSymbol.symbol,
-      strike_price: optionSymbol.targetStrike,
+      strike_price: strike,
       option_type: optionType,
       expiry_date: expiry,
       order_id: orderResult.orderid,
       status: orderResult.status,
-      message: orderResult.message || 'Options order placed successfully',
+      message: orderResult.message || `${operatingMode} mode: ${action} executed successfully`,
     });
+
+    this._invalidateInstanceCaches(instance.id);
 
     return {
       order_id: orderResult.orderid,
       status: orderResult.status,
       symbol: optionSymbol.symbol,
-      strike: optionSymbol.targetStrike,
+      strike,
       option_type: optionType,
-      quantity: tradeQuantity,
-      action: side,
-      closed_positions: closeResults.length,
+      quantity,
+      action: algoAction,
+      operating_mode: operatingMode,
+      strike_policy: strikePolicy,
+      current_position: currentPosition,
+      target_position: targetPosition,
     };
   }
 
@@ -708,6 +1066,8 @@ class QuickOrderService {
       }
     }
 
+    this._invalidateInstanceCaches(instance.id);
+
     return {
       message: `Closed ${closeResults.filter(r => r.success).length} position(s)`,
       closed_count: closeResults.filter(r => r.success).length,
@@ -773,22 +1133,67 @@ class QuickOrderService {
   }
 
   /**
+   * Get cached position book for an instance (fallback to OpenAlgo if cache missing)
+   * @private
+   */
+  async _getPositionBook(instance) {
+    const cache = marketDataFeedService.getPositionSnapshot(instance.id);
+    if (cache?.data) {
+      return cache.data;
+    }
+
+    const positionBook = await openalgoClient.getPositionBook(instance);
+    marketDataFeedService.setPositionSnapshot(instance.id, positionBook);
+    return positionBook;
+  }
+
+  /**
    * Get current position size for a symbol
    * @private
    */
   async _getCurrentPositionSize(instance, symbol, exchange, product) {
     try {
-      const position = await openalgoClient.getOpenPosition(
-        instance,
+      const positionBook = await this._getPositionBook(instance);
+      const targetSymbol = this._normalizeSymbolKey(symbol);
+      const targetExchange = this._normalizeExchange(exchange);
+      const targetProduct = this._normalizeProduct(product);
+
+      return positionBook.reduce((total, pos) => {
+        const posSymbol = this._normalizeSymbolKey(
+          pos.symbol || pos.trading_symbol || pos.tradingsymbol
+        );
+        if (!posSymbol || posSymbol !== targetSymbol) {
+          return total;
+        }
+
+        const posExchange = this._normalizeExchange(pos.exchange || pos.exch);
+        if (targetExchange && posExchange && posExchange !== targetExchange) {
+          return total;
+        }
+
+        const posProduct = this._normalizeProduct(pos.product || pos.producttype);
+        if (targetProduct && posProduct && posProduct !== targetProduct) {
+          return total;
+        }
+
+        const qty =
+          parseIntSafe(pos.quantity) ||
+          parseIntSafe(pos.netqty) ||
+          parseIntSafe(pos.net_quantity) ||
+          parseIntSafe(pos.net) ||
+          parseIntSafe(pos.netQty) ||
+          0;
+
+        return total + qty;
+      }, 0);
+    } catch (error) {
+      log.warn('Failed to determine current position size from cache', {
+        instance_id: instance.id,
         symbol,
         exchange,
         product,
-        'default'
-      );
-
-      return parseIntSafe(position.quantity, 0);
-    } catch (error) {
-      // No position or error fetching - return 0
+        error: error.message,
+      });
       return 0;
     }
   }
@@ -799,23 +1204,57 @@ class QuickOrderService {
    */
   async _getOpenOptionsPositions(instance, underlying, expiry, optionType, product) {
     try {
-      const positionBook = await openalgoClient.getPositionBook(instance);
+      const positionBook = await this._getPositionBook(instance);
+      const targetUnderlying = (underlying || '').toUpperCase();
+      const targetOptionType = (optionType || '').toUpperCase();
 
-      // Filter positions matching underlying, expiry, and option type
-      const positions = positionBook.filter(p => {
-        const matchesType = p.symbol.includes(optionType);
-        const matchesUnderlying = p.symbol.startsWith(underlying);
-        const hasQuantity = p.quantity && p.quantity !== '0' && parseInt(p.quantity) !== 0;
+      const positions = positionBook
+        .filter(p => {
+          const rawSymbol = p.symbol || '';
+          if (!rawSymbol) return false;
 
-        return matchesType && matchesUnderlying && hasQuantity;
-      });
+          const symbol = rawSymbol.toUpperCase();
+          const quantity =
+            parseIntSafe(p.quantity) ||
+            parseIntSafe(p.netqty) ||
+            parseIntSafe(p.net_quantity) ||
+            parseIntSafe(p.net) ||
+            parseIntSafe(p.netQty) ||
+            0;
 
-      return positions.map(p => ({
-        symbol: p.symbol,
-        exchange: p.exchange,
-        quantity: parseIntSafe(p.quantity, 0),
-        product: p.product,
-      }));
+          if (quantity === 0) return false;
+
+          const parsed = this._parseOptionSymbol(symbol);
+          const matchesUnderlying = parsed.underlying
+            ? parsed.underlying === targetUnderlying
+            : symbol.includes(targetUnderlying);
+
+          if (!matchesUnderlying) return false;
+
+          const matchesExpiry = parsed.expiry ? parsed.expiry === expiry : true;
+          if (!matchesExpiry) return false;
+
+          const parsedType = parsed.type ? parsed.type.toUpperCase() : null;
+          const matchesType = parsedType
+            ? parsedType === targetOptionType
+            : symbol.includes(targetOptionType);
+
+          return matchesType;
+        })
+        .map(p => ({
+          symbol: p.symbol,
+          exchange: p.exchange,
+          quantity:
+            parseIntSafe(p.quantity) ||
+            parseIntSafe(p.netqty) ||
+            parseIntSafe(p.net_quantity) ||
+            parseIntSafe(p.net) ||
+            parseIntSafe(p.netQty) ||
+            0,
+          product: p.product || product,
+        }));
+
+      return positions;
     } catch (error) {
       log.error('Failed to get options positions', error);
       return [];
@@ -828,7 +1267,7 @@ class QuickOrderService {
    */
   async _getOpenPositionsForSymbol(instance, symbol, exchange, product) {
     try {
-      const positionBook = await openalgoClient.getPositionBook(instance);
+      const positionBook = await this._getPositionBook(instance);
 
       const positions = positionBook.filter(p => {
         const matchesSymbol = p.symbol === symbol;
@@ -907,24 +1346,44 @@ class QuickOrderService {
         exchange,
       });
 
+      const cachedQuote = this._findQuoteInSnapshot(
+        marketDataFeedService.getQuoteSnapshot(instance.id),
+        exchange,
+        underlying
+      );
+
+      if (cachedQuote) {
+        const cachedLtp = this._extractLtpFromQuote(cachedQuote);
+        if (cachedLtp) {
+          log.debug('Using cached LTP for underlying', {
+            instance_id: instance.id,
+            underlying,
+            ltp: cachedLtp,
+            source: 'cache',
+          });
+          return cachedLtp;
+        }
+      }
+
       const quotes = await openalgoClient.getQuotes(instance, [
         { exchange, symbol: underlying },
       ]);
 
-      if (quotes.length === 0) {
+      if (!quotes || quotes.length === 0) {
         throw new NotFoundError(`No quote found for ${underlying}`);
       }
 
-      const ltp = parseFloatSafe(quotes[0].ltp || quotes[0].last_price, 0);
+      const ltp = this._extractLtpFromQuote(quotes[0]);
 
-      if (!ltp || ltp === 0) {
-        throw new ValidationError(`Invalid LTP (${ltp}) received for ${underlying}`);
+      if (!ltp) {
+        throw new ValidationError(`Invalid LTP received for ${underlying}`);
       }
 
       log.debug('LTP fetched successfully', {
         instance_id: instance.id,
         underlying,
         ltp,
+        source: 'live',
       });
 
       return ltp;
@@ -1355,6 +1814,84 @@ class QuickOrderService {
   }
 
   /**
+   * Ensure a symbol is marked tradable for OPTIONS by checking instruments table
+   * @param {Object} symbol - Watchlist symbol record
+   * @returns {Promise<boolean>}
+   * @private
+   */
+  async _ensureOptionsTradability(symbol) {
+    if (symbol.symbol_type === 'OPTIONS' || symbol.tradable_options === 1) {
+      return true;
+    }
+
+    const underlying = (symbol.underlying_symbol || symbol.symbol || '').trim().toUpperCase();
+    if (!underlying) {
+      return false;
+    }
+
+    const row = await db.get(
+      `SELECT 1 FROM instruments
+       WHERE name = ? AND instrumenttype IN ('CE', 'PE') LIMIT 1`,
+      [underlying]
+    );
+
+    if (row) {
+      await db.run(
+        `UPDATE watchlist_symbols
+         SET tradable_options = 1, underlying_symbol = COALESCE(underlying_symbol, ?)
+         WHERE id = ?`,
+        [underlying, symbol.id]
+      );
+      symbol.tradable_options = 1;
+      if (!symbol.underlying_symbol) {
+        symbol.underlying_symbol = underlying;
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Ensure a symbol is marked tradable for FUTURES by checking instruments table
+   * @param {Object} symbol - Watchlist symbol record
+   * @returns {Promise<boolean>}
+   * @private
+   */
+  async _ensureFuturesTradability(symbol) {
+    if (symbol.symbol_type === 'FUTURES' || symbol.tradable_futures === 1) {
+      return true;
+    }
+
+    const underlying = (symbol.underlying_symbol || symbol.symbol || '').trim().toUpperCase();
+    if (!underlying) {
+      return false;
+    }
+
+    const row = await db.get(
+      `SELECT 1 FROM instruments
+       WHERE name = ? AND instrumenttype = 'FUT' LIMIT 1`,
+      [underlying]
+    );
+
+    if (row) {
+      await db.run(
+        `UPDATE watchlist_symbols
+         SET tradable_futures = 1, underlying_symbol = COALESCE(underlying_symbol, ?)
+         WHERE id = ?`,
+        [underlying, symbol.id]
+      );
+      symbol.tradable_futures = 1;
+      if (!symbol.underlying_symbol) {
+        symbol.underlying_symbol = underlying;
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
    * Resolve option symbol for a single instance
    * @private
    */
@@ -1362,7 +1899,7 @@ class QuickOrderService {
     const { action, expiry: userExpiry, optionsLeg: userOptionsLeg } = orderParams;
 
     // Parse action to determine option type
-    const optionType = action.includes('CE') ? 'CE' : 'PE';
+    const optionType = this._getOptionTypeFromAction(action);
 
     // Get underlying symbol and current LTP
     const underlying = symbol.underlying_symbol || symbol.symbol;
@@ -1386,9 +1923,11 @@ class QuickOrderService {
     log.info('Using strike offset', { strikeOffset, userSelected: !!userOptionsLeg });
 
     // Resolve option symbol
+    const derivativeExchange = this._getDerivativeExchange(symbol.exchange);
+
     const optionSymbol = await optionsResolutionService.resolveOptionSymbol({
       underlying,
-      exchange: symbol.exchange,
+      exchange: derivativeExchange,
       expiry,
       optionType,
       strikeOffset,
@@ -1401,6 +1940,721 @@ class QuickOrderService {
       expiry,
       optionSymbol,
     };
+  }
+
+  /**
+   * Provide option symbol + LTP preview for UI display
+   */
+  async getOptionsPreview({ symbolId, expiry = null, optionsLeg = null }) {
+    if (!symbolId) {
+      throw new ValidationError('symbolId is required for options preview');
+    }
+
+    const symbol = await this._getSymbolConfig(symbolId);
+
+    const supportsOptions =
+      symbol.symbol_type === 'OPTIONS' ||
+      symbol.tradable_options === 1 ||
+      (await this._ensureOptionsTradability(symbol));
+
+    if (!supportsOptions) {
+      throw new ValidationError(
+        `Symbol ${symbol.symbol} is not enabled for options trading. Enable the options flag in the watchlist symbol configuration.`
+      );
+    }
+
+    const underlying = (symbol.underlying_symbol || symbol.symbol || '').trim().toUpperCase();
+    if (!underlying) {
+      throw new ValidationError(
+        'Underlying symbol is required to preview options strikes. Please set it in the watchlist symbol settings.'
+      );
+    }
+
+    const strikeOffset = (optionsLeg || symbol.options_strike_selection || 'ATM').toUpperCase();
+    const validOffsets = ['ITM3', 'ITM2', 'ITM1', 'ATM', 'OTM1', 'OTM2', 'OTM3'];
+    if (!validOffsets.includes(strikeOffset)) {
+      throw new ValidationError(
+        `optionsLeg must be one of ${validOffsets.join(', ')}. Received "${strikeOffset}".`
+      );
+    }
+
+    const normalizedExpiry = expiry ? this._normalizeExpiryInput(expiry) : null;
+
+    const marketDataInstanceService = (await import('./market-data-instance.service.js')).default;
+    const marketDataInstance = await marketDataInstanceService.getMarketDataInstance();
+
+    const effectiveExpiry =
+      normalizedExpiry ||
+      await expiryManagementService.getNearestExpiry(
+        underlying,
+        symbol.exchange,
+        marketDataInstance
+      );
+
+    if (!effectiveExpiry) {
+      throw new ValidationError(
+        'Unable to determine an expiry for options preview. Please pick an expiry in the UI.'
+      );
+    }
+
+    const derivativeExchange = this._getDerivativeExchange(symbol.exchange);
+    const underlyingLtp = await this._getUnderlyingLTP(
+      marketDataInstance,
+      underlying,
+      symbol.exchange
+    );
+
+    const resolveParamsBase = {
+      underlying,
+      exchange: derivativeExchange,
+      expiry: effectiveExpiry,
+      strikeOffset,
+      ltp: underlyingLtp,
+      instance: marketDataInstance,
+    };
+
+    const [ceResolution, peResolution] = await Promise.all([
+      optionsResolutionService.resolveOptionSymbol({
+        ...resolveParamsBase,
+        optionType: 'CE',
+      }),
+      optionsResolutionService.resolveOptionSymbol({
+        ...resolveParamsBase,
+        optionType: 'PE',
+      }),
+    ]);
+
+    const quoteRequests = [];
+    if (ceResolution?.symbol) {
+      quoteRequests.push({ exchange: derivativeExchange, symbol: ceResolution.symbol });
+    }
+    if (peResolution?.symbol) {
+      quoteRequests.push({ exchange: derivativeExchange, symbol: peResolution.symbol });
+    }
+
+    const quotesMap = await this._getQuotesFromCache(marketDataInstance, quoteRequests);
+
+    const buildLegResponse = (resolution) => {
+      if (!resolution?.symbol) {
+        return null;
+      }
+
+      const quoteKey = this._buildQuoteMatchKey(derivativeExchange, resolution.symbol);
+      const quote = quoteKey ? quotesMap.get(quoteKey) : null;
+      const ltp = quote ? this._extractLtpFromQuote(quote) : null;
+      const changePercent = quote ? this._extractChangePercentFromQuote(quote) : null;
+
+      return {
+        symbol: resolution.symbol,
+        tradingSymbol: resolution.trading_symbol || resolution.symbol,
+        strike: resolution.targetStrike ?? resolution.strike,
+        optionType: resolution.optionType,
+        lotSize: resolution.lot_size || symbol.lot_size || symbol.lotsize || 1,
+        tickSize: resolution.tick_size || 0.05,
+        token: resolution.token || null,
+        ltp,
+        changePercent,
+      };
+    };
+
+    return {
+      symbolId,
+      watchlistId: symbol.watchlist_id,
+      expiry: effectiveExpiry,
+      strikeOffset,
+      derivativeExchange,
+      updatedAt: new Date().toISOString(),
+      underlying: {
+        symbol: underlying,
+        exchange: symbol.exchange,
+        ltp: underlyingLtp,
+      },
+      ce: buildLegResponse(ceResolution),
+      pe: buildLegResponse(peResolution),
+    };
+  }
+
+  /**
+   * Compute target position based on action (Implementation Guide Section 14)
+   * @param {number} current - Current position (signed: +ve long, -ve short)
+   * @param {string} action - Button action
+   * @param {number} Qstep - Quantity step (step_lots × lotsize)
+   * @param {boolean} writerGuard - Enable writer guard (clamp at 0 when covering shorts)
+   * @returns {number} - Target position
+   * @private
+   */
+  _computeTarget(current, action, Qstep, writerGuard = true) {
+    // Writer actions (short premium)
+    if (action === 'SELL_CE' || action === 'SELL_PE') {
+      return current - Qstep;  // More negative (add short)
+    }
+
+    if (action === 'INCREASE_CE' || action === 'INCREASE_PE') {
+      const target = current + Qstep;  // Less negative (reduce short)
+      return writerGuard ? Math.min(0, target) : target;  // Clamp at 0 if guard enabled
+    }
+
+    // Buyer actions (long premium)
+    if (action === 'BUY_CE' || action === 'BUY_PE') {
+      return current + Qstep;  // Add longs
+    }
+
+    if (action === 'REDUCE_CE' || action === 'REDUCE_PE') {
+      return Math.max(0, current - Qstep);  // Reduce longs, don't go negative
+    }
+
+    // Close actions
+    if (action === 'CLOSE_ALL_CE' || action === 'CLOSE_ALL_PE' || action === 'EXIT_ALL') {
+      return 0;
+    }
+
+    // Unknown action
+    throw new ValidationError(`Unknown action for target calculation: ${action}`);
+  }
+
+  /**
+   * Get aggregated position for all strikes of a TYPE (CE/PE) for selected expiry
+   * Required for FLOAT_OFS mode where multiple strikes may be held
+   * @param {Object} instance - Instance object
+   * @param {string} underlying - Underlying symbol
+   * @param {string} expiry - Expiry date (YYYY-MM-DD)
+   * @param {string} optionType - CE or PE
+   * @param {string} product - Product type (MIS, NRML)
+   * @returns {Promise<number>} - Total net position across all strikes
+   * @private
+   */
+  async _getAggregatedTypePosition(instance, underlying, expiry, optionType, product) {
+    try {
+      // Query watchlist_options_state for aggregated position
+      const rows = await db.all(`
+        SELECT SUM(net_qty) as total_qty
+        FROM watchlist_options_state
+        WHERE instance_id = ?
+          AND underlying = ?
+          AND expiry = ?
+          AND option_type = ?
+          AND product = ?
+      `, [instance.id, underlying, expiry, optionType, product]);
+
+      const totalQty = rows && rows[0] && rows[0].total_qty ? parseIntSafe(rows[0].total_qty) : 0;
+
+      log.debug('Aggregated TYPE position', {
+        instance_id: instance.id,
+        underlying,
+        expiry,
+        optionType,
+        product,
+        totalQty,
+      });
+
+      return totalQty;
+    } catch (error) {
+      log.warn('Failed to get aggregated position from state, falling back to 0', error);
+      return 0;
+    }
+  }
+
+  /**
+   * Get ALL open positions for all strikes of a TYPE (CE/PE) for selected expiry
+   * Required for FLOAT_OFS REDUCE/INCREASE actions to target each open strike
+   * @param {Object} instance - Instance object
+   * @param {string} underlying - Underlying symbol
+   * @param {string} expiry - Expiry date (YYYY-MM-DD)
+   * @param {string} optionType - CE or PE
+   * @param {string} product - Product type (MIS, NRML)
+   * @returns {Promise<Array>} - Array of positions with symbol, strike, and quantity
+   * @private
+   */
+  /**
+   * Construct option symbol from components
+   * Format: UNDERLYING + DD + MMM + YYYY + CE/PE + STRIKE
+   * Example: NIFTY + 18 + NOV + 2025 + CE + 26000 → NIFTY18NOV2526000CE
+   * @private
+   */
+  _constructOptionSymbol(underlying, expiry, optionType, strike) {
+    // Parse expiry YYYY-MM-DD
+    const date = new Date(expiry);
+    const day = String(date.getDate()).padStart(2, '0');
+    const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    const month = months[date.getMonth()];
+    const year = String(date.getFullYear());  // Use FULL year, not just last 2 digits
+
+    // Construct symbol: NIFTY18NOV2526000CE
+    return `${underlying}${day}${month}${year}${optionType}${strike}`;
+  }
+
+  async _getAllOpenPositions(instance, underlying, expiry, optionType, product) {
+    try {
+      log.info('Querying position book from OpenAlgo', {
+        instance_id: instance.id,
+        underlying,
+        expiry,
+        optionType,
+        product,
+      });
+
+      const positionBook = await this._getPositionBook(instance);
+
+      const targetUnderlying = (underlying || '').toUpperCase();
+      const targetOptionType = (optionType || '').toUpperCase();
+
+      const positions = positionBook
+        .filter(pos => {
+          const rawSymbol = pos.symbol || '';
+          if (!rawSymbol) return false;
+
+          const symbol = rawSymbol.toUpperCase();
+
+          const quantity =
+            parseIntSafe(pos.quantity) ||
+            parseIntSafe(pos.netqty) ||
+            parseIntSafe(pos.net_quantity) ||
+            parseIntSafe(pos.net) ||
+            parseIntSafe(pos.netQty) ||
+            0;
+
+          if (quantity === 0) {
+            return false;
+          }
+
+          const parsed = this._parseOptionSymbol(symbol);
+          const matchesUnderlying = parsed.underlying
+            ? parsed.underlying === targetUnderlying
+            : symbol.includes(targetUnderlying);
+
+          if (!matchesUnderlying) return false;
+
+          const matchesExpiry = parsed.expiry ? parsed.expiry === expiry : true;
+          if (!matchesExpiry) return false;
+
+          const parsedType = parsed.type ? parsed.type.toUpperCase() : null;
+          const matchesOptionType = parsedType
+            ? parsedType === targetOptionType
+            : symbol.includes(targetOptionType);
+
+          return matchesOptionType;
+        })
+        .map(pos => ({
+          symbol: pos.symbol,
+          netQty:
+            parseIntSafe(pos.quantity) ||
+            parseIntSafe(pos.netqty) ||
+            parseIntSafe(pos.net_quantity) ||
+            parseIntSafe(pos.net) ||
+            parseIntSafe(pos.netQty) ||
+            0,
+          avgPrice: parseFloatSafe(pos.avgprice || pos.average_price),
+          product: pos.product || product,
+        }));
+
+      log.info('Retrieved all open positions from OpenAlgo positionbook', {
+        instance_id: instance.id,
+        underlying,
+        expiry,
+        optionType,
+        product,
+        positionCount: positions.length,
+        positions: positions.map(p => ({ symbol: p.symbol, qty: p.netQty, avgPrice: p.avgPrice })),
+      });
+
+      return positions;
+    } catch (error) {
+      log.warn('Failed to get open positions from positionbook, returning empty array', error);
+      return [];
+    }
+  }
+
+  /**
+   * Parse option symbol string to extract components
+   * Example: "NIFTY05DEC25C22450" → { underlying: "NIFTY", expiry: "2025-12-05", type: "CE", strike: 22450 }
+   * @param {string} symbol - Option symbol string
+   * @returns {Object} - Parsed components
+   * @private
+   */
+  _parseOptionSymbol(symbol) {
+    if (!symbol) {
+      return {
+        underlying: null,
+        expiry: null,
+        type: null,
+        strike: null,
+      };
+    }
+
+    // Normalize symbol: uppercase, drop exchange prefixes (e.g., NFO:, MCX:)
+    let normalized = symbol.toUpperCase();
+    if (normalized.includes(':')) {
+      normalized = normalized.split(':').pop();
+    }
+
+    // Expected format: UNDERLYING + DDMMMYY + STRIKE + CE/PE
+    const match = normalized.match(/^([A-Z]+)(\d{2}[A-Z]{3}\d{2})(\d+)([CP]E?)$/);
+    if (!match) {
+      log.warn('Failed to parse option symbol', { symbol });
+      return {
+        underlying: null,
+        expiry: null,
+        type: null,
+        strike: null,
+      };
+    }
+
+    const [, underlying, dateStr, strikeStr, rawType] = match;
+
+    const monthMap = {
+      JAN: '01', FEB: '02', MAR: '03', APR: '04',
+      MAY: '05', JUN: '06', JUL: '07', AUG: '08',
+      SEP: '09', OCT: '10', NOV: '11', DEC: '12',
+    };
+
+    const day = dateStr.substring(0, 2);
+    const monthAbbr = dateStr.substring(2, 5);
+    const year = '20' + dateStr.substring(5, 7);
+    const month = monthMap[monthAbbr] || '01';
+    const expiry = `${year}-${month}-${day}`;
+
+    const type = rawType.startsWith('C') ? 'CE' : 'PE';
+
+    return {
+      underlying,
+      expiry,
+      type,
+      strike: parseInt(strikeStr, 10),
+    };
+  }
+
+  /**
+   * Determine OpenAlgo action (BUY/SELL) based on target position change
+   * @param {number} currentPosition - Current position
+   * @param {number} targetPosition - Target position
+   * @returns {string} - 'BUY' or 'SELL'
+   * @private
+   */
+  _determineAlgoAction(currentPosition, targetPosition) {
+    const delta = targetPosition - currentPosition;
+
+    if (delta > 0) {
+      // Increasing position → BUY
+      return 'BUY';
+    } else if (delta < 0) {
+      // Decreasing position → SELL
+      return 'SELL';
+    } else {
+      // No change (shouldn't happen in normal flow)
+      throw new ValidationError('No position change - delta is zero');
+    }
+  }
+
+  /**
+   * Get or create anchored strike for ANCHOR_OFS policy
+   * @param {number} symbolId - Watchlist symbol ID
+   * @param {string} optionType - CE or PE
+   * @param {string} expiry - Expiry date
+   * @param {number} strike - Strike price (if setting anchor)
+   * @param {boolean} setAnchor - Whether to set/update the anchor
+   * @returns {Promise<number|null>} - Anchored strike or null
+   * @private
+   */
+  async _manageAnchoredStrike(symbolId, optionType, expiry, strike = null, setAnchor = false) {
+    const columnName = optionType === 'CE' ? 'anchored_ce_strike' : 'anchored_pe_strike';
+
+    if (setAnchor && strike) {
+      // Set or update anchored strike
+      await db.run(`
+        UPDATE watchlist_symbols
+        SET ${columnName} = ?, anchored_expiry = ?
+        WHERE id = ?
+      `, [strike, expiry, symbolId]);
+
+      log.info('Anchored strike set', { symbolId, optionType, strike, expiry });
+      return strike;
+    } else {
+      // Get existing anchored strike
+      const row = await db.get(`
+        SELECT ${columnName} as strike, anchored_expiry
+        FROM watchlist_symbols
+        WHERE id = ?
+      `, [symbolId]);
+
+      // Only return anchored strike if expiry matches
+      if (row && row.anchored_expiry === expiry) {
+        return row.strike ? parseIntSafe(row.strike) : null;
+      }
+
+      return null;
+    }
+  }
+
+  /**
+   * Clear anchored strikes (when expiry or offset changes)
+   * @param {number} symbolId - Watchlist symbol ID
+   * @param {string} optionType - CE, PE, or null for both
+   * @private
+   */
+  async _clearAnchoredStrikes(symbolId, optionType = null) {
+    if (optionType === 'CE') {
+      await db.run('UPDATE watchlist_symbols SET anchored_ce_strike = NULL WHERE id = ?', [symbolId]);
+    } else if (optionType === 'PE') {
+      await db.run('UPDATE watchlist_symbols SET anchored_pe_strike = NULL WHERE id = ?', [symbolId]);
+    } else {
+      // Clear both
+      await db.run('UPDATE watchlist_symbols SET anchored_ce_strike = NULL, anchored_pe_strike = NULL, anchored_expiry = NULL WHERE id = ?', [symbolId]);
+    }
+
+    log.info('Cleared anchored strikes', { symbolId, optionType: optionType || 'both' });
+  }
+
+  /**
+   * Sync position to watchlist_options_state table
+   * @param {number} watchlistId - Watchlist ID
+   * @param {number} symbolId - Symbol ID
+   * @param {number} instanceId - Instance ID
+   * @param {string} underlying - Underlying symbol
+   * @param {string} expiry - Expiry date
+   * @param {string} optionType - CE or PE
+   * @param {number} strike - Strike price
+   * @param {number} netQty - Net quantity
+   * @param {number} avgPrice - Average price
+   * @param {string} product - Product type
+   * @private
+   */
+  async _syncOptionsState(watchlistId, symbolId, instanceId, underlying, expiry, optionType, strike, netQty, avgPrice, product) {
+    try {
+      await db.run(`
+        INSERT INTO watchlist_options_state
+          (watchlist_id, symbol_id, instance_id, underlying, expiry, option_type, strike, net_qty, avg_price, product, last_updated)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(instance_id, underlying, expiry, option_type, strike)
+        DO UPDATE SET
+          net_qty = ?,
+          avg_price = ?,
+          last_updated = CURRENT_TIMESTAMP
+      `, [
+        watchlistId, symbolId, instanceId, underlying, expiry, optionType, strike,
+        netQty, avgPrice, product,
+        netQty, avgPrice
+      ]);
+
+      log.debug('Synced options state', {
+        instance_id: instanceId,
+        underlying,
+        expiry,
+        optionType,
+        strike,
+        netQty,
+      });
+    } catch (error) {
+      log.error('Failed to sync options state', error, {
+        instance_id: instanceId,
+        underlying,
+        expiry,
+        optionType,
+        strike,
+      });
+    }
+  }
+
+  _invalidateInstanceCaches(instanceId, options = {}) {
+    const { positions = true, funds = true } = options;
+
+    if (positions) {
+      marketDataFeedService.invalidatePositions(instanceId, { refresh: true })
+        .catch(error => log.warn('Failed to refresh position cache', {
+          instance_id: instanceId,
+          error: error.message,
+        }));
+    }
+
+    if (funds) {
+      marketDataFeedService.invalidateFunds(instanceId, { refresh: true })
+        .catch(error => log.warn('Failed to refresh funds cache', {
+          instance_id: instanceId,
+          error: error.message,
+        }));
+    }
+  }
+
+  async _getQuotesFromCache(instance, requests = []) {
+    if (!Array.isArray(requests) || requests.length === 0) {
+      return new Map();
+    }
+
+    const results = new Map();
+    const missing = [];
+    const snapshot = marketDataFeedService.getQuoteSnapshot(instance.id);
+
+    for (const request of requests) {
+      const key = this._buildQuoteMatchKey(request.exchange, request.symbol);
+      if (!key) continue;
+
+      const cachedQuote = this._findQuoteInSnapshot(snapshot, request.exchange, request.symbol);
+      if (cachedQuote) {
+        results.set(key, cachedQuote);
+      } else {
+        missing.push({
+          exchange: request.exchange,
+          symbol: request.symbol,
+        });
+      }
+    }
+
+    if (missing.length > 0) {
+      const liveQuotes = await openalgoClient.getQuotes(instance, missing);
+      if (Array.isArray(liveQuotes)) {
+        for (const quote of liveQuotes) {
+          const key = this._buildQuoteMatchKey(
+            quote.exchange || quote.exch,
+            quote.symbol || quote.trading_symbol || quote.tradingsymbol
+          );
+          if (key) {
+            results.set(key, quote);
+          }
+        }
+      }
+    }
+
+    return results;
+  }
+
+  _findQuoteInSnapshot(snapshot, exchange, symbol) {
+    if (!snapshot?.data || snapshot.data.length === 0) {
+      return null;
+    }
+
+    const targetKey = this._buildQuoteMatchKey(exchange, symbol);
+    if (!targetKey) {
+      return null;
+    }
+
+    for (const quote of snapshot.data) {
+      const candidateKey = this._buildQuoteMatchKey(
+        quote.exchange || quote.exch,
+        quote.symbol || quote.trading_symbol || quote.tradingsymbol
+      );
+
+      if (candidateKey && candidateKey === targetKey) {
+        return quote;
+      }
+    }
+
+    return null;
+  }
+
+  _buildQuoteMatchKey(exchange, symbol) {
+    const normalizedSymbol = this._normalizeSymbolKey(symbol);
+    if (!normalizedSymbol) {
+      return null;
+    }
+
+    const normalizedExchange = this._normalizeExchange(exchange) || 'DEFAULT';
+    return `${normalizedExchange}::${normalizedSymbol}`;
+  }
+
+  _normalizeSymbolKey(symbol) {
+    if (!symbol) return null;
+    return String(symbol).trim().toUpperCase().replace(/\s+/g, '');
+  }
+
+  _normalizeExchange(exchange) {
+    if (!exchange) return null;
+    return String(exchange).trim().toUpperCase();
+  }
+
+  _normalizeProduct(product) {
+    if (!product) return null;
+    return String(product).trim().toUpperCase();
+  }
+
+  _extractLtpFromQuote(quote) {
+    if (!quote) return null;
+    const candidates = [
+      quote.ltp,
+      quote.LTP,
+      quote.last_price,
+      quote.lastPrice,
+      quote.last_traded_price,
+      quote.lastTradedPrice,
+      quote.close,
+    ];
+
+    for (const value of candidates) {
+      const parsed = parseFloatSafe(value, null);
+      if (parsed !== null && !Number.isNaN(parsed) && parsed !== 0) {
+        return parsed;
+      }
+    }
+
+    return null;
+  }
+
+  _extractChangePercentFromQuote(quote) {
+    if (!quote) return null;
+    const candidates = [
+      quote.percent_change,
+      quote.pchange,
+      quote.change_percent,
+      quote.change,
+    ];
+
+    for (const value of candidates) {
+      const parsed = parseFloatSafe(value, null);
+      if (parsed !== null && !Number.isNaN(parsed)) {
+        return parsed;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Normalize expiry input to YYYY-MM-DD
+   * @private
+   */
+  _normalizeExpiryInput(expiry) {
+    if (!expiry) return null;
+    const trimmed = String(expiry).trim().toUpperCase();
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      return trimmed;
+    }
+
+    if (/^\d{2}-[A-Z]{3}-\d{2}$/.test(trimmed)) {
+      const [day, monthStr, year] = trimmed.split('-');
+      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+                          'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+      const monthIndex = monthNames.indexOf(monthStr);
+      if (monthIndex === -1) {
+        throw new ValidationError(`Unknown expiry month: ${monthStr}`);
+      }
+      const paddedMonth = String(monthIndex + 1).padStart(2, '0');
+      return `20${year}-${paddedMonth}-${day}`;
+    }
+
+    return trimmed;
+  }
+
+  /**
+   * Determine option type (CE/PE) based on action keyword
+   * @private
+   */
+  _getOptionTypeFromAction(action = '') {
+    const ceActions = new Set([
+      'BUY_CE', 'SELL_CE',
+      'REDUCE_CE', 'INCREASE_CE',
+      'CLOSE_ALL_CE',
+    ]);
+
+    const peActions = new Set([
+      'BUY_PE', 'SELL_PE',
+      'REDUCE_PE', 'INCREASE_PE',
+      'CLOSE_ALL_PE',
+    ]);
+
+    if (ceActions.has(action)) return 'CE';
+    if (peActions.has(action)) return 'PE';
+
+    // EXIT_ALL should not rely on option type, default to CE for compatibility
+    return 'CE';
   }
 }
 

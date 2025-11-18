@@ -8,6 +8,7 @@ import pnlService from '../../services/pnl.service.js';
 import instanceService from '../../services/instance.service.js';
 import positionsService from '../../services/positions.service.js';
 import openalgoClient from '../../integrations/openalgo/client.js';
+import marketDataFeedService from '../../services/market-data-feed.service.js';
 import { log } from '../../core/logger.js';
 import { NotFoundError } from '../../core/errors.js';
 
@@ -65,13 +66,26 @@ router.get('/:instanceId', async (req, res, next) => {
     const instanceId = parseInt(req.params.instanceId, 10);
     const instance = await instanceService.getInstanceById(instanceId);
 
-    // Get positionbook from OpenAlgo
+    const cache = marketDataFeedService.getPositionSnapshot(instanceId);
+    if (cache?.data) {
+      return res.json({
+        status: 'success',
+        data: cache.data,
+        count: cache.data.length,
+        cachedAt: cache.fetchedAt,
+        source: 'cache',
+      });
+    }
+
+    // Get positionbook from OpenAlgo (fallback) and seed cache
     const positions = await openalgoClient.getPositionBook(instance);
+    marketDataFeedService.setPositionSnapshot(instanceId, positions);
 
     res.json({
       status: 'success',
       data: positions,
       count: positions.length,
+      source: 'live',
     });
   } catch (error) {
     next(error);

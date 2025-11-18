@@ -6,6 +6,7 @@
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import openalgoClient from '../integrations/openalgo/client.js';
+import marketDataFeedService from './market-data-feed.service.js';
 import { parseFloatSafe } from '../utils/sanitizers.js';
 
 class DashboardService {
@@ -115,31 +116,34 @@ class DashboardService {
         instance_name: instance.name,
       });
 
-      // Call OpenAlgo Funds endpoint
-      const funds = await openalgoClient.getFunds(instance);
+      const cache = marketDataFeedService.getFundsSnapshot(instance.id);
+      const fundsResponse = cache?.data || await openalgoClient.getFunds(instance);
+      if (!cache) {
+        marketDataFeedService.setFundsSnapshot(instance.id, fundsResponse);
+      }
 
       // Parse funds fields - different brokers may use different field names
       const availableBalance =
-        funds.availablecash != null
-          ? parseFloatSafe(funds.availablecash, 0)
-          : parseFloatSafe(funds.available_cash, 0) ||
-            parseFloatSafe(funds.availableBalance, 0) ||
+        fundsResponse.availablecash != null
+          ? parseFloatSafe(fundsResponse.availablecash, 0)
+          : parseFloatSafe(fundsResponse.available_cash, 0) ||
+            parseFloatSafe(fundsResponse.availableBalance, 0) ||
             0;
 
       const realizedPnL =
-        funds.m2mrealized != null
-          ? parseFloatSafe(funds.m2mrealized, 0)
-          : parseFloatSafe(funds.m2m_realized, 0) ||
-            parseFloatSafe(funds.realizedPnL, 0) ||
-            parseFloatSafe(funds.realized_pnl, 0) ||
+        fundsResponse.m2mrealized != null
+          ? parseFloatSafe(fundsResponse.m2mrealized, 0)
+          : parseFloatSafe(fundsResponse.m2m_realized, 0) ||
+            parseFloatSafe(fundsResponse.realizedPnL, 0) ||
+            parseFloatSafe(fundsResponse.realized_pnl, 0) ||
             0;
 
       const unrealizedPnL =
-        funds.m2munrealized != null
-          ? parseFloatSafe(funds.m2munrealized, 0)
-          : parseFloatSafe(funds.m2m_unrealized, 0) ||
-            parseFloatSafe(funds.unrealizedPnL, 0) ||
-            parseFloatSafe(funds.unrealized_pnl, 0) ||
+        fundsResponse.m2munrealized != null
+          ? parseFloatSafe(fundsResponse.m2munrealized, 0)
+          : parseFloatSafe(fundsResponse.m2m_unrealized, 0) ||
+            parseFloatSafe(fundsResponse.unrealizedPnL, 0) ||
+            parseFloatSafe(fundsResponse.unrealized_pnl, 0) ||
             0;
 
       const totalPnL = realizedPnL + unrealizedPnL;

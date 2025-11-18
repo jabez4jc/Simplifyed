@@ -7,11 +7,14 @@ import express from 'express';
 import instanceService from '../../services/instance.service.js';
 import symbolValidationService from '../../services/symbol-validation.service.js';
 import instrumentsService from '../../services/instruments.service.js';
+import expiryManagementService from '../../services/expiry-management.service.js';
 import openalgoClient from '../../integrations/openalgo/client.js';
+import optionChainService from '../../services/option-chain.service.js';
 import db from '../../core/database.js';
 import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
 import { sanitizeString } from '../../utils/sanitizers.js';
+import marketDataFeedService from '../../services/market-data-feed.service.js';
 
 const router = express.Router();
 
@@ -129,17 +132,30 @@ router.post('/quotes', async (req, res, next) => {
       throw new ValidationError('instanceId parameter is required');
     }
 
+    const cache = marketDataFeedService.getQuoteSnapshot(parseInt(instanceId, 10));
+    if (cache?.data?.length) {
+      res.json({
+        status: 'success',
+        data: cache.data,
+        count: cache.data.length,
+        cachedAt: cache.fetchedAt,
+        source: 'cache',
+      });
+      return;
+    }
+
+    // Fallback to live OpenAlgo call if cache missing/stale
     const instance = await instanceService.getInstanceById(
       parseInt(instanceId, 10)
     );
-
-    // Get quotes from OpenAlgo
     const quotes = await openalgoClient.getQuotes(instance, symbols);
+    marketDataFeedService.setQuoteSnapshot(instance.id, quotes);
 
     res.json({
       status: 'success',
       data: quotes,
       count: quotes.length,
+      source: 'live',
     });
   } catch (error) {
     next(error);
@@ -189,24 +205,26 @@ router.get('/expiry', async (req, res, next) => {
       throw new ValidationError('symbol parameter is required');
     }
 
-    if (!instanceId) {
-      throw new ValidationError('instanceId parameter is required');
+    const normalizedExchange = (exchange || 'NFO').toUpperCase();
+    let expiries = await instrumentsService.getExpiries(symbol.toUpperCase(), normalizedExchange);
+
+    if (expiries.length === 0) {
+      if (!instanceId) {
+        throw new ValidationError('No cached expiries available. Provide instanceId to fetch from broker.');
+      }
+      const instance = await instanceService.getInstanceById(parseInt(instanceId, 10));
+      const fetched = await expiryManagementService.fetchExpiries(
+        symbol.toUpperCase(),
+        normalizedExchange,
+        instance
+      );
+      expiries = fetched.map(row => row.expiry_date);
     }
-
-    const instance = await instanceService.getInstanceById(
-      parseInt(instanceId, 10)
-    );
-
-    // Get expiry dates from OpenAlgo
-    const expiries = await openalgoClient.getExpiry(
-      instance,
-      symbol,
-      exchange || 'NFO'
-    );
 
     res.json({
       status: 'success',
       data: expiries,
+      source: 'instruments',
     });
   } catch (error) {
     next(error);
@@ -219,7 +237,7 @@ router.get('/expiry', async (req, res, next) => {
  */
 router.get('/option-chain', async (req, res, next) => {
   try {
-    const { symbol, expiry, exchange, instanceId } = req.query;
+    const { symbol, expiry, exchange, type, include_quotes, strike_window } = req.query;
 
     if (!symbol) {
       throw new ValidationError('symbol parameter is required');
@@ -229,25 +247,28 @@ router.get('/option-chain', async (req, res, next) => {
       throw new ValidationError('expiry parameter is required');
     }
 
-    if (!instanceId) {
-      throw new ValidationError('instanceId parameter is required');
+    const normalizedSymbol = sanitizeString(symbol).toUpperCase();
+    const normalizedExpiry = sanitizeString(expiry);
+    const normalizedType = type ? sanitizeString(type).toLowerCase() : null;
+    const includeQuotes = include_quotes === 'true' || include_quotes === true;
+    const window = strike_window ? parseInt(strike_window, 10) : null;
+
+    if (window && (Number.isNaN(window) || window < 0)) {
+      throw new ValidationError('strike_window must be a positive integer');
     }
 
-    const instance = await instanceService.getInstanceById(
-      parseInt(instanceId, 10)
-    );
-
-    // Get option chain from OpenAlgo
-    const optionChain = await openalgoClient.getOptionChain(
-      instance,
-      symbol,
-      expiry,
-      exchange || 'NFO'
+    const optionChain = await optionChainService.getOptionChain(
+      normalizedSymbol,
+      normalizedExpiry,
+      normalizedType,
+      includeQuotes,
+      window
     );
 
     res.json({
       status: 'success',
       data: optionChain,
+      source: 'instruments',
     });
   } catch (error) {
     next(error);

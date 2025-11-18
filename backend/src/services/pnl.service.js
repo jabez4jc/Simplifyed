@@ -5,6 +5,7 @@
 
 import { log } from '../core/logger.js';
 import openalgoClient from '../integrations/openalgo/client.js';
+import marketDataFeedService from './market-data-feed.service.js';
 import { parseFloatSafe } from '../utils/sanitizers.js';
 
 class PnLService {
@@ -180,8 +181,8 @@ class PnLService {
       // Fetch data from OpenAlgo
       const [tradebook, positionbook, funds] = await Promise.all([
         openalgoClient.getTradeBook(instance).catch(() => []),
-        openalgoClient.getPositionBook(instance).catch(() => []),
-        openalgoClient.getFunds(instance).catch(() => null),
+        this._getCachedPositionBook(instance).catch(() => []),
+        this._getCachedFunds(instance).catch(() => null),
       ]);
 
       // Calculate realized P&L
@@ -374,6 +375,25 @@ class PnLService {
     }
   }
 
+  async _getCachedPositionBook(instance) {
+    const cache = marketDataFeedService.getPositionSnapshot(instance.id);
+    if (cache?.data) {
+      return cache.data;
+    }
+    const positionBook = await openalgoClient.getPositionBook(instance);
+    marketDataFeedService.setPositionSnapshot(instance.id, positionBook);
+    return positionBook;
+  }
+
+  async _getCachedFunds(instance) {
+    const cache = marketDataFeedService.getFundsSnapshot(instance.id);
+    if (cache?.data) {
+      return cache.data;
+    }
+    const funds = await openalgoClient.getFunds(instance);
+    marketDataFeedService.setFundsSnapshot(instance.id, funds);
+    return funds;
+  }
 }
 
 // Export singleton instance

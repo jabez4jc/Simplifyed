@@ -17,14 +17,17 @@ const router = express.Router();
  * Request body:
  * {
  *   "symbolId": 123 (required - watchlist symbol database ID),
- *   "action": "BUY" | "SELL" | "EXIT" | "BUY_CE" | "SELL_CE" | "BUY_PE" | "SELL_PE" | "EXIT_ALL",
+ *   "action": "BUY" | "SELL" | "EXIT" | "BUY_CE" | "SELL_CE" | "BUY_PE" | "SELL_PE" | "EXIT_ALL" | "REDUCE_CE" | "REDUCE_PE" | "INCREASE_CE" | "INCREASE_PE" | "CLOSE_ALL_CE" | "CLOSE_ALL_PE",
  *   "tradeMode": "EQUITY" | "FUTURES" | "OPTIONS",
  *   "optionsLeg": "ITM3" | "ITM2" | "ITM1" | "ATM" | "OTM1" | "OTM2" | "OTM3" (required for OPTIONS actions),
  *   "quantity": 1,
  *   "expiry": "2025-11-18" (optional - for FUTURES/OPTIONS, uses nearest if not provided),
  *   "instanceId": 1 (optional - if not provided, broadcasts to all assigned instances),
  *   "product": "MIS" | "CNC" | "NRML" (optional, defaults to MIS),
- *   "strategy": "quickorder" (optional)
+ *   "strategy": "quickorder" (optional),
+ *   "operatingMode": "BUYER" | "WRITER" (optional - for OPTIONS mode),
+ *   "strikePolicy": "FLOAT_OFS" | "ANCHOR_OFS" (optional - for OPTIONS mode),
+ *   "stepLots": 1 (optional - for OPTIONS mode)
  * }
  */
 router.post('/', async (req, res, next) => {
@@ -39,6 +42,9 @@ router.post('/', async (req, res, next) => {
       product,
       strategy,
       expiry,
+      operatingMode,
+      strikePolicy,
+      stepLots,
     } = req.body;
 
     // Validate required fields
@@ -55,7 +61,22 @@ router.post('/', async (req, res, next) => {
       throw new ValidationError('action is required');
     }
 
-    const validActions = ['BUY', 'SELL', 'EXIT', 'BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE', 'EXIT_ALL'];
+    const validActions = [
+      'BUY',
+      'SELL',
+      'EXIT',
+      'BUY_CE',
+      'SELL_CE',
+      'BUY_PE',
+      'SELL_PE',
+      'EXIT_ALL',
+      'REDUCE_CE',
+      'REDUCE_PE',
+      'INCREASE_CE',
+      'INCREASE_PE',
+      'CLOSE_ALL_CE',
+      'CLOSE_ALL_PE'
+    ];
     if (!validActions.includes(action)) {
       throw new ValidationError(
         `action must be one of: ${validActions.join(', ')}`
@@ -73,7 +94,7 @@ router.post('/', async (req, res, next) => {
       );
     }
 
-    if (tradeMode === 'OPTIONS' && ['BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE'].includes(action) && !optionsLeg) {
+    if (tradeMode === 'OPTIONS' && ['BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE', 'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE', 'CLOSE_ALL_CE', 'CLOSE_ALL_PE'].includes(action) && !optionsLeg) {
       throw new ValidationError('optionsLeg is required for OPTIONS trade mode');
     }
 
@@ -99,6 +120,9 @@ router.post('/', async (req, res, next) => {
       quantity,
       instanceId,
       expiry,
+      operatingMode,
+      strikePolicy,
+      stepLots,
     });
 
     // Place quick order
@@ -112,6 +136,9 @@ router.post('/', async (req, res, next) => {
       product: product || 'MIS',
       strategy: strategy || 'quickorder',
       expiry: expiry || null,
+      operatingMode: operatingMode || 'BUYER',
+      strikePolicy: strikePolicy || 'FLOAT_OFS',
+      stepLots: stepLots ? parseInt(stepLots, 10) : undefined,
     });
 
     // Determine overall success
@@ -130,6 +157,34 @@ router.post('/', async (req, res, next) => {
           failed: failedOrders,
         },
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/quickorders/options/preview
+ * Resolve the CE/PE symbols + quotes for the current options configuration
+ */
+router.get('/options/preview', async (req, res, next) => {
+  try {
+    const { symbolId, expiry, optionsLeg } = req.query;
+
+    const parsedSymbolId = parseInt(symbolId, 10);
+    if (!symbolId || Number.isNaN(parsedSymbolId) || parsedSymbolId <= 0) {
+      throw new ValidationError('symbolId must be a positive integer');
+    }
+
+    const preview = await quickOrderService.getOptionsPreview({
+      symbolId: parsedSymbolId,
+      expiry: expiry || null,
+      optionsLeg: optionsLeg || null,
+    });
+
+    res.json({
+      status: 'success',
+      data: preview,
     });
   } catch (error) {
     next(error);

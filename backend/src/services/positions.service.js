@@ -6,6 +6,7 @@
 import db from '../core/database.js';
 import log from '../core/logger.js';
 import openalgoClient from '../integrations/openalgo/client.js';
+import marketDataFeedService from './market-data-feed.service.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
 
 class PositionsService {
@@ -53,16 +54,17 @@ class PositionsService {
 
         if (promiseResult.status === 'fulfilled') {
           const data = promiseResult.value;
-          result.instances.push({
-            instance_id: instance.id,
-            instance_name: instance.name,
-            broker: instance.broker,
-            health_status: instance.health_status,
-            positions: data.positions,
-            total_pnl: data.total_pnl,
-            open_positions_count: data.open_positions_count,
-            closed_positions_count: data.closed_positions_count,
-            error: null,
+        result.instances.push({
+          instance_id: instance.id,
+          instance_name: instance.name,
+          broker: instance.broker,
+          health_status: instance.health_status,
+          is_analyzer_mode: !!instance.is_analyzer_mode,
+          positions: data.positions,
+          total_pnl: data.total_pnl,
+          open_positions_count: data.open_positions_count,
+          closed_positions_count: data.closed_positions_count,
+          error: null,
           });
 
           result.overall_total_pnl += data.total_pnl;
@@ -70,14 +72,15 @@ class PositionsService {
           result.overall_closed_positions += data.closed_positions_count;
         } else {
           // Include failed instances with error message
-          result.instances.push({
-            instance_id: instance.id,
-            instance_name: instance.name,
-            broker: instance.broker,
-            health_status: instance.health_status,
-            positions: [],
-            total_pnl: 0,
-            open_positions_count: 0,
+        result.instances.push({
+          instance_id: instance.id,
+          instance_name: instance.name,
+          broker: instance.broker,
+          health_status: instance.health_status,
+          is_analyzer_mode: !!instance.is_analyzer_mode,
+          positions: [],
+          total_pnl: 0,
+          open_positions_count: 0,
             closed_positions_count: 0,
             error: promiseResult.reason?.message || 'Failed to fetch positions',
           });
@@ -124,30 +127,33 @@ class PositionsService {
         instance_name: instance.name,
       });
 
-      // Call OpenAlgo PositionBook endpoint
-      const positions = await openalgoClient.getPositionBook(instance);
+      const cache = marketDataFeedService.getPositionSnapshot(instance.id);
+      const positionBook = cache?.data || await openalgoClient.getPositionBook(instance);
+      if (!cache) {
+        marketDataFeedService.setPositionSnapshot(instance.id, positionBook);
+      }
 
-      if (!Array.isArray(positions)) {
+      if (!Array.isArray(positionBook)) {
         throw new Error('Invalid positionbook response');
       }
 
       // Filter positions if onlyOpen is true
-      let filteredPositions = positions;
+      let filteredPositions = positionBook;
       if (onlyOpen) {
-        filteredPositions = positions.filter(pos => {
+        filteredPositions = positionBook.filter(pos => {
           const qty = this._getPositionQuantity(pos);
           return qty !== 0;
         });
       }
 
       // Calculate totals
-      const openPositions = positions.filter(pos => this._getPositionQuantity(pos) !== 0);
-      const closedPositions = positions.filter(pos => this._getPositionQuantity(pos) === 0);
+      const openPositions = positionBook.filter(pos => this._getPositionQuantity(pos) !== 0);
+      const closedPositions = positionBook.filter(pos => this._getPositionQuantity(pos) === 0);
 
       // Calculate total P&L from positions
       // Some brokers return pnl field, some return mtm, some return realized_pnl + unrealized_pnl
       // Use explicit null/undefined checks to preserve zero values (0 is a valid P&L)
-      const totalPnL = positions.reduce((sum, pos) => {
+      const totalPnL = positionBook.reduce((sum, pos) => {
         const pnl =
           pos.pnl != null ? parseFloatSafe(pos.pnl, 0) :
           pos.mtm != null ? parseFloatSafe(pos.mtm, 0) :
@@ -158,7 +164,7 @@ class PositionsService {
       log.debug('Fetched positions from instance', {
         instance_id: instance.id,
         instance_name: instance.name,
-        total_positions: positions.length,
+        total_positions: filteredPositions.length,
         open_positions: openPositions.length,
         closed_positions: closedPositions.length,
         total_pnl: totalPnL,

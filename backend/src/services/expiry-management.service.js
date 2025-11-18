@@ -7,6 +7,7 @@
 import { log } from '../core/logger.js';
 import db from '../core/database.js';
 import openalgoClient from '../integrations/openalgo/client.js';
+import instrumentsService from './instruments.service.js';
 import { NotFoundError } from '../core/errors.js';
 
 class ExpiryManagementService {
@@ -81,6 +82,17 @@ class ExpiryManagementService {
     log.debug('Fetching expiries from OpenAlgo', { underlying, exchange });
 
     try {
+      const cachedExpiries = await instrumentsService.getExpiries(underlying, exchange);
+      if (cachedExpiries.length > 0) {
+        const processedFromDb = this._processExpiries(cachedExpiries, underlying, exchange);
+        await this._cacheExpiries(underlying, exchange, processedFromDb);
+        log.info('Fetched expiries from instruments cache', {
+          underlying,
+          count: processedFromDb.length,
+        });
+        return processedFromDb;
+      }
+
       const expiries = await openalgoClient.getExpiry(instance, underlying, exchange);
 
       // Process and classify expiries

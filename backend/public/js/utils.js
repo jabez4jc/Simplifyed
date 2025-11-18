@@ -145,25 +145,22 @@ const Utils = {
    */
   showToast(message, type = 'info', duration = 3000) {
     const toast = document.createElement('div');
-    toast.className = `toast toast-${type}`;
+    const alertType = type === 'error' ? 'alert-error' :
+                      type === 'success' ? 'alert-success' :
+                      type === 'warning' ? 'alert-warning' : 'alert-info';
+
+    toast.className = `alert ${alertType} shadow-lg`;
     toast.innerHTML = `
-      <div class="toast-content">
-        <span class="toast-icon">${this.getToastIcon(type)}</span>
-        <span class="toast-message">${message}</span>
-      </div>
+      <span>${this.getToastIcon(type)} ${message}</span>
     `;
 
     const container = document.getElementById('toast-container');
     if (container) {
       container.appendChild(toast);
 
-      // Animate in
-      setTimeout(() => toast.classList.add('show'), 10);
-
       // Auto remove
       setTimeout(() => {
-        toast.classList.remove('show');
-        setTimeout(() => toast.remove(), 300);
+        toast.remove();
       }, duration);
     }
   },

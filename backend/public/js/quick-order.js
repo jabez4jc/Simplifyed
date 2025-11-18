@@ -11,29 +11,55 @@ class QuickOrderHandler {
     this.selectedOptionsLegs = new Map(); // symbolId -> optionsLeg
     this.selectedExpiries = new Map(); // symbolId -> expiry
     this.availableExpiries = new Map(); // symbolId -> expiry list
+
+    // Buyer/Writer options mode settings (for OPTIONS trade mode only)
+    this.operatingModes = new Map(); // symbolId -> 'BUYER' | 'WRITER'
+    this.strikePolicies = new Map(); // symbolId -> 'FLOAT_OFS' | 'ANCHOR_OFS'
+    this.stepLots = new Map(); // symbolId -> number (contracts per click)
+    this.writerGuards = new Map(); // symbolId -> boolean (enable writer guard)
+    this.optionPreviewTimers = new Map(); // symbolId -> interval id
+    this.optionPreviewRequestIds = new Map(); // symbolId -> latest request token
   }
 
   /**
    * Toggle row expansion for a symbol
    */
   toggleRowExpansion(watchlistId, symbolId) {
-    const rowKey = `${watchlistId}_${symbolId}`;
-    const expansionRow = document.getElementById(`expansion-row-${symbolId}`);
-    const toggleBtn = document.querySelector(`[data-toggle-symbol="${symbolId}"]`);
+    try {
+      const rowKey = `${watchlistId}_${symbolId}`;
+      const expansionRow = document.getElementById(`expansion-row-${symbolId}`);
+      const toggleBtn = document.querySelector(`[data-toggle-symbol="${symbolId}"]`);
 
-    if (this.expandedRows.has(rowKey)) {
-      // Collapse
-      expansionRow.style.display = 'none';
-      toggleBtn.textContent = '▼';
-      this.expandedRows.delete(rowKey);
-    } else {
-      // Expand
-      expansionRow.style.display = 'table-row';
-      toggleBtn.textContent = '▲';
-      this.expandedRows.add(rowKey);
+      if (!expansionRow) {
+        throw new Error('Expansion row not found in DOM');
+      }
 
-      // Load expansion content if not already loaded
-      this.loadExpansionContent(watchlistId, symbolId);
+      if (this.expandedRows.has(rowKey)) {
+        // Collapse
+        expansionRow.style.display = 'none';
+        if (toggleBtn) {
+          toggleBtn.textContent = '▼';
+          toggleBtn.classList.remove('rotated');
+        }
+        this.expandedRows.delete(rowKey);
+        this.stopOptionPreviewPolling(symbolId);
+      } else {
+        // Expand
+        expansionRow.style.display = 'table-row';
+        if (toggleBtn) {
+          toggleBtn.textContent = '▲';
+          toggleBtn.classList.add('rotated');
+        }
+        this.expandedRows.add(rowKey);
+
+        // Load expansion content if not already loaded
+        this.loadExpansionContent(watchlistId, symbolId);
+      }
+    } catch (error) {
+      console.error('Failed to toggle watchlist symbol expansion', { watchlistId, symbolId, error });
+      if (window.Utils && typeof Utils.showToast === 'function') {
+        Utils.showToast(`Failed to show trading controls: ${error.message}`, 'error');
+      }
     }
   }
 
@@ -51,14 +77,33 @@ class QuickOrderHandler {
     try {
       // Get symbol data from the row
       const symbolRow = document.querySelector(`tr[data-symbol-id="${symbolId}"]`);
+      if (!symbolRow) {
+        throw new Error('Symbol row not found in DOM');
+      }
+
       const symbol = symbolRow.dataset.symbol;
       const exchange = symbolRow.dataset.exchange;
-      const symbolType = symbolRow.querySelector('.badge').textContent.trim();
 
-      // Get default values
-      const tradeMode = this.selectedTradeModes.get(symbolId) || this.getDefaultTradeMode(symbolType);
-      const optionsLeg = this.selectedOptionsLegs.get(symbolId) || 'ATM';
-      const quantity = this.defaultQuantities.get(symbolId) || 1;
+    let capabilities = { equity: true, futures: true, options: true, symbolType: 'UNKNOWN' };
+    try {
+      capabilities = this.getSymbolCapabilities(symbolRow);
+    } catch (error) {
+      console.warn('Failed to derive symbol capabilities, falling back to defaults', error);
+    }
+
+    const symbolType =
+      capabilities.symbolType ||
+      (symbolRow.querySelector('.badge')?.textContent.trim() || 'UNKNOWN');
+
+    // Get default values
+    const availableModes = this.getAvailableTradeModes(symbolType, capabilities);
+    let tradeMode = this.selectedTradeModes.get(symbolId) || this.getDefaultTradeMode(symbolType, capabilities);
+    if (!availableModes.includes(tradeMode)) {
+      tradeMode = availableModes[0];
+      this.selectedTradeModes.set(symbolId, tradeMode);
+    }
+    const optionsLeg = this.selectedOptionsLegs.get(symbolId) || 'ATM';
+    const quantity = this.defaultQuantities.get(symbolId) || 1;
 
       // Save defaults to Maps if not already set
       if (!this.selectedTradeModes.has(symbolId)) {
@@ -70,6 +115,17 @@ class QuickOrderHandler {
       }
       if (!this.defaultQuantities.has(symbolId)) {
         this.defaultQuantities.set(symbolId, quantity);
+      }
+
+      // Initialize Buyer/Writer options mode settings (for OPTIONS trade mode)
+      if (!this.operatingModes.has(symbolId)) {
+        this.operatingModes.set(symbolId, 'BUYER');  // Default to Buyer mode
+      }
+      if (!this.strikePolicies.has(symbolId)) {
+        this.strikePolicies.set(symbolId, 'FLOAT_OFS');  // Default to FLOAT_OFS
+      }
+      if (!this.writerGuards.has(symbolId)) {
+        this.writerGuards.set(symbolId, true);  // Default to writer guard enabled
       }
 
       // Fetch available expiries for FUTURES/OPTIONS if needed
@@ -102,11 +158,23 @@ class QuickOrderHandler {
         exchange,
         symbolType,
         tradeMode,
+        capabilities,
+        availableModes,
         optionsLeg,
         quantity,
         expiries,
         selectedExpiry,
+        // Buyer/Writer options mode settings
+        operatingMode: this.operatingModes.get(symbolId),
+        strikePolicy: this.strikePolicies.get(symbolId),
+        writerGuard: this.writerGuards.get(symbolId),
       });
+
+      if (tradeMode === 'OPTIONS' && capabilities.options) {
+        this.startOptionPreviewPolling(symbolId);
+      } else {
+        this.stopOptionPreviewPolling(symbolId);
+      }
 
       contentDiv.dataset.loaded = 'true';
     } catch (error) {
@@ -117,137 +185,339 @@ class QuickOrderHandler {
   /**
    * Get default trade mode based on symbol type
    */
-  getDefaultTradeMode(symbolType) {
-    const modeMap = {
-      'EQUITY_ONLY': 'EQUITY',
-      'EQUITY_FNO': 'EQUITY',
-      'FUTURES': 'EQUITY',      // Direct FUTURES symbols use EQUITY-like interface (BUY/SELL/EXIT)
-      'OPTIONS': 'EQUITY',      // Direct OPTIONS symbols use EQUITY-like interface (BUY/SELL/EXIT)
-      'INDEX': 'OPTIONS',       // INDEX symbols default to OPTIONS mode (BUY_CE/SELL_CE/etc)
-      'UNKNOWN': 'EQUITY',
+  getDefaultTradeMode(symbolType, capabilities = {}) {
+    if (capabilities.options) return 'OPTIONS';
+    if (capabilities.futures) return 'FUTURES';
+    if (capabilities.equity !== false) return 'EQUITY';
+
+    const fallback = {
+      INDEX: 'OPTIONS',
     };
-    return modeMap[symbolType] || 'EQUITY';
+    return fallback[symbolType] || 'EQUITY';
   }
 
   /**
    * Render trading controls UI
    */
-  renderTradingControls({ watchlistId, symbolId, symbol, exchange, symbolType, tradeMode, optionsLeg, quantity, expiries, selectedExpiry }) {
-    const availableModes = this.getAvailableTradeModes(symbolType);
-    const showOptionsLeg = tradeMode === 'OPTIONS';
-    const showExpirySelector = (tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') && expiries && expiries.length > 0;
+  renderTradingControls({ watchlistId, symbolId, symbol, exchange, symbolType, tradeMode, capabilities = {}, availableModes = [], optionsLeg, quantity, expiries, selectedExpiry, operatingMode, strikePolicy, writerGuard }) {
+    const showOptionsLeg = tradeMode === 'OPTIONS' && capabilities.options;
+    const showExpirySelector =
+      ((tradeMode === 'FUTURES' && capabilities.futures) ||
+        (tradeMode === 'OPTIONS' && capabilities.options)) &&
+      expiries &&
+      expiries.length > 0;
+    const showOperatingMode = tradeMode === 'OPTIONS' && capabilities.options;
+    const showStrikePolicy = tradeMode === 'OPTIONS' && capabilities.options;
 
     console.log(`[QuickOrder] Rendering controls:`, {
       tradeMode,
       expiryCount: expiries?.length || 0,
       showExpirySelector,
-      selectedExpiry
+      selectedExpiry,
+      operatingMode,
+      strikePolicy,
+      quantity
     });
+
+    const renderField = (label, help, controlHtml) => `
+      <div class="form-field-row">
+        <div class="form-label-stack">
+          <div class="form-label-line">
+            <span class="form-label-sm">${label}</span>
+            ${help ? `
+              <button type="button" class="field-help" title="${help}">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="12" y1="8" x2="12" y2="12"></line>
+                  <circle cx="12" cy="16" r="0.5"></circle>
+                </svg>
+              </button>
+            ` : ''}
+          </div>
+        </div>
+        <div class="field-control">
+          ${controlHtml}
+        </div>
+      </div>
+    `;
+
+    const tradeModeField = renderField(
+      'Trade Mode',
+      'Choose whether this quick order fires direct equity orders, futures contracts, or managed options legs.',
+      `<div class="trade-mode-selector">
+        ${availableModes.map(mode => `
+          <button
+            class="btn-trade-mode ${mode === tradeMode ? 'active' : ''} ${!this.isModeAvailable(mode, symbolType, capabilities) ? 'disabled' : ''}"
+            data-mode="${mode}"
+            data-symbol-id="${symbolId}"
+            onclick="console.log('[QuickOrder] Button clicked:', ${symbolId}, '${mode}'); quickOrder.selectTradeMode(${symbolId}, '${mode}'); return false;"
+            ${!this.isModeAvailable(mode, symbolType, capabilities) ? 'disabled' : ''}
+            title="${this.getTradeModeTooltip(mode, symbolType, capabilities)}">
+            ${this.getTradeModeLabel(mode)}
+          </button>
+        `).join('')}
+      </div>`
+    );
+
+    const expiryField = showExpirySelector
+      ? renderField(
+          'Expiry',
+          'Pick the contract month you want to trade. Futures and options require an expiry.',
+          `<select
+            class="select-expiry"
+            data-symbol-id="${symbolId}"
+            onchange="quickOrder.selectExpiry(${symbolId}, this.value)">
+            ${expiries.map(expiry => `
+              <option value="${expiry}" ${expiry === selectedExpiry ? 'selected' : ''}>
+                ${this.formatExpiryDate(expiry)}
+              </option>
+            `).join('')}
+          </select>`
+        )
+      : '';
+
+    const optionsLegField = showOptionsLeg
+      ? renderField(
+          'Options Leg',
+          'Shift the strike relative to ATM before firing CE/PE actions.',
+          `<select
+            class="select-options-leg"
+            data-symbol-id="${symbolId}"
+            onchange="quickOrder.selectOptionsLeg(${symbolId}, this.value)">
+            <option value="ITM3" ${optionsLeg === 'ITM3' ? 'selected' : ''}>ITM 3</option>
+            <option value="ITM2" ${optionsLeg === 'ITM2' ? 'selected' : ''}>ITM 2</option>
+            <option value="ITM1" ${optionsLeg === 'ITM1' ? 'selected' : ''}>ITM 1</option>
+            <option value="ATM" ${optionsLeg === 'ATM' ? 'selected' : ''}>ATM</option>
+            <option value="OTM1" ${optionsLeg === 'OTM1' ? 'selected' : ''}>OTM 1</option>
+            <option value="OTM2" ${optionsLeg === 'OTM2' ? 'selected' : ''}>OTM 2</option>
+            <option value="OTM3" ${optionsLeg === 'OTM3' ? 'selected' : ''}>OTM 3</option>
+          </select>`
+        )
+      : '';
+
+    const operatingModeField = showOperatingMode
+      ? renderField(
+          'Operating Mode',
+          'Toggle between Buyer (long premium) and Writer (short premium) flows.',
+          `<div class="operating-mode-toggle" role="group" aria-label="Buyer or Writer mode">
+            <button
+              class="${operatingMode === 'BUYER' ? 'is-active' : ''}"
+              data-mode="BUYER"
+              data-symbol-id="${symbolId}"
+              onclick="quickOrder.selectOperatingMode(${symbolId}, 'BUYER')"
+              title="Buyer Mode: go long premium (BUY/REDUCE buttons)">
+              Buyer
+            </button>
+            <button
+              class="${operatingMode === 'WRITER' ? 'is-active' : ''}"
+              data-mode="WRITER"
+              data-symbol-id="${symbolId}"
+              onclick="quickOrder.selectOperatingMode(${symbolId}, 'WRITER')"
+              title="Writer Mode: short premium (SELL/INCREASE buttons)">
+              Writer
+            </button>
+          </div>`
+        )
+      : '';
+
+    const strikePolicyField = showStrikePolicy
+      ? renderField(
+          'Strike Policy',
+          'Controls how strikes migrate as ATM moves during FLOAT/ANCHOR offsets.',
+          `<select
+            class="select-strike-policy"
+            data-symbol-id="${symbolId}"
+            onchange="quickOrder.selectStrikePolicy(${symbolId}, this.value)">
+            <option value="FLOAT_OFS" ${strikePolicy === 'FLOAT_OFS' ? 'selected' : ''}>
+              FLOAT_OFS (Follow ATM)
+            </option>
+            <option value="ANCHOR_OFS" ${strikePolicy === 'ANCHOR_OFS' ? 'selected' : ''}>
+              ANCHOR_OFS (Lock first strike)
+            </option>
+          </select>`
+        )
+      : '';
+
+    const quantityField = renderField(
+      'Quantity',
+      'Lots/contracts dispatched per click. Uses instrument lot size for totals.',
+      `<input
+        type="number"
+        class="input-quantity"
+        value="${quantity}"
+        min="1"
+        step="1"
+        data-symbol-id="${symbolId}"
+        onchange="quickOrder.updateQuantity(${symbolId}, parseInt(this.value))"
+        title="Number of lots per order. Controls both position step size and order size. Example: 2 lots × 25 lot size = 50 contracts">`
+    );
+
+    const optionPreviewBlock = tradeMode === 'OPTIONS' && capabilities.options
+      ? `
+        <div
+          class="option-preview-card border border-base-300 rounded-xl p-3 bg-base-200/60 space-y-3"
+          id="option-preview-${symbolId}"
+          aria-live="polite">
+          <p class="text-sm text-neutral-500">Resolving option strikes…</p>
+        </div>
+      `
+      : '';
 
     return `
       <div class="quick-order-panel">
-        <!-- Left: Trade Mode and Options Leg -->
         <div class="quick-order-config">
-          <div class="form-group-inline">
-            <label class="form-label-sm">Trade Mode:</label>
-            <div class="trade-mode-selector">
-              ${availableModes.map(mode => `
-                <button
-                  class="btn-trade-mode ${mode === tradeMode ? 'active' : ''} ${!this.isModeAvailable(mode, symbolType) ? 'disabled' : ''}"
-                  data-mode="${mode}"
-                  data-symbol-id="${symbolId}"
-                  onclick="console.log('[QuickOrder] Button clicked:', ${symbolId}, '${mode}'); quickOrder.selectTradeMode(${symbolId}, '${mode}'); return false;"
-                  ${!this.isModeAvailable(mode, symbolType) ? 'disabled' : ''}
-                  title="${this.getTradeModeTooltip(mode, symbolType)}">
-                  ${this.getTradeModeLabel(mode)}
-                </button>
-              `).join('')}
-            </div>
-          </div>
-
-          ${showExpirySelector ? `
-            <div class="form-group-inline">
-              <label class="form-label-sm">Expiry:</label>
-              <select
-                class="select-expiry"
-                data-symbol-id="${symbolId}"
-                onchange="quickOrder.selectExpiry(${symbolId}, this.value)">
-                ${expiries.map(expiry => `
-                  <option value="${expiry}" ${expiry === selectedExpiry ? 'selected' : ''}>
-                    ${this.formatExpiryDate(expiry)}
-                  </option>
-                `).join('')}
-              </select>
-            </div>
-          ` : ''}
-
-          ${showOptionsLeg ? `
-            <div class="form-group-inline">
-              <label class="form-label-sm">Options Leg:</label>
-              <select
-                class="select-options-leg"
-                data-symbol-id="${symbolId}"
-                onchange="quickOrder.selectOptionsLeg(${symbolId}, this.value)">
-                <option value="ITM3" ${optionsLeg === 'ITM3' ? 'selected' : ''}>ITM 3</option>
-                <option value="ITM2" ${optionsLeg === 'ITM2' ? 'selected' : ''}>ITM 2</option>
-                <option value="ITM1" ${optionsLeg === 'ITM1' ? 'selected' : ''}>ITM 1</option>
-                <option value="ATM" ${optionsLeg === 'ATM' ? 'selected' : ''}>ATM</option>
-                <option value="OTM1" ${optionsLeg === 'OTM1' ? 'selected' : ''}>OTM 1</option>
-                <option value="OTM2" ${optionsLeg === 'OTM2' ? 'selected' : ''}>OTM 2</option>
-                <option value="OTM3" ${optionsLeg === 'OTM3' ? 'selected' : ''}>OTM 3</option>
-              </select>
-            </div>
-          ` : ''}
-
-          <div class="form-group-inline">
-            <label class="form-label-sm">Quantity:</label>
-            <input
-              type="number"
-              class="input-quantity"
-              value="${quantity}"
-              min="1"
-              step="1"
-              data-symbol-id="${symbolId}"
-              onchange="quickOrder.updateQuantity(${symbolId}, parseInt(this.value))">
-          </div>
+          ${tradeModeField}
+          ${expiryField}
+          ${optionsLegField}
+          ${operatingModeField}
+          ${strikePolicyField}
+          ${quantityField}
         </div>
-
-        <!-- Right: Action Buttons -->
+        ${optionPreviewBlock}
         <div class="quick-order-actions">
-          ${this.renderActionButtons(watchlistId, symbolId, symbol, exchange, tradeMode)}
+          ${this.renderActionButtons(watchlistId, symbolId, symbol, exchange, tradeMode, operatingMode, strikePolicy, quantity, selectedExpiry, optionsLeg)}
         </div>
       </div>
-    </div>
     `;
   }
 
   /**
-   * Render action buttons based on trade mode
+   * Check if options mode is fully configured
    */
-  renderActionButtons(watchlistId, symbolId, symbol, exchange, tradeMode) {
+  isOptionsModeConfigured(symbolId) {
+    const tradeMode = this.selectedTradeModes.get(symbolId);
+    const expiry = this.selectedExpiries.get(symbolId);
+    const operatingMode = this.operatingModes.get(symbolId);
+    const strikePolicy = this.strikePolicies.get(symbolId);
+    const quantity = this.defaultQuantities.get(symbolId);
+
+    // For OPTIONS mode, all settings must be present
     if (tradeMode === 'OPTIONS') {
-      return `
-        <div class="action-buttons-grid">
+      return !!(expiry && operatingMode && strikePolicy && quantity && quantity > 0);
+    }
+
+    // For other modes, only basic settings needed
+    return true;
+  }
+
+  /**
+   * Render action buttons based on trade mode and operating mode
+   */
+  renderActionButtons(watchlistId, symbolId, symbol, exchange, tradeMode, operatingMode = 'BUYER', strikePolicy = 'FLOAT_OFS', quantity = 1, selectedExpiry = null, optionsLeg = 'ATM') {
+    // Disable buttons until all required settings are configured
+    const isConfigured = this.isOptionsModeConfigured(symbolId);
+
+    if (tradeMode === 'OPTIONS') {
+      // CE Row
+      let ceButtons = '';
+      if (operatingMode === 'BUYER') {
+        ceButtons = `
           <button class="btn-quick-action btn-buy-ce"
-                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'BUY_CE')">
+                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'BUY_CE')"
+                  ${!isConfigured ? 'disabled' : ''}
+                  title="Add CE longs at ${optionsLeg} strike">
             BUY CE
           </button>
+          <button class="btn-quick-action btn-reduce-ce"
+                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'REDUCE_CE')"
+                  ${!isConfigured ? 'disabled' : ''}
+                  title="Reduce CE longs (sell to close)">
+            REDUCE CE
+          </button>
+        `;
+      } else {
+        ceButtons = `
           <button class="btn-quick-action btn-sell-ce"
-                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SELL_CE')">
+                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SELL_CE')"
+                  ${!isConfigured ? 'disabled' : ''}
+                  title="Open CE shorts at ${optionsLeg} strike">
             SELL CE
           </button>
+          <button class="btn-quick-action btn-increase-ce"
+                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'INCREASE_CE')"
+                  ${!isConfigured ? 'disabled' : ''}
+                  title="Cover CE shorts (buy back)">
+            INCREASE CE
+          </button>
+        `;
+      }
+
+      // PE Row
+      let peButtons = '';
+      if (operatingMode === 'BUYER') {
+        peButtons = `
           <button class="btn-quick-action btn-buy-pe"
-                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'BUY_PE')">
+                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'BUY_PE')"
+                  ${!isConfigured ? 'disabled' : ''}
+                  title="Add PE longs at ${optionsLeg} strike">
             BUY PE
           </button>
+          <button class="btn-quick-action btn-reduce-pe"
+                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'REDUCE_PE')"
+                  ${!isConfigured ? 'disabled' : ''}
+                  title="Reduce PE longs (sell to close)">
+            REDUCE PE
+          </button>
+        `;
+      } else {
+        peButtons = `
           <button class="btn-quick-action btn-sell-pe"
-                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SELL_PE')">
+                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SELL_PE')"
+                  ${!isConfigured ? 'disabled' : ''}
+                  title="Open PE shorts at ${optionsLeg} strike">
             SELL PE
           </button>
-          <button class="btn-quick-action btn-exit-all"
-                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'EXIT_ALL')">
-            EXIT ALL
+          <button class="btn-quick-action btn-increase-pe"
+                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'INCREASE_PE')"
+                  ${!isConfigured ? 'disabled' : ''}
+                  title="Cover PE shorts (buy back)">
+            INCREASE PE
           </button>
+        `;
+      }
+
+      // Exit Row
+      const exitButtons = `
+        <button class="btn-quick-action btn-close-all-ce"
+                onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'CLOSE_ALL_CE')"
+                ${!isConfigured ? 'disabled' : ''}
+                title="Close all CE positions">
+          CLOSE ALL CE
+        </button>
+        <button class="btn-quick-action btn-close-all-pe"
+                onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'CLOSE_ALL_PE')"
+                ${!isConfigured ? 'disabled' : ''}
+                title="Close all PE positions">
+          CLOSE ALL PE
+        </button>
+        <button class="btn-quick-action btn-exit-all"
+                onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'EXIT_ALL')"
+                ${!isConfigured ? 'disabled' : ''}
+                title="Exit all positions (CE & PE)">
+          EXIT ALL
+        </button>
+      `;
+
+      return `
+        <div class="options-action-buttons">
+          <div class="options-button-row">
+            <div class="button-row-label">CE Options</div>
+            <div class="button-group">
+              ${ceButtons}
+            </div>
+          </div>
+          <div class="options-button-row">
+            <div class="button-row-label">PE Options</div>
+            <div class="button-group">
+              ${peButtons}
+            </div>
+          </div>
+          <div class="options-button-row exit-row">
+            <div class="button-row-label">Exit Positions</div>
+            <div class="button-group">
+              ${exitButtons}
+            </div>
+          </div>
         </div>
       `;
     } else {
@@ -286,21 +556,37 @@ class QuickOrderHandler {
   /**
    * Get available trade modes based on symbol type
    */
-  getAvailableTradeModes(symbolType) {
-    return ['EQUITY', 'FUTURES', 'OPTIONS'];
+  getAvailableTradeModes(symbolType, capabilities = {}) {
+    const modes = [];
+    if (capabilities.equity !== false) {
+      modes.push('EQUITY');
+    }
+    if (capabilities.futures) {
+      modes.push('FUTURES');
+    }
+    if (capabilities.options) {
+      modes.push('OPTIONS');
+    }
+
+    if (modes.length === 0) {
+      if (symbolType === 'INDEX') {
+        modes.push('OPTIONS');
+      } else {
+        modes.push('EQUITY');
+      }
+    }
+    return modes;
   }
 
   /**
    * Check if trade mode is available for symbol type
    */
-  isModeAvailable(mode, symbolType) {
+  isModeAvailable(mode, symbolType, capabilities = {}) {
+    if (mode === 'OPTIONS') return !!capabilities.options;
+    if (mode === 'FUTURES') return !!capabilities.futures;
+    if (mode === 'EQUITY') return capabilities.equity !== false;
     const availability = {
-      'EQUITY_ONLY': ['EQUITY'],
-      'EQUITY_FNO': ['EQUITY', 'FUTURES', 'OPTIONS'],
-      'FUTURES': ['EQUITY'],    // Direct FUTURES symbols: only DIRECT mode (BUY/SELL/EXIT)
-      'OPTIONS': ['EQUITY'],    // Direct OPTIONS symbols: only DIRECT mode (BUY/SELL/EXIT)
-      'INDEX': ['FUTURES', 'OPTIONS'],
-      'UNKNOWN': ['EQUITY'],
+      INDEX: ['FUTURES', 'OPTIONS'],
     };
     return (availability[symbolType] || ['EQUITY']).includes(mode);
   }
@@ -308,8 +594,8 @@ class QuickOrderHandler {
   /**
    * Get tooltip for trade mode button
    */
-  getTradeModeTooltip(mode, symbolType) {
-    if (this.isModeAvailable(mode, symbolType)) {
+  getTradeModeTooltip(mode, symbolType, capabilities = {}) {
+    if (this.isModeAvailable(mode, symbolType, capabilities)) {
       const label = this.getTradeModeLabel(mode).toLowerCase();
       return `Trade ${label}`;
     }
@@ -321,18 +607,20 @@ class QuickOrderHandler {
    */
   selectTradeMode(symbolId, mode) {
     console.log('[QuickOrder] selectTradeMode called:', { symbolId, mode });
-    this.selectedTradeModes.set(symbolId, mode);
-    console.log('[QuickOrder] Map after setting:', Array.from(this.selectedTradeModes.entries()));
 
-    // Reload expansion content
-    const expansionContent = document.getElementById(`expansion-content-${symbolId}`);
-    expansionContent.dataset.loaded = 'false';
-
-    // Find watchlist ID from the row
     const symbolRow = document.querySelector(`tr[data-symbol-id="${symbolId}"]`);
-    const watchlistId = parseInt(symbolRow.closest('[id^="watchlist-table-"]').id.split('-')[2]);
+    if (symbolRow) {
+      const capabilities = this.getSymbolCapabilities(symbolRow);
+      const symbolType = capabilities.symbolType || (symbolRow.querySelector('.badge')?.textContent.trim() || 'UNKNOWN');
+      const availableModes = this.getAvailableTradeModes(symbolType, capabilities);
+      if (!availableModes.includes(mode)) {
+        Utils.showToast(`${this.getTradeModeLabel(mode)} trading is disabled for this symbol.`, 'warning');
+        return;
+      }
+    }
 
-    this.loadExpansionContent(watchlistId, symbolId);
+    this.selectedTradeModes.set(symbolId, mode);
+    this.reloadExpansionContent(symbolId);
   }
 
   /**
@@ -340,6 +628,43 @@ class QuickOrderHandler {
    */
   selectOptionsLeg(symbolId, leg) {
     this.selectedOptionsLegs.set(symbolId, leg);
+    this.triggerOptionPreviewRefresh(symbolId);
+  }
+
+  /**
+   * Select operating mode (BUYER or WRITER)
+   */
+  selectOperatingMode(symbolId, mode) {
+    console.log('[QuickOrder] selectOperatingMode called:', { symbolId, mode });
+    this.operatingModes.set(symbolId, mode);
+    console.log('[QuickOrder] Operating mode updated:', this.operatingModes.get(symbolId));
+    this.reloadExpansionContent(symbolId);
+  }
+
+  /**
+   * Select strike policy (FLOAT_OFS or ANCHOR_OFS)
+   */
+  selectStrikePolicy(symbolId, policy) {
+    console.log('[QuickOrder] selectStrikePolicy called:', { symbolId, policy });
+    this.strikePolicies.set(symbolId, policy);
+
+    // Clear anchored strikes if switching from ANCHOR_OFS to FLOAT_OFS
+    if (policy === 'FLOAT_OFS') {
+      console.log('[QuickOrder] Clearing anchored strikes for FLOAT_OFS mode');
+      // TODO: Clear anchored strikes from database if needed
+    }
+
+    this.reloadExpansionContent(symbolId);
+  }
+
+  /**
+   * Update step lots
+   */
+  updateStepLots(symbolId, value) {
+    const validatedValue = Math.max(1, parseInt(value) || 1);
+    console.log('[QuickOrder] updateStepLots called:', { symbolId, value: validatedValue });
+    this.stepLots.set(symbolId, validatedValue);
+    this.reloadExpansionContent(symbolId);
   }
 
   /**
@@ -350,6 +675,7 @@ class QuickOrderHandler {
     const normalizedExpiry = this.normalizeExpiryDate(expiry);
     console.log(`[QuickOrder] selectExpiry: raw="${expiry}" normalized="${normalizedExpiry}"`);
     this.selectedExpiries.set(symbolId, normalizedExpiry);
+    this.triggerOptionPreviewRefresh(symbolId);
   }
 
   /**
@@ -360,56 +686,245 @@ class QuickOrderHandler {
   }
 
   /**
+   * Reload expansion content when configuration changes
+   */
+  reloadExpansionContent(symbolId) {
+    const expansionContent = document.getElementById(`expansion-content-${symbolId}`);
+    if (!expansionContent) {
+      console.warn('[QuickOrder] Expansion content not found when reloading', { symbolId });
+      return;
+    }
+
+    expansionContent.dataset.loaded = 'false';
+    expansionContent.innerHTML = '<p class="text-neutral-500 text-sm">Loading...</p>';
+
+    const symbolRow = document.querySelector(`tr[data-symbol-id="${symbolId}"]`);
+    if (!symbolRow) {
+      console.warn('[QuickOrder] Symbol row not found when reloading expansion', { symbolId });
+      return;
+    }
+
+    const tableEl = symbolRow.closest('[id^="watchlist-table-"]');
+    if (!tableEl) {
+      console.warn('[QuickOrder] Watchlist table not found when reloading expansion', { symbolId });
+      return;
+    }
+
+    const watchlistId = parseInt(tableEl.id.split('-')[2], 10);
+    if (Number.isNaN(watchlistId)) {
+      console.warn('[QuickOrder] Unable to derive watchlist ID for expansion reload', { symbolId, tableId: tableEl.id });
+      return;
+    }
+
+    this.loadExpansionContent(watchlistId, symbolId);
+  }
+
+  triggerOptionPreviewRefresh(symbolId) {
+    const container = document.getElementById(`option-preview-${symbolId}`);
+    if (!container) {
+      return;
+    }
+
+    // Kick off a refresh without waiting for the next scheduled tick
+    this.refreshOptionPreview(symbolId);
+  }
+
+  startOptionPreviewPolling(symbolId) {
+    this.stopOptionPreviewPolling(symbolId);
+
+    const execute = () => this.refreshOptionPreview(symbolId);
+    execute();
+    const intervalId = setInterval(execute, 20000);
+    this.optionPreviewTimers.set(symbolId, intervalId);
+  }
+
+  stopOptionPreviewPolling(symbolId) {
+    if (this.optionPreviewTimers.has(symbolId)) {
+      clearInterval(this.optionPreviewTimers.get(symbolId));
+      this.optionPreviewTimers.delete(symbolId);
+    }
+    this.optionPreviewRequestIds.delete(symbolId);
+  }
+
+  stopAllOptionPreviewPolling() {
+    this.optionPreviewTimers.forEach(intervalId => clearInterval(intervalId));
+    this.optionPreviewTimers.clear();
+    this.optionPreviewRequestIds.clear();
+  }
+
+  refreshPositionsAfterOrder() {
+    if (window.app && window.app.currentView === 'watchlists' && typeof window.app.loadPositionsTab === 'function') {
+      window.app.loadPositionsTab();
+    }
+  }
+
+  async refreshOptionPreview(symbolId) {
+    const container = document.getElementById(`option-preview-${symbolId}`);
+    if (!container) {
+      return;
+    }
+
+    const tradeMode = this.selectedTradeModes.get(symbolId) || 'EQUITY';
+    if (tradeMode !== 'OPTIONS') {
+      container.innerHTML = '<p class="text-sm text-neutral-500">Switch to Options mode to view CE/PE quotes.</p>';
+      this.stopOptionPreviewPolling(symbolId);
+      return;
+    }
+
+    const expiry = this.selectedExpiries.get(symbolId);
+    if (!expiry) {
+      container.innerHTML = '<p class="text-sm text-warning">Select an expiry to view CE/PE quotes.</p>';
+      return;
+    }
+
+    const optionsLeg = this.selectedOptionsLegs.get(symbolId) || 'ATM';
+    const requestId = (this.optionPreviewRequestIds.get(symbolId) || 0) + 1;
+    this.optionPreviewRequestIds.set(symbolId, requestId);
+
+    if (!container.dataset.loaded) {
+      container.innerHTML = '<p class="text-sm text-neutral-500">Loading option quotes…</p>';
+    }
+
+    try {
+      const response = await api.getQuickOrderOptionsPreview({
+        symbolId,
+        expiry,
+        optionsLeg,
+      });
+
+      if (this.optionPreviewRequestIds.get(symbolId) !== requestId) {
+        return;
+      }
+
+      const preview = response?.data || response;
+      this.renderOptionPreview(symbolId, preview);
+      container.dataset.loaded = 'true';
+    } catch (error) {
+      if (this.optionPreviewRequestIds.get(symbolId) !== requestId) {
+        return;
+      }
+      const message = error?.message || 'Failed to load option quotes';
+      container.innerHTML = `<p class="text-sm text-error">${Utils.escapeHTML(message)}</p>`;
+    }
+  }
+
+  renderOptionPreview(symbolId, preview) {
+    const container = document.getElementById(`option-preview-${symbolId}`);
+    if (!container) {
+      return;
+    }
+
+    if (!preview) {
+      container.innerHTML = '<p class="text-sm text-error">Option preview unavailable.</p>';
+      return;
+    }
+
+    const expiryLabel = preview.expiry ? this.formatExpiryDate(preview.expiry) : 'N/A';
+    const underlyingSymbol = preview.underlying?.symbol || '';
+    const underlyingLtp = preview.underlying?.ltp != null
+      ? `₹${Utils.formatNumber(preview.underlying.ltp)}`
+      : '—';
+    const updatedAt = preview.updatedAt ? new Date(preview.updatedAt) : null;
+    const updatedLabel = updatedAt
+      ? `Refreshed ${updatedAt.toLocaleTimeString()}`
+      : 'Refreshed moments ago';
+
+    container.innerHTML = `
+      <div class="flex items-center justify-between gap-4 flex-wrap text-xs text-neutral-600">
+        <div>
+          <p class="font-semibold text-base-content">Option Symbols (${preview.strikeOffset})</p>
+          <p>Exp ${expiryLabel} • ${Utils.escapeHTML(underlyingSymbol)} ${underlyingLtp}</p>
+        </div>
+        <span>${updatedLabel}</span>
+      </div>
+      <div class="option-preview-grid grid grid-cols-1 md:grid-cols-2 gap-3">
+        ${this.renderOptionPreviewLeg('CALL', preview.ce)}
+        ${this.renderOptionPreviewLeg('PUT', preview.pe)}
+      </div>
+    `;
+  }
+
+  renderOptionPreviewLeg(label, leg) {
+    if (!leg) {
+      return `
+        <div class="option-leg-card border border-dashed rounded-lg p-3 text-sm text-neutral-500">
+          No ${label} leg available
+        </div>
+      `;
+    }
+
+    const ltpDefined = typeof leg.ltp === 'number' && !Number.isNaN(leg.ltp);
+    const ltpText = ltpDefined ? `₹${Utils.formatNumber(leg.ltp)}` : '—';
+    const changeDefined = typeof leg.changePercent === 'number' && !Number.isNaN(leg.changePercent);
+    const changeText = changeDefined
+      ? `${leg.changePercent >= 0 ? '+' : ''}${leg.changePercent.toFixed(2)}%`
+      : '—';
+    const changeClass = changeDefined
+      ? (leg.changePercent > 0 ? 'text-profit' : (leg.changePercent < 0 ? 'text-loss' : 'text-neutral-500'))
+      : 'text-neutral-500';
+
+    return `
+      <div class="option-leg-card border border-base-200 rounded-lg p-3 bg-base-100/80 space-y-1">
+        <div class="text-xs uppercase tracking-wide text-neutral-500">${label}</div>
+        <div class="font-mono text-sm break-all">${Utils.escapeHTML(leg.symbol || '')}</div>
+        <div class="text-xs text-neutral-600">Strike ${leg.strike ?? '—'} • Lot ${leg.lotSize ?? '—'}</div>
+        <div class="flex items-baseline gap-2">
+          <span class="text-lg font-semibold">${ltpText}</span>
+          <span class="${changeClass} text-xs">${changeText}</span>
+        </div>
+      </div>
+    `;
+  }
+
+  /**
    * Fetch available expiries for a symbol
    */
   async fetchAvailableExpiries(symbol, exchange) {
-    try {
-      // Extract underlying symbol (remove expiry and strike info)
-      const underlying = this.extractUnderlying(symbol);
-      console.log(`[QuickOrder] fetchAvailableExpiries: underlying=${underlying}, exchange=${exchange}`);
+    const underlying = this.extractUnderlying(symbol);
+    const derivativeExchange = this.getDerivativeExchange(exchange);
+    console.log(`[QuickOrder] fetchAvailableExpiries: underlying=${underlying}, exchange=${exchange}, derivative=${derivativeExchange}`);
 
-      // Get first active instance to fetch expiries
-      // Try without filter first, then filter on client side as fallback
-      let instancesResponse = await api.getInstances({ is_active: 1 });
-      console.log(`[QuickOrder] Instances response with is_active=1:`, instancesResponse.data?.length || 0, 'instances');
-
-      // Fallback: if no instances found with filter, try getting all and filter manually
-      if (!instancesResponse.data || instancesResponse.data.length === 0) {
-        console.log(`[QuickOrder] No instances with filter, trying all instances...`);
-        instancesResponse = await api.getInstances({});
-        if (instancesResponse.data && instancesResponse.data.length > 0) {
-          // Filter active instances manually
-          const activeInstances = instancesResponse.data.filter(inst =>
-            inst.is_active === 1 || inst.is_active === true || inst.is_active === '1'
-          );
-          console.log(`[QuickOrder] Found ${activeInstances.length} active instances out of ${instancesResponse.data.length} total`);
-          if (activeInstances.length === 0) {
-            console.warn('No active instances available to fetch expiries (after manual filter)');
-            return [];
-          }
-          instancesResponse.data = activeInstances;
-        } else {
-          console.warn('No instances available at all to fetch expiries');
-          return [];
-        }
+    const attemptFetch = async (options = {}) => {
+      const response = await api.getExpiry(underlying, {
+        exchange: derivativeExchange,
+        ...options,
+      });
+      if (response?.data && Array.isArray(response.data)) {
+        return response.data.map(exp => exp.expiry || exp);
       }
-
-      const instance = instancesResponse.data[0];
-      const instanceId = instance.id;
-      console.log(`[QuickOrder] Using instance: ${instance.name} (ID: ${instanceId})`);
-
-      // Fetch expiries from API
-      const response = await api.getExpiry(underlying, instanceId, exchange);
-      console.log(`[QuickOrder] Expiry API response:`, response);
-
-      if (response.data && Array.isArray(response.data)) {
-        const expiries = response.data.map(exp => exp.expiry || exp);
-        console.log(`[QuickOrder] Mapped ${expiries.length} expiries:`, expiries.slice(0, 5));
-        return expiries;
-      }
-
-      console.warn('[QuickOrder] Expiry API returned no data or non-array data');
       return [];
+    };
+
+    try {
+      // Fast path: rely on instruments cache (no instanceId required)
+      const cachedExpiries = await attemptFetch();
+      if (cachedExpiries.length > 0) {
+        console.log(`[QuickOrder] Expiries resolved via instruments cache (${cachedExpiries.length} items)`);
+        return cachedExpiries;
+      }
+
+      console.log('[QuickOrder] No cached expiries available, falling back to broker instance fetch');
+
+      // Fallback: find an active instance to refresh expiries from broker
+      let instancesResponse = await api.getInstances({ is_active: 1 });
+      let activeInstances = instancesResponse.data || [];
+      if (activeInstances.length === 0) {
+        instancesResponse = await api.getInstances({});
+        activeInstances = (instancesResponse.data || []).filter(inst =>
+          inst.is_active === 1 || inst.is_active === true || inst.is_active === '1'
+        );
+      }
+
+      if (activeInstances.length === 0) {
+        console.warn('[QuickOrder] No active instances available to refresh expiries');
+        return [];
+      }
+
+      const fallbackInstance = activeInstances[0];
+      console.log(`[QuickOrder] Using instance ${fallbackInstance.name} (ID: ${fallbackInstance.id}) for expiry refresh`);
+      const refreshedExpiries = await attemptFetch({ instanceId: fallbackInstance.id });
+      console.log(`[QuickOrder] Refreshed ${refreshedExpiries.length} expiries from broker`);
+      return refreshedExpiries;
     } catch (error) {
       console.error('[QuickOrder] Failed to fetch expiries:', error);
       return [];
@@ -513,16 +1028,21 @@ class QuickOrderHandler {
    */
   async placeOrder(watchlistId, symbolId, action) {
     try {
-      // Get current symbol data
       const symbolRow = document.querySelector(`tr[data-symbol-id="${symbolId}"]`);
+      if (!symbolRow) {
+        throw new Error('Symbol row not found in DOM');
+      }
+
       const symbol = symbolRow.dataset.symbol;
       const exchange = symbolRow.dataset.exchange;
 
-      // Get current settings
       const tradeMode = this.selectedTradeModes.get(symbolId) || 'EQUITY';
       const optionsLeg = this.selectedOptionsLegs.get(symbolId) || 'ATM';
       const quantity = this.defaultQuantities.get(symbolId) || 1;
       const selectedExpiry = this.selectedExpiries.get(symbolId);
+      const operatingMode = this.operatingModes.get(symbolId) || 'BUYER';
+      const strikePolicy = this.strikePolicies.get(symbolId) || 'FLOAT_OFS';
+      const stepLots = this.stepLots.get(symbolId) || quantity;
 
       console.log('[QuickOrder] placeOrder - Settings retrieved:', {
         symbolId,
@@ -532,48 +1052,59 @@ class QuickOrderHandler {
         optionsLeg,
         quantity,
         selectedExpiry,
+        operatingMode,
+        strikePolicy,
+        stepLots,
         mapContents: Array.from(this.selectedTradeModes.entries()),
       });
 
-      // Validate quantity
       if (!quantity || quantity <= 0) {
         Utils.showToast('Quantity must be greater than 0', 'error');
         return;
       }
 
-      // Build order request
       const orderData = {
-        symbolId,  // Watchlist symbol database ID (required by backend)
+        symbolId,
         action,
         tradeMode,
         quantity,
       };
 
-      // Add expiry for FUTURES/OPTIONS mode (ensure YYYY-MM-DD format)
       if ((tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') && selectedExpiry) {
-        // Double-check normalization (defensive programming)
         orderData.expiry = this.normalizeExpiryDate(selectedExpiry);
         console.log(`[QuickOrder] Expiry for order: raw="${selectedExpiry}" normalized="${orderData.expiry}"`);
       }
 
-      // Add options leg for OPTIONS mode with option actions
-      if (tradeMode === 'OPTIONS' && ['BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE'].includes(action)) {
+      const optionActions = [
+        'BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE',
+        'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE',
+        'CLOSE_ALL_CE', 'CLOSE_ALL_PE'
+      ];
+      if (tradeMode === 'OPTIONS' && optionActions.includes(action)) {
         orderData.optionsLeg = optionsLeg;
+      }
+
+      if (tradeMode === 'OPTIONS') {
+        orderData.operatingMode = operatingMode;
+        orderData.strikePolicy = strikePolicy;
+        orderData.stepLots = stepLots;
+        console.log('[QuickOrder] Added Buyer/Writer settings:', {
+          operatingMode,
+          strikePolicy,
+          stepLots,
+        });
       }
 
       console.log('[QuickOrder] Final order data being sent:', orderData);
 
-      // Show loading state
       const actionButtons = document.querySelectorAll(`#expansion-content-${symbolId} .btn-quick-action`);
       actionButtons.forEach(btn => {
         btn.disabled = true;
         btn.classList.add('loading');
       });
 
-      // Place order
       const response = await api.placeQuickOrder(orderData);
 
-      // Show success message
       if (response.data.summary) {
         const { successful, failed, total } = response.data.summary;
         if (successful > 0) {
@@ -582,43 +1113,70 @@ class QuickOrderHandler {
             failed > 0 ? 'warning' : 'success'
           );
         } else {
-          Utils.showToast(`All orders failed`, 'error');
+          Utils.showToast('All orders failed', 'error');
         }
       } else {
         Utils.showToast('Order placed successfully', 'success');
       }
 
-      // Log results
       console.log('Quick order results:', response.data);
 
-      // Log detailed error information if any orders failed
       if (response.data.results) {
         response.data.results.forEach((result, index) => {
           if (!result.success) {
             console.error(`[QuickOrder] Order ${index + 1} FAILED:`, {
               message: result.message,
               error: result.error,
-              fullResult: result
+              fullResult: result,
             });
           } else {
             console.log(`[QuickOrder] Order ${index + 1} SUCCESS:`, result);
           }
         });
       }
-
     } catch (error) {
       console.error('Quick order failed:', error);
       Utils.showToast(`Order failed: ${error.message}`, 'error');
     } finally {
-      // Remove loading state
       const actionButtons = document.querySelectorAll(`#expansion-content-${symbolId} .btn-quick-action`);
       actionButtons.forEach(btn => {
         btn.disabled = false;
         btn.classList.remove('loading');
       });
+      this.refreshPositionsAfterOrder();
     }
+  }
+
+  /**
+   * Derive trade capabilities from DOM row
+   */
+  getSymbolCapabilities(row) {
+    const dataset = row?.dataset || {};
+    const symbolType = (dataset.symbolType || '').toUpperCase();
+    const parse = (value, fallback) => {
+      if (value === undefined) return fallback;
+      return value === '1' || value === 'true';
+    };
+
+    const defaults = {
+      equity: true,
+      futures: ['INDEX', 'EQUITY_FNO', 'FUTURES'].includes(symbolType),
+      options: ['INDEX', 'EQUITY_FNO', 'OPTIONS'].includes(symbolType),
+    };
+
+    return {
+      symbolType,
+      equity: parse(dataset.tradableEquity, defaults.equity),
+      futures: parse(dataset.tradableFutures, defaults.futures),
+      options: parse(dataset.tradableOptions, defaults.options),
+    };
   }
 }
 
-// Export singleton instance
-const quickOrder = new QuickOrderHandler();
+// Export singleton instance globally for inline handlers
+if (window.quickOrder) {
+  console.warn('[QuickOrder] Existing handler detected, reusing global instance');
+} else {
+  window.quickOrder = new QuickOrderHandler();
+  console.log('[QuickOrder] Handler initialized', window.quickOrder);
+}

@@ -325,13 +325,39 @@ class APIClient {
     return this.request(`/symbols/market-data/${exchange}/${symbol}`);
   }
 
-  async getExpiry(symbol, instanceId, exchange = 'NFO') {
-    const params = new URLSearchParams({ symbol, instanceId, exchange });
+  async getExpiry(symbol, options = {}) {
+    const { exchange = 'NFO', instanceId = null } = options;
+    const params = new URLSearchParams({ symbol, exchange });
+    if (instanceId) {
+      params.append('instanceId', instanceId);
+    }
     return this.request(`/symbols/expiry?${params}`);
   }
 
-  async getOptionChain(symbol, expiry, instanceId, exchange = 'NFO') {
-    const params = new URLSearchParams({ symbol, expiry, instanceId, exchange });
+  async getOptionChain(symbol, expiry, options = {}) {
+    const {
+      exchange = 'NFO',
+      type = null,
+      includeQuotes = false,
+      strikeWindow = null,
+    } = options;
+
+    const params = new URLSearchParams({
+      symbol,
+      expiry,
+      exchange,
+    });
+
+    if (type) {
+      params.append('type', type);
+    }
+    if (includeQuotes) {
+      params.append('include_quotes', 'true');
+    }
+    if (strikeWindow != null) {
+      params.append('strike_window', String(strikeWindow));
+    }
+
     return this.request(`/symbols/option-chain?${params}`);
   }
 
@@ -371,6 +397,18 @@ class APIClient {
       method: 'POST',
       body: data,
     });
+  }
+
+  async getQuickOrderOptionsPreview({ symbolId, expiry, optionsLeg } = {}) {
+    if (!symbolId) {
+      throw new Error('symbolId is required for options preview');
+    }
+
+    const params = new URLSearchParams({ symbolId: String(symbolId) });
+    if (expiry) params.append('expiry', expiry);
+    if (optionsLeg) params.append('optionsLeg', optionsLeg);
+
+    return this.request(`/quickorders/options/preview?${params}`);
   }
 
   async getQuickOrders(filters = {}) {

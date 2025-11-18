@@ -7,19 +7,11 @@ import sqlite3 from 'sqlite3';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
-import config from './config.js';
 import { log } from './logger.js';
 import { DatabaseError } from './errors.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-// Ensure database directory exists
-const dbPath = join(__dirname, '../../', config.database.path);
-const dbDir = dirname(dbPath);
-if (!existsSync(dbDir)) {
-  mkdirSync(dbDir, { recursive: true });
-}
 
 /**
  * Database class with Promise-based methods
@@ -36,6 +28,13 @@ class Database {
   async connect() {
     if (this.isConnected) {
       return;
+    }
+
+    // Get database path from environment or use default
+    const dbPath = join(__dirname, '../../', process.env.DATABASE_PATH || './database/simplifyed.db');
+    const dbDir = dirname(dbPath);
+    if (!existsSync(dbDir)) {
+      mkdirSync(dbDir, { recursive: true });
     }
 
     return new Promise((resolve, reject) => {
