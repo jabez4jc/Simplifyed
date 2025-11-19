@@ -202,11 +202,16 @@ class Config {
       marketDataInterval: getEnvInt('MARKET_DATA_POLL_INTERVAL_MS', 5000),
     };
 
+    this.autoExit = {
+      monitorIntervalMs: getEnvInt('AUTO_EXIT_MONITOR_INTERVAL_MS', 5000),
+    };
+
     this.marketDataFeed = {
       quoteTtlMs: getEnvInt('MARKET_DATA_QUOTE_TTL_MS', 2500),
       positionTtlMs: getEnvInt('MARKET_DATA_POSITION_TTL_MS', 8000),
       fundsTtlMs: getEnvInt('MARKET_DATA_FUNDS_TTL_MS', 20000),
       orderbookTtlMs: getEnvInt('MARKET_DATA_ORDERBOOK_TTL_MS', 5000),
+      websocketMode: getEnvInt('MARKET_DATA_WEBSOCKET_MODE', 2),
     };
 
     this.openalgo = {
@@ -272,6 +277,8 @@ class Config {
       this.marketDataFeed.positionTtlMs = await getSettingInt('market_data_feed.position_ttl_ms', this.marketDataFeed.positionTtlMs);
       this.marketDataFeed.fundsTtlMs = await getSettingInt('market_data_feed.funds_ttl_ms', this.marketDataFeed.fundsTtlMs);
       this.marketDataFeed.orderbookTtlMs = await getSettingInt('market_data_feed.orderbook_ttl_ms', this.marketDataFeed.orderbookTtlMs);
+      this.marketDataFeed.websocketMode = await getSettingInt('market_data_feed.websocket_mode', this.marketDataFeed.websocketMode);
+      this.autoExit.monitorIntervalMs = await getSettingInt('auto_exit.monitor_interval_ms', this.autoExit.monitorIntervalMs);
 
       this.openalgo.requestTimeout = await getSettingInt('openalgo.request_timeout_ms', this.openalgo.requestTimeout);
       this.openalgo.critical.maxRetries = await getSettingInt('openalgo.critical.max_retries', this.openalgo.critical.maxRetries);

@@ -39,6 +39,7 @@
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "socket.io": "^4.6.1",
+    "ws": "^8.13.0",
     "sqlite3": "^5.1.7",
     "undici": "^7.16.0",
     "winston": "^3.11.0"

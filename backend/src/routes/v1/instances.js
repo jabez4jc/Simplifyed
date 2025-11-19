@@ -7,6 +7,7 @@ import express from 'express';
 import instanceService from '../../services/instance.service.js';
 import pollingService from '../../services/polling.service.js';
 import marketDataInstanceService from '../../services/market-data-instance.service.js';
+import websocketTestService from '../../services/websocket-test.service.js';
 import { log } from '../../core/logger.js';
 import {
   NotFoundError,
@@ -197,6 +198,37 @@ router.post('/test/connection', async (req, res, next) => {
       status: result.success ? 'success' : 'error',
       message: result.message,
       data: result.success ? { broker: result.broker } : null,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/instances/ws/test
+ * Quick websocket connectivity test (LTP/quote) for a symbol
+ */
+router.post('/ws/test', async (req, res, next) => {
+  try {
+    const { host_url, api_key, symbol, exchange, mode } = req.body;
+
+    if (!host_url || !api_key) {
+      throw new ValidationError('host_url and api_key are required for websocket testing');
+    }
+
+    const payload = {
+      host_url,
+      api_key,
+      symbol: symbol || 'NIFTY',
+      exchange: exchange || 'NSE',
+      mode: mode ? parseInt(mode, 10) : undefined,
+    };
+
+    const result = await websocketTestService.testConnection(payload);
+
+    res.json({
+      status: 'success',
+      data: result,
     });
   } catch (error) {
     next(error);

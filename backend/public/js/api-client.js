@@ -132,6 +132,13 @@ class APIClient {
     });
   }
 
+  async testWebsocketConnection(data) {
+    return this.request('/instances/ws/test', {
+      method: 'POST',
+      body: data,
+    });
+  }
+
   async bulkUpdateInstances(data) {
     return this.request('/instances/bulk-update', {
       method: 'POST',

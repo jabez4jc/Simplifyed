@@ -308,42 +308,89 @@ class WatchlistService {
         );
       }
 
-      // Insert symbol
+      const insertColumns = [
+        'watchlist_id',
+        'exchange',
+        'symbol',
+        'token',
+        'lot_size',
+        'qty_type',
+        'qty_value',
+        'product_type',
+        'order_type',
+        'max_position_size',
+        'tradable_equity',
+        'tradable_futures',
+        'tradable_options',
+        'underlying_symbol',
+        'target_points_direct',
+        'stoploss_points_direct',
+        'trailing_stoploss_points_direct',
+        'target_points_futures',
+        'stoploss_points_futures',
+        'trailing_stoploss_points_futures',
+        'target_points_options',
+        'stoploss_points_options',
+        'trailing_stoploss_points_options',
+        'trailing_activation_points_direct',
+        'trailing_activation_points_futures',
+        'trailing_activation_points_options',
+        'is_enabled',
+        'symbol_type',
+        'expiry',
+        'strike',
+        'option_type',
+        'instrumenttype',
+        'name',
+        'tick_size',
+        'brsymbol',
+        'brexchange',
+      ];
+
+      const columnPlaceholders = insertColumns.map(() => '?').join(', ');
+
+      const values = [
+        watchlistId,
+        normalized.exchange,
+        normalized.symbol,
+        normalized.token,
+        normalized.lot_size || 1,
+        normalized.qty_type,
+        normalized.qty_value,
+        normalized.product_type,
+        normalized.order_type,
+        normalized.max_position_size,
+        normalized.tradable_equity !== undefined ? normalized.tradable_equity : 1,
+        normalized.tradable_futures !== undefined ? normalized.tradable_futures : 0,
+        normalized.tradable_options !== undefined ? normalized.tradable_options : 0,
+        normalized.underlying_symbol || normalized.symbol || null,
+        normalized.target_points_direct ?? null,
+        normalized.stoploss_points_direct ?? null,
+        normalized.trailing_stoploss_points_direct ?? null,
+        normalized.target_points_futures ?? null,
+        normalized.stoploss_points_futures ?? null,
+        normalized.trailing_stoploss_points_futures ?? null,
+        normalized.target_points_options ?? null,
+        normalized.stoploss_points_options ?? null,
+        normalized.trailing_stoploss_points_options ?? null,
+        normalized.trailing_activation_points_direct ?? null,
+        normalized.trailing_activation_points_futures ?? null,
+        normalized.trailing_activation_points_options ?? null,
+        normalized.is_enabled ? 1 : 0,
+        normalized.symbol_type || null,
+        normalized.expiry || null,
+        normalized.strike || null,
+        normalized.option_type || null,
+        normalized.instrumenttype || null,
+        normalized.name || null,
+        normalized.tick_size || null,
+        normalized.brsymbol || null,
+        normalized.brexchange || null,
+      ];
+
       const result = await db.run(
-        `INSERT INTO watchlist_symbols (
-          watchlist_id, exchange, symbol, token, lot_size,
-          qty_type, qty_value, product_type, order_type,
-          max_position_size, tradable_equity, tradable_futures, tradable_options, underlying_symbol,
-          is_enabled,
-          symbol_type, expiry, strike, option_type,
-          instrumenttype, name, tick_size, brsymbol, brexchange
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          watchlistId,
-          normalized.exchange,
-          normalized.symbol,
-          normalized.token,
-          normalized.lot_size || 1,
-          normalized.qty_type,
-          normalized.qty_value,
-          normalized.product_type,
-          normalized.order_type,
-          normalized.max_position_size,
-          normalized.tradable_equity !== undefined ? normalized.tradable_equity : 1,
-          normalized.tradable_futures !== undefined ? normalized.tradable_futures : 0,
-          normalized.tradable_options !== undefined ? normalized.tradable_options : 0,
-          normalized.underlying_symbol || normalized.symbol || null,
-          normalized.is_enabled ? 1 : 0,
-          normalized.symbol_type || null,
-          normalized.expiry || null,
-          normalized.strike || null,
-          normalized.option_type || null,
-          normalized.instrumenttype || null,
-          normalized.name || null,
-          normalized.tick_size || null,
-          normalized.brsymbol || null,
-          normalized.brexchange || null,
-        ]
+        `INSERT INTO watchlist_symbols (${insertColumns.join(', ')}) VALUES (${columnPlaceholders})`,
+        values
       );
 
       const symbol = await db.get(
@@ -635,6 +682,29 @@ class WatchlistService {
     }
   }
 
+  async getSymbolsWithAutoExitConfig() {
+    try {
+      const rows = await db.all(`
+        SELECT *
+        FROM watchlist_symbols
+        WHERE
+          target_points_direct IS NOT NULL OR
+          stoploss_points_direct IS NOT NULL OR
+          trailing_stoploss_points_direct IS NOT NULL OR
+          target_points_futures IS NOT NULL OR
+          stoploss_points_futures IS NOT NULL OR
+          trailing_stoploss_points_futures IS NOT NULL OR
+          target_points_options IS NOT NULL OR
+          stoploss_points_options IS NOT NULL OR
+          trailing_stoploss_points_options IS NOT NULL
+      `);
+      return rows;
+    } catch (error) {
+      log.error('Failed to load auto-exit symbols', error);
+      return [];
+    }
+  }
+
   /**
    * Normalize and validate watchlist data
    * @private
@@ -819,6 +889,45 @@ class WatchlistService {
     if (data.brexchange !== undefined) {
       normalized.brexchange = sanitizeString(data.brexchange) || null;
     }
+
+    const collectPointField = (fieldName) => {
+      if (!Object.prototype.hasOwnProperty.call(data, fieldName)) {
+        return;
+      }
+
+      const rawValue = data[fieldName];
+      const trimmed = typeof rawValue === 'string' ? rawValue.trim() : rawValue;
+
+      if (trimmed === '' || trimmed === null) {
+        normalized[fieldName] = null;
+        return;
+      }
+
+      const parsed = parseFloatSafe(trimmed, null);
+      if (parsed !== null && parsed >= 0) {
+        normalized[fieldName] = parsed;
+      } else {
+        errors.push({
+          field: fieldName,
+          message: 'Must be a non-negative number',
+        });
+      }
+    };
+
+    [
+      'target_points_direct',
+      'stoploss_points_direct',
+      'trailing_stoploss_points_direct',
+      'target_points_futures',
+      'stoploss_points_futures',
+      'trailing_stoploss_points_futures',
+      'target_points_options',
+      'stoploss_points_options',
+      'trailing_stoploss_points_options',
+      'trailing_activation_points_direct',
+      'trailing_activation_points_futures',
+      'trailing_activation_points_options',
+    ].forEach(collectPointField);
 
     if (errors.length > 0) {
       throw new ValidationError('Symbol validation failed', errors);

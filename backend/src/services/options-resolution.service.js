@@ -257,6 +257,14 @@ class OptionsResolutionService {
       const options = this._extractOptionsFromChainData(chainData);
 
       for (const option of options) {
+        if (!option.option_type || typeof option.option_type !== 'string') {
+          log.debug('Skipping option cache because option_type is missing', {
+            underlying,
+            expiry,
+            symbol: option.symbol,
+          });
+          continue;
+        }
         await db.run(
           `INSERT OR REPLACE INTO options_cache (
             underlying, expiry, strike, option_type, exchange,

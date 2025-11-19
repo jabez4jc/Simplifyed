@@ -13,6 +13,7 @@ import { log } from './src/core/logger.js';
 import db from './src/core/database.js';
 import pollingService from './src/services/polling.service.js';
 import marketDataFeedService from './src/services/market-data-feed.service.js';
+import autoExitService from './src/services/auto-exit.service.js';
 // Order monitor service removed - no longer needed after target/stoploss removal
 // import orderMonitorService from './src/services/order-monitor.service.js';
 import telegramService from './src/services/telegram.service.js';
@@ -150,6 +151,9 @@ async function startServer() {
       quoteInterval: config.polling.marketDataInterval || undefined,
     });
     log.info('Market data feed service started');
+
+    await autoExitService.start();
+    log.info('Auto exit service started');
 
     // Start polling service
     await pollingService.start();

@@ -1069,8 +1069,9 @@ class QuickOrderService {
         const closeQuantity = Math.abs(position.quantity);
 
         // For EXIT/EXIT_ALL, position_size should be 0 to close completely
+        const strategyTag = orderParams.strategy || symbol.watchlist_name || 'default';
         const orderResult = await openalgoClient.placeSmartOrder(instance, {
-          strategy: symbol.watchlist_name || 'default',
+          strategy: strategyTag,
           exchange: position.exchange,
           symbol: position.symbol,
           action: closeAction,
@@ -1264,6 +1265,7 @@ class QuickOrderService {
       action: 'EXIT',
       tradeMode: params.tradeMode || 'FUTURES',
       product: params.product || 'MIS',
+      strategy: params.strategy,
       expiry: params.expiry || null,
     };
 

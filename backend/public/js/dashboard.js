@@ -30,6 +30,12 @@ class DashboardApp {
     this.watchlistPositionsExpanded = new Set();
     this.latestWatchlistPositionsData = null;
     this.currentOrderFilter = '';
+    this.autoExitModes = [
+      { key: 'direct', label: 'Direct Trading' },
+      { key: 'futures', label: 'Futures Trading' },
+      { key: 'options', label: 'Options Trading' },
+    ];
+    this.symbolConfigContext = null;
   }
 
   /**
@@ -914,6 +920,9 @@ class DashboardApp {
                   <button class="btn btn-error btn-sm" onclick="app.removeSymbol(${watchlistId}, ${sym.id})">
                     Remove
                   </button>
+                  <button class="btn btn-outline btn-sm ml-2" onclick="app.showEditSymbolModal(${watchlistId}, ${sym.id})">
+                    Edit
+                  </button>
                 </td>
               </tr>
               <tr id="expansion-row-${sym.id}" class="expansion-row" style="display: none;">
@@ -1768,6 +1777,32 @@ class DashboardApp {
             </div>
 
             <div class="form-group">
+              <label class="form-label">WebSocket Role</label>
+              <select name="websocket_role" class="form-select">
+                <option value="none">None - Don't stream via websocket</option>
+                <option value="primary">Primary - Stream quotes/depth via websocket</option>
+                <option value="secondary">Secondary - Fallback websocket stream</option>
+              </select>
+              <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
+                Mark websocket-capable instances for streaming data (HTTP polling remains as fallback)
+              </small>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">WebSocket Test</label>
+              <div class="flex gap-2 flex-wrap">
+                <input type="text" name="ws_test_symbol" class="form-input" placeholder="Symbol" value="NIFTY">
+                <input type="text" name="ws_test_exchange" class="form-input" placeholder="Exchange" value="NSE">
+                <button type="button" class="btn btn-outline btn-sm" onclick="app.testWebsocketConnection(this)">
+                  Test WebSocket
+                </button>
+              </div>
+              <small class="form-help" style="display: block; margin-top: 0.25rem;">
+                Streams the selected symbol for 5s via websocket to verify connectivity.
+              </small>
+            </div>
+
+            <div class="form-group">
               <label class="form-label">Strategy Tag</label>
               <input type="text" name="strategy_tag" class="form-input" value="default">
             </div>
@@ -1952,6 +1987,44 @@ class DashboardApp {
       statusEl.textContent = '❌ ' + error.message;
       statusEl.style.color = 'var(--color-loss)';
       Utils.showToast('API key validation failed: ' + error.message, 'error');
+    }
+  }
+
+  async testWebsocketConnection(button) {
+    const form = button.closest('form');
+    if (!form) {
+      Utils.showToast('No form found for websocket test', 'error');
+      return;
+    }
+
+    const hostUrlField = form.querySelector('input[name="host_url"]');
+    const apiKeyField = form.querySelector('input[name="api_key"]');
+    const symbolField = form.querySelector('input[name="ws_test_symbol"]');
+    const exchangeField = form.querySelector('input[name="ws_test_exchange"]');
+
+    const hostUrl = hostUrlField?.value?.trim();
+    const apiKey = apiKeyField?.value?.trim();
+    const symbol = symbolField?.value?.trim() || 'NIFTY';
+    const exchange = exchangeField?.value?.trim() || 'NSE';
+
+    if (!hostUrl || !apiKey) {
+      Utils.showToast('Enter host URL and API key before testing websocket', 'warning');
+      return;
+    }
+
+    try {
+      Utils.showToast('Testing websocket connection…', 'info');
+      const response = await api.testWebsocketConnection({
+        host_url: hostUrl,
+        api_key: apiKey,
+        symbol,
+        exchange,
+      });
+
+      const message = response.data?.message || 'Websocket stream received updates';
+      Utils.showToast(message, 'success');
+    } catch (error) {
+      Utils.showToast('Websocket test failed: ' + error.message, 'error');
     }
   }
 
@@ -2324,14 +2397,82 @@ class DashboardApp {
     };
   }
 
-  showSymbolConfigModal(symbolData) {
+  showSymbolConfigModal(symbolData, options = {}) {
     const defaults = this.getSymbolTradableDefaults(symbolData);
+    const mode = options.mode || 'add';
+    const watchlistId = options.watchlistId || this.currentWatchlistId;
+    const symbolId = options.symbolId || symbolData.id || null;
+    this.symbolConfigContext = { mode, watchlistId, symbolId };
+    this.pendingSymbolData = symbolData;
+
+    const tradableEquityChecked =
+      symbolData.tradable_equity !== undefined
+        ? Boolean(symbolData.tradable_equity)
+        : defaults.equity;
+    const tradableFuturesChecked =
+      symbolData.tradable_futures !== undefined
+        ? Boolean(symbolData.tradable_futures)
+        : defaults.futures;
+    const tradableOptionsChecked =
+      symbolData.tradable_options !== undefined
+        ? Boolean(symbolData.tradable_options)
+        : defaults.options;
+
+    const autoExitValue = (field) => {
+      const value = symbolData[field];
+      return value !== undefined && value !== null ? value : '';
+    };
+    const formatAutoExitValue = (field) => {
+      const raw = autoExitValue(field);
+      if (raw === '') return '';
+      return Utils.escapeHTML(String(raw));
+    };
+
+    const autoExitFieldsHtml = this.autoExitModes
+      .map((modeConfig) => `
+        <div class="border rounded-lg p-3 bg-white shadow-sm">
+          <div class="text-sm font-semibold mb-2">${modeConfig.label} auto exits</div>
+        <div class="grid gap-2 sm:grid-cols-4">
+          <div class="form-group">
+            <label class="form-label">Target (points)</label>
+            <input type="number" name="target_points_${modeConfig.key}"
+                   class="form-input" step="0.01" min="0"
+                   value="${formatAutoExitValue(`target_points_${modeConfig.key}`)}"
+                   placeholder="e.g., 20">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Stop loss (points)</label>
+            <input type="number" name="stoploss_points_${modeConfig.key}"
+                   class="form-input" step="0.01" min="0"
+                   value="${formatAutoExitValue(`stoploss_points_${modeConfig.key}`)}"
+                   placeholder="e.g., 15">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Trailing SL (points)</label>
+            <input type="number" name="trailing_stoploss_points_${modeConfig.key}"
+                   class="form-input" step="0.01" min="0"
+                   value="${formatAutoExitValue(`trailing_stoploss_points_${modeConfig.key}`)}"
+                   placeholder="e.g., 10">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Trail activation (points)</label>
+            <input type="number" name="trailing_activation_points_${modeConfig.key}"
+                   class="form-input" step="0.01" min="0"
+                   value="${formatAutoExitValue(`trailing_activation_points_${modeConfig.key}`)}"
+                   placeholder="e.g., 0">
+          </div>
+        </div>
+        </div>
+      `)
+      .join('');
+    const modalTitle = mode === 'edit' ? 'Edit Symbol Configuration' : 'Configure Symbol';
+    const saveLabel = mode === 'edit' ? 'Save Changes' : 'Add Symbol';
     const modal = document.createElement('div');
     modal.className = 'modal-overlay';
     modal.innerHTML = `
       <div class="modal-content" style="max-width: 560px;">
         <div class="modal-header">
-          <h3>Configure Symbol</h3>
+          <h3>${modalTitle}</h3>
         </div>
         <div class="modal-body">
           <p class="text-sm text-neutral-600 mb-4">
@@ -2352,21 +2493,21 @@ class DashboardApp {
 
             <div class="space-y-3">
               <label class="flex items-center gap-3 p-3 border rounded cursor-pointer hover:bg-neutral-50">
-                <input type="checkbox" name="tradable_equity" ${defaults.equity ? 'checked' : ''}>
+                <input type="checkbox" name="tradable_equity" ${tradableEquityChecked ? 'checked' : ''}>
                 <div>
                   <p class="font-semibold">Enable Direct Trading</p>
                   <p class="text-sm text-neutral-600">Use BUY/SELL/EXIT buttons directly for this symbol (spot, futures, or options).</p>
                 </div>
               </label>
               <label class="flex items-center gap-3 p-3 border rounded cursor-pointer hover:bg-neutral-50">
-                <input type="checkbox" name="tradable_futures" ${defaults.futures ? 'checked' : ''}>
+                <input type="checkbox" name="tradable_futures" ${tradableFuturesChecked ? 'checked' : ''}>
                 <div>
                   <p class="font-semibold">Enable Futures Trading</p>
                   <p class="text-sm text-neutral-600">Route BUY/SELL/EXIT to futures contracts.</p>
                 </div>
               </label>
               <label class="flex items-center gap-3 p-3 border rounded cursor-pointer hover:bg-neutral-50">
-                <input type="checkbox" name="tradable_options" ${defaults.options ? 'checked' : ''}>
+                <input type="checkbox" name="tradable_options" ${tradableOptionsChecked ? 'checked' : ''}>
                 <div>
                   <p class="font-semibold">Enable Options Trading</p>
                   <p class="text-sm text-neutral-600">Show the documented Options workflow.</p>
@@ -2383,6 +2524,14 @@ class DashboardApp {
                 Used to resolve futures/options via the instruments cache or option-chain API.
               </p>
             </div>
+            <div class="border rounded-lg bg-neutral-50 p-4 space-y-3">
+              <p class="text-sm font-semibold text-neutral-600">
+                Optional auto-exit thresholds (points)
+              </p>
+              <div class="space-y-3">
+                ${autoExitFieldsHtml}
+              </div>
+            </div>
           </form>
         </div>
         <div class="modal-footer">
@@ -2390,7 +2539,7 @@ class DashboardApp {
             Cancel
           </button>
           <button class="btn btn-primary" onclick="app.confirmAddSymbol()">
-            Add Symbol
+            ${saveLabel}
           </button>
         </div>
       </div>
@@ -2400,12 +2549,32 @@ class DashboardApp {
     this.symbolConfigModal = modal;
   }
 
+  async showEditSymbolModal(watchlistId, symbolId) {
+    try {
+      const response = await api.getWatchlistSymbols(watchlistId);
+      const symbol = response.data.find((row) => row.id === symbolId);
+      if (!symbol) {
+        throw new Error('Symbol not found in this watchlist');
+      }
+      this.currentWatchlistId = watchlistId;
+      this.pendingSymbolData = symbol;
+      this.showSymbolConfigModal(symbol, {
+        mode: 'edit',
+        watchlistId,
+        symbolId,
+      });
+    } catch (error) {
+      Utils.showToast(error.message, 'error');
+    }
+  }
+
   cancelSymbolConfig() {
     if (this.symbolConfigModal) {
       this.symbolConfigModal.remove();
       this.symbolConfigModal = null;
     }
     this.pendingSymbolData = null;
+    this.symbolConfigContext = null;
   }
 
   async confirmAddSymbol() {
@@ -2425,9 +2594,37 @@ class DashboardApp {
       this.pendingSymbolData.tradingsymbol ||
       this.pendingSymbolData.symbol;
 
+    const readAutoExitValue = (fieldName) => {
+      if (!form[fieldName]) {
+        return null;
+      }
+      const value = form[fieldName].value.trim();
+      if (!value) {
+        return null;
+      }
+      const parsed = parseFloat(value);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+
+    const autoExitData = {};
+    this.autoExitModes.forEach((mode) => {
+      autoExitData[`target_points_${mode.key}`] = readAutoExitValue(`target_points_${mode.key}`);
+      autoExitData[`stoploss_points_${mode.key}`] = readAutoExitValue(`stoploss_points_${mode.key}`);
+      autoExitData[`trailing_stoploss_points_${mode.key}`] =
+        readAutoExitValue(`trailing_stoploss_points_${mode.key}`);
+      autoExitData[`trailing_activation_points_${mode.key}`] =
+        readAutoExitValue(`trailing_activation_points_${mode.key}`);
+    });
+
+    const context = this.symbolConfigContext || {};
+    const targetWatchlistId = context.watchlistId || this.currentWatchlistId;
+
     try {
-      Utils.showToast('Adding symbol...', 'info');
-      await api.addSymbol(this.currentWatchlistId, {
+      Utils.showToast(
+        context.mode === 'edit' ? 'Saving changes...' : 'Adding symbol...',
+        'info'
+      );
+      const payload = {
         symbol: this.pendingSymbolData.tradingsymbol || this.pendingSymbolData.symbol,
         exchange: this.pendingSymbolData.exchange,
         token: this.pendingSymbolData.token,
@@ -2445,15 +2642,23 @@ class DashboardApp {
         tradable_futures: tradableFutures,
         tradable_options: tradableOptions,
         underlying_symbol: underlyingSymbol,
-      });
+        ...autoExitData,
+      };
 
-      Utils.showToast('Symbol added successfully', 'success');
+      if (context.mode === 'edit' && context.symbolId) {
+        await api.updateSymbol(targetWatchlistId, context.symbolId, payload);
+        Utils.showToast('Symbol updated successfully', 'success');
+      } else {
+        await api.addSymbol(targetWatchlistId, payload);
+        Utils.showToast('Symbol added successfully', 'success');
+      }
 
       if (this.symbolConfigModal) {
         this.symbolConfigModal.remove();
         this.symbolConfigModal = null;
       }
       this.pendingSymbolData = null;
+      this.symbolConfigContext = null;
 
       await this.renderWatchlistsView();
     } catch (error) {
@@ -3125,6 +3330,38 @@ class DashboardApp {
                 </select>
                 <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
                   Only Primary/Secondary instances will be used for fetching market data
+                </small>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">WebSocket Role</label>
+                <select name="websocket_role" class="form-select">
+                  <option value="none" ${instance.websocket_role === 'none' ? 'selected' : ''}>
+                    None - Don't stream via websocket
+                  </option>
+                  <option value="primary" ${instance.websocket_role === 'primary' ? 'selected' : ''}>
+                    Primary - Stream quotes/depth via websocket
+                  </option>
+                  <option value="secondary" ${instance.websocket_role === 'secondary' ? 'selected' : ''}>
+                    Secondary - Websocket fallback
+                  </option>
+                </select>
+                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
+                  Use for websocket-capable instances; HTTP is still the fallback
+                </small>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">WebSocket Test</label>
+                <div class="flex gap-2 flex-wrap">
+                  <input type="text" name="ws_test_symbol" class="form-input" placeholder="Symbol" value="NIFTY">
+                  <input type="text" name="ws_test_exchange" class="form-input" placeholder="Exchange" value="NSE">
+                  <button type="button" class="btn btn-outline btn-sm" onclick="app.testWebsocketConnection(this)">
+                    Test WebSocket
+                  </button>
+                </div>
+                <small class="form-help" style="display: block; margin-top: 0.25rem;">
+                  Streams the selected symbol for 5s to verify websocket connectivity.
                 </small>
               </div>
 

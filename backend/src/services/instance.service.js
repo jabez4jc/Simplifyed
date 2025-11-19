@@ -115,8 +115,8 @@ class InstanceService {
         `INSERT INTO instances (
           name, host_url, api_key, broker, strategy_tag,
           is_primary_admin, is_secondary_admin,
-          market_data_role
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          market_data_role, websocket_role
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           normalized.name,
           normalized.host_url,
@@ -126,6 +126,7 @@ class InstanceService {
           normalized.is_primary_admin ? 1 : 0,
           normalized.is_secondary_admin ? 1 : 0,
           normalized.market_data_role || 'none',
+          normalized.websocket_role || 'none',
         ]
       );
 
@@ -699,6 +700,27 @@ class InstanceService {
     }
   }
 
+  async getWebsocketInstances() {
+    try {
+      const instances = await db.all(
+        `SELECT *
+         FROM instances
+         WHERE websocket_role IN ('primary', 'secondary')
+           AND is_active = 1
+         ORDER BY
+           CASE websocket_role
+             WHEN 'primary' THEN 1
+             WHEN 'secondary' THEN 2
+           END`
+      );
+
+      return instances;
+    } catch (error) {
+      log.error('Failed to get websocket instances', error);
+      throw error;
+    }
+  }
+
   /**
    * Normalize and validate instance data
    * @private
@@ -757,6 +779,19 @@ class InstanceService {
         errors.push({
           field: 'market_data_role',
           message: 'Market data role must be one of: none, primary, secondary',
+        });
+      }
+    }
+
+    if (data.websocket_role !== undefined) {
+      const validWsRoles = ['none', 'primary', 'secondary'];
+      const wsRole = String(data.websocket_role).toLowerCase();
+      if (validWsRoles.includes(wsRole)) {
+        normalized.websocket_role = wsRole;
+      } else if (!isUpdate) {
+        errors.push({
+          field: 'websocket_role',
+          message: 'WebSocket role must be one of: none, primary, secondary',
         });
       }
     }

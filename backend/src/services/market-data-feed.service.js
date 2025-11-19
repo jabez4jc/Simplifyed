@@ -9,12 +9,16 @@ import instanceService from './instance.service.js';
 import marketDataInstanceService from './market-data-instance.service.js';
 import watchlistService from './watchlist.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
+import WebSocket from 'ws';
 import config from '../core/config.js';
 import { log } from '../core/logger.js';
+import { buildWebsocketUrl } from '../utils/websocket-utils.js';
 
 const DEFAULT_QUOTE_INTERVAL = 2000;   // 2 seconds
 const DEFAULT_POSITION_INTERVAL = 10000; // 10 seconds
 const DEFAULT_FUNDS_INTERVAL = 15000;
+const INITIAL_WEBSOCKET_RECONNECT_DELAY = 2000;
+const MAX_WEBSOCKET_RECONNECT_DELAY = 30000;
 
 class MarketDataFeedService extends EventEmitter {
   constructor() {
@@ -37,6 +41,12 @@ class MarketDataFeedService extends EventEmitter {
     this.ORDERBOOK_TTL_MS = config.marketDataFeed.orderbookTtlMs;
     this.orderbookCache = new Map();
     this.orderbookRefreshTimestamps = new Map();
+    this.globalSymbolList = [];
+    this.websocketClients = new Map();
+    this.websocketReconnectDelays = new Map();
+    this.websocketSubscriptions = new Map();
+    this.websocketFreshness = new Map();
+    this.websocketMode = config.marketDataFeed.websocketMode || 2;
   }
 
   async start(config = {}) {
@@ -57,12 +67,15 @@ class MarketDataFeedService extends EventEmitter {
     this.intervals.push(setInterval(() => this.refreshPositions(), positionInterval));
     this.intervals.push(setInterval(() => this.refreshFunds(), fundsInterval));
 
+    await this.startWebsocketStreams();
+
     log.info('MarketDataFeedService started', { quoteInterval, positionInterval, fundsInterval });
   }
 
   stop() {
     this.intervals.forEach(clearInterval);
     this.intervals = [];
+    this.stopWebsocketStreams();
     this.isRunning = false;
   }
 
@@ -83,6 +96,7 @@ class MarketDataFeedService extends EventEmitter {
     try {
       const marketDataInstances = await marketDataInstanceService.getMarketDataInstances();
       const symbolList = await this._buildGlobalSymbolList();
+      this._syncAllWebsocketSubscriptions();
 
       if (symbolList.length === 0) {
         log.debug('No tracked symbols found. Skipping quote refresh.');
@@ -116,9 +130,27 @@ class MarketDataFeedService extends EventEmitter {
     return this.quoteCache.get(instanceId);
   }
 
-  setQuoteSnapshot(instanceId, quotes) {
-    this.quoteCache.set(instanceId, { data: quotes, fetchedAt: Date.now() });
-    this.emit('quotes:update', { instanceId, data: quotes });
+  setQuoteSnapshot(instanceId, quotes, options = {}) {
+    let dataArray;
+    if (Array.isArray(quotes)) {
+      dataArray = quotes;
+    } else if (quotes && Array.isArray(quotes.data)) {
+      dataArray = quotes.data;
+    } else {
+      dataArray = [];
+    }
+
+    const snapshot = {
+      data: dataArray,
+      fetchedAt: options.fetchedAt || Date.now(),
+    };
+
+    if (options.source) {
+      snapshot.source = options.source;
+    }
+
+    this.quoteCache.set(instanceId, snapshot);
+    this.emit('quotes:update', { instanceId, data: snapshot.data });
   }
 
   /**
@@ -246,17 +278,219 @@ class MarketDataFeedService extends EventEmitter {
       }
 
       if (trackedSymbols.length === 0) {
+        this.globalSymbolList = [];
         return [];
       }
 
-      return trackedSymbols.map(symbol => ({
+      this.globalSymbolList = trackedSymbols.map(symbol => ({
         exchange: symbol.exchange,
         symbol: symbol.symbol,
       }));
+
+      return this.globalSymbolList;
     } catch (error) {
       log.warn('Failed to build global symbol list', { error: error.message });
       return [];
     }
+  }
+
+  async startWebsocketStreams() {
+    try {
+      const instances = await instanceService.getWebsocketInstances();
+      instances.forEach(instance => this._connectWebsocket(instance));
+    } catch (error) {
+      log.warn('Failed to start websocket streams', error);
+    }
+  }
+
+  stopWebsocketStreams() {
+    this.websocketClients.forEach((ws, instanceId) => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+    });
+    this.websocketClients.clear();
+    this.websocketSubscriptions.clear();
+    this.websocketFreshness.clear();
+    this.websocketReconnectDelays.forEach(entry => {
+      clearTimeout(entry.timer);
+    });
+    this.websocketReconnectDelays.clear();
+  }
+
+  _connectWebsocket(instance) {
+    if (this.websocketClients.has(instance.id)) {
+      return;
+    }
+
+    const url = buildWebsocketUrl(instance.host_url);
+    if (!url) {
+      log.warn('Unable to determine websocket URL for instance', { instance_id: instance.id });
+      return;
+    }
+
+    const ws = new WebSocket(url);
+    this.websocketClients.set(instance.id, ws);
+
+    ws.on('open', () => {
+      log.info('Websocket connected', {
+        instance_id: instance.id,
+        websocket_role: instance.websocket_role,
+      });
+      this.websocketReconnectDelays.delete(instance.id);
+      ws.send(JSON.stringify({
+        action: 'authenticate',
+        api_key: instance.api_key,
+      }));
+      this._subscribeSymbolsToWebsocket(instance.id, ws);
+    });
+
+    ws.on('message', (message) => {
+      this._handleWebsocketMessage(instance.id, message);
+    });
+
+    ws.on('error', (error) => {
+      log.warn('Websocket error', {
+        instance_id: instance.id,
+        error: error.message,
+      });
+    });
+
+    ws.on('close', () => {
+      log.warn('Websocket closed', {
+        instance_id: instance.id,
+        websocket_role: instance.websocket_role,
+      });
+      this._cleanupWebsocketClient(instance.id);
+      this._scheduleWebsocketReconnect(instance);
+    });
+
+    ws.on('ping', () => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.pong();
+      }
+    });
+  }
+
+  _syncAllWebsocketSubscriptions() {
+    this.websocketClients.forEach((ws, instanceId) => {
+      this._subscribeSymbolsToWebsocket(instanceId, ws);
+    });
+  }
+
+  _subscribeSymbolsToWebsocket(instanceId, ws) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!this.globalSymbolList.length) return;
+
+    const current = new Set(this.websocketSubscriptions.get(instanceId) || []);
+    const desired = new Set();
+
+    for (const symbol of this.globalSymbolList) {
+      const key = this._symbolKey(symbol.exchange, symbol.symbol);
+      if (!key) continue;
+      desired.add(key);
+      if (current.has(key)) {
+        continue;
+      }
+
+      ws.send(JSON.stringify({
+        action: 'subscribe',
+        symbol: symbol.symbol,
+        exchange: symbol.exchange,
+        mode: this.websocketMode,
+      }));
+    }
+
+    this.websocketSubscriptions.set(instanceId, desired);
+  }
+
+  _handleWebsocketMessage(instanceId, message) {
+    let payload;
+    try {
+      payload = JSON.parse(message.toString());
+    } catch (error) {
+      log.warn('Failed to parse websocket message', {
+        instance_id: instanceId,
+        error: error.message,
+      });
+      return;
+    }
+
+    if (payload.type !== 'market_data' || !payload.data) {
+      return;
+    }
+
+    this._updateQuoteSnapshotFromWebsocket(instanceId, payload.data);
+  }
+
+  _updateQuoteSnapshotFromWebsocket(instanceId, data) {
+    const key = this._symbolKey(data.exchange, data.symbol);
+    if (!key) return;
+
+    const existing = this.quoteCache.get(instanceId);
+    const map = new Map();
+
+    (existing?.data || []).forEach(item => {
+      const itemKey = this._symbolKey(item.exchange, item.symbol);
+      if (itemKey) {
+        map.set(itemKey, item);
+      }
+    });
+
+    map.set(key, {
+      symbol: data.symbol,
+      exchange: data.exchange,
+      ltp: data.ltp,
+      change: data.change,
+      change_percent: data.change_percent,
+      volume: data.volume,
+      timestamp: data.timestamp,
+    });
+
+    this.setQuoteSnapshot(instanceId, Array.from(map.values()), { source: 'websocket' });
+    this.websocketFreshness.set(instanceId, Date.now());
+  }
+
+  _scheduleWebsocketReconnect(instance) {
+    const existing = this.websocketReconnectDelays.get(instance.id);
+    const currentDelay = existing?.delay || INITIAL_WEBSOCKET_RECONNECT_DELAY;
+
+    if (existing && existing.timer) {
+      clearTimeout(existing.timer);
+    }
+
+    const timer = setTimeout(() => {
+      this.websocketReconnectDelays.delete(instance.id);
+      this._connectWebsocket(instance);
+    }, currentDelay);
+
+    this.websocketReconnectDelays.set(instance.id, {
+      timer,
+      delay: Math.min(currentDelay * 2, MAX_WEBSOCKET_RECONNECT_DELAY),
+    });
+  }
+
+  _cleanupWebsocketClient(instanceId) {
+    const ws = this.websocketClients.get(instanceId);
+    if (ws) {
+      ws.removeAllListeners();
+      try {
+        ws.terminate();
+      } catch (error) {
+        log.warn('Failed to terminate websocket', { instance_id: instanceId, error: error.message });
+      }
+    }
+
+    this.websocketClients.delete(instanceId);
+    this.websocketSubscriptions.delete(instanceId);
+    this.websocketFreshness.delete(instanceId);
+  }
+
+  _symbolKey(exchange, symbol) {
+    if (!exchange || !symbol) return null;
+    const normalizedExchange = exchange.replace(/\s+/g, '').toUpperCase();
+    const normalizedSymbol = symbol.replace(/\s+/g, '').toUpperCase();
+    return `${normalizedExchange}:${normalizedSymbol}`;
   }
 
   async getOrderbookSnapshot(instanceId, { force = false } = {}) {
