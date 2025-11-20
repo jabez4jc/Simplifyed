@@ -1733,23 +1733,33 @@ class DashboardApp {
       return;
     }
 
-    panel.innerHTML = `
-      <div class="space-y-5">
-        ${this.renderTradesSummary(payload.statistics)}
-        ${this.renderTradesSection('Live Instances', liveInstances)}
-        ${this.renderTradesSection('Analyzer Mode Instances', analyzerInstances)}
-      </div>
-    `;
+    this.ensureTradesLayout(panel);
+    this.updateTradesSummary(payload.statistics);
+    this.updateTradesSection('live', liveInstances);
+    this.updateTradesSection('analyzer', analyzerInstances);
   }
 
-  renderTradesSummary(stats = {}) {
+  ensureTradesLayout(panel) {
+    if (panel.dataset.initialized === 'true') return;
+    panel.innerHTML = `
+      <div class="space-y-5">
+        <div id="trades-summary"></div>
+        <div id="trades-live" class="trades-section"></div>
+        <div id="trades-analyzer" class="trades-section"></div>
+      </div>
+    `;
+    panel.dataset.initialized = 'true';
+  }
+
+  updateTradesSummary(stats = {}) {
     const totalTrades = stats.total_trades || 0;
     const buyTrades = stats.total_buy_trades || 0;
     const sellTrades = stats.total_sell_trades || 0;
     const notional = stats.total_value || 0;
     const quantity = stats.total_quantity || 0;
-
-    return `
+    const summary = document.getElementById('trades-summary');
+    if (!summary) return;
+    summary.innerHTML = `
       <div class="card border border-base-200 bg-base-100 p-4">
         <div class="grid gap-4 md:grid-cols-4">
           <div>
@@ -1773,40 +1783,38 @@ class DashboardApp {
     `;
   }
 
-  renderTradesSection(title, instances = []) {
-    if (!instances.length) {
-      return `
-        <div class="card">
-          <div class="card-header">
-            <div>
-              <h3 class="card-title">${title}</h3>
-              <p class="text-sm text-neutral-600">No trades in this category.</p>
-            </div>
-            <span class="badge">0</span>
-          </div>
+  updateTradesSection(type, instances = []) {
+    const container = document.getElementById(type === 'live' ? 'trades-live' : 'trades-analyzer');
+    if (!container) return;
+    const title = type === 'live' ? 'Live Instances' : 'Analyzer Mode Instances';
+    const existingOpen = new Set(
+      Array.from(container.querySelectorAll('details[data-instance-id][open]')).map(el => el.dataset.instanceId)
+    );
+    const sorted = [...instances].sort((a, b) => (a.instance_name || '').localeCompare(b.instance_name || ''));
+    const totalTrades = sorted.reduce((acc, inst) => acc + (inst.trades?.length || 0), 0);
+
+    const header = `
+      <div class="card-header">
+        <div>
+          <h3 class="card-title">${title}</h3>
+          <p class="text-sm text-neutral-600">${totalTrades} trades</p>
         </div>
-      `;
-    }
+        <span class="badge badge-outline">${totalTrades}</span>
+      </div>
+    `;
 
-    const totalTrades = instances.reduce((acc, inst) => acc + (inst.trades?.length || 0), 0);
-
-    return `
+    const body = sorted.map(inst => this.buildTradesInstance(inst, existingOpen.has(String(inst.instance_id)))).join('');
+    container.innerHTML = `
       <div class="card">
-        <div class="card-header">
-          <div>
-            <h3 class="card-title">${title}</h3>
-            <p class="text-sm text-neutral-600">${totalTrades} trades</p>
-          </div>
-          <span class="badge badge-outline">${totalTrades}</span>
-        </div>
+        ${header}
         <div class="divide-y divide-base-200">
-          ${instances.map(inst => this.renderTradesInstance(inst)).join('')}
+          ${body || `<div class="p-4 text-neutral-500">No trades in this category.</div>`}
         </div>
       </div>
     `;
   }
 
-  renderTradesInstance(instanceEntry) {
+  buildTradesInstance(instanceEntry, preserveOpen = false) {
     const trades = instanceEntry.trades || [];
     const broker = Utils.escapeHTML(instanceEntry.broker || 'N/A');
     const latestTrade = trades[0];
@@ -1815,9 +1823,10 @@ class DashboardApp {
         ? Utils.formatDateTime(latestTrade.timestamp_iso, true)
         : Utils.escapeHTML(latestTrade.timestamp || ''))
       : '-';
+    const bodyRows = this.renderTradesRows(trades);
 
     return `
-      <details class="instance-section" ${trades.length ? 'open' : ''}>
+      <details class="instance-section" data-instance-id="${instanceEntry.instance_id}" ${preserveOpen || trades.length ? 'open' : ''}>
         <summary class="flex flex-wrap cursor-pointer items-center justify-between gap-4 px-4 py-4">
           <div>
             <h4 class="font-semibold text-lg">${Utils.escapeHTML(instanceEntry.instance_name)}</h4>
@@ -1829,14 +1838,14 @@ class DashboardApp {
           </div>
         </summary>
         <div class="border-t border-base-200 p-4">
-          ${trades.length ? this.renderTradesTable(trades) : '<p class="text-neutral-500">No trades yet.</p>'}
+          ${trades.length ? this.renderTradesTableShell(bodyRows) : '<p class="text-neutral-500">No trades yet.</p>'}
         </div>
       </details>
     `;
   }
 
-  renderTradesTable(trades = []) {
-    const rows = trades.map(trade => {
+  renderTradesRows(trades = []) {
+    return trades.map(trade => {
       const action = trade.action;
       const badgeClass = action === 'BUY'
         ? 'badge-success'
@@ -1868,7 +1877,9 @@ class DashboardApp {
         </tr>
       `;
     }).join('');
+  }
 
+  renderTradesTableShell(rowsHtml) {
     return `
       <div class="table-container overflow-x-auto">
         <table class="table">
@@ -1885,7 +1896,7 @@ class DashboardApp {
             </tr>
           </thead>
           <tbody>
-            ${rows || '<tr><td colspan="8" class="text-center text-neutral-500">No trades</td></tr>'}
+            ${rowsHtml || '<tr><td colspan="8" class="text-center text-neutral-500">No trades</td></tr>'}
           </tbody>
         </table>
       </div>
