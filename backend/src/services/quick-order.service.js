@@ -427,10 +427,11 @@ class QuickOrderService {
       product,
       { forceLive: true }
     );
+    const baseLotSize = resolvedLotSize || symbol.lot_size || symbol.lotsize || 1;
     const lotSize = await this._resolveLotSize(
       finalSymbol,
       finalExchange,
-      resolvedLotSize || symbol.lot_size,
+      baseLotSize,
       instance
     );
     const normalizedPosition = lotSize > 1
@@ -448,6 +449,10 @@ class QuickOrderService {
       tradeQuantity,
       rawPosition,
       normalizedPosition: currentPosition,
+      instance_id: instance.id,
+      instance_name: instance.name,
+      exchange: finalExchange,
+      symbol: finalSymbol,
     });
 
     // Calculate target position_size based on action
