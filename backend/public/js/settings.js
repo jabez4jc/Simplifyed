@@ -182,6 +182,10 @@ class SettingsHandler {
   renderInputField(id, key, dataType, value, isSensitive) {
     const baseProps = `id="${id}" name="${key}" data-key="${key}" data-type="${dataType}" ${isSensitive ? 'data-sensitive="true"' : ''}`;
 
+    if (key === 'trading_sessions') {
+      return this.renderTradingSessionsField(key, value);
+    }
+
     switch (dataType) {
       case 'boolean':
         return `
@@ -203,6 +207,50 @@ class SettingsHandler {
     }
   }
 
+  renderTradingSessionsField(key, value) {
+    let sessions = [];
+    try {
+      sessions = typeof value === 'string' ? JSON.parse(value) : value;
+      if (!Array.isArray(sessions)) {
+        sessions = [];
+      }
+    } catch (e) {
+      sessions = [];
+    }
+    if (sessions.length === 0) {
+      sessions = [
+        { label: 'Session 1', start: '09:00', end: '11:30' },
+        { label: 'Session 2', start: '12:30', end: '15:10' },
+        { label: 'Session 3', start: '15:45', end: '19:00' },
+        { label: 'Session 4', start: '20:30', end: '22:45' },
+      ];
+    }
+
+    const rows = sessions.map((s, idx) => `
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 items-center trading-session-row" data-index="${idx}">
+        <div>
+          <label class="text-sm text-neutral-600">Label</label>
+          <input type="text" class="form-input trading-session-input" data-key="${key}" data-index="${idx}" data-field="label" value="${Utils.escapeHTML(s.label || '')}">
+        </div>
+        <div>
+          <label class="text-sm text-neutral-600">Start (HH:MM)</label>
+          <input type="time" class="form-input trading-session-input" data-key="${key}" data-index="${idx}" data-field="start" value="${Utils.escapeHTML(s.start || '')}">
+        </div>
+        <div>
+          <label class="text-sm text-neutral-600">End (HH:MM)</label>
+          <input type="time" class="form-input trading-session-input" data-key="${key}" data-index="${idx}" data-field="end" value="${Utils.escapeHTML(s.end || '')}">
+        </div>
+      </div>
+    `).join('');
+
+    return `
+      <div class="space-y-3" data-session-key="${key}">
+        ${rows}
+        <small class="text-neutral-500 block">Configure up to 4 session windows in IST. These control auto cutoffs.</small>
+      </div>
+    `;
+  }
+
   /**
    * Initialize category tabs
    */
@@ -212,6 +260,14 @@ class SettingsHandler {
     inputs.forEach(input => {
       input.addEventListener('change', (e) => {
         this.handleSettingChange(e.target);
+      });
+    });
+
+    // Trading session inputs
+    const sessionInputs = document.querySelectorAll('.trading-session-input');
+    sessionInputs.forEach(input => {
+      input.addEventListener('change', (e) => {
+        this.handleTradingSessionChange(e.target);
       });
     });
   }
@@ -255,6 +311,39 @@ class SettingsHandler {
     this.settings[category][key].pendingValue = input.value;
 
     console.log(`[Settings] Setting changed: ${key} = ${input.value}`);
+  }
+
+  handleTradingSessionChange(input) {
+    const key = input.dataset.key;
+    const idx = parseInt(input.dataset.index, 10);
+    const field = input.dataset.field;
+    const category = this.getSettingCategory(key);
+    const setting = this.settings[category]?.[key] || {};
+
+    let sessions = [];
+    try {
+      const source = setting.pendingValue ?? setting.rawValue ?? setting.value;
+      sessions = typeof source === 'string' ? JSON.parse(source) : source;
+      if (!Array.isArray(sessions)) sessions = [];
+    } catch (e) {
+      sessions = [];
+    }
+    while (sessions.length <= idx) {
+      sessions.push({ label: `Session ${sessions.length + 1}`, start: '', end: '' });
+    }
+    sessions[idx] = {
+      ...sessions[idx],
+      [field]: input.value,
+    };
+
+    if (!this.settings[category]) {
+      this.settings[category] = {};
+    }
+    if (!this.settings[category][key]) {
+      this.settings[category][key] = { dataType: 'json', isSensitive: false };
+    }
+    this.settings[category][key].pendingValue = JSON.stringify(sessions);
+    console.log('[Settings] trading_sessions updated', sessions);
   }
 
   /**
