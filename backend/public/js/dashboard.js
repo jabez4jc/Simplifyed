@@ -1803,7 +1803,7 @@ class DashboardApp {
       </div>
     `;
 
-    const body = sorted.map(inst => this.buildTradesInstance(inst, existingOpen.has(String(inst.instance_id)))).join('');
+    const body = sorted.map(inst => this.buildTradesInstance(inst, existingOpen.has(String(inst.instance_id)), true)).join('');
     container.innerHTML = `
       <div class="card">
         ${header}
@@ -1814,7 +1814,7 @@ class DashboardApp {
     `;
   }
 
-  buildTradesInstance(instanceEntry, preserveOpen = false) {
+  buildTradesInstance(instanceEntry, preserveOpen = false, collapseByDefault = false) {
     const trades = instanceEntry.trades || [];
     const broker = Utils.escapeHTML(instanceEntry.broker || 'N/A');
     const latestTrade = trades[0];
@@ -1826,7 +1826,7 @@ class DashboardApp {
     const bodyRows = this.renderTradesRows(trades);
 
     return `
-      <details class="instance-section" data-instance-id="${instanceEntry.instance_id}" ${preserveOpen || trades.length ? 'open' : ''}>
+      <details class="instance-section" data-instance-id="${instanceEntry.instance_id}" ${preserveOpen && trades.length && !collapseByDefault ? 'open' : ''}>
         <summary class="flex flex-wrap cursor-pointer items-center justify-between gap-4 px-4 py-4">
           <div>
             <h4 class="font-semibold text-lg">${Utils.escapeHTML(instanceEntry.instance_name)}</h4>
