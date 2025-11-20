@@ -9,6 +9,10 @@ import { OpenAlgoError } from '../../core/errors.js';
 import config from '../../core/config.js';
 import { maskApiKey } from '../../utils/sanitizers.js';
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * OpenAlgo HTTP Client
  */
@@ -60,6 +64,16 @@ class OpenAlgoClient {
     } else {
       log.info('No proxy configured for OpenAlgo requests');
     }
+
+    // Rate-limit state
+    this.instanceRate = new Map(); // key -> { rps:[], rpm:[], orders:[] }
+    this.globalRpm = [];
+    this.globalOrders = [];
+    this.currentTasks = 0;
+    this.maxConcurrentTasks = 10;
+    this.rpsLimitPerInstance = 5;
+    this.rpmLimitGlobal = 300;
+    this.ordersPerSecondLimit = 10;
   }
 
   /**
@@ -123,7 +137,8 @@ class OpenAlgoClient {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const startTime = Date.now();
-        const response = await this._makeRequest(url, method, payload);
+        await this._throttle(instance, endpoint, isOrderPlacement);
+        const response = await this._executeWithConcurrency(instance, endpoint, method, url, payload, isOrderPlacement);
         const duration = Date.now() - startTime;
 
         log.openalgo(method, endpoint, duration, true);
@@ -254,6 +269,111 @@ class OpenAlgoClient {
     });
 
     throw lastError;
+  }
+
+  async _executeWithConcurrency(instance, endpoint, method, url, payload, isOrderPlacement) {
+    const instKey = this._instanceKey(instance);
+    await this._waitForConcurrency(instKey, endpoint);
+
+    // Record timestamps for rate tracking
+    const now = Date.now();
+    const state = this._getRateState(instKey);
+    state.rps.push(now);
+    state.rpm.push(now);
+    this.globalRpm.push(now);
+    if (isOrderPlacement) {
+      state.orders.push(now);
+      this.globalOrders.push(now);
+    }
+
+    try {
+      return await this._makeRequest(url, method, payload);
+    } finally {
+      this.currentTasks = Math.max(0, this.currentTasks - 1);
+    }
+  }
+
+  async _waitForConcurrency(instKey, endpoint) {
+    while (this.currentTasks >= this.maxConcurrentTasks) {
+      const delay = 50;
+      log.warn('Throttling due to concurrent task limit', {
+        endpoint,
+        instKey,
+        currentTasks: this.currentTasks,
+      });
+      await sleep(delay);
+    }
+    this.currentTasks += 1;
+  }
+
+  _getRateState(instKey) {
+    if (!this.instanceRate.has(instKey)) {
+      this.instanceRate.set(instKey, { rps: [], rpm: [], orders: [] });
+    }
+    return this.instanceRate.get(instKey);
+  }
+
+  _instanceKey(instance) {
+    return instance.id || instance.instance_id || instance.host_url || instance.name || 'unknown';
+  }
+
+  _prune(list, windowMs, now) {
+    while (list.length && now - list[0] >= windowMs) {
+      list.shift();
+    }
+  }
+
+  async _throttle(instance, endpoint, isOrderPlacement) {
+    const instKey = this._instanceKey(instance);
+    const state = this._getRateState(instKey);
+    let waitedOnce = false;
+
+    while (true) {
+      const now = Date.now();
+      this._prune(state.rps, 1000, now);
+      this._prune(state.rpm, 60000, now);
+      this._prune(state.orders, 1000, now);
+      this._prune(this.globalRpm, 60000, now);
+      this._prune(this.globalOrders, 1000, now);
+
+      const instRps = state.rps.length;
+      const instRpm = state.rpm.length;
+      const globalRpm = this.globalRpm.length;
+      const instOrders = state.orders.length;
+      const globalOrders = this.globalOrders.length;
+
+      const rpsOver = instRps >= this.rpsLimitPerInstance;
+      const rpmOver = globalRpm >= this.rpmLimitGlobal;
+      const ordersOver = isOrderPlacement && (instOrders >= this.ordersPerSecondLimit || globalOrders >= this.ordersPerSecondLimit);
+
+      if (!rpsOver && !rpmOver && !ordersOver) {
+        return;
+      }
+
+      const nextExpiry = Math.min(
+        rpsOver && state.rps[0] ? state.rps[0] + 1000 - now : Infinity,
+        rpmOver && this.globalRpm[0] ? this.globalRpm[0] + 60000 - now : Infinity,
+        ordersOver && state.orders[0] ? state.orders[0] + 1000 - now : Infinity,
+        ordersOver && this.globalOrders[0] ? this.globalOrders[0] + 1000 - now : Infinity,
+      );
+      const waitFor = Math.max(25, isFinite(nextExpiry) ? nextExpiry : 50);
+
+      if (!waitedOnce) {
+        log.warn('Rate throttle applied', {
+          endpoint,
+          instKey,
+          instRps,
+          instRpm,
+          globalRpm,
+          instOrders,
+          globalOrders,
+          waitFor,
+        });
+        waitedOnce = true;
+      }
+
+      await sleep(waitFor);
+    }
   }
 
   /**
