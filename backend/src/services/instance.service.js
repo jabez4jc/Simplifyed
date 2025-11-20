@@ -19,6 +19,7 @@ import {
   parseFloatSafe,
   parseBooleanSafe,
 } from '../utils/sanitizers.js';
+import settingsService from './settings.service.js';
 
 class InstanceService {
   /**
@@ -169,12 +170,16 @@ class InstanceService {
         };
 
         const connectionTest = await this.testConnection(connectionPayload);
-        if (!connectionTest.success) {
-          throw new ValidationError(connectionTest.message || 'Failed to connect to OpenAlgo instance');
-        }
 
-        // Auto-populate broker only if caller didn't explicitly override it
-        if (connectionTest.broker && normalized.broker === undefined) {
+        if (!connectionTest.success) {
+          // Allow saving even if the instance is currently unreachable or the API key is invalid.
+          // We log the warning but proceed so users can fix credentials/offline instances.
+          log.warn('Instance update proceeding despite failed connection test', {
+            id,
+            message: connectionTest.message,
+          });
+        } else if (connectionTest.broker && normalized.broker === undefined) {
+          // Auto-populate broker only if caller didn't explicitly override it
           normalized.broker = connectionTest.broker;
         }
       }
@@ -419,6 +424,64 @@ class InstanceService {
 
         const totalPnl = realizedPnl + unrealizedPnl;
 
+        // Session-aware tracking (IST)
+        const istNow = this._nowInIST();
+        const todayIst = this._formatDateIST(istNow);
+        const sessions = await this._getTradingSessions();
+        const currentSession = this._findCurrentSession(istNow, sessions);
+
+        let sessionBaseline = instance.session_baseline_total_pnl;
+        let sessionBaselineAt = instance.session_baseline_at;
+        let sessionPnl = instance.session_pnl;
+        let lastLiveTotalPnl = instance.last_live_total_pnl;
+        let lastLiveTotalPnlAt = instance.last_live_total_pnl_at;
+        let cutoffReason = null;
+
+        if (!instance.is_analyzer_mode) {
+          lastLiveTotalPnl = totalPnl;
+          lastLiveTotalPnlAt = new Date().toISOString();
+        }
+
+        if (!instance.is_analyzer_mode && currentSession) {
+          const sessionLabel = currentSession.label || 'Session';
+          const sessionKey = `${todayIst}|${sessionLabel}`;
+
+          if (sessionBaselineAt !== sessionKey || sessionBaseline === null || sessionBaseline === undefined) {
+            sessionBaseline = totalPnl;
+            sessionBaselineAt = sessionKey;
+            sessionPnl = 0;
+          } else {
+            sessionPnl = totalPnl - sessionBaseline;
+          }
+
+          const target = parseFloatSafe(instance.session_target_profit, null);
+          const maxLoss = parseFloatSafe(instance.session_max_loss, null);
+
+          if (target !== null && sessionPnl >= target) {
+            cutoffReason = 'SESSION_TARGET_PROFIT_REACHED';
+          } else if (maxLoss !== null && sessionPnl <= -Math.abs(maxLoss)) {
+            cutoffReason = 'SESSION_MAX_LOSS_BREACHED';
+          }
+
+          if (cutoffReason) {
+            log.warn('Session cutoff triggered; switching to analyzer mode', {
+              id,
+              session: sessionLabel,
+              session_pnl: sessionPnl,
+              reason: cutoffReason,
+            });
+            // fire-and-forget safe toggle; errors logged but do not throw to keep polling running
+            try {
+              await this.toggleAnalyzerMode(id, true);
+            } catch (toggleError) {
+              log.error('Failed to toggle analyzer after cutoff', {
+                id,
+                error: toggleError.message,
+              });
+            }
+          }
+        }
+
         // Update database
         await db.run(
           `UPDATE instances SET
@@ -426,9 +489,32 @@ class InstanceService {
             realized_pnl = ?,
             unrealized_pnl = ?,
             total_pnl = ?,
+            session_baseline_total_pnl = ?,
+            session_baseline_at = ?,
+            session_pnl = ?,
+            last_live_total_pnl = ?,
+            last_live_total_pnl_at = ?,
+            session_cutoff_reason = COALESCE(?, session_cutoff_reason),
+            session_cutoff_at = CASE
+              WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP
+              ELSE session_cutoff_at
+            END,
             last_updated = CURRENT_TIMESTAMP
           WHERE id = ?`,
-          [currentBalance, realizedPnl, unrealizedPnl, totalPnl, id]
+          [
+            currentBalance,
+            realizedPnl,
+            unrealizedPnl,
+            totalPnl,
+            sessionBaseline,
+            sessionBaselineAt,
+            sessionPnl,
+            lastLiveTotalPnl,
+            lastLiveTotalPnlAt,
+            cutoffReason,
+            cutoffReason,
+            id,
+          ]
         );
 
         log.info('P&L updated', {
@@ -437,6 +523,7 @@ class InstanceService {
           realized: realizedPnl,
           unrealized: unrealizedPnl,
           total: totalPnl,
+          session_pnl: sessionPnl,
         });
 
         return await this.getInstanceById(id);
@@ -696,6 +783,60 @@ class InstanceService {
     }
   }
 
+  _nowInIST() {
+    const istString = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+    return new Date(istString);
+  }
+
+  _formatDateIST(date) {
+    const year = date.getFullYear();
+    const month = `${date.getMonth() + 1}`.padStart(2, '0');
+    const day = `${date.getDate()}`.padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  _parseHmToMinutes(hm = '') {
+    const [h, m] = hm.split(':').map((v) => parseInt(v, 10));
+    if (Number.isNaN(h) || Number.isNaN(m)) return null;
+    return h * 60 + m;
+  }
+
+  _findCurrentSession(date, sessions = []) {
+    const minutes = date.getHours() * 60 + date.getMinutes();
+    return sessions.find((s) => {
+      const start = this._parseHmToMinutes(s.start);
+      const end = this._parseHmToMinutes(s.end);
+      if (start === null || end === null) return false;
+      return minutes >= start && minutes < end;
+    });
+  }
+
+  async _getTradingSessions() {
+    const fallback = [
+      { label: 'Session 1', start: '09:00', end: '11:30' },
+      { label: 'Session 2', start: '12:30', end: '15:10' },
+      { label: 'Session 3', start: '15:45', end: '19:00' },
+      { label: 'Session 4', start: '20:30', end: '22:45' },
+    ];
+
+    try {
+      const setting = await settingsService.getSetting('trading_sessions');
+      const raw = setting?.value ?? setting?.rawValue;
+      if (Array.isArray(raw)) {
+        return raw;
+      }
+      if (typeof raw === 'string') {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
+      }
+    } catch (error) {
+      log.warn('Falling back to default trading sessions', { error: error.message });
+    }
+    return fallback;
+  }
+
   /**
    * Normalize and validate instance data
    * @private
@@ -737,6 +878,21 @@ class InstanceService {
     // Strategy Tag
     if (data.strategy_tag !== undefined) {
       normalized.strategy_tag = sanitizeStrategyTag(data.strategy_tag);
+    }
+
+    // Session-level risk controls
+    if (data.session_target_profit !== undefined) {
+      const val = parseFloat(data.session_target_profit);
+      if (!Number.isNaN(val)) {
+        normalized.session_target_profit = val;
+      }
+    }
+
+    if (data.session_max_loss !== undefined) {
+      const val = parseFloat(data.session_max_loss);
+      if (!Number.isNaN(val)) {
+        normalized.session_max_loss = val;
+      }
     }
 
     // Broker (auto-detected, but can be overridden)

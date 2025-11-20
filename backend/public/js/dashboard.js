@@ -41,6 +41,8 @@ class DashboardApp {
     this.tradesPayload = null;
     this.tradesInstanceStore = new Map();
     this.positionsInstanceStore = new Map();
+    // Track expanded instances in positions view; default is collapsed
+    this.positionsExpanded = new Set();
   }
 
   /**
@@ -1724,6 +1726,10 @@ class DashboardApp {
   }
 
   renderTradesPanel(payload = {}) {
+    // Ensure caches are always initialized even if constructor did not run as expected
+    if (!this.tradesInstanceStore) {
+      this.tradesInstanceStore = new Map();
+    }
     const panel = document.getElementById('trades-panel');
     if (!panel) return;
 
@@ -1758,27 +1764,27 @@ class DashboardApp {
     const buyTrades = stats.total_buy_trades || 0;
     const sellTrades = stats.total_sell_trades || 0;
     const notional = stats.total_value || 0;
-    const quantity = stats.total_quantity || 0;
     const summary = document.getElementById('trades-summary');
     if (!summary) return;
     summary.innerHTML = `
-      <div class="card border border-base-200 bg-base-100 p-4">
-        <div class="grid gap-4 md:grid-cols-4">
-          <div>
-            <div class="text-sm text-neutral-500 uppercase tracking-wide">Total Trades</div>
-            <div class="text-2xl font-semibold">${totalTrades}</div>
-          </div>
-          <div>
-            <div class="text-sm text-neutral-500 uppercase tracking-wide">Buy / Sell</div>
-            <div class="text-xl font-semibold">${buyTrades} / ${sellTrades}</div>
-          </div>
-          <div>
-            <div class="text-sm text-neutral-500 uppercase tracking-wide">Total Quantity</div>
-            <div class="text-xl font-semibold">${quantity}</div>
-          </div>
-          <div>
-            <div class="text-sm text-neutral-500 uppercase tracking-wide">Notional Value</div>
-            <div class="text-xl font-semibold">${Utils.formatCurrency(notional)}</div>
+      <div class="card bg-base-100 border border-base-200">
+        <div class="card-header">
+          <h3 class="card-title">Trades Summary</h3>
+        </div>
+        <div class="p-6">
+          <div class="grid grid-cols-3 gap-4">
+            <div class="border border-base-200 rounded-lg p-4 text-center">
+              <div class="text-sm text-neutral-600 mb-1">Total Trades</div>
+              <div class="text-3xl font-semibold">${totalTrades}</div>
+            </div>
+            <div class="border border-base-200 rounded-lg p-4 text-center">
+              <div class="text-sm text-neutral-600 mb-1">Buy / Sell</div>
+              <div class="text-2xl font-semibold">${buyTrades} / ${sellTrades}</div>
+            </div>
+            <div class="border border-base-200 rounded-lg p-4 text-center">
+              <div class="text-sm text-neutral-600 mb-1">Notional Value</div>
+              <div class="text-2xl font-semibold">${Utils.formatCurrency(notional)}</div>
+            </div>
           </div>
         </div>
       </div>
@@ -1935,6 +1941,9 @@ class DashboardApp {
    */
   async renderPositionsView() {
     const contentArea = document.getElementById('content-area');
+    if (!this.positionsInstanceStore) {
+      this.positionsInstanceStore = new Map();
+    }
 
     try {
       // Fetch ALL positions from all active instances (including closed)
@@ -1959,13 +1968,20 @@ class DashboardApp {
             </div>
             <div class="p-4" id="positions-summary"></div>
           </div>
-          <div id="positions-instances" class="space-y-4"></div>
+          <div class="space-y-5" id="positions-layout">
+            <div id="positions-live"></div>
+            <div id="positions-analyzer"></div>
+          </div>
         `;
         contentArea.dataset.positionsInitialized = 'true';
       }
 
       this.updatePositionsSummary(data);
-      this.updatePositionsInstances(data.instances);
+      const instances = Array.isArray(data.instances) ? data.instances : [];
+      const liveInstances = instances.filter(inst => !inst.is_analyzer_mode);
+      const analyzerInstances = instances.filter(inst => inst.is_analyzer_mode);
+      this.updatePositionsSection('live', liveInstances);
+      this.updatePositionsSection('analyzer', analyzerInstances);
     } catch (error) {
       contentArea.innerHTML = `
         <div class="card">
@@ -1998,18 +2014,37 @@ class DashboardApp {
     `;
   }
 
-  updatePositionsInstances(instances = []) {
-    const container = document.getElementById('positions-instances');
+  updatePositionsSection(type, instances = []) {
+    const container = document.getElementById(type === 'live' ? 'positions-live' : 'positions-analyzer');
     if (!container) return;
-    const existingOpen = new Set(
-      Array.from(container.querySelectorAll('details[data-instance-id][open]')).map(el => el.dataset.instanceId)
-    );
+    const title = type === 'live' ? 'Live Instances' : 'Analyzer Mode Instances';
+    const sorted = [...instances].sort((a, b) => (a.instance_name || '').localeCompare(b.instance_name || ''));
+    const totalPositions = sorted.reduce((acc, inst) => {
+      const count = typeof inst.open_positions_count === 'number'
+        ? inst.open_positions_count
+        : (inst.positions || []).length;
+      return acc + count;
+    }, 0);
 
-    container.innerHTML = instances.map(inst => {
-      const isOpen = existingOpen.has(String(inst.instance_id));
-      this.positionsInstanceStore.set(String(inst.instance_id), inst.positions || []);
-      return this.buildPositionsInstance(inst, isOpen);
-    }).join('');
+    container.innerHTML = `
+      <div class="card">
+        <div class="card-header items-center justify-between">
+          <div>
+            <h3 class="card-title">${title}</h3>
+            <p class="text-sm text-neutral-600">${totalPositions} open positions</p>
+          </div>
+          <span class="badge badge-outline">${totalPositions}</span>
+        </div>
+        <div class="divide-y divide-base-200">
+          ${sorted.map(inst => {
+            const id = String(inst.instance_id);
+            const isOpen = this.positionsExpanded.has(id);
+            this.positionsInstanceStore.set(id, inst.positions || []);
+            return this.buildPositionsInstance(inst, isOpen);
+          }).join('') || `<div class="p-4 text-neutral-500">No positions in this category.</div>`}
+        </div>
+      </div>
+    `;
 
     this.attachPositionsToggles(container);
   }
@@ -2059,14 +2094,17 @@ class DashboardApp {
     const detailsList = container.querySelectorAll('details.card');
     detailsList.forEach(details => {
       details.addEventListener('toggle', () => {
+        const instanceId = details.dataset.instanceId;
         if (details.open) {
+          this.positionsExpanded.add(String(instanceId));
           const body = details.querySelector('.instance-positions-body');
           if (body && body.dataset.loaded !== 'true') {
-            const instanceId = details.dataset.instanceId;
             const positions = this.positionsInstanceStore.get(String(instanceId)) || [];
             body.innerHTML = this.renderPositionsBody(positions, { instance_id: instanceId });
             body.dataset.loaded = 'true';
           }
+        } else {
+          this.positionsExpanded.delete(String(instanceId));
         }
       });
     });
@@ -2141,13 +2179,19 @@ class DashboardApp {
             </div>
 
             <div class="form-group">
-              <label class="form-label">Target Profit</label>
-              <input type="number" name="target_profit" class="form-input" step="0.01" placeholder="5000">
+              <label class="form-label">Session Target Profit</label>
+              <input type="number" name="session_target_profit" class="form-input" step="0.01" placeholder="5000">
+              <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
+                Auto-switch to Analyze when this profit is reached within a session.
+              </small>
             </div>
 
             <div class="form-group">
-              <label class="form-label">Target Loss</label>
-              <input type="number" name="target_loss" class="form-input" step="0.01" placeholder="2000">
+              <label class="form-label">Session Max Loss</label>
+              <input type="number" name="session_max_loss" class="form-input" step="0.01" placeholder="2000">
+              <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
+                Auto-switch to Analyze when this loss is hit within a session.
+              </small>
             </div>
           </form>
         </div>
@@ -3637,15 +3681,21 @@ class DashboardApp {
               </div>
 
               <div class="form-group">
-                <label class="form-label">Target Profit</label>
-                <input type="number" name="target_profit" class="form-input" step="0.01"
-                       value="${instance.target_profit || 5000}">
+                <label class="form-label">Session Target Profit</label>
+                <input type="number" name="session_target_profit" class="form-input" step="0.01"
+                       value="${instance.session_target_profit ?? ''}">
+                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
+                  Auto-switch to Analyze when this profit is reached within a session.
+                </small>
               </div>
 
               <div class="form-group">
-                <label class="form-label">Target Loss</label>
-                <input type="number" name="target_loss" class="form-input" step="0.01"
-                       value="${instance.target_loss || 2000}">
+                <label class="form-label">Session Max Loss</label>
+                <input type="number" name="session_max_loss" class="form-input" step="0.01"
+                       value="${instance.session_max_loss ?? ''}">
+                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
+                  Auto-switch to Analyze when this loss is hit within a session.
+                </small>
               </div>
 
               <div class="form-group">
