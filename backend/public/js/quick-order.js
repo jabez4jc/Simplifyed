@@ -572,27 +572,29 @@ class QuickOrderHandler {
     } else {
       // EQUITY or FUTURES mode
       return `
-        <div class="action-buttons-grid simple">
-          <button class="btn-quick-action btn-buy"
-                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'BUY')">
-            BUY
-          </button>
-          <button class="btn-quick-action btn-sell"
-                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SELL')">
-            SELL
-          </button>
-          <button class="btn-quick-action btn-short"
-                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SHORT')">
-            SHORT
-          </button>
-          <button class="btn-quick-action btn-cover"
-                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'COVER')">
-            COVER
-          </button>
-          <button class="btn-quick-action btn-exit"
-                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'EXIT')">
-            EXIT
-          </button>
+        <div class="direct-actions">
+          <div class="direct-actions-grid">
+            <button class="btn-quick-action btn-buy"
+                    onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'BUY')">
+              BUY
+            </button>
+            <button class="btn-quick-action btn-sell"
+                    onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SELL')">
+              SELL
+            </button>
+            <button class="btn-quick-action btn-short"
+                    onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SHORT')">
+              SHORT
+            </button>
+            <button class="btn-quick-action btn-cover"
+                    onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'COVER')">
+              COVER
+            </button>
+            <button class="btn-quick-action btn-exit"
+                    onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'EXIT')">
+              EXIT
+            </button>
+          </div>
         </div>
       `;
     }

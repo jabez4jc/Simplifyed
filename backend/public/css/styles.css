@@ -1597,6 +1597,25 @@ body {
   text-align: center;
 }
 
+/* Direct/Futures action buttons */
+.direct-actions {
+  width: 100%;
+}
+
+.direct-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: var(--space-3);
+  align-items: stretch;
+}
+
+.direct-actions-grid .btn-quick-action {
+  width: 100%;
+  height: 52px;
+  font-weight: 700;
+  border-radius: 10px;
+}
+
 /* Responsive design for smaller screens */
 @media (max-width: 1200px) {
   .quick-order-panel {
