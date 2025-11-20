@@ -1803,7 +1803,10 @@ class DashboardApp {
       </div>
     `;
 
-    const body = sorted.map(inst => this.buildTradesInstance(inst, existingOpen.has(String(inst.instance_id)), true)).join('');
+    const body = sorted.map(inst => {
+      this.tradesInstanceStore.set(String(inst.instance_id), inst.trades || []);
+      return this.buildTradesInstance(inst, existingOpen.has(String(inst.instance_id)), true);
+    }).join('');
     container.innerHTML = `
       <div class="card">
         ${header}
@@ -1837,11 +1840,30 @@ class DashboardApp {
             </div>
           </div>
         </summary>
-        <div class="border-t border-base-200 p-4">
-          ${trades.length ? this.renderTradesTableShell(bodyRows) : '<p class="text-neutral-500">No trades yet.</p>'}
+        <div class="border-t border-base-200 p-4" id="trades-body-${instanceEntry.instance_id}" data-loaded="${!collapseByDefault}">
+          ${trades.length && !collapseByDefault ? this.renderTradesTableShell(bodyRows) : '<p class="text-neutral-500">Expand to view trades.</p>'}
         </div>
       </details>
     `;
+  }
+
+  attachTradesToggles(container) {
+    const detailsList = container.querySelectorAll('details.instance-section');
+    detailsList.forEach(details => {
+      details.addEventListener('toggle', () => {
+        if (details.open) {
+          const body = details.querySelector('[id^="trades-body-"]');
+          if (body && body.dataset.loaded !== 'true') {
+            const instanceId = details.dataset.instanceId;
+            const trades = this.tradesInstanceStore.get(String(instanceId)) || [];
+            body.innerHTML = trades.length
+              ? this.renderTradesTableShell(this.renderTradesRows(trades))
+              : '<p class="text-neutral-500">No trades yet.</p>';
+            body.dataset.loaded = 'true';
+          }
+        }
+      });
+    });
   }
 
   renderTradesRows(trades = []) {
