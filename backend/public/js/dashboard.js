@@ -578,6 +578,8 @@ class DashboardApp {
               <th>Health</th>
               <th>Mode</th>
               <th>Limits</th>
+              <th class="text-right">Live P&L</th>
+              <th class="text-right">Analyzer P&L</th>
               <th class="text-right">Balance</th>
               <th class="text-right">Total P&L</th>
               <th class="text-right">Realized</th>
@@ -603,6 +605,16 @@ class DashboardApp {
                   : '<span class="badge badge-success">Live</span>'}
               </td>
               <td>${this.renderLimitBadge(instance.limit_metrics)}</td>
+              <td class="text-right ${Utils.getPnLColorClass(instance.last_live_total_pnl)}">
+                ${instance.last_live_total_pnl != null
+                  ? Utils.formatCurrency(instance.last_live_total_pnl)
+                  : '<span class="text-neutral-400">-</span>'}
+              </td>
+              <td class="text-right ${Utils.getPnLColorClass(instance.is_analyzer_mode ? instance.total_pnl : 0)}">
+                ${instance.is_analyzer_mode
+                  ? Utils.formatCurrency(instance.total_pnl || 0)
+                  : '<span class="text-neutral-400">-</span>'}
+              </td>
               <td class="text-right">
                 ${instance.available_balance != null
                   ? Utils.formatCurrency(instance.available_balance)
