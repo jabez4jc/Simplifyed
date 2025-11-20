@@ -1805,7 +1805,8 @@ class DashboardApp {
 
     const body = sorted.map(inst => {
       this.tradesInstanceStore.set(String(inst.instance_id), inst.trades || []);
-      return this.buildTradesInstance(inst, existingOpen.has(String(inst.instance_id)), true);
+      const isOpen = existingOpen.has(String(inst.instance_id));
+      return this.buildTradesInstance(inst, isOpen, !isOpen);
     }).join('');
     container.innerHTML = `
       <div class="card">
@@ -1828,8 +1829,10 @@ class DashboardApp {
       : '-';
     const bodyRows = this.renderTradesRows(trades);
 
+    const shouldOpen = preserveOpen && trades.length && !collapseByDefault;
+
     return `
-      <details class="instance-section" data-instance-id="${instanceEntry.instance_id}" ${preserveOpen && trades.length && !collapseByDefault ? 'open' : ''}>
+      <details class="instance-section" data-instance-id="${instanceEntry.instance_id}" ${shouldOpen ? 'open' : ''}>
         <summary class="flex flex-wrap cursor-pointer items-center justify-between gap-4 px-4 py-4">
           <div>
             <h4 class="font-semibold text-lg">${Utils.escapeHTML(instanceEntry.instance_name)}</h4>
@@ -1840,8 +1843,8 @@ class DashboardApp {
             </div>
           </div>
         </summary>
-        <div class="border-t border-base-200 p-4" id="trades-body-${instanceEntry.instance_id}" data-loaded="${!collapseByDefault}">
-          ${trades.length && !collapseByDefault ? this.renderTradesTableShell(bodyRows) : '<p class="text-neutral-500">Expand to view trades.</p>'}
+        <div class="border-t border-base-200 p-4" id="trades-body-${instanceEntry.instance_id}" data-loaded="${shouldOpen || !collapseByDefault}">
+          ${trades.length && shouldOpen ? this.renderTradesTableShell(bodyRows) : '<p class="text-neutral-500">Expand to view trades.</p>'}
         </div>
       </details>
     `;
