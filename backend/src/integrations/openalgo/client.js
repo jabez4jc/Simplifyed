@@ -13,6 +13,12 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const ERROR_LIMITS = {
+  max404PerDay: 20,
+  maxInvalidApiPerDay: 10,
+  backoffMs: 60 * 60 * 1000, // 1 hour
+};
+
 /**
  * OpenAlgo HTTP Client
  */
@@ -74,6 +80,8 @@ class OpenAlgoClient {
     this.rpsLimitPerInstance = 5;
     this.rpmLimitGlobal = 300;
     this.ordersPerSecondLimit = 10;
+    this.errorCounters = new Map(); // instKey -> { day, count404, countInvalid, backoffUntil }
+    this.instanceMeta = new Map();
   }
 
   /**
@@ -97,6 +105,8 @@ class OpenAlgoClient {
     const url = `${host_url}/api/v1/${endpoint}`;
     const payload = { ...data, apikey: api_key };
     const maskedPayload = { ...data, apikey: maskApiKey(api_key) };
+    const instKey = this._instanceKey(instance);
+    this._persistMeta(instKey, instance);
 
     // Select retry configuration based on operation type
     const maxRetries = isCritical ? this.criticalRetries : this.nonCriticalRetries;
@@ -137,6 +147,7 @@ class OpenAlgoClient {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const startTime = Date.now();
+        this._ensureBackoffWindow(instKey, endpoint);
         await this._throttle(instance, endpoint, isOrderPlacement);
         const response = await this._executeWithConcurrency(instance, endpoint, method, url, payload, isOrderPlacement);
         const duration = Date.now() - startTime;
@@ -146,6 +157,7 @@ class OpenAlgoClient {
         return response;
       } catch (error) {
         lastError = error;
+        this._recordError(instKey, error, endpoint);
 
         // Don't retry on client errors (4xx) - these indicate bad requests
         // Log at WARN level for invalid API keys (not ERROR) to reduce log spam
@@ -313,6 +325,34 @@ class OpenAlgoClient {
     return this.instanceRate.get(instKey);
   }
 
+  _getErrorState(instKey) {
+    const today = new Date().toISOString().slice(0, 10);
+    if (!this.errorCounters.has(instKey)) {
+      this.errorCounters.set(instKey, {
+        day: today,
+        count404: 0,
+        countInvalid: 0,
+        backoffUntil: null,
+      });
+    }
+    const state = this.errorCounters.get(instKey);
+    if (state.day !== today) {
+      state.day = today;
+      state.count404 = 0;
+      state.countInvalid = 0;
+      state.backoffUntil = null;
+    }
+    return state;
+  }
+
+  _persistMeta(instKey, instance) {
+    this.instanceMeta.set(instKey, {
+      id: instance.id || instance.instance_id,
+      host_url: instance.host_url,
+      name: instance.name,
+    });
+  }
+
   _instanceKey(instance) {
     return instance.id || instance.instance_id || instance.host_url || instance.name || 'unknown';
   }
@@ -374,6 +414,91 @@ class OpenAlgoClient {
 
       await sleep(waitFor);
     }
+  }
+
+  _ensureBackoffWindow(instKey, endpoint) {
+    const errState = this._getErrorState(instKey);
+    if (errState.backoffUntil && Date.now() < errState.backoffUntil) {
+      const waitMs = errState.backoffUntil - Date.now();
+      const message = `Instance ${instKey} is in backoff for ${Math.ceil(waitMs / 1000)}s due to error limits`;
+      const error = new OpenAlgoError(message, endpoint);
+      error.statusCode = 429;
+      throw error;
+    }
+  }
+
+  _recordError(instKey, error, endpoint) {
+    const errState = this._getErrorState(instKey);
+    const status = error.statusCode;
+    const message = error.message ? error.message.toLowerCase() : '';
+    const is404 = status === 404;
+    const isInvalid = status === 401 || status === 403 || message.includes('invalid apikey');
+
+    if (!is404 && !isInvalid) {
+      return;
+    }
+
+    if (is404) {
+      errState.count404 += 1;
+    }
+    if (isInvalid) {
+      errState.countInvalid += 1;
+    }
+
+    const warnNearLimit =
+      errState.count404 >= ERROR_LIMITS.max404PerDay - 2 ||
+      errState.countInvalid >= ERROR_LIMITS.maxInvalidApiPerDay - 1;
+
+    if (warnNearLimit) {
+      log.warn('Approaching OpenAlgo error thresholds', {
+        instKey,
+        endpoint,
+        count404: errState.count404,
+        countInvalid: errState.countInvalid,
+      });
+    }
+
+    const exceeded =
+      errState.count404 >= ERROR_LIMITS.max404PerDay ||
+      errState.countInvalid >= ERROR_LIMITS.maxInvalidApiPerDay;
+
+    if (exceeded) {
+      errState.backoffUntil = Date.now() + ERROR_LIMITS.backoffMs;
+      log.error('Error limits exceeded, entering backoff', {
+        instKey,
+        endpoint,
+        backoffUntil: new Date(errState.backoffUntil).toISOString(),
+        count404: errState.count404,
+        countInvalid: errState.countInvalid,
+      });
+    }
+  }
+
+  getInstanceMetrics() {
+    const metrics = [];
+    for (const [instKey, rate] of this.instanceRate.entries()) {
+      const err = this._getErrorState(instKey);
+      const meta = this.instanceMeta.get(instKey) || {};
+      metrics.push({
+        key: instKey,
+        id: meta.id,
+        host_url: meta.host_url,
+        name: meta.name,
+        rate: {
+          rps: rate.rps.length,
+          rpm: rate.rpm.length,
+          orders: rate.orders.length,
+          globalRpm: this.globalRpm.length,
+          globalOrders: this.globalOrders.length,
+        },
+        errors: {
+          count404: err.count404,
+          countInvalid: err.countInvalid,
+          backoffUntil: err.backoffUntil,
+        },
+      });
+    }
+    return metrics;
   }
 
   /**

@@ -50,7 +50,7 @@ class InstanceService {
       query += ' ORDER BY created_at DESC';
 
       const instances = await db.all(query, params);
-      return instances;
+      return this._attachTelemetry(instances);
     } catch (error) {
       log.error('Failed to get instances', error);
       throw error;
@@ -70,7 +70,7 @@ class InstanceService {
         throw new NotFoundError('Instance');
       }
 
-      return instance;
+      return this._attachTelemetry([instance])[0];
     } catch (error) {
       if (error instanceof NotFoundError) throw error;
       log.error('Failed to get instance', error, { id });
@@ -937,6 +937,31 @@ class InstanceService {
     }
 
     return normalized;
+  }
+
+  _attachTelemetry(instances = []) {
+    const metricsList = openalgoClient.getInstanceMetrics();
+    const byId = new Map();
+    const byKey = new Map();
+    metricsList.forEach((m) => {
+      if (m.id !== undefined && m.id !== null) {
+        byId.set(String(m.id), m);
+      }
+      if (m.key) {
+        byKey.set(String(m.key), m);
+      }
+      if (m.host_url) {
+        byKey.set(m.host_url, m);
+      }
+    });
+
+    return instances.map((inst) => {
+      const metric = byId.get(String(inst.id)) || byKey.get(inst.host_url) || byKey.get(inst.name);
+      return {
+        ...inst,
+        limit_metrics: metric || null,
+      };
+    });
   }
 
   async _safeDeleteByInstanceId(tableName, instanceId) {
