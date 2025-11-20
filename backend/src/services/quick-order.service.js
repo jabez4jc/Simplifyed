@@ -437,10 +437,7 @@ class QuickOrderService {
     if (!lotSize || lotSize <= 0) {
       throw new ValidationError(`Unable to resolve lot size for ${finalExchange}:${finalSymbol}`);
     }
-    const normalizedPosition = lotSize > 1
-      ? Math.sign(rawPosition) * Math.floor(Math.abs(rawPosition) / lotSize) * lotSize
-      : rawPosition;
-    const currentPosition = normalizedPosition;
+    const currentPosition = rawPosition;
 
     const tradeQuantity = quantity * lotSize;
 
@@ -467,7 +464,14 @@ class QuickOrderService {
       targetPosition = currentPosition + tradeQuantity;
     } else if (action === 'SELL') {
       if (currentPosition <= 0) {
-        throw new ValidationError('No long position to reduce');
+        return {
+          order_id: null,
+          status: 'noop',
+          symbol: finalSymbol,
+          quantity: 0,
+          action: 'SELL',
+          message: 'No long position to reduce',
+        };
       }
       algoAction = 'SELL';
       targetPosition = Math.max(currentPosition - tradeQuantity, 0);
@@ -476,13 +480,27 @@ class QuickOrderService {
       targetPosition = currentPosition - tradeQuantity;
     } else if (action === 'COVER') {
       if (currentPosition >= 0) {
-        throw new ValidationError('No short position to cover');
+        return {
+          order_id: null,
+          status: 'noop',
+          symbol: finalSymbol,
+          quantity: 0,
+          action: 'COVER',
+          message: 'No short position to cover',
+        };
       }
       algoAction = 'BUY';
       targetPosition = Math.min(currentPosition + tradeQuantity, 0);
     } else if (action === 'EXIT') {
       if (currentPosition === 0) {
-        throw new ValidationError('No open position to exit');
+        return {
+          order_id: null,
+          status: 'noop',
+          symbol: finalSymbol,
+          quantity: 0,
+          action: 'EXIT',
+          message: 'No open position to exit',
+        };
       }
       targetPosition = 0;
       algoAction = currentPosition > 0 ? 'SELL' : 'BUY';
@@ -502,7 +520,14 @@ class QuickOrderService {
     // Place order using placesmartorder
     const orderQuantity = Math.abs(targetPosition - currentPosition);
     if (!orderQuantity) {
-      throw new ValidationError('No position change required');
+      return {
+        order_id: null,
+        status: 'noop',
+        symbol: finalSymbol,
+        quantity: 0,
+        action: algoAction,
+        message: 'No position change required',
+      };
     }
 
     const orderPayload = orderPayloadFactory.buildEquityOrder({
@@ -1236,14 +1261,8 @@ class QuickOrderService {
    * Get cached position book for an instance (fallback to OpenAlgo if cache missing)
    * @private
    */
-  async _getPositionBook(instance, { forceLive = false } = {}) {
-    if (!forceLive) {
-      const cache = marketDataFeedService.getPositionSnapshot(instance.id);
-      if (cache?.data) {
-        return cache.data;
-      }
-    }
-
+  async _getPositionBook(instance, { forceLive = true } = {}) {
+    // Always prefer live fetch per requirement; cache only as fallback for failures if needed later
     const positionBook = await openalgoClient.getPositionBook(instance);
     marketDataFeedService.setPositionSnapshot(instance.id, positionBook);
     return positionBook;
