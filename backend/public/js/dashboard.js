@@ -40,6 +40,7 @@ class DashboardApp {
     this.tradesLastUpdatedAt = null;
     this.tradesPayload = null;
     this.tradesInstanceStore = new Map();
+    this.positionsInstanceStore = new Map();
   }
 
   /**
@@ -1949,61 +1950,22 @@ class DashboardApp {
         return;
       }
 
-      contentArea.innerHTML = `
-        <!-- Overall Summary Card -->
-        <div class="card mb-6">
-          <div class="card-header">
-            <h3 class="card-title">All Positions Summary</h3>
-          </div>
-          <div class="p-4">
-            <div class="grid grid-cols-3 gap-4">
-              <div class="text-center">
-                <div class="text-sm text-neutral-600 mb-1">Open Positions</div>
-                <div class="text-2xl font-semibold">${data.overall_open_positions}</div>
-              </div>
-              <div class="text-center">
-                <div class="text-sm text-neutral-600 mb-1">Closed Positions</div>
-                <div class="text-2xl font-semibold">${data.overall_closed_positions}</div>
-              </div>
-              <div class="text-center">
-                <div class="text-sm text-neutral-600 mb-1">Overall P&L</div>
-                <div class="text-2xl font-semibold ${Utils.getPnLColorClass(data.overall_total_pnl)}">
-                  ${Utils.formatCurrency(data.overall_total_pnl)}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Instance Positions -->
-        ${data.instances.map(inst => `
+      if (!contentArea.dataset.positionsInitialized) {
+        contentArea.innerHTML = `
+          <!-- Overall Summary Card -->
           <div class="card mb-6">
             <div class="card-header">
-              <div>
-                <h3 class="card-title">${Utils.escapeHTML(inst.instance_name)}</h3>
-                <div class="flex gap-4 mt-1 text-sm text-neutral-600">
-                  <span>Broker: <span class="font-medium">${Utils.escapeHTML(inst.broker || 'N/A')}</span></span>
-                  <span>Open: <span class="font-medium">${inst.open_positions_count}</span></span>
-                  <span>Closed: <span class="font-medium">${inst.closed_positions_count}</span></span>
-                  <span>P&L: <span class="font-medium ${Utils.getPnLColorClass(inst.total_pnl)}">${Utils.formatCurrency(inst.total_pnl)}</span></span>
-                </div>
-              </div>
-              <button class="btn btn-error btn-sm"
-                      onclick="app.closeAllPositions(${inst.instance_id})">
-                Close All Positions
-              </button>
+              <h3 class="card-title">All Positions Summary</h3>
             </div>
-            <div class="table-container">
-                ${inst.error ?
-                `<p class="text-center text-error-600 p-4">${Utils.escapeHTML(inst.error)}</p>` :
-                (inst.positions.length > 0 ?
-                  this.renderPositionsTable(inst.positions, inst.instance_id) :
-                  '<p class="text-center text-neutral-600 p-4">No positions</p>')
-              }
-            </div>
+            <div class="p-4" id="positions-summary"></div>
           </div>
-        `).join('')}
-      `;
+          <div id="positions-instances" class="space-y-4"></div>
+        `;
+        contentArea.dataset.positionsInitialized = 'true';
+      }
+
+      this.updatePositionsSummary(data);
+      this.updatePositionsInstances(data.instances);
     } catch (error) {
       contentArea.innerHTML = `
         <div class="card">
@@ -2011,6 +1973,103 @@ class DashboardApp {
         </div>
       `;
     }
+  }
+
+  updatePositionsSummary(data) {
+    const container = document.getElementById('positions-summary');
+    if (!container) return;
+    container.innerHTML = `
+      <div class="grid grid-cols-3 gap-4">
+        <div class="text-center">
+          <div class="text-sm text-neutral-600 mb-1">Open Positions</div>
+          <div class="text-2xl font-semibold">${data.overall_open_positions}</div>
+        </div>
+        <div class="text-center">
+          <div class="text-sm text-neutral-600 mb-1">Closed Positions</div>
+          <div class="text-2xl font-semibold">${data.overall_closed_positions}</div>
+        </div>
+        <div class="text-center">
+          <div class="text-sm text-neutral-600 mb-1">Overall P&L</div>
+          <div class="text-2xl font-semibold ${Utils.getPnLColorClass(data.overall_total_pnl)}">
+            ${Utils.formatCurrency(data.overall_total_pnl)}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  updatePositionsInstances(instances = []) {
+    const container = document.getElementById('positions-instances');
+    if (!container) return;
+    const existingOpen = new Set(
+      Array.from(container.querySelectorAll('details[data-instance-id][open]')).map(el => el.dataset.instanceId)
+    );
+
+    container.innerHTML = instances.map(inst => {
+      const isOpen = existingOpen.has(String(inst.instance_id));
+      this.positionsInstanceStore.set(String(inst.instance_id), inst.positions || []);
+      return this.buildPositionsInstance(inst, isOpen);
+    }).join('');
+
+    this.attachPositionsToggles(container);
+  }
+
+  buildPositionsInstance(inst, isOpen) {
+    const header = `
+      <summary class="card-header flex items-center justify-between gap-3 px-4 py-4">
+        <div>
+          <h3 class="card-title">${Utils.escapeHTML(inst.instance_name)}</h3>
+          <div class="flex gap-4 mt-1 text-sm text-neutral-600">
+            <span>Broker: <span class="font-medium">${Utils.escapeHTML(inst.broker || 'N/A')}</span></span>
+            <span>Open: <span class="font-medium">${inst.open_positions_count}</span></span>
+            <span>Closed: <span class="font-medium">${inst.closed_positions_count}</span></span>
+            <span>P&L: <span class="font-medium ${Utils.getPnLColorClass(inst.total_pnl)}">${Utils.formatCurrency(inst.total_pnl)}</span></span>
+          </div>
+        </div>
+        <button class="btn btn-error btn-sm"
+                onclick="app.closeAllPositions(${inst.instance_id})">
+          Close All Positions
+        </button>
+      </summary>
+    `;
+
+    const positions = inst.positions || [];
+
+    return `
+      <details class="card" data-instance-id="${inst.instance_id}" ${isOpen ? 'open' : ''}>
+        ${header}
+        <div class="p-4 instance-positions-body" data-loaded="${isOpen}">
+          ${isOpen ? this.renderPositionsBody(positions, inst) : '<p class="text-neutral-500">Expand to view positions.</p>'}
+        </div>
+      </details>
+    `;
+  }
+
+  renderPositionsBody(positions, inst) {
+    if (inst.error) {
+      return `<p class="text-center text-error-600 p-4">${Utils.escapeHTML(inst.error)}</p>`;
+    }
+    if (!positions || positions.length === 0) {
+      return '<p class="text-center text-neutral-600 p-4">No positions</p>';
+    }
+    return this.renderPositionsTable(positions, inst.instance_id);
+  }
+
+  attachPositionsToggles(container) {
+    const detailsList = container.querySelectorAll('details.card');
+    detailsList.forEach(details => {
+      details.addEventListener('toggle', () => {
+        if (details.open) {
+          const body = details.querySelector('.instance-positions-body');
+          if (body && body.dataset.loaded !== 'true') {
+            const instanceId = details.dataset.instanceId;
+            const positions = this.positionsInstanceStore.get(String(instanceId)) || [];
+            body.innerHTML = this.renderPositionsBody(positions, { instance_id: instanceId });
+            body.dataset.loaded = 'true';
+          }
+        }
+      });
+    });
   }
 
   /**
