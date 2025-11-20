@@ -419,16 +419,19 @@ class QuickOrderService {
     }
 
     // Get current position size (signed: positive for long, negative for short)
-    const currentPosition = await this._getCurrentPositionSize(
+    const rawPosition = await this._getCurrentPositionSize(
       instance,
       finalSymbol,
       finalExchange,
       product,
       { forceLive: true }
     );
-
-    // Always scale by lot size (defaults to 1 for equities)
     const lotSize = resolvedLotSize || symbol.lot_size || 1;
+    const normalizedPosition = lotSize > 1
+      ? Math.sign(rawPosition) * Math.floor(Math.abs(rawPosition) / lotSize) * lotSize
+      : rawPosition;
+    const currentPosition = normalizedPosition;
+
     const tradeQuantity = quantity * lotSize;
 
     log.info('Calculated trade quantity', {
@@ -437,6 +440,8 @@ class QuickOrderService {
       inputQuantity: quantity,
       lotSize,
       tradeQuantity,
+      rawPosition,
+      normalizedPosition: currentPosition,
     });
 
     // Calculate target position_size based on action
