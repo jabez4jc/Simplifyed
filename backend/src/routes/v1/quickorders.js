@@ -62,20 +62,11 @@ router.post('/', async (req, res, next) => {
     }
 
     const validActions = [
-      'BUY',
-      'SELL',
-      'EXIT',
-      'BUY_CE',
-      'SELL_CE',
-      'BUY_PE',
-      'SELL_PE',
-      'EXIT_ALL',
-      'REDUCE_CE',
-      'REDUCE_PE',
-      'INCREASE_CE',
-      'INCREASE_PE',
-      'CLOSE_ALL_CE',
-      'CLOSE_ALL_PE'
+      // Direct/Futures
+      'BUY', 'SELL', 'SHORT', 'COVER', 'EXIT',
+      // Options
+      'BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE', 'EXIT_ALL',
+      'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE', 'CLOSE_ALL_CE', 'CLOSE_ALL_PE'
     ];
     if (!validActions.includes(action)) {
       throw new ValidationError(
@@ -96,6 +87,10 @@ router.post('/', async (req, res, next) => {
 
     if (tradeMode === 'OPTIONS' && ['BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE', 'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE', 'CLOSE_ALL_CE', 'CLOSE_ALL_PE'].includes(action) && !optionsLeg) {
       throw new ValidationError('optionsLeg is required for OPTIONS trade mode');
+    }
+
+    if (tradeMode === 'OPTIONS' && ['BUY', 'SELL', 'SHORT', 'COVER'].includes(action)) {
+      throw new ValidationError(`action ${action} is not valid for OPTIONS trade mode`);
     }
 
     if (quantity !== undefined && quantity !== null) {

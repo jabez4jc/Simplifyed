@@ -581,6 +581,14 @@ class QuickOrderHandler {
                   onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SELL')">
             SELL
           </button>
+          <button class="btn-quick-action btn-short"
+                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SHORT')">
+            SHORT
+          </button>
+          <button class="btn-quick-action btn-cover"
+                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'COVER')">
+            COVER
+          </button>
           <button class="btn-quick-action btn-exit"
                   onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'EXIT')">
             EXIT

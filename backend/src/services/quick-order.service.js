@@ -157,11 +157,11 @@ class QuickOrderService {
     }
 
     const validActions = [
-      'BUY', 'SELL', 'EXIT',  // Direct/Futures actions
-      'BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE', 'EXIT_ALL',  // Existing options actions
-      'REDUCE_CE', 'REDUCE_PE',  // Buyer mode: reduce longs
-      'INCREASE_CE', 'INCREASE_PE',  // Writer mode: cover shorts
-      'CLOSE_ALL_CE', 'CLOSE_ALL_PE'  // Type-specific close
+      // Direct/Futures actions
+      'BUY', 'SELL', 'SHORT', 'COVER', 'EXIT',
+      // Options actions
+      'BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE', 'EXIT_ALL',
+      'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE', 'CLOSE_ALL_CE', 'CLOSE_ALL_PE'
     ];
     if (!validActions.includes(action)) {
       throw new ValidationError(`action must be one of: ${validActions.join(', ')}`);
@@ -188,6 +188,11 @@ class QuickOrderService {
     ];
     if (optionsActions.includes(action) && tradeMode !== 'OPTIONS') {
       throw new ValidationError(`Action ${action} is only valid for OPTIONS trade mode`);
+    }
+
+    const directActions = ['BUY', 'SELL', 'SHORT', 'COVER', 'EXIT'];
+    if (directActions.includes(action) && tradeMode === 'OPTIONS') {
+      throw new ValidationError(`Action ${action} is not valid for OPTIONS trade mode`);
     }
 
     // NEW: Validate that the symbol supports options trading if using OPTIONS actions
@@ -279,7 +284,7 @@ class QuickOrderService {
     }
 
     // Direct/Futures BUY/SELL actions
-    if (action === 'BUY' || action === 'SELL') {
+    if (tradeMode !== 'OPTIONS' && ['BUY', 'SELL', 'SHORT', 'COVER'].includes(action)) {
       return 'DIRECT_ORDER';
     }
 
@@ -423,21 +428,14 @@ class QuickOrderService {
 
     // Calculate trade quantity based on symbol type and trade mode
     // ONLY EQUITY symbols in EQUITY mode use actual quantity
-    // Everything else (FUTURES, OPTIONS, derivatives on EQUITY/INDEX) uses lots
+    // Everything else (FUTURES, derivatives on EQUITY/INDEX) uses lots
     let tradeQuantity;
     let lotSize;
 
     if (symbol.symbol_type === 'EQUITY' && tradeMode === 'EQUITY') {
-      // EQUITY symbols in EQUITY mode: quantity is actual quantity
       lotSize = 1;
       tradeQuantity = quantity;
     } else {
-      // All other cases: quantity is number of lots (multiply by lot_size)
-      // - Direct FUTURES symbols: lots * lot_size
-      // - Direct OPTIONS symbols: lots * lot_size
-      // - INDEX with FUTURES/OPTIONS mode: lots * lot_size
-      // - EQUITY with FUTURES/OPTIONS mode: lots * lot_size
-      // Use resolvedLotSize if futures symbol was resolved, otherwise use symbol.lot_size
       lotSize = resolvedLotSize || symbol.lot_size || 1;
       tradeQuantity = quantity * lotSize;
     }
@@ -455,28 +453,34 @@ class QuickOrderService {
     let algoAction;
 
     if (action === 'BUY') {
-      // BUY: Increase position (or reduce short position)
+      // BUY: open/increase longs or close shorts
       algoAction = 'BUY';
       targetPosition = currentPosition + tradeQuantity;
     } else if (action === 'SELL') {
-      // SELL: Decrease position (or increase short position)
+      // SELL: reduce existing longs only
+      if (currentPosition <= 0) {
+        throw new ValidationError('No long position to reduce');
+      }
       algoAction = 'SELL';
-      targetPosition = currentPosition - tradeQuantity;
-      // Ensure target position doesn't go below 0 for now (no shorting for simplicity)
-      if (targetPosition < 0) targetPosition = 0;
+      targetPosition = Math.max(currentPosition - tradeQuantity, 0);
+    } else if (action === 'SHORT') {
+      // SHORT: open/increase shorts or close longs
+      algoAction = 'SELL';
+      targetPosition = currentPosition - tradeQuantity; // can cross zero to negative
+    } else if (action === 'COVER') {
+      // COVER: reduce existing shorts only
+      if (currentPosition >= 0) {
+        throw new ValidationError('No short position to cover');
+      }
+      algoAction = 'BUY';
+      targetPosition = Math.min(currentPosition + tradeQuantity, 0);
     } else if (action === 'EXIT') {
       // EXIT: Close current position completely
-      targetPosition = 0;
-      if (currentPosition > 0) {
-        // Close long position - SELL
-        algoAction = 'SELL';
-      } else if (currentPosition < 0) {
-        // Close short position - BUY
-        algoAction = 'BUY';
-      } else {
-        // No position to exit
+      if (currentPosition === 0) {
         throw new ValidationError('No open position to exit');
       }
+      targetPosition = 0;
+      algoAction = currentPosition > 0 ? 'SELL' : 'BUY';
     } else {
       throw new ValidationError(`Invalid action: ${action}`);
     }
