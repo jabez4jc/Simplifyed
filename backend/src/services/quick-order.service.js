@@ -423,22 +423,13 @@ class QuickOrderService {
       instance,
       finalSymbol,
       finalExchange,
-      product
+      product,
+      { forceLive: true }
     );
 
-    // Calculate trade quantity based on symbol type and trade mode
-    // ONLY EQUITY symbols in EQUITY mode use actual quantity
-    // Everything else (FUTURES, derivatives on EQUITY/INDEX) uses lots
-    let tradeQuantity;
-    let lotSize;
-
-    if (symbol.symbol_type === 'EQUITY' && tradeMode === 'EQUITY') {
-      lotSize = 1;
-      tradeQuantity = quantity;
-    } else {
-      lotSize = resolvedLotSize || symbol.lot_size || 1;
-      tradeQuantity = quantity * lotSize;
-    }
+    // Always scale by lot size (defaults to 1 for equities)
+    const lotSize = resolvedLotSize || symbol.lot_size || 1;
+    const tradeQuantity = quantity * lotSize;
 
     log.info('Calculated trade quantity', {
       symbolType: symbol.symbol_type,
@@ -453,29 +444,24 @@ class QuickOrderService {
     let algoAction;
 
     if (action === 'BUY') {
-      // BUY: open/increase longs or close shorts
       algoAction = 'BUY';
       targetPosition = currentPosition + tradeQuantity;
     } else if (action === 'SELL') {
-      // SELL: reduce existing longs only
       if (currentPosition <= 0) {
         throw new ValidationError('No long position to reduce');
       }
       algoAction = 'SELL';
       targetPosition = Math.max(currentPosition - tradeQuantity, 0);
     } else if (action === 'SHORT') {
-      // SHORT: open/increase shorts or close longs
       algoAction = 'SELL';
-      targetPosition = currentPosition - tradeQuantity; // can cross zero to negative
+      targetPosition = currentPosition - tradeQuantity;
     } else if (action === 'COVER') {
-      // COVER: reduce existing shorts only
       if (currentPosition >= 0) {
         throw new ValidationError('No short position to cover');
       }
       algoAction = 'BUY';
       targetPosition = Math.min(currentPosition + tradeQuantity, 0);
     } else if (action === 'EXIT') {
-      // EXIT: Close current position completely
       if (currentPosition === 0) {
         throw new ValidationError('No open position to exit');
       }
@@ -495,12 +481,17 @@ class QuickOrderService {
     });
 
     // Place order using placesmartorder
+    const orderQuantity = Math.abs(targetPosition - currentPosition);
+    if (!orderQuantity) {
+      throw new ValidationError('No position change required');
+    }
+
     const orderPayload = orderPayloadFactory.buildEquityOrder({
       strategy: symbol.watchlist_name || 'default',
       exchange: finalExchange,
       symbol: finalSymbol,
       action: algoAction,
-      quantity: tradeQuantity,
+      quantity: orderQuantity,
       position_size: targetPosition,
       product,
       pricetype: orderType,
@@ -1226,10 +1217,12 @@ class QuickOrderService {
    * Get cached position book for an instance (fallback to OpenAlgo if cache missing)
    * @private
    */
-  async _getPositionBook(instance) {
-    const cache = marketDataFeedService.getPositionSnapshot(instance.id);
-    if (cache?.data) {
-      return cache.data;
+  async _getPositionBook(instance, { forceLive = false } = {}) {
+    if (!forceLive) {
+      const cache = marketDataFeedService.getPositionSnapshot(instance.id);
+      if (cache?.data) {
+        return cache.data;
+      }
     }
 
     const positionBook = await openalgoClient.getPositionBook(instance);
@@ -1241,9 +1234,9 @@ class QuickOrderService {
    * Get current position size for a symbol
    * @private
    */
-  async _getCurrentPositionSize(instance, symbol, exchange, product) {
+  async _getCurrentPositionSize(instance, symbol, exchange, product, opts = {}) {
     try {
-      const positionBook = await this._getPositionBook(instance);
+      const positionBook = await this._getPositionBook(instance, opts);
       const targetSymbol = this._normalizeSymbolKey(symbol);
       const targetExchange = this._normalizeExchange(exchange);
       const targetProduct = this._normalizeProduct(product);
