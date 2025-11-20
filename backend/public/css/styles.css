@@ -552,6 +552,29 @@ body {
   margin-bottom: var(--space-4);
 }
 
+.card-header.compact {
+  margin-bottom: var(--space-2);
+}
+
+.card-header.align-start {
+  align-items: flex-start;
+}
+
+.card-header .header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 1;
+  min-width: 0;
+}
+
+.card-header .header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
 .card-title {
   font-size: var(--font-size-lg);
   font-weight: 600;
@@ -1788,6 +1811,13 @@ body {
   color: var(--color-neutral-600);
 }
 
+.watchlist-card__meta-inline {
+  display: flex;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+  color: var(--color-neutral-600);
+}
+
 .watchlist-card__status {
   display: inline-flex;
   align-items: center;
@@ -1812,7 +1842,33 @@ body {
   display: flex;
   gap: var(--space-2);
   flex-wrap: wrap;
-  margin-top: var(--space-4);
+}
+
+.watchlist-card__actions .btn-xs {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--font-size-xs);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-neutral-200);
+  background-color: white;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.watchlist-card__actions .btn-xs:hover {
+  background-color: var(--color-neutral-50);
+  border-color: var(--color-neutral-400);
+}
+
+.watchlist-card__actions .btn-xs.danger {
+  border-color: var(--color-loss);
+  color: var(--color-loss);
+}
+
+.watchlist-card__actions .btn-xs.danger:hover {
+  background-color: var(--color-loss-bg);
 }
 
 .watchlist-card__body {

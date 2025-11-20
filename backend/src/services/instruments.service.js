@@ -91,6 +91,31 @@ class InstrumentsService {
     }
   }
 
+  async _queryExpiriesByUnderlyingKey(underlyingKey, exchange, instrumentTypes = []) {
+    if (!underlyingKey) {
+      return [];
+    }
+
+    let query = `
+      SELECT DISTINCT expiry
+      FROM instruments
+      WHERE underlying_key = ? AND exchange = ? AND expiry IS NOT NULL
+    `;
+    const params = [underlyingKey, exchange];
+
+    if (instrumentTypes.length > 0) {
+      const clauses = instrumentTypes.map(() => 'UPPER(instrumenttype) LIKE ?').join(' OR ');
+      query += ` AND (${clauses})`;
+      instrumentTypes.forEach(type => {
+        const normalized = type.toUpperCase();
+        const isExact = normalized === 'CE' || normalized === 'PE';
+        params.push(isExact ? normalized : `${normalized}%`);
+      });
+    }
+
+    return db.all(query, params);
+  }
+
   /**
    * Refresh instruments from broker
    * Fetches complete instrument list and stores in database
@@ -187,8 +212,8 @@ class InstrumentsService {
           log.debug('Cleared all existing instruments');
         }
 
-        // Batch insert instruments (SQLite max 999 parameters, each instrument has 11 fields)
-        const batchSize = 90; // 90 * 11 = 990 parameters (under 999 limit)
+        // Batch insert instruments (SQLite max 999 parameters, each instrument has 12 fields)
+        const batchSize = 75; // 75 * 13 < 999 (including timestamps)
         const batches = [];
 
         for (let i = 0; i < instruments.length; i += batchSize) {
@@ -206,28 +231,37 @@ class InstrumentsService {
 
           // Build VALUES clause with placeholders (11 fields + 2 timestamps)
           const placeholders = batch
-            .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
+            .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
             .join(', ');
 
           // Flatten values for all instruments in batch
-          const values = batch.flatMap(inst => [
-            inst.symbol ? inst.symbol.toUpperCase() : null,
-            inst.brsymbol || null,
-            inst.name || null,
-            inst.exchange ? inst.exchange.toUpperCase() : null,
-            inst.brexchange || null,
-            inst.token || null,
-            inst.expiry || null,
-            inst.strike || null,
-            inst.lotsize || 1,
-            inst.instrumenttype ? inst.instrumenttype.toUpperCase() : null,
-            inst.tick_size || null
-          ]);
+          const values = batch.flatMap(inst => {
+            const normalizedInstrument = {
+              symbol: inst.symbol ? inst.symbol.toUpperCase() : null,
+              instrumenttype: inst.instrumenttype ? inst.instrumenttype.toUpperCase() : null,
+              name: inst.name ? inst.name.toUpperCase() : null,
+            };
+            const underlyingKey = this._deriveUnderlyingKey(normalizedInstrument);
+            return [
+              normalizedInstrument.symbol,
+              inst.brsymbol || null,
+              inst.name || null,
+              inst.exchange ? inst.exchange.toUpperCase() : null,
+              inst.brexchange || null,
+              inst.token || null,
+              inst.expiry || null,
+              inst.strike || null,
+              inst.lotsize || 1,
+              normalizedInstrument.instrumenttype,
+              underlyingKey,
+              inst.tick_size || null
+            ];
+          });
 
           await db.run(
             `INSERT OR REPLACE INTO instruments (
               symbol, brsymbol, name, exchange, brexchange, token, expiry, strike,
-              lotsize, instrumenttype, tick_size, created_at, updated_at
+              lotsize, instrumenttype, underlying_key, tick_size, created_at, updated_at
             ) VALUES ${placeholders}`,
             values
           );
@@ -425,12 +459,22 @@ class InstrumentsService {
       log.debug('Building option chain', { symbol, expiry, exchange });
 
       // Get all options for this symbol and expiry
-      const options = await db.all(
+      const normalizedSymbol = String(symbol || '').toUpperCase();
+      let options = await db.all(
         `SELECT * FROM instruments
-         WHERE symbol LIKE ? AND expiry = ? AND exchange = ? AND strike IS NOT NULL
+         WHERE underlying_key = ? AND expiry = ? AND exchange = ? AND strike IS NOT NULL
          ORDER BY strike ASC`,
-        [`${symbol}%`, expiry, exchange]
+        [normalizedSymbol, expiry, exchange]
       );
+
+      if (!options || options.length === 0) {
+        options = await db.all(
+          `SELECT * FROM instruments
+           WHERE symbol LIKE ? AND expiry = ? AND exchange = ? AND strike IS NOT NULL
+           ORDER BY strike ASC`,
+          [`${normalizedSymbol}%`, expiry, exchange]
+        );
+      }
 
       // Separate CE and PE options
       const callOptions = [];
@@ -513,27 +557,46 @@ class InstrumentsService {
     const useName = matchField === 'name';
     try {
       const normalizedSymbol = String(symbol || '').toUpperCase();
-      let query = `
-        SELECT DISTINCT expiry
-        FROM instruments
-        WHERE UPPER(${matchField}) ${useName ? '=' : 'LIKE'} ? AND exchange = ? AND expiry IS NOT NULL
-      `;
-      const params = [
-        useName ? normalizedSymbol : `${normalizedSymbol}%`,
+      let expiries = await this._queryExpiriesByUnderlyingKey(
+        normalizedSymbol,
         exchange,
-      ];
+        instrumentTypes
+      );
 
-      if (instrumentTypes.length > 0) {
-        const clauses = instrumentTypes.map(() => 'UPPER(instrumenttype) LIKE ?').join(' OR ');
-        query += ` AND (${clauses})`;
-        instrumentTypes.forEach(type => {
-          const normalized = type.toUpperCase();
-          const isExact = normalized === 'CE' || normalized === 'PE';
-          params.push(isExact ? normalized : `${normalized}%`);
-        });
+      if (!expiries || expiries.length === 0) {
+        const buildQuery = (field) => {
+          const searchValue = `${normalizedSymbol}%`;
+          let q = `
+            SELECT DISTINCT expiry
+            FROM instruments
+            WHERE UPPER(${field}) LIKE ? AND exchange = ? AND expiry IS NOT NULL
+          `;
+          const params = [
+            searchValue,
+            exchange,
+          ];
+
+          if (instrumentTypes.length > 0) {
+            const clauses = instrumentTypes.map(() => 'UPPER(instrumenttype) LIKE ?').join(' OR ');
+            q += ` AND (${clauses})`;
+            instrumentTypes.forEach(type => {
+              const normalized = type.toUpperCase();
+              const isExact = normalized === 'CE' || normalized === 'PE';
+              params.push(isExact ? normalized : `${normalized}%`);
+            });
+          }
+
+          return { query: q, params };
+        };
+
+        let { query, params } = buildQuery(matchField);
+        expiries = await db.all(query, params);
+
+        if ((!expiries || expiries.length === 0) && useName) {
+          ({ query, params } = buildQuery('symbol'));
+          expiries = await db.all(query, params);
+        }
       }
-
-      const expiries = await db.all(query, params);
 
       if (!expiries || expiries.length === 0) {
         return [];
@@ -744,22 +807,30 @@ class InstrumentsService {
           ] = fields;
 
           // Prepare values (convert empty strings to null)
+          const normalizedInstrument = {
+            symbol: symbol ? symbol.toUpperCase() : null,
+            instrumenttype: instrumenttype ? instrumenttype.toUpperCase() : null,
+            name: name ? name.toUpperCase() : null,
+          };
+          const underlyingKey = this._deriveUnderlyingKey(normalizedInstrument);
+
           const value = [
-            symbol || null,
+            normalizedInstrument.symbol,
             brsymbol || null,
             name || null,
-            exchange || null,
+            exchange ? exchange.toUpperCase() : null,
             brexchange || null,
             token || null,
             expiry === '-1' || expiry === '' ? null : expiry,
             strike === '-1' || strike === '' ? null : strike,
             lotsize === '-1' || lotsize === '' ? 1 : parseInt(lotsize, 10),
-            instrumenttype || null,
+            normalizedInstrument.instrumenttype,
+            underlyingKey,
             tick_size === '-1' || tick_size === '' ? null : tick_size
           ];
 
           values.push(...value);
-          placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime("now"), datetime("now"))');
+          placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime("now"), datetime("now"))');
         }
 
         if (placeholders.length > 0) {
@@ -767,7 +838,7 @@ class InstrumentsService {
           const sql = `
             INSERT INTO instruments (
               symbol, brsymbol, name, exchange, brexchange, token, expiry, strike,
-              lotsize, instrumenttype, tick_size, created_at, updated_at
+              lotsize, instrumenttype, underlying_key, tick_size, created_at, updated_at
             ) VALUES ${placeholders.join(', ')}
           `;
 
@@ -819,6 +890,34 @@ class InstrumentsService {
       log.error('CSV import failed', error);
       throw error;
     }
+  }
+
+  _deriveUnderlyingKey(instrument) {
+    if (!instrument) return null;
+    const symbol = (instrument.symbol || '').toUpperCase().replace(/\s+/g, '');
+    const name = (instrument.name || '').toUpperCase();
+    const instrumentType = (instrument.instrumenttype || '').toUpperCase();
+
+    if (!symbol) {
+      return name || null;
+    }
+
+    const isDerivative = instrumentType.startsWith('FUT') || instrumentType.startsWith('OPT');
+    if (!isDerivative) {
+      return symbol;
+    }
+
+    const cleaned = symbol.replace(/[^A-Z0-9]/g, '');
+    const prefixMatch = cleaned.match(/^([A-Z]+)/);
+    if (prefixMatch && prefixMatch[1]) {
+      return prefixMatch[1];
+    }
+
+    if (name) {
+      return name.replace(/[^A-Z0-9]/g, '').replace(/\d+$/, '');
+    }
+
+    return cleaned;
   }
 
   /**
@@ -927,7 +1026,7 @@ class InstrumentsService {
           }
 
           // Insert instruments in batches
-          const BATCH_SIZE = 1000;
+          const BATCH_SIZE = 70;
           let inserted = 0;
 
           for (let i = 0; i < response.length; i += BATCH_SIZE) {
@@ -936,29 +1035,37 @@ class InstrumentsService {
             const placeholders = [];
 
             for (const instrument of batch) {
+              const normalizedInstrument = {
+                symbol: instrument.symbol ? instrument.symbol.toUpperCase() : null,
+                instrumenttype: instrument.instrumenttype ? instrument.instrumenttype.toUpperCase() : null,
+                name: instrument.name ? instrument.name.toUpperCase() : null,
+              };
+              const underlyingKey = this._deriveUnderlyingKey(normalizedInstrument);
+
               const value = [
-                instrument.symbol || null,
+                normalizedInstrument.symbol,
                 instrument.brsymbol || null,
                 instrument.name || null,
-                instrument.exchange || exchange,
+                (instrument.exchange || exchange || '').toUpperCase(),
                 instrument.brexchange || null,
                 instrument.token || null,
                 instrument.expiry === '-1' || !instrument.expiry ? null : instrument.expiry,
                 instrument.strike === '-1' || !instrument.strike ? null : instrument.strike,
                 instrument.lotsize === '-1' || !instrument.lotsize ? 1 : parseInt(instrument.lotsize, 10),
-                instrument.instrumenttype || null,
+                normalizedInstrument.instrumenttype,
+                underlyingKey,
                 instrument.tick_size === '-1' || !instrument.tick_size ? null : instrument.tick_size
               ];
 
               values.push(...value);
-              placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime("now"), datetime("now"))');
+              placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime("now"), datetime("now"))');
             }
 
             if (placeholders.length > 0) {
               const sql = `
                 INSERT INTO instruments (
                   symbol, brsymbol, name, exchange, brexchange, token, expiry, strike,
-                  lotsize, instrumenttype, tick_size, created_at, updated_at
+                  lotsize, instrumenttype, underlying_key, tick_size, created_at, updated_at
                 ) VALUES ${placeholders.join(', ')}
               `;
 

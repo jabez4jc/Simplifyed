@@ -15,6 +15,7 @@ import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
 import { sanitizeString } from '../../utils/sanitizers.js';
 import marketDataFeedService from '../../services/market-data-feed.service.js';
+import symbolResolutionService from '../../services/symbol-resolution.service.js';
 
 const router = express.Router();
 
@@ -32,13 +33,9 @@ router.get('/search', async (req, res, next) => {
 
     // Try cached instruments first (fast path)
     try {
-      const cachedResults = await instrumentsService.searchInstruments(
+      const cachedResults = await symbolResolutionService.searchSymbols(
         query,
-        {
-          exchange: exchange ? sanitizeString(exchange).toUpperCase() : null,
-          instrumenttype: instrumenttype ? sanitizeString(instrumenttype).toUpperCase() : null,
-          limit: 50
-        }
+        exchange ? sanitizeString(exchange).toUpperCase() : null
       );
 
       if (cachedResults && cachedResults.length > 0) {
@@ -96,12 +93,19 @@ router.post('/validate', async (req, res, next) => {
       throw new ValidationError('symbol and exchange are required');
     }
 
-    // Validate symbol using OpenAlgo /symbol endpoint
-    const validated = await symbolValidationService.validateSymbol(
-      symbol,
-      exchange,
-      instanceId ? parseInt(instanceId, 10) : null
-    );
+    // Validate symbol using resolver + fallback to OpenAlgo
+    const resolved = await symbolResolutionService.validateSymbol(symbol, exchange);
+    let validated = resolved.instrument
+      ? { ...resolved.instrument, from_cache: true }
+      : null;
+
+    if (!validated) {
+      validated = await symbolValidationService.validateSymbol(
+        symbol,
+        exchange,
+        instanceId ? parseInt(instanceId, 10) : null
+      );
+    }
 
     res.json({
       status: 'success',

@@ -10,11 +10,12 @@ import openalgoClient from '../integrations/openalgo/client.js';
 import optionsResolutionService from './options-resolution.service.js';
 import expiryManagementService from './expiry-management.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
+import derivativeResolutionService, { NSE_INDEX_UNDERLYINGS, BSE_INDEX_UNDERLYINGS } from './derivative-resolution.service.js';
+import orderPlacementService from './order-placement.service.js';
+import orderPayloadFactory from './order-payload.factory.js';
+import orderRepository from './order-repository.js';
 import { ValidationError, NotFoundError } from '../core/errors.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
-
-const NSE_INDEX_UNDERLYINGS = new Set(['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY']);
-const BSE_INDEX_UNDERLYINGS = new Set(['SENSEX', 'BANKEX']);
 
 class QuickOrderService {
   constructor() {
@@ -108,6 +109,8 @@ class QuickOrderService {
     // Get instances (single or all assigned)
     const instances = await this._getTargetInstances(instanceId, symbol.watchlist_id);
 
+    const resolvedProduct = this._resolveProductForOrder(product, tradeMode, symbol);
+
     // Determine order strategy based on action
     const strategy = this._determineOrderStrategy(action, tradeMode);
 
@@ -116,7 +119,7 @@ class QuickOrderService {
       strategy,
       symbol,
       instances,
-      { action, tradeMode, quantity, product, orderType, price, expiry, optionsLeg, operatingMode, strikePolicy, stepLots }
+      { action, tradeMode, quantity, product: resolvedProduct, orderType, price, expiry, optionsLeg, operatingMode, strikePolicy, stepLots }
     );
 
     log.info('Quick order completed', {
@@ -369,9 +372,8 @@ class QuickOrderService {
     if (tradeMode === 'FUTURES') {
       const derivativeExchange = symbol.symbol_type === 'FUTURES'
         ? symbol.exchange
-        : this._getDerivativeExchange(symbol.exchange);
-      const underlying =
-        (symbol.underlying_symbol || symbol.name || symbol.symbol || '').toUpperCase();
+        : derivativeResolutionService.getDerivativeExchange(symbol.exchange);
+      const underlying = derivativeResolutionService.getDerivativeUnderlying(symbol);
 
       if (expiry) {
         if (!underlying) {
@@ -386,7 +388,7 @@ class QuickOrderService {
           derivativeExchange,
         });
 
-        const futuresSymbol = await this._resolveFuturesSymbol(
+        const futuresSymbol = await derivativeResolutionService.resolveFuturesSymbol(
           instance,
           underlying,
           derivativeExchange,
@@ -489,7 +491,7 @@ class QuickOrderService {
     });
 
     // Place order using placesmartorder
-    const orderResult = await openalgoClient.placeSmartOrder(instance, {
+    const orderPayload = orderPayloadFactory.buildEquityOrder({
       strategy: symbol.watchlist_name || 'default',
       exchange: finalExchange,
       symbol: finalSymbol,
@@ -498,7 +500,14 @@ class QuickOrderService {
       position_size: targetPosition,
       product,
       pricetype: orderType,
-      price: price.toString(),
+      price,
+    });
+
+    const orderResult = await orderPlacementService.placeSmartOrder(instance, orderPayload, {
+      request_type: 'DIRECT',
+      trade_mode: tradeMode,
+      base_symbol: symbol.symbol,
+      expiry: expiry || null,
     });
 
     // Record order in database
@@ -621,7 +630,7 @@ class QuickOrderService {
     }
 
     // Determine the correct derivatives exchange
-    const derivativeExchange = this._getDerivativeExchange(symbol.exchange);
+    const derivativeExchange = derivativeResolutionService.getDerivativeExchange(symbol.exchange);
 
     // Determine scope: TYPE-level or LEG-level position calculation
     // FLOAT_OFS + reduce/close actions → TYPE scope (aggregate across strikes)
@@ -714,7 +723,7 @@ class QuickOrderService {
       }
 
       const orderPromises = ordersToPlace.map(async order => {
-        const orderDataToSend = {
+        const orderDataToSend = orderPayloadFactory.buildOptionsOrder({
           strategy: symbol.watchlist_name || 'default',
           exchange: derivativeExchange,
           symbol: order.symbol,
@@ -723,8 +732,8 @@ class QuickOrderService {
           position_size: order.position_size,
           product,
           pricetype: orderType,
-          price: price.toString(),
-        };
+          price,
+        });
 
         log.info('FLOAT_OFS: Placing order for strike', {
           strike: order.strike,
@@ -734,7 +743,15 @@ class QuickOrderService {
           position_size: order.position_size,
         });
 
-        const orderResult = await openalgoClient.placeSmartOrder(instance, orderDataToSend);
+        const orderResult = await orderPlacementService.placeSmartOrder(instance, orderDataToSend, {
+          request_type: 'OPTIONS_FLOAT',
+          trade_mode: 'OPTIONS',
+          base_symbol: symbol.symbol,
+          underlying,
+          expiry,
+          option_type: optionType,
+          strike: order.strike,
+        });
 
         await this._syncOptionsState(
           symbol.watchlist_id,
@@ -887,7 +904,7 @@ class QuickOrderService {
     });
 
     // Prepare order data for OpenAlgo
-    const orderDataToSend = {
+    const orderDataToSend = orderPayloadFactory.buildOptionsOrder({
       strategy: symbol.watchlist_name || 'default',
       exchange: derivativeExchange,
       symbol: optionSymbol.symbol,
@@ -896,13 +913,21 @@ class QuickOrderService {
       position_size: targetPosition,
       product,
       pricetype: orderType,
-      price: price.toString(),
-    };
+      price,
+    });
 
     log.info('Data being sent to OpenAlgo placesmartorder', orderDataToSend);
 
     // Place order using placesmartorder
-    const orderResult = await openalgoClient.placeSmartOrder(instance, orderDataToSend);
+    const orderResult = await orderPlacementService.placeSmartOrder(instance, orderDataToSend, {
+      request_type: 'OPTIONS_STANDARD',
+      trade_mode: 'OPTIONS',
+      base_symbol: symbol.symbol,
+      underlying,
+      expiry,
+      option_type: optionType,
+      strike,
+    });
 
     // Sync position to watchlist_options_state table
     await this._syncOptionsState(
@@ -1070,16 +1095,21 @@ class QuickOrderService {
 
         // For EXIT/EXIT_ALL, position_size should be 0 to close completely
         const strategyTag = orderParams.strategy || symbol.watchlist_name || 'default';
-        const orderResult = await openalgoClient.placeSmartOrder(instance, {
+        const orderPayload = orderPayloadFactory.buildExitOrder({
           strategy: strategyTag,
           exchange: position.exchange,
           symbol: position.symbol,
           action: closeAction,
           quantity: closeQuantity,
-          position_size: 0,  // Target position is 0 (close completely)
           product,
           pricetype: 'MARKET',
-          price: '0',
+          price: 0,
+        });
+        const orderResult = await orderPlacementService.placeSmartOrder(instance, orderPayload, {
+          request_type: 'EXIT_POSITION',
+          trade_mode: orderParams.tradeMode || 'DIRECT',
+          base_symbol: symbol.symbol,
+          closing_symbol: position.symbol,
         });
 
         closeResults.push({
@@ -1147,16 +1177,22 @@ class QuickOrderService {
         const closeAction = position.quantity > 0 ? 'SELL' : 'BUY';
         const closeQuantity = Math.abs(position.quantity);
 
-        const orderResult = await openalgoClient.placeSmartOrder(instance, {
+        const orderPayload = orderPayloadFactory.buildExitOrder({
           strategy: strategy || 'default',
           exchange: position.exchange,
           symbol: position.symbol,
           action: closeAction,
           quantity: closeQuantity,
-          position_size: position.quantity,
           product,
           pricetype: 'MARKET',
-          price: '0',
+          price: 0,
+        });
+        const orderResult = await orderPlacementService.placeSmartOrder(instance, orderPayload, {
+          request_type: 'OPTIONS_RECONCILE',
+          trade_mode: 'OPTIONS',
+          base_symbol: position.symbol,
+          option_type: optionType,
+          position_side: side,
         });
 
         closeResults.push({
@@ -1280,6 +1316,7 @@ class QuickOrderService {
     try {
       const positionBook = await this._getPositionBook(instance);
       const targetUnderlying = (underlying || '').toUpperCase();
+      const canonicalTarget = targetUnderlying.replace(/[^A-Z0-9]/g, '').replace(/\d+$/, '');
       const targetOptionType = (optionType || '').toUpperCase();
 
       const positions = positionBook
@@ -1299,9 +1336,13 @@ class QuickOrderService {
           if (quantity === 0) return false;
 
           const parsed = this._parseOptionSymbol(symbol);
-          const matchesUnderlying = parsed.underlying
-            ? parsed.underlying === targetUnderlying
-            : symbol.includes(targetUnderlying);
+          const candidateUnderlying = parsed.underlying
+            ? parsed.underlying.toUpperCase()
+            : symbol;
+          const canonicalCandidate = candidateUnderlying
+            .replace(/[^A-Z0-9]/g, '')
+            .replace(/\d+$/, '');
+          const matchesUnderlying = canonicalCandidate === canonicalTarget;
 
           if (!matchesUnderlying) return false;
 
@@ -1478,37 +1519,7 @@ class QuickOrderService {
    */
   async _recordQuickOrder(orderData) {
     try {
-      await db.run(
-        `INSERT INTO quick_orders (
-          watchlist_id, symbol_id, instance_id, underlying, symbol, exchange,
-          action, trade_mode, options_leg, quantity, product, order_type,
-          price, trigger_price, resolved_symbol, strike_price, option_type,
-          expiry_date, status, order_id, message, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-        [
-          orderData.watchlist_id,
-          orderData.symbol_id,
-          orderData.instance_id,
-          orderData.underlying,
-          orderData.symbol,
-          orderData.exchange,
-          orderData.action,
-          orderData.trade_mode,
-          orderData.options_leg || null,
-          orderData.quantity,
-          orderData.product,
-          orderData.order_type,
-          orderData.price || null,
-          orderData.trigger_price || null,
-          orderData.resolved_symbol || null,
-          orderData.strike_price || null,
-          orderData.option_type || null,
-          orderData.expiry_date || null,
-          orderData.status,
-          orderData.order_id,
-          orderData.message,
-        ]
-      );
+      await orderRepository.insertQuickOrder(orderData);
 
       log.debug('Quick order recorded in database', {
         order_id: orderData.order_id,
@@ -1748,109 +1759,11 @@ class QuickOrderService {
    * Map cash market exchange to derivative exchange
    * @private
    */
-  /**
-   * Resolve futures symbol from underlying and expiry
-   * @private
-   */
-  async _resolveFuturesSymbol(instance, underlying, exchange, expiry) {
-    try {
-      // Convert expiry to OpenAlgo format (DD-MMM-YY)
-      const openalgoExpiry = this._convertExpiryToOpenAlgoFormat(expiry);
-
-      log.debug('Searching for futures symbol', {
-        underlying,
-        exchange,
-        expiry: openalgoExpiry,
-      });
-
-      // Search for futures symbol matching underlying and expiry
-      const searchResults = await openalgoClient.searchSymbols(instance, underlying);
-
-      const futuresSymbols = searchResults.filter(result => {
-        const isFutures = (result.instrumenttype || '').toUpperCase().startsWith('FUT');
-        const matchesUnderlying = (result.name || '').toUpperCase() === underlying.toUpperCase();
-        const matchesExpiry = result.expiry === openalgoExpiry;
-        const matchesExchange =
-          (result.exchange || '').toUpperCase() === (exchange || '').toUpperCase();
-        return isFutures && matchesUnderlying && matchesExpiry && matchesExchange;
-      });
-
-      if (futuresSymbols.length === 0) {
-        throw new NotFoundError(
-          `No futures contract found for ${underlying} with expiry ${openalgoExpiry}`
-        );
-      }
-
-      const futuresSymbol = futuresSymbols[0];
-
-      log.info('Futures symbol found', {
-        symbol: futuresSymbol.symbol,
-        lotSize: futuresSymbol.lotsize || futuresSymbol.lot_size,
-        expiry: futuresSymbol.expiry,
-      });
-
-      return {
-        symbol: futuresSymbol.symbol,
-        trading_symbol: futuresSymbol.tradingsymbol || futuresSymbol.symbol,
-        lot_size: futuresSymbol.lotsize || futuresSymbol.lot_size || 1,
-        tick_size: futuresSymbol.tick_size || 0.05,
-        token: futuresSymbol.token,
-        expiry: futuresSymbol.expiry,
-      };
-    } catch (error) {
-      log.error('Failed to resolve futures symbol', error);
-      throw new NotFoundError(
-        `Unable to find futures contract for ${underlying} with expiry ${expiry}: ${error.message}`
-      );
-    }
-  }
-
-  /**
-   * Convert expiry from YYYY-MM-DD to DD-MMM-YY format (OpenAlgo format)
-   * @private
-   */
-  _convertExpiryToOpenAlgoFormat(expiry) {
-    if (!expiry) return null;
-
-    // If already in DD-MMM-YY format, return as-is
-    if (/^\d{2}-[A-Z]{3}-\d{2}$/.test(expiry)) {
-      return expiry;
-    }
-
-    // Convert YYYY-MM-DD to DD-MMM-YY
-    if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
-      const date = new Date(expiry);
-      const day = String(date.getDate()).padStart(2, '0');
-      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
-                          'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-      const month = monthNames[date.getMonth()];
-      const year = String(date.getFullYear()).slice(-2);
-      return `${day}-${month}-${year}`;
-    }
-
-    return expiry;
-  }
-
-  _getDerivativeExchange(exchange) {
-    const exchangeMap = {
-      'NSE': 'NFO',         // NSE equity -> NSE F&O
-      'NSE_INDEX': 'NFO',   // NSE indices -> NSE F&O
-      'BSE': 'BFO',         // BSE equity -> BSE F&O
-      'BSE_INDEX': 'BFO',   // BSE indices -> BSE F&O
-      'NFO': 'NFO',         // Already derivative exchange
-      'BFO': 'BFO',         // Already derivative exchange
-      'MCX': 'MCX',         // Commodities
-      'CDS': 'CDS',         // Currency derivatives
-    };
-
-    return exchangeMap[exchange] || exchange;
-  }
-
   _getUnderlyingQuoteExchange(symbol = {}) {
     const exchange = (symbol.exchange || '').toUpperCase();
     const instrumentType = (symbol.instrumenttype || symbol.symbol_type || '').toUpperCase();
     const brexchange = (symbol.brexchange || '').toUpperCase();
-    const underlying = (symbol.underlying_symbol || symbol.name || symbol.symbol || '').toUpperCase();
+    const underlying = derivativeResolutionService.getDerivativeUnderlying(symbol);
 
     if (BSE_INDEX_UNDERLYINGS.has(underlying)) {
       return 'BSE_INDEX';
@@ -1890,15 +1803,7 @@ class QuickOrderService {
   }
 
   _getUnderlyingForClosing(symbol = {}) {
-    if (symbol.underlying_symbol) {
-      return symbol.underlying_symbol.toUpperCase();
-    }
-    if (symbol.name) {
-      return symbol.name.toUpperCase();
-    }
-    const candidate = (symbol.symbol || symbol.trading_symbol || '').toUpperCase();
-    const match = candidate.match(/^([A-Z]+)/);
-    return match ? match[1] : candidate;
+    return derivativeResolutionService.getUnderlyingForClosing(symbol);
   }
 
   /**
@@ -1955,7 +1860,7 @@ class QuickOrderService {
       return true;
     }
 
-    const underlying = (symbol.underlying_symbol || symbol.symbol || '').trim().toUpperCase();
+    const underlying = derivativeResolutionService.getDerivativeUnderlying(symbol);
     if (!underlying) {
       return false;
     }
@@ -1994,7 +1899,7 @@ class QuickOrderService {
       return true;
     }
 
-    const underlying = (symbol.underlying_symbol || symbol.symbol || '').trim().toUpperCase();
+    const underlying = derivativeResolutionService.getDerivativeUnderlying(symbol);
     if (!underlying) {
       return false;
     }
@@ -2031,7 +1936,7 @@ class QuickOrderService {
     const optionType = this._getOptionTypeFromAction(action);
 
     const underlying = symbol.underlying_symbol || symbol.symbol;
-    const derivativeExchange = this._getDerivativeExchange(symbol.exchange);
+    const derivativeExchange = derivativeResolutionService.getDerivativeExchange(symbol.exchange);
     const baseExchange = this._getUnderlyingQuoteExchange(symbol);
     const quoteSymbol = this._getUnderlyingQuoteSymbol(symbol);
 
@@ -2107,7 +2012,7 @@ class QuickOrderService {
       );
     }
 
-    const underlying = (symbol.underlying_symbol || symbol.symbol || '').trim().toUpperCase();
+    const underlying = derivativeResolutionService.getDerivativeUnderlying(symbol);
     if (!underlying) {
       throw new ValidationError(
         'Underlying symbol is required to preview options strikes. Please set it in the watchlist symbol settings.'
@@ -2141,7 +2046,7 @@ class QuickOrderService {
       );
     }
 
-    const derivativeExchange = this._getDerivativeExchange(symbol.exchange);
+    const derivativeExchange = derivativeResolutionService.getDerivativeExchange(symbol.exchange);
     const baseExchange = this._getUnderlyingQuoteExchange(symbol);
     const quoteSymbol = this._getUnderlyingQuoteSymbol(symbol);
     const underlyingLtp = await this._getUnderlyingLTP(
@@ -2217,6 +2122,82 @@ class QuickOrderService {
       },
       ce: buildLegResponse(ceResolution),
       pe: buildLegResponse(peResolution),
+    };
+  }
+
+  /**
+   * Provide futures symbol + quote preview for UI display
+   */
+  async getFuturesPreview({ symbolId, expiry = null }) {
+    if (!symbolId) {
+      throw new ValidationError('symbolId is required for futures preview');
+    }
+
+    const symbol = await this._getSymbolConfig(symbolId);
+
+    const supportsFutures =
+      symbol.symbol_type === 'FUTURES' ||
+      symbol.tradable_futures === 1 ||
+      (await this._ensureFuturesTradability(symbol));
+
+    if (!supportsFutures) {
+      throw new ValidationError(
+        `Symbol ${symbol.symbol} is not enabled for futures trading. Enable the futures flag in the watchlist symbol configuration.`
+      );
+    }
+
+    const normalizedExpiry = expiry ? this._normalizeExpiryInput(expiry) : null;
+    if (!normalizedExpiry) {
+      throw new ValidationError('Select an expiry to preview futures quotes.');
+    }
+
+    const derivativeExchange = symbol.symbol_type === 'FUTURES'
+      ? symbol.exchange
+      : derivativeResolutionService.getDerivativeExchange(symbol.exchange);
+
+    const underlying = derivativeResolutionService.getDerivativeUnderlying(symbol);
+    if (!underlying) {
+      throw new ValidationError(
+        'Underlying symbol is required to preview futures contracts. Please set it in the watchlist symbol settings.'
+      );
+    }
+
+    const marketDataInstanceService = (await import('./market-data-instance.service.js')).default;
+    const marketDataInstance = await marketDataInstanceService.getMarketDataInstance();
+
+    const futuresResolution = await derivativeResolutionService.resolveFuturesSymbol(
+      marketDataInstance,
+      underlying,
+      derivativeExchange,
+      normalizedExpiry
+    );
+
+    const quotesMap = await this._getQuotesFromCache(marketDataInstance, [
+      {
+        exchange: derivativeExchange,
+        symbol: futuresResolution.symbol,
+      },
+    ]);
+
+    const quoteKey = this._buildQuoteMatchKey(derivativeExchange, futuresResolution.symbol);
+    const quote = quoteKey ? quotesMap.get(quoteKey) : null;
+
+    return {
+      symbolId,
+      watchlistId: symbol.watchlist_id,
+      expiry: futuresResolution.expiry || normalizedExpiry,
+      derivativeExchange,
+      futuresSymbol: futuresResolution.symbol,
+      tradingSymbol: futuresResolution.trading_symbol || futuresResolution.symbol,
+      lotSize: futuresResolution.lot_size || symbol.lot_size || symbol.lotsize || 1,
+      tickSize: futuresResolution.tick_size || 0.05,
+      quote: quote
+        ? {
+            ltp: this._extractLtpFromQuote(quote),
+            changePercent: this._extractChangePercentFromQuote(quote),
+          }
+        : null,
+      updatedAt: new Date().toISOString(),
     };
   }
 
@@ -2777,6 +2758,21 @@ class QuickOrderService {
     }
 
     return null;
+  }
+
+  _resolveProductForOrder(product, tradeMode, symbol) {
+    const normalizedProduct = this._normalizeProduct(product) || 'MIS';
+    const trade = String(tradeMode || '').toUpperCase();
+    const symbolType = String(symbol.symbol_type || '').toUpperCase();
+
+    const isDerivativeTrade = trade === 'FUTURES' || trade === 'OPTIONS';
+    const isDerivativeSymbol = symbolType === 'FUTURES' || symbolType === 'OPTIONS';
+
+    if (isDerivativeTrade || isDerivativeSymbol) {
+      return 'NRML';
+    }
+
+    return normalizedProduct;
   }
 
   /**

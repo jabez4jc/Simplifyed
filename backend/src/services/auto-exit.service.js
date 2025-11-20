@@ -9,6 +9,7 @@ import instanceService from './instance.service.js';
 import watchlistService from './watchlist.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import quickOrderService from './quick-order.service.js';
+import riskControlsService from './risk-controls.service.js';
 
 const TRADE_MODE_MAP = {
   direct: 'EQUITY',
@@ -22,7 +23,6 @@ class AutoExitService {
     this.intervalId = null;
     this.isCycleRunning = false;
     this.pendingExits = new Map();
-    this.trailingState = new Map();
     this.monitorIntervalMs = config.autoExit?.monitorIntervalMs || 5000;
   }
 
@@ -50,7 +50,7 @@ class AutoExitService {
     this.isRunning = false;
     this.isCycleRunning = false;
     this.pendingExits.clear();
-    this.trailingState.clear();
+    riskControlsService.reset();
     log.info('AutoExitService stopped');
   }
 
@@ -104,7 +104,7 @@ class AutoExitService {
 
     if (positionQty === 0) {
       this.pendingExits.delete(key);
-      this.trailingState.delete(key);
+      riskControlsService.clearTrailingState(key);
       return;
     }
 
@@ -117,51 +117,27 @@ class AutoExitService {
       return;
     }
 
-    const websocketPrice = this._getWebsocketQuote(instance.id, position.symbol || position.tradingsymbol || position.trading_symbol, positionExchange);
     const fallbackPrice = this._extractPrice(position, ['ltp', 'ltp_value', 'last_price', 'lastprice', 'price']);
     const entryPrice = this._extractPrice(position, ['average_price', 'avg_price', 'avgprice', 'open_price']);
-    const currentPrice = websocketPrice ?? fallbackPrice;
-    if ((!currentPrice && websocketPrice === null) || !entryPrice) {
-      return;
-    }
-
-    const mode = this._determineMode(configEntry, positionSymbol);
-    const thresholds = this._getThresholds(configEntry, mode);
-    if (!thresholds) {
+    const currentPrice = fallbackPrice;
+    if (!currentPrice || !entryPrice) {
       return;
     }
 
     const side = positionQty > 0 ? 'LONG' : 'SHORT';
-    const direction = side === 'LONG' ? 1 : -1;
-    const targetPrice = thresholds.targetPoints
-      ? entryPrice + direction * thresholds.targetPoints
-      : null;
-    const stopPrice = thresholds.stoplossPoints
-      ? entryPrice - direction * thresholds.stoplossPoints
-      : null;
-
-    const trailingHit = this._evaluateTrailing(
+    const evaluation = riskControlsService.evaluateExit({
       key,
       side,
       currentPrice,
       entryPrice,
-      thresholds.trailingPoints,
-      thresholds.trailingActivationPoints
-    );
-    const targetHit = targetPrice && (
-      (side === 'LONG' && currentPrice >= targetPrice) ||
-      (side === 'SHORT' && currentPrice <= targetPrice)
-    );
-    const stopHit = stopPrice && (
-      (side === 'LONG' && currentPrice <= stopPrice) ||
-      (side === 'SHORT' && currentPrice >= stopPrice)
-    );
+      configEntry,
+      symbol: positionSymbol,
+    });
+    if (!evaluation) {
+      return;
+    }
 
-    let exitReason = null;
-    if (targetHit) exitReason = 'TARGET_MET';
-    else if (stopHit) exitReason = 'STOPLOSS_HIT';
-    else if (trailingHit) exitReason = 'TSL_HIT';
-
+    const { reason: exitReason, mode } = evaluation;
     if (exitReason) {
       await this._executeAutoExit(instance, position, mode, exitReason);
       this.pendingExits.set(key, Date.now());
@@ -198,77 +174,6 @@ class AutoExitService {
         error: error.message,
       });
     }
-  }
-
-  _evaluateTrailing(key, side, currentPrice, entryPrice, trailingPoints, activationPoints) {
-    if (!trailingPoints) return false;
-    if (!entryPrice || entryPrice <= 0) return false;
-
-    const profit = side === 'LONG'
-      ? currentPrice - entryPrice
-      : entryPrice - currentPrice;
-
-    const state = this.trailingState.get(key) || {
-      highest: currentPrice,
-      lowest: currentPrice,
-      activated: !activationPoints,
-    };
-    state.highest = Math.max(state.highest, currentPrice);
-    state.lowest = Math.min(state.lowest, currentPrice);
-
-    if (activationPoints && !state.activated) {
-      if (profit >= activationPoints) {
-        state.activated = true;
-      } else {
-        this.trailingState.set(key, state);
-        return false;
-      }
-    }
-
-    if (!state.activated) {
-      this.trailingState.set(key, state);
-      return false;
-    }
-
-    if (side === 'LONG') {
-      const trigger = state.highest - trailingPoints;
-      this.trailingState.set(key, state);
-      return currentPrice <= trigger;
-    }
-
-    const trigger = state.lowest + trailingPoints;
-    this.trailingState.set(key, state);
-    return currentPrice >= trigger;
-  }
-
-  _getThresholds(entry, mode) {
-    const normalizeValue = (value) => (typeof value === 'number' && value > 0 ? value : null);
-    const targetPoints = normalizeValue(entry[`target_points_${mode}`]);
-    const stoplossPoints = normalizeValue(entry[`stoploss_points_${mode}`]);
-    const trailingPoints = normalizeValue(entry[`trailing_stoploss_points_${mode}`]);
-    const trailingActivationPoints = normalizeValue(entry[`trailing_activation_points_${mode}`]) ?? 0;
-    if (!targetPoints && !stoplossPoints && !trailingPoints) {
-      return null;
-    }
-    return { targetPoints, stoplossPoints, trailingPoints, trailingActivationPoints };
-  }
-
-  _determineMode(entry, symbol) {
-    const normalizedSymbol = symbol.toUpperCase();
-    if (normalizedSymbol.includes('CE') || normalizedSymbol.includes('PE')) {
-      return 'options';
-    }
-    if (normalizedSymbol.includes('FUT')) {
-      return 'futures';
-    }
-    const type = (entry.symbol_type || '').toUpperCase();
-    if (type === 'OPTIONS') {
-      return 'options';
-    }
-    if (type === 'FUTURES' || type === 'INDEX') {
-      return 'futures';
-    }
-    return 'direct';
   }
 
   _findConfig(symbol, exchange, lookup) {
@@ -323,30 +228,6 @@ class AutoExitService {
       keys.push(underlying);
     }
     return keys;
-  }
-
-  _getWebsocketQuote(instanceId, symbol, exchange) {
-    const snapshot = marketDataFeedService.getQuoteSnapshot(instanceId);
-    if (!snapshot?.data || snapshot.source !== 'websocket') {
-      return null;
-    }
-
-    const targetKey = this._symbolKey(exchange, symbol);
-    if (!targetKey) {
-      return null;
-    }
-
-    for (const item of snapshot.data) {
-      if (this._symbolKey(item.exchange, item.symbol) !== targetKey) {
-        continue;
-      }
-      const price = parseFloat(item.ltp);
-      if (!Number.isNaN(price) && price > 0) {
-        return price;
-      }
-    }
-
-    return null;
   }
 
   _symbolKey(exchange, symbol) {

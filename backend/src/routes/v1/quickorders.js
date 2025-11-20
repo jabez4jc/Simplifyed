@@ -192,6 +192,33 @@ router.get('/options/preview', async (req, res, next) => {
 });
 
 /**
+ * GET /api/v1/quickorders/futures/preview
+ * Resolve the futures contract + quote for the current futures configuration
+ */
+router.get('/futures/preview', async (req, res, next) => {
+  try {
+    const { symbolId, expiry } = req.query;
+
+    const parsedSymbolId = parseInt(symbolId, 10);
+    if (!symbolId || Number.isNaN(parsedSymbolId) || parsedSymbolId <= 0) {
+      throw new ValidationError('symbolId must be a positive integer');
+    }
+
+    const preview = await quickOrderService.getFuturesPreview({
+      symbolId: parsedSymbolId,
+      expiry: expiry || null,
+    });
+
+    res.json({
+      status: 'success',
+      data: preview,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * GET /api/v1/quickorders
  * Get quick order history with filters
  *

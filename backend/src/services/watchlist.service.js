@@ -10,14 +10,8 @@ import {
   ConflictError,
   ValidationError,
 } from '../core/errors.js';
-import {
-  sanitizeString,
-  sanitizeSymbol,
-  sanitizeExchange,
-  parseFloatSafe,
-  parseIntSafe,
-  parseBooleanSafe,
-} from '../utils/sanitizers.js';
+import { sanitizeString, parseBooleanSafe } from '../utils/sanitizers.js';
+import watchlistSymbolService from './watchlist-symbol.service.js';
 
 class WatchlistService {
   /**
@@ -71,10 +65,7 @@ class WatchlistService {
       }
 
       // Get symbols
-      const symbols = await db.all(
-        'SELECT * FROM watchlist_symbols WHERE watchlist_id = ? ORDER BY created_at',
-        [id]
-      );
+      const symbols = await watchlistSymbolService.getSymbolsByWatchlist(id);
 
       // Get assigned instances (only active instances)
       const instances = await db.all(
@@ -236,28 +227,7 @@ class WatchlistService {
 
       // Clone symbols
       for (const symbol of source.symbols) {
-        await this.addSymbol(cloned.id, {
-          exchange: symbol.exchange,
-          symbol: symbol.symbol,
-          token: symbol.token,
-          lot_size: symbol.lot_size,
-          qty_type: symbol.qty_type,
-          qty_value: symbol.qty_value,
-          product_type: symbol.product_type,
-          order_type: symbol.order_type,
-          max_position_size: symbol.max_position_size,
-          is_enabled: symbol.is_enabled,
-          // Symbol metadata fields
-          symbol_type: symbol.symbol_type,
-          expiry: symbol.expiry,
-          strike: symbol.strike,
-          option_type: symbol.option_type,
-          instrumenttype: symbol.instrumenttype,
-          name: symbol.name,
-          tick_size: symbol.tick_size,
-          brsymbol: symbol.brsymbol,
-          brexchange: symbol.brexchange,
-        });
+        await watchlistSymbolService.addSymbol(cloned.id, { ...symbol });
       }
 
       // Clone instance assignments
@@ -289,122 +259,8 @@ class WatchlistService {
    */
   async addSymbol(watchlistId, symbolData) {
     try {
-      // Validate watchlist exists
       await this.getWatchlistById(watchlistId);
-
-      // Normalize and validate symbol data
-      const normalized = this._normalizeSymbolData(symbolData);
-
-      // Check for duplicate symbol in watchlist
-      const existing = await db.get(
-        `SELECT id FROM watchlist_symbols
-         WHERE watchlist_id = ? AND exchange = ? AND symbol = ?`,
-        [watchlistId, normalized.exchange, normalized.symbol]
-      );
-
-      if (existing) {
-        throw new ConflictError(
-          `Symbol ${normalized.symbol} already exists in this watchlist`
-        );
-      }
-
-      const insertColumns = [
-        'watchlist_id',
-        'exchange',
-        'symbol',
-        'token',
-        'lot_size',
-        'qty_type',
-        'qty_value',
-        'product_type',
-        'order_type',
-        'max_position_size',
-        'tradable_equity',
-        'tradable_futures',
-        'tradable_options',
-        'underlying_symbol',
-        'target_points_direct',
-        'stoploss_points_direct',
-        'trailing_stoploss_points_direct',
-        'target_points_futures',
-        'stoploss_points_futures',
-        'trailing_stoploss_points_futures',
-        'target_points_options',
-        'stoploss_points_options',
-        'trailing_stoploss_points_options',
-        'trailing_activation_points_direct',
-        'trailing_activation_points_futures',
-        'trailing_activation_points_options',
-        'is_enabled',
-        'symbol_type',
-        'expiry',
-        'strike',
-        'option_type',
-        'instrumenttype',
-        'name',
-        'tick_size',
-        'brsymbol',
-        'brexchange',
-      ];
-
-      const columnPlaceholders = insertColumns.map(() => '?').join(', ');
-
-      const values = [
-        watchlistId,
-        normalized.exchange,
-        normalized.symbol,
-        normalized.token,
-        normalized.lot_size || 1,
-        normalized.qty_type,
-        normalized.qty_value,
-        normalized.product_type,
-        normalized.order_type,
-        normalized.max_position_size,
-        normalized.tradable_equity !== undefined ? normalized.tradable_equity : 1,
-        normalized.tradable_futures !== undefined ? normalized.tradable_futures : 0,
-        normalized.tradable_options !== undefined ? normalized.tradable_options : 0,
-        normalized.underlying_symbol || normalized.symbol || null,
-        normalized.target_points_direct ?? null,
-        normalized.stoploss_points_direct ?? null,
-        normalized.trailing_stoploss_points_direct ?? null,
-        normalized.target_points_futures ?? null,
-        normalized.stoploss_points_futures ?? null,
-        normalized.trailing_stoploss_points_futures ?? null,
-        normalized.target_points_options ?? null,
-        normalized.stoploss_points_options ?? null,
-        normalized.trailing_stoploss_points_options ?? null,
-        normalized.trailing_activation_points_direct ?? null,
-        normalized.trailing_activation_points_futures ?? null,
-        normalized.trailing_activation_points_options ?? null,
-        normalized.is_enabled ? 1 : 0,
-        normalized.symbol_type || null,
-        normalized.expiry || null,
-        normalized.strike || null,
-        normalized.option_type || null,
-        normalized.instrumenttype || null,
-        normalized.name || null,
-        normalized.tick_size || null,
-        normalized.brsymbol || null,
-        normalized.brexchange || null,
-      ];
-
-      const result = await db.run(
-        `INSERT INTO watchlist_symbols (${insertColumns.join(', ')}) VALUES (${columnPlaceholders})`,
-        values
-      );
-
-      const symbol = await db.get(
-        'SELECT * FROM watchlist_symbols WHERE id = ?',
-        [result.lastID]
-      );
-
-      log.info('Symbol added to watchlist', {
-        watchlist_id: watchlistId,
-        symbol: normalized.symbol,
-        exchange: normalized.exchange,
-      });
-
-      return symbol;
+      return await watchlistSymbolService.addSymbol(watchlistId, symbolData);
     } catch (error) {
       if (
         error instanceof NotFoundError ||
@@ -426,48 +282,7 @@ class WatchlistService {
    */
   async updateSymbol(symbolId, updates) {
     try {
-      // Check if symbol exists
-      const existing = await db.get(
-        'SELECT * FROM watchlist_symbols WHERE id = ?',
-        [symbolId]
-      );
-
-      if (!existing) {
-        throw new NotFoundError('Symbol');
-      }
-
-      // Normalize updates
-      const normalized = this._normalizeSymbolData(updates, true);
-
-      // Build update query
-      const fields = [];
-      const values = [];
-
-      for (const [key, value] of Object.entries(normalized)) {
-        fields.push(`${key} = ?`);
-        values.push(value);
-      }
-
-      if (fields.length === 0) {
-        throw new ValidationError('No valid fields to update');
-      }
-
-      fields.push('updated_at = CURRENT_TIMESTAMP');
-      values.push(symbolId);
-
-      await db.run(
-        `UPDATE watchlist_symbols SET ${fields.join(', ')} WHERE id = ?`,
-        values
-      );
-
-      const symbol = await db.get(
-        'SELECT * FROM watchlist_symbols WHERE id = ?',
-        [symbolId]
-      );
-
-      log.info('Symbol updated', { id: symbolId, updates: Object.keys(normalized) });
-
-      return symbol;
+      return await watchlistSymbolService.updateSymbol(symbolId, updates);
     } catch (error) {
       if (error instanceof NotFoundError || error instanceof ValidationError) {
         throw error;
@@ -483,19 +298,7 @@ class WatchlistService {
    */
   async removeSymbol(symbolId) {
     try {
-      // Check if symbol exists
-      const existing = await db.get(
-        'SELECT * FROM watchlist_symbols WHERE id = ?',
-        [symbolId]
-      );
-
-      if (!existing) {
-        throw new NotFoundError('Symbol');
-      }
-
-      await db.run('DELETE FROM watchlist_symbols WHERE id = ?', [symbolId]);
-
-      log.info('Symbol removed', { id: symbolId, symbol: existing.symbol });
+      await watchlistSymbolService.removeSymbol(symbolId);
     } catch (error) {
       if (error instanceof NotFoundError) throw error;
       log.error('Failed to remove symbol', error, { symbolId });
@@ -740,201 +543,6 @@ class WatchlistService {
     return normalized;
   }
 
-  /**
-   * Normalize and validate symbol data
-   * @private
-   */
-  _normalizeSymbolData(data, isUpdate = false) {
-    const normalized = {};
-    const errors = [];
-
-    // Exchange
-    if (data.exchange !== undefined) {
-      const exchange = sanitizeExchange(data.exchange);
-      if (!exchange && !isUpdate) {
-        errors.push({ field: 'exchange', message: 'Valid exchange is required' });
-      } else if (exchange) {
-        normalized.exchange = exchange;
-      }
-    }
-
-    // Symbol
-    if (data.symbol !== undefined) {
-      const symbol = sanitizeSymbol(data.symbol);
-      if (!symbol && !isUpdate) {
-        errors.push({ field: 'symbol', message: 'Symbol is required' });
-      } else if (symbol) {
-        normalized.symbol = symbol;
-      }
-    }
-
-    // Token
-    if (data.token !== undefined) {
-      normalized.token = sanitizeString(data.token) || null;
-    }
-
-    // Quantity configuration
-    if (data.qty_type !== undefined) {
-      const qtyType = sanitizeString(data.qty_type);
-      if (['fixed', 'capital', 'percentage'].includes(qtyType)) {
-        normalized.qty_type = qtyType;
-      } else if (!isUpdate) {
-        errors.push({ field: 'qty_type', message: 'Invalid qty_type' });
-      }
-    }
-
-    if (data.qty_value !== undefined) {
-      const qtyValue = parseFloatSafe(data.qty_value, null);
-      if (qtyValue !== null && qtyValue > 0) {
-        normalized.qty_value = qtyValue;
-      } else if (!isUpdate) {
-        errors.push({ field: 'qty_value', message: 'qty_value must be positive' });
-      }
-    }
-
-    // Product type
-    if (data.product_type !== undefined) {
-      const productType = sanitizeString(data.product_type).toUpperCase();
-      if (['MIS', 'CNC', 'NRML'].includes(productType)) {
-        normalized.product_type = productType;
-      } else if (!isUpdate) {
-        errors.push({ field: 'product_type', message: 'Invalid product_type' });
-      }
-    }
-
-    // Order type
-    if (data.order_type !== undefined) {
-      const orderType = sanitizeString(data.order_type).toUpperCase();
-      if (['MARKET', 'LIMIT'].includes(orderType)) {
-        normalized.order_type = orderType;
-      } else if (!isUpdate) {
-        errors.push({ field: 'order_type', message: 'Invalid order_type' });
-      }
-    }
-
-    // Max position size
-    if (data.max_position_size !== undefined) {
-      const maxSize = parseIntSafe(data.max_position_size, null);
-      if (maxSize !== null && maxSize > 0) {
-        normalized.max_position_size = maxSize;
-      }
-    }
-
-    if (data.tradable_equity !== undefined) {
-      normalized.tradable_equity = parseBooleanSafe(data.tradable_equity, true) ? 1 : 0;
-    }
-
-    if (data.tradable_futures !== undefined) {
-      normalized.tradable_futures = parseBooleanSafe(data.tradable_futures, false) ? 1 : 0;
-    }
-
-    if (data.tradable_options !== undefined) {
-      normalized.tradable_options = parseBooleanSafe(data.tradable_options, false) ? 1 : 0;
-    }
-
-    if (data.underlying_symbol !== undefined) {
-      const underlying = sanitizeSymbol(data.underlying_symbol);
-      normalized.underlying_symbol = underlying || null;
-    }
-
-    // Is enabled
-    if (data.is_enabled !== undefined) {
-      normalized.is_enabled = parseBooleanSafe(data.is_enabled, true);
-    }
-
-    // Symbol metadata (from symbol validation/search API)
-    if (data.symbol_type !== undefined) {
-      const symbolType = sanitizeString(data.symbol_type).toUpperCase();
-      if (['EQUITY', 'FUTURES', 'OPTIONS', 'INDEX', 'UNKNOWN'].includes(symbolType)) {
-        normalized.symbol_type = symbolType;
-      }
-    }
-
-    if (data.expiry !== undefined) {
-      normalized.expiry = sanitizeString(data.expiry) || null;
-    }
-
-    if (data.strike !== undefined) {
-      normalized.strike = parseFloatSafe(data.strike, null);
-    }
-
-    if (data.option_type !== undefined) {
-      const optionType = sanitizeString(data.option_type).toUpperCase();
-      if (['CE', 'PE', ''].includes(optionType)) {
-        normalized.option_type = optionType || null;
-      }
-    }
-
-    if (data.instrumenttype !== undefined) {
-      normalized.instrumenttype = sanitizeString(data.instrumenttype) || null;
-    }
-
-    if (data.name !== undefined) {
-      normalized.name = sanitizeString(data.name) || null;
-    }
-
-    if (data.lotsize !== undefined || data.lot_size !== undefined) {
-      const lotsize = parseIntSafe(data.lotsize || data.lot_size, 1);
-      normalized.lot_size = lotsize > 0 ? lotsize : 1;
-    }
-
-    if (data.tick_size !== undefined || data.tickSize !== undefined) {
-      normalized.tick_size = parseFloatSafe(data.tick_size || data.tickSize, null);
-    }
-
-    if (data.brsymbol !== undefined) {
-      normalized.brsymbol = sanitizeString(data.brsymbol) || null;
-    }
-
-    if (data.brexchange !== undefined) {
-      normalized.brexchange = sanitizeString(data.brexchange) || null;
-    }
-
-    const collectPointField = (fieldName) => {
-      if (!Object.prototype.hasOwnProperty.call(data, fieldName)) {
-        return;
-      }
-
-      const rawValue = data[fieldName];
-      const trimmed = typeof rawValue === 'string' ? rawValue.trim() : rawValue;
-
-      if (trimmed === '' || trimmed === null) {
-        normalized[fieldName] = null;
-        return;
-      }
-
-      const parsed = parseFloatSafe(trimmed, null);
-      if (parsed !== null && parsed >= 0) {
-        normalized[fieldName] = parsed;
-      } else {
-        errors.push({
-          field: fieldName,
-          message: 'Must be a non-negative number',
-        });
-      }
-    };
-
-    [
-      'target_points_direct',
-      'stoploss_points_direct',
-      'trailing_stoploss_points_direct',
-      'target_points_futures',
-      'stoploss_points_futures',
-      'trailing_stoploss_points_futures',
-      'target_points_options',
-      'stoploss_points_options',
-      'trailing_stoploss_points_options',
-      'trailing_activation_points_direct',
-      'trailing_activation_points_futures',
-      'trailing_activation_points_options',
-    ].forEach(collectPointField);
-
-    if (errors.length > 0) {
-      throw new ValidationError('Symbol validation failed', errors);
-    }
-
-    return normalized;
-  }
 }
 
 // Export singleton instance

@@ -22,7 +22,7 @@ class DashboardApp {
     this.watchlistQuoteSnapshots = new Map();
     this.isSidebarCollapsed = false;
     this.quickOrder = window.quickOrder || null;
-    this.validViews = ['dashboard', 'instances', 'watchlists', 'orders', 'positions', 'settings'];
+    this.validViews = ['dashboard', 'instances', 'watchlists', 'orders', 'trades', 'positions', 'settings'];
     this.suppressHashChange = false;
     this._throttledWatchlistRefresh = Utils.throttle((opts = {}) => {
       this.refreshWatchlistPositions(opts);
@@ -36,6 +36,9 @@ class DashboardApp {
       { key: 'options', label: 'Options Trading' },
     ];
     this.symbolConfigContext = null;
+    this.tradesPollingInterval = null;
+    this.tradesLastUpdatedAt = null;
+    this.tradesPayload = null;
   }
 
   /**
@@ -256,6 +259,13 @@ class DashboardApp {
       if (window.quickOrder && typeof window.quickOrder.stopAllOptionPreviewPolling === 'function') {
         window.quickOrder.stopAllOptionPreviewPolling();
       }
+      if (window.quickOrder && typeof window.quickOrder.stopAllFuturesPreviewPolling === 'function') {
+        window.quickOrder.stopAllFuturesPreviewPolling();
+      }
+    }
+
+    if (this.currentView === 'trades' && viewName !== 'trades') {
+      this.stopTradesPolling();
     }
 
     this.currentView = viewName;
@@ -266,6 +276,7 @@ class DashboardApp {
       instances: 'Instances',
       watchlists: 'Watchlists',
       orders: 'Orders',
+      trades: 'Trades',
       positions: 'Positions',
       settings: 'Settings',
     };
@@ -291,6 +302,9 @@ class DashboardApp {
           break;
         case 'orders':
           await this.renderOrdersView();
+          break;
+        case 'trades':
+          await this.renderTradesView();
           break;
         case 'positions':
           await this.renderPositionsView();
@@ -552,19 +566,19 @@ class DashboardApp {
     return `
       <table class="table">
         <thead>
-          <tr>
-            ${showBulkActions ? '<th><input type="checkbox" id="select-all-instances" onchange="app.toggleSelectAllInstances(this.checked)"></th>' : ''}
-            <th>Name</th>
-            <th>Broker</th>
-            <th>Status</th>
-            <th>Health</th>
-            <th>Mode</th>
-            <th class="text-right">Balance</th>
-            <th class="text-right">Total P&L</th>
-            <th class="text-right">Realized</th>
-            <th class="text-right">Unrealized</th>
-            <th>Actions</th>
-          </tr>
+            <tr>
+              ${showBulkActions ? '<th><input type="checkbox" id="select-all-instances" onchange="app.toggleSelectAllInstances(this.checked)"></th>' : ''}
+              <th>Name</th>
+              <th>Broker</th>
+              <th>Status</th>
+              <th>Health</th>
+              <th>Mode</th>
+              <th class="text-right">Balance</th>
+              <th class="text-right">Total P&L</th>
+              <th class="text-right">Realized</th>
+              <th class="text-right">Unrealized</th>
+              <th>Actions</th>
+            </tr>
         </thead>
         <tbody>
           ${instances.map(instance => `
@@ -634,6 +648,9 @@ class DashboardApp {
     if (window.quickOrder && typeof window.quickOrder.stopAllOptionPreviewPolling === 'function') {
       window.quickOrder.stopAllOptionPreviewPolling();
     }
+    if (window.quickOrder && typeof window.quickOrder.stopAllFuturesPreviewPolling === 'function') {
+      window.quickOrder.stopAllFuturesPreviewPolling();
+    }
 
     // Fetch watchlists + instances in parallel to reduce latency
     const [watchlistsRes, instancesRes] = await Promise.all([
@@ -674,17 +691,17 @@ class DashboardApp {
         </div>
 
         <div class="card">
-          <div class="card-header flex flex-wrap items-center gap-4">
-            <div class="flex-1 min-w-[200px] flex items-center gap-2">
-              <h3 class="card-title flex items-center gap-2 mb-0">
-                💼 Open Positions
-              </h3>
-              <p class="text-sm text-neutral-500">Showing open positions from all linked instances</p>
+          <div class="card-header">
+            <div class="header-left">
+              <span class="text-xl">💼</span>
+              <h3 class="card-title">Open Positions</h3>
             </div>
-            <div id="positions-summary-inline" class="flex min-w-[220px] justify-center text-center text-sm text-neutral-600 gap-8">
-              <span>Loading summary...</span>
+            <div class="flex items-center justify-center flex-1">
+              <div id="positions-summary-inline" class="flex flex-col items-center gap-2">
+                <span class="text-xs text-neutral-500 uppercase tracking-wide">Loading positions…</span>
+              </div>
             </div>
-            <div class="flex items-center gap-2 ml-auto">
+            <div class="header-actions">
               <button class="btn btn-outline btn-sm" onclick="app.requestWatchlistRefresh({ showLoader: true, force: true })">
                 Refresh
               </button>
@@ -763,32 +780,36 @@ class DashboardApp {
           </button>
           <div class="watchlist-card__info">
             <div class="flex items-center justify-between gap-4 flex-wrap">
-              <div>
-                <h4>${Utils.escapeHTML(wl.name)}</h4>
+              <div class="flex-1">
+                <div class="flex items-center gap-3">
+                  <h4>${Utils.escapeHTML(wl.name)}</h4>
+                  <span class="watchlist-card__meta-inline">
+                    <span>${wl.symbol_count || 0} symbols</span>
+                    <span>•</span>
+                    <span>${wl.instance_count || 0} instances</span>
+                  </span>
+                </div>
                 <p>${Utils.escapeHTML(wl.description || 'No description provided')}</p>
               </div>
-              <span class="watchlist-card__status ${statusColor}">
-                ${wl.is_active ? 'Active' : 'Paused'}
-              </span>
-            </div>
-            <div class="watchlist-card__meta">
-              <span>${wl.symbol_count || 0} symbols</span>
-              <span>•</span>
-              <span>${wl.instance_count || 0} instances</span>
-            </div>
-            <div class="watchlist-card__actions">
-              <button class="watchlist-actions__button" onclick="app.showAddSymbolModal(${wl.id})">
-                + Add Symbol
-              </button>
-              <button class="watchlist-actions__button" onclick="app.showEditWatchlistModal(${wl.id})">
-                ✏️ Edit Watchlist
-              </button>
-              <button class="watchlist-actions__button" onclick="app.manageWatchlistInstances(${wl.id})">
-                🔗 Manage Instances
-              </button>
-              <button class="watchlist-actions__button danger" onclick="app.deleteWatchlist(${wl.id})">
-                🗑️ Delete
-              </button>
+              <div class="flex items-center gap-2 shrink-0">
+                <span class="watchlist-card__status ${statusColor}">
+                  ${wl.is_active ? 'Active' : 'Paused'}
+                </span>
+                <div class="watchlist-card__actions">
+                  <button class="watchlist-actions__button btn-xs" onclick="app.showAddSymbolModal(${wl.id})" title="Add Symbol">
+                    + Add Symbol
+                  </button>
+                  <button class="watchlist-actions__button btn-xs" onclick="app.showEditWatchlistModal(${wl.id})" title="Edit Watchlist">
+                    ✏️
+                  </button>
+                  <button class="watchlist-actions__button btn-xs" onclick="app.manageWatchlistInstances(${wl.id})" title="Manage Instances">
+                    🔗
+                  </button>
+                  <button class="watchlist-actions__button danger btn-xs" onclick="app.deleteWatchlist(${wl.id})" title="Delete">
+                    🗑️
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1566,6 +1587,7 @@ class DashboardApp {
       const placedAt = timestamp && timestamp !== '-' ? Utils.formatDateTime(timestamp, true) : '-';
       const statusValue = (safeValue('status', 'metadata.order_status') || 'unknown').toLowerCase();
       const rejectionReason = safeValue('metadata.rejection_reason', 'metadata.rejectionReason');
+      const resolvedSymbol = safeValue('resolved_symbol', 'metadata.resolved_symbol', 'metadata.symbol');
       let statusBadge = Utils.getStatusBadge(statusValue);
       if (statusValue === 'rejected' && rejectionReason) {
         const escapedReason = Utils.escapeHTML(rejectionReason);
@@ -1578,6 +1600,7 @@ class DashboardApp {
       return `
         <tr>
           <td>${Utils.escapeHTML(safeValue('symbol', 'metadata.symbol'))}</td>
+          <td class="text-xs text-neutral-600">${Utils.escapeHTML(resolvedSymbol)}</td>
           <td>${exchange}</td>
           <td>
             <span class="badge ${action === 'BUY' ? 'badge-success' : 'badge-error'}">
@@ -1609,6 +1632,7 @@ class DashboardApp {
           <thead>
             <tr>
               <th>Symbol</th>
+              <th>Resolved</th>
               <th>Exchange</th>
               <th>Side</th>
               <th>Price</th>
@@ -1623,6 +1647,245 @@ class DashboardApp {
           </thead>
           <tbody>
             ${rows}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  stopTradesPolling() {
+    if (this.tradesPollingInterval) {
+      clearInterval(this.tradesPollingInterval);
+      this.tradesPollingInterval = null;
+    }
+  }
+
+  updateTradesLastUpdatedDisplay(timestamp) {
+    const label = document.getElementById('trades-last-updated');
+    if (!label) return;
+    if (!timestamp) {
+      label.textContent = 'Waiting for updates…';
+      return;
+    }
+    label.textContent = `Updated ${Utils.formatRelativeTime(new Date(timestamp).toISOString())}`;
+  }
+
+  /**
+   * Render Trades View
+   */
+  async renderTradesView() {
+    const contentArea = document.getElementById('content-area');
+    this.stopTradesPolling();
+
+    contentArea.innerHTML = `
+      <div class="space-y-4">
+        <div class="card">
+          <div class="card-header flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 class="card-title">Trades</h3>
+              <p class="text-sm text-neutral-600">Live tradebook snapshot grouped by instance. Auto-refreshes every 5 seconds.</p>
+            </div>
+            <div class="flex items-center gap-3 flex-wrap text-sm text-neutral-500">
+              <span id="trades-last-updated">Waiting for updates…</span>
+              <button class="btn btn-outline btn-sm" onclick="app.loadTrades()">
+                Refresh
+              </button>
+            </div>
+          </div>
+          <div class="p-4" id="trades-panel">
+            <div class="text-center text-neutral-500">Loading trades…</div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    await this.loadTrades();
+    this.tradesPollingInterval = setInterval(() => this.loadTrades(true), 5000);
+  }
+
+  async loadTrades(isAuto = false) {
+    try {
+      const response = await api.getTradebook();
+      this.tradesPayload = response.data || {};
+      this.tradesLastUpdatedAt = this.tradesPayload.fetchedAt || Date.now();
+      this.renderTradesPanel(this.tradesPayload);
+      this.updateTradesLastUpdatedDisplay(this.tradesLastUpdatedAt);
+    } catch (error) {
+      const panel = document.getElementById('trades-panel');
+      if (panel) {
+        panel.innerHTML = `<p class="text-center text-error-600">${Utils.escapeHTML(error.message)}</p>`;
+      }
+      if (!isAuto) {
+        Utils.showToast(`Failed to load trades: ${error.message}`, 'error');
+      }
+    }
+  }
+
+  renderTradesPanel(payload = {}) {
+    const panel = document.getElementById('trades-panel');
+    if (!panel) return;
+
+    const liveInstances = payload.liveInstances || [];
+    const analyzerInstances = payload.analyzerInstances || [];
+
+    if (!liveInstances.length && !analyzerInstances.length) {
+      panel.innerHTML = '<p class="text-center text-neutral-600">No trades available.</p>';
+      return;
+    }
+
+    panel.innerHTML = `
+      <div class="space-y-5">
+        ${this.renderTradesSummary(payload.statistics)}
+        ${this.renderTradesSection('Live Instances', liveInstances)}
+        ${this.renderTradesSection('Analyzer Mode Instances', analyzerInstances)}
+      </div>
+    `;
+  }
+
+  renderTradesSummary(stats = {}) {
+    const totalTrades = stats.total_trades || 0;
+    const buyTrades = stats.total_buy_trades || 0;
+    const sellTrades = stats.total_sell_trades || 0;
+    const notional = stats.total_value || 0;
+    const quantity = stats.total_quantity || 0;
+
+    return `
+      <div class="card border border-base-200 bg-base-100 p-4">
+        <div class="grid gap-4 md:grid-cols-4">
+          <div>
+            <div class="text-sm text-neutral-500 uppercase tracking-wide">Total Trades</div>
+            <div class="text-2xl font-semibold">${totalTrades}</div>
+          </div>
+          <div>
+            <div class="text-sm text-neutral-500 uppercase tracking-wide">Buy / Sell</div>
+            <div class="text-xl font-semibold">${buyTrades} / ${sellTrades}</div>
+          </div>
+          <div>
+            <div class="text-sm text-neutral-500 uppercase tracking-wide">Total Quantity</div>
+            <div class="text-xl font-semibold">${quantity}</div>
+          </div>
+          <div>
+            <div class="text-sm text-neutral-500 uppercase tracking-wide">Notional Value</div>
+            <div class="text-xl font-semibold">${Utils.formatCurrency(notional)}</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  renderTradesSection(title, instances = []) {
+    if (!instances.length) {
+      return `
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h3 class="card-title">${title}</h3>
+              <p class="text-sm text-neutral-600">No trades in this category.</p>
+            </div>
+            <span class="badge">0</span>
+          </div>
+        </div>
+      `;
+    }
+
+    const totalTrades = instances.reduce((acc, inst) => acc + (inst.trades?.length || 0), 0);
+
+    return `
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h3 class="card-title">${title}</h3>
+            <p class="text-sm text-neutral-600">${totalTrades} trades</p>
+          </div>
+          <span class="badge badge-outline">${totalTrades}</span>
+        </div>
+        <div class="divide-y divide-base-200">
+          ${instances.map(inst => this.renderTradesInstance(inst)).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  renderTradesInstance(instanceEntry) {
+    const trades = instanceEntry.trades || [];
+    const broker = Utils.escapeHTML(instanceEntry.broker || 'N/A');
+    const latestTrade = trades[0];
+    const lastTradeTime = latestTrade
+      ? (latestTrade.timestamp_iso
+        ? Utils.formatDateTime(latestTrade.timestamp_iso, true)
+        : Utils.escapeHTML(latestTrade.timestamp || ''))
+      : '-';
+
+    return `
+      <details class="instance-section" ${trades.length ? 'open' : ''}>
+        <summary class="flex flex-wrap cursor-pointer items-center justify-between gap-4 px-4 py-4">
+          <div>
+            <h4 class="font-semibold text-lg">${Utils.escapeHTML(instanceEntry.instance_name)}</h4>
+            <div class="text-sm text-neutral-600 flex gap-4 flex-wrap">
+              <span>Broker: ${broker}</span>
+              <span>Total trades: ${trades.length}</span>
+              <span>Last trade: ${lastTradeTime || '-'}</span>
+            </div>
+          </div>
+        </summary>
+        <div class="border-t border-base-200 p-4">
+          ${trades.length ? this.renderTradesTable(trades) : '<p class="text-neutral-500">No trades yet.</p>'}
+        </div>
+      </details>
+    `;
+  }
+
+  renderTradesTable(trades = []) {
+    const rows = trades.map(trade => {
+      const action = trade.action;
+      const badgeClass = action === 'BUY'
+        ? 'badge-success'
+        : action === 'SELL'
+          ? 'badge-error'
+          : 'badge-neutral';
+      const timestampDisplay = trade.timestamp_iso
+        ? Utils.formatDateTime(trade.timestamp_iso, true)
+        : Utils.escapeHTML(trade.timestamp || '-');
+      const avgPriceDisplay = (trade.average_price ?? null) !== null
+        ? Utils.formatNumber(trade.average_price)
+        : '-';
+      const tradeValueDisplay = (trade.trade_value ?? null) !== null
+        ? Utils.formatCurrency(trade.trade_value)
+        : '-';
+
+      return `
+        <tr>
+          <td>${Utils.escapeHTML(trade.symbol || '-')}</td>
+          <td>${Utils.escapeHTML(trade.exchange || '-')}</td>
+          <td>
+            <span class="badge ${badgeClass}">${action || '-'}</span>
+          </td>
+          <td>${trade.quantity ?? '-'}</td>
+          <td>${Utils.escapeHTML(trade.product || '-')}</td>
+          <td>${avgPriceDisplay}</td>
+          <td>${tradeValueDisplay}</td>
+          <td class="text-right">${timestampDisplay}</td>
+        </tr>
+      `;
+    }).join('');
+
+    return `
+      <div class="table-container overflow-x-auto">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Exchange</th>
+              <th>Side</th>
+              <th>Qty</th>
+              <th>Product</th>
+              <th>Avg Price</th>
+              <th>Trade Value</th>
+              <th class="text-right">Timestamp</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows || '<tr><td colspan="8" class="text-center text-neutral-500">No trades</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -1773,32 +2036,6 @@ class DashboardApp {
               </select>
               <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
                 Only Primary/Secondary instances will be used for fetching market data (quotes, depth, etc.)
-              </small>
-            </div>
-
-            <div class="form-group">
-              <label class="form-label">WebSocket Role</label>
-              <select name="websocket_role" class="form-select">
-                <option value="none">None - Don't stream via websocket</option>
-                <option value="primary">Primary - Stream quotes/depth via websocket</option>
-                <option value="secondary">Secondary - Fallback websocket stream</option>
-              </select>
-              <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                Mark websocket-capable instances for streaming data (HTTP polling remains as fallback)
-              </small>
-            </div>
-
-            <div class="form-group">
-              <label class="form-label">WebSocket Test</label>
-              <div class="flex gap-2 flex-wrap">
-                <input type="text" name="ws_test_symbol" class="form-input" placeholder="Symbol" value="NIFTY">
-                <input type="text" name="ws_test_exchange" class="form-input" placeholder="Exchange" value="NSE">
-                <button type="button" class="btn btn-outline btn-sm" onclick="app.testWebsocketConnection(this)">
-                  Test WebSocket
-                </button>
-              </div>
-              <small class="form-help" style="display: block; margin-top: 0.25rem;">
-                Streams the selected symbol for 5s via websocket to verify connectivity.
               </small>
             </div>
 
@@ -1987,44 +2224,6 @@ class DashboardApp {
       statusEl.textContent = '❌ ' + error.message;
       statusEl.style.color = 'var(--color-loss)';
       Utils.showToast('API key validation failed: ' + error.message, 'error');
-    }
-  }
-
-  async testWebsocketConnection(button) {
-    const form = button.closest('form');
-    if (!form) {
-      Utils.showToast('No form found for websocket test', 'error');
-      return;
-    }
-
-    const hostUrlField = form.querySelector('input[name="host_url"]');
-    const apiKeyField = form.querySelector('input[name="api_key"]');
-    const symbolField = form.querySelector('input[name="ws_test_symbol"]');
-    const exchangeField = form.querySelector('input[name="ws_test_exchange"]');
-
-    const hostUrl = hostUrlField?.value?.trim();
-    const apiKey = apiKeyField?.value?.trim();
-    const symbol = symbolField?.value?.trim() || 'NIFTY';
-    const exchange = exchangeField?.value?.trim() || 'NSE';
-
-    if (!hostUrl || !apiKey) {
-      Utils.showToast('Enter host URL and API key before testing websocket', 'warning');
-      return;
-    }
-
-    try {
-      Utils.showToast('Testing websocket connection…', 'info');
-      const response = await api.testWebsocketConnection({
-        host_url: hostUrl,
-        api_key: apiKey,
-        symbol,
-        exchange,
-      });
-
-      const message = response.data?.message || 'Websocket stream received updates';
-      Utils.showToast(message, 'success');
-    } catch (error) {
-      Utils.showToast('Websocket test failed: ' + error.message, 'error');
     }
   }
 
@@ -2936,22 +3135,24 @@ class DashboardApp {
     const summaryEl = document.getElementById('positions-summary-inline');
     if (!summaryEl) return;
 
+    const relativeText = refreshedAt ? `Updated ${Utils.formatRelativeTime(refreshedAt)}` : 'Updated just now';
     summaryEl.innerHTML = `
-      <div class="flex flex-col items-center gap-1">
-        <span class="text-xs uppercase tracking-wide text-neutral-500">Updated ${Utils.formatRelativeTime(refreshedAt)}</span>
-        <div class="flex items-center gap-10">
-          <span class="flex items-baseline gap-2">
-            <span class="text-xs text-neutral-500 uppercase tracking-wide">Total open</span>
-            <span class="text-lg font-semibold text-base-content">${overallOpen}</span>
-          </span>
-          <span class="flex items-baseline gap-2">
-            <span class="text-xs text-neutral-500 uppercase tracking-wide">Overall P&L</span>
-            <span class="text-lg font-semibold ${Utils.getPnLColorClass(overallPnl)}">
-              ${Utils.formatCurrency(overallPnl)}
-            </span>
+      <div class="flex items-center">
+        <div class="flex items-center gap-3">
+          <span class="text-[0.65rem] uppercase tracking-[0.25em] text-neutral-500">Total Open:</span>
+          <span class="text-sm font-semibold text-neutral-900">${overallOpen}</span>
+        </div>
+        <div style="width: 4rem;"></div>
+        <div class="w-px h-4 bg-neutral-300"></div>
+        <div style="width: 4rem;"></div>
+        <div class="flex items-center gap-3">
+          <span class="text-[0.65rem] uppercase tracking-[0.25em] text-neutral-500">Overall P&L:</span>
+          <span class="text-sm font-semibold ${Utils.getPnLColorClass(overallPnl)}">
+            ${Utils.formatCurrency(overallPnl)}
           </span>
         </div>
       </div>
+      <span class="text-xs text-neutral-400 whitespace-nowrap">${relativeText}</span>
     `;
   }
 
@@ -3330,38 +3531,6 @@ class DashboardApp {
                 </select>
                 <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
                   Only Primary/Secondary instances will be used for fetching market data
-                </small>
-              </div>
-
-              <div class="form-group">
-                <label class="form-label">WebSocket Role</label>
-                <select name="websocket_role" class="form-select">
-                  <option value="none" ${instance.websocket_role === 'none' ? 'selected' : ''}>
-                    None - Don't stream via websocket
-                  </option>
-                  <option value="primary" ${instance.websocket_role === 'primary' ? 'selected' : ''}>
-                    Primary - Stream quotes/depth via websocket
-                  </option>
-                  <option value="secondary" ${instance.websocket_role === 'secondary' ? 'selected' : ''}>
-                    Secondary - Websocket fallback
-                  </option>
-                </select>
-                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                  Use for websocket-capable instances; HTTP is still the fallback
-                </small>
-              </div>
-
-              <div class="form-group">
-                <label class="form-label">WebSocket Test</label>
-                <div class="flex gap-2 flex-wrap">
-                  <input type="text" name="ws_test_symbol" class="form-input" placeholder="Symbol" value="NIFTY">
-                  <input type="text" name="ws_test_exchange" class="form-input" placeholder="Exchange" value="NSE">
-                  <button type="button" class="btn btn-outline btn-sm" onclick="app.testWebsocketConnection(this)">
-                    Test WebSocket
-                  </button>
-                </div>
-                <small class="form-help" style="display: block; margin-top: 0.25rem;">
-                  Streams the selected symbol for 5s to verify websocket connectivity.
                 </small>
               </div>
 

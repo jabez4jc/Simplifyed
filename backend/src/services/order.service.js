@@ -6,6 +6,9 @@
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import openalgoClient from '../integrations/openalgo/client.js';
+import orderPlacementService from './order-placement.service.js';
+import orderPayloadFactory from './order-payload.factory.js';
+import orderRepository from './order-repository.js';
 import {
   NotFoundError,
   ValidationError,
@@ -65,8 +68,7 @@ class OrderService {
       const normalized = this._normalizeOrderData(params);
 
       // Build order data for OpenAlgo
-      const orderData = {
-        apikey: instance.api_key,
+      const orderData = orderPayloadFactory.buildEquityOrder({
         strategy: instance.strategy_tag || 'default',
         exchange: normalized.exchange,
         symbol: normalized.symbol,
@@ -75,10 +77,9 @@ class OrderService {
         position_size: normalized.position_size,
         product: normalized.product,
         pricetype: normalized.pricetype,
-        price: normalized.price.toString(),
-        trigger_price: normalized.trigger_price.toString(),
-        disclosed_quantity: '0',
-      };
+        price: normalized.price,
+        trigger_price: normalized.trigger_price,
+      });
 
       // Place order via OpenAlgo
       log.info('Placing order', {
@@ -88,41 +89,38 @@ class OrderService {
         quantity: normalized.quantity,
       });
 
-      const response = await openalgoClient.placeSmartOrder(instance, orderData);
+      const response = await orderPlacementService.placeSmartOrder(instance, orderData, {
+        request_type: 'MANUAL_ORDER',
+        base_symbol: normalized.symbol,
+        trade_mode: 'DIRECT',
+        exchange: normalized.exchange,
+      });
 
       // Extract order ID from response
       const orderId = response.orderid || response.order_id || null;
 
-      // Save order to database
-      const result = await db.run(
-        `INSERT INTO watchlist_orders (
-          watchlist_id, instance_id, symbol_id,
-          exchange, symbol, side, quantity,
-          order_type, product_type, price, trigger_price,
-          status, order_id, message, metadata
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          watchlistId || null,
-          instanceId,
-          symbolId || null,
-          normalized.exchange,
-          normalized.symbol,
-          normalized.action,
-          normalized.quantity,
-          normalized.pricetype,
-          normalized.product,
-          normalized.price,
-          normalized.trigger_price,
-          'pending',
-          orderId,
-          response.message || 'Order placed',
-          JSON.stringify(response),
-        ]
-      );
+      // Save order to database via repository
+      const insertedId = await orderRepository.insertWatchlistOrder({
+        watchlistId,
+        instanceId,
+        symbolId,
+        exchange: normalized.exchange,
+        symbol: normalized.symbol,
+        side: normalized.action,
+        quantity: normalized.quantity,
+        orderType: normalized.pricetype,
+        productType: normalized.product,
+        price: normalized.price,
+        trigger_price: normalized.trigger_price,
+        status: 'pending',
+        orderId,
+        message: response.message || 'Order placed',
+        metadata: response,
+      });
 
       const order = await db.get(
         'SELECT * FROM watchlist_orders WHERE id = ?',
-        [result.lastID]
+        [insertedId]
       );
 
       log.info('Order placed successfully', {

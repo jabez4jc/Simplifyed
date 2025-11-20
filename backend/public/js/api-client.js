@@ -132,13 +132,6 @@ class APIClient {
     });
   }
 
-  async testWebsocketConnection(data) {
-    return this.request('/instances/ws/test', {
-      method: 'POST',
-      body: data,
-    });
-  }
-
   async bulkUpdateInstances(data) {
     return this.request('/instances/bulk-update', {
       method: 'POST',
@@ -281,6 +274,10 @@ class APIClient {
     const params = new URLSearchParams();
     if (status) params.append('status', status);
     return this.request(`/orders/orderbook?${params.toString()}`);
+  }
+
+  async getTradebook() {
+    return this.request('/trades/tradebook');
   }
 
   // Position APIs
@@ -443,6 +440,17 @@ class APIClient {
     if (optionsLeg) params.append('optionsLeg', optionsLeg);
 
     return this.request(`/quickorders/options/preview?${params}`);
+  }
+
+  async getQuickOrderFuturesPreview({ symbolId, expiry } = {}) {
+    if (!symbolId) {
+      throw new Error('symbolId is required for futures preview');
+    }
+
+    const params = new URLSearchParams({ symbolId: String(symbolId) });
+    if (expiry) params.append('expiry', expiry);
+
+    return this.request(`/quickorders/futures/preview?${params}`);
   }
 
   async getQuickOrders(filters = {}) {

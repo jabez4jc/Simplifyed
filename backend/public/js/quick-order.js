@@ -11,6 +11,7 @@ class QuickOrderHandler {
     this.selectedOptionsLegs = new Map(); // symbolId -> optionsLeg
     this.selectedExpiries = new Map(); // symbolId -> expiry
     this.availableExpiries = new Map(); // symbolId -> expiry list
+    this.selectedProducts = new Map(); // symbolId -> product
 
     // Buyer/Writer options mode settings (for OPTIONS trade mode only)
     this.operatingModes = new Map(); // symbolId -> 'BUYER' | 'WRITER'
@@ -19,6 +20,8 @@ class QuickOrderHandler {
     this.writerGuards = new Map(); // symbolId -> boolean (enable writer guard)
     this.optionPreviewTimers = new Map(); // symbolId -> interval id
     this.optionPreviewRequestIds = new Map(); // symbolId -> latest request token
+    this.futuresPreviewTimers = new Map();
+    this.futuresPreviewRequestIds = new Map();
   }
 
   /**
@@ -43,6 +46,7 @@ class QuickOrderHandler {
         }
         this.expandedRows.delete(rowKey);
         this.stopOptionPreviewPolling(symbolId);
+        this.stopFuturesPreviewPolling(symbolId);
       } else {
         // Expand
         expansionRow.style.display = 'table-row';
@@ -83,7 +87,8 @@ class QuickOrderHandler {
 
       const symbol = symbolRow.dataset.symbol;
       const exchange = symbolRow.dataset.exchange;
-      const underlyingSymbol = symbolRow.dataset.underlying || symbol;
+      const rawUnderlying = symbolRow.dataset.underlying || symbol;
+      const underlyingSymbol = this.extractUnderlying(rawUnderlying) || rawUnderlying;
 
     let capabilities = { equity: true, futures: true, options: true, symbolType: 'UNKNOWN' };
     try {
@@ -118,6 +123,10 @@ class QuickOrderHandler {
         this.defaultQuantities.set(symbolId, quantity);
       }
 
+      if (!this.selectedProducts.has(symbolId)) {
+        this.selectedProducts.set(symbolId, 'MIS');
+      }
+
       // Initialize Buyer/Writer options mode settings (for OPTIONS trade mode)
       if (!this.operatingModes.has(symbolId)) {
         this.operatingModes.set(symbolId, 'BUYER');  // Default to Buyer mode
@@ -131,12 +140,18 @@ class QuickOrderHandler {
 
       // Fetch available expiries for FUTURES/OPTIONS if needed
       let expiries = [];
+      let expiryUnderlying = underlyingSymbol;
+      const normalizedExchange = (exchange || '').toUpperCase();
+      if ((symbolType === 'INDEX' || normalizedExchange.endsWith('_INDEX')) && symbol) {
+        expiryUnderlying = symbol;
+      }
+
       if (tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') {
         // Use NFO exchange for derivatives (futures/options)
         // INDEX and EQUITY symbols need to use NFO/BFO for their derivatives
         const derivativeExchange = this.getDerivativeExchange(exchange, symbolType);
         console.log(`[QuickOrder] Fetching expiries for symbol: ${symbol}, exchange: ${exchange} -> ${derivativeExchange}, mode: ${tradeMode}`);
-        expiries = await this.fetchAvailableExpiries(underlyingSymbol, derivativeExchange, tradeMode);
+        expiries = await this.fetchAvailableExpiries(expiryUnderlying, derivativeExchange, tradeMode, exchange);
         console.log(`[QuickOrder] Received ${expiries.length} expiries:`, expiries.slice(0, 5));
         this.availableExpiries.set(symbolId, expiries);
       }
@@ -150,6 +165,8 @@ class QuickOrderHandler {
         console.log(`[QuickOrder] Initial expiry set: raw="${expiries[0]}" normalized="${selectedExpiry}"`);
       }
       console.log(`[QuickOrder] Selected expiry (YYYY-MM-DD format):`, selectedExpiry);
+
+      const selectedProduct = this.selectedProducts.get(symbolId) || 'MIS';
 
       // Render trading controls
       contentDiv.innerHTML = this.renderTradingControls({
@@ -165,6 +182,7 @@ class QuickOrderHandler {
         quantity,
         expiries,
         selectedExpiry,
+        selectedProduct,
         // Buyer/Writer options mode settings
         operatingMode: this.operatingModes.get(symbolId),
         strikePolicy: this.strikePolicies.get(symbolId),
@@ -175,6 +193,11 @@ class QuickOrderHandler {
         this.startOptionPreviewPolling(symbolId);
       } else {
         this.stopOptionPreviewPolling(symbolId);
+      }
+      if (tradeMode === 'FUTURES' && capabilities.futures) {
+        this.startFuturesPreviewPolling(symbolId);
+      } else {
+        this.stopFuturesPreviewPolling(symbolId);
       }
 
       contentDiv.dataset.loaded = 'true';
@@ -200,7 +223,7 @@ class QuickOrderHandler {
   /**
    * Render trading controls UI
    */
-  renderTradingControls({ watchlistId, symbolId, symbol, exchange, symbolType, tradeMode, capabilities = {}, availableModes = [], optionsLeg, quantity, expiries, selectedExpiry, operatingMode, strikePolicy, writerGuard }) {
+  renderTradingControls({ watchlistId, symbolId, symbol, exchange, symbolType, tradeMode, capabilities = {}, availableModes = [], optionsLeg, quantity, expiries, selectedExpiry, selectedProduct, operatingMode, strikePolicy, writerGuard }) {
     const showOptionsLeg = tradeMode === 'OPTIONS' && capabilities.options;
     const showExpirySelector =
       (tradeMode === 'FUTURES' && capabilities.futures) ||
@@ -353,6 +376,29 @@ class QuickOrderHandler {
         title="Number of lots per order. Controls both position step size and order size. Example: 2 lots × 25 lot size = 50 contracts">`
     );
 
+    const productField = renderField(
+      'Product',
+      'Choose the product type to send for all instances (CNC for equity delivery, MIS for intraday, NRML for derivatives).',
+      `<select class="form-select"
+              data-symbol-id="${symbolId}"
+              onchange="quickOrder.selectProduct(${symbolId}, this.value)">
+         <option value="MIS" ${selectedProduct === 'MIS' ? 'selected' : ''}>MIS (Intraday)</option>
+         <option value="NRML" ${selectedProduct === 'NRML' ? 'selected' : ''}>NRML (Derivatives)</option>
+         <option value="CNC" ${selectedProduct === 'CNC' ? 'selected' : ''}>CNC (Delivery)</option>
+       </select>`
+    );
+
+    const futuresPreviewBlock = tradeMode === 'FUTURES' && capabilities.futures
+      ? `
+        <div
+          class="futures-preview-card border border-base-300 rounded-xl p-3 bg-base-100/80 space-y-1"
+          id="futures-preview-${symbolId}"
+          aria-live="polite">
+          <p class="text-sm text-neutral-500">Select an expiry to view futures quote.</p>
+        </div>
+      `
+      : '';
+
     const optionPreviewBlock = tradeMode === 'OPTIONS' && capabilities.options
       ? `
         <div
@@ -369,11 +415,13 @@ class QuickOrderHandler {
         <div class="quick-order-config">
           ${tradeModeField}
           ${expiryField}
+          ${productField}
           ${optionsLegField}
           ${operatingModeField}
           ${strikePolicyField}
           ${quantityField}
         </div>
+        ${futuresPreviewBlock}
         ${optionPreviewBlock}
         <div class="quick-order-actions">
           ${this.renderActionButtons(watchlistId, symbolId, symbol, exchange, tradeMode, operatingMode, strikePolicy, quantity, selectedExpiry, optionsLeg)}
@@ -621,6 +669,8 @@ class QuickOrderHandler {
     }
 
     this.selectedTradeModes.set(symbolId, mode);
+    this.selectedExpiries.delete(symbolId);
+    this.availableExpiries.delete(symbolId);
     this.reloadExpansionContent(symbolId);
   }
 
@@ -658,6 +708,11 @@ class QuickOrderHandler {
     this.reloadExpansionContent(symbolId);
   }
 
+  selectProduct(symbolId, product) {
+    console.log('[QuickOrder] selectProduct called:', { symbolId, product });
+    this.selectedProducts.set(symbolId, product);
+  }
+
   /**
    * Update step lots
    */
@@ -677,6 +732,7 @@ class QuickOrderHandler {
     console.log(`[QuickOrder] selectExpiry: raw="${expiry}" normalized="${normalizedExpiry}"`);
     this.selectedExpiries.set(symbolId, normalizedExpiry);
     this.triggerOptionPreviewRefresh(symbolId);
+    this.triggerFuturesPreviewRefresh(symbolId);
   }
 
   /**
@@ -877,20 +933,132 @@ class QuickOrderHandler {
     `;
   }
 
+  triggerFuturesPreviewRefresh(symbolId) {
+    const container = document.getElementById(`futures-preview-${symbolId}`);
+    if (!container) {
+      return;
+    }
+    this.refreshFuturesPreview(symbolId);
+  }
+
+  startFuturesPreviewPolling(symbolId) {
+    this.stopFuturesPreviewPolling(symbolId);
+    const execute = () => this.refreshFuturesPreview(symbolId);
+    execute();
+    const intervalId = setInterval(execute, 20000);
+    this.futuresPreviewTimers.set(symbolId, intervalId);
+  }
+
+  stopFuturesPreviewPolling(symbolId) {
+    if (this.futuresPreviewTimers.has(symbolId)) {
+      clearInterval(this.futuresPreviewTimers.get(symbolId));
+      this.futuresPreviewTimers.delete(symbolId);
+    }
+    this.futuresPreviewRequestIds.delete(symbolId);
+  }
+
+  stopAllFuturesPreviewPolling() {
+    this.futuresPreviewTimers.forEach(intervalId => clearInterval(intervalId));
+    this.futuresPreviewTimers.clear();
+    this.futuresPreviewRequestIds.clear();
+  }
+
+  async refreshFuturesPreview(symbolId) {
+    const container = document.getElementById(`futures-preview-${symbolId}`);
+    if (!container) return;
+
+    const tradeMode = this.selectedTradeModes.get(symbolId) || 'EQUITY';
+    if (tradeMode !== 'FUTURES') {
+      container.innerHTML = '<p class="text-sm text-neutral-500">Switch to Futures mode to view the contract quote.</p>';
+      this.stopFuturesPreviewPolling(symbolId);
+      return;
+    }
+
+    const expiry = this.selectedExpiries.get(symbolId);
+    if (!expiry) {
+      container.innerHTML = '<p class="text-sm text-warning">Select an expiry to view the futures quote.</p>';
+      return;
+    }
+
+    const requestId = (this.futuresPreviewRequestIds.get(symbolId) || 0) + 1;
+    this.futuresPreviewRequestIds.set(symbolId, requestId);
+
+    if (!container.dataset.loaded) {
+      container.innerHTML = '<p class="text-sm text-neutral-500">Loading futures quote…</p>';
+    }
+
+    try {
+      const response = await api.getQuickOrderFuturesPreview({ symbolId, expiry });
+      if (this.futuresPreviewRequestIds.get(symbolId) !== requestId) {
+        return;
+      }
+
+      const preview = response?.data || response;
+      this.renderFuturesPreview(symbolId, preview);
+      container.dataset.loaded = 'true';
+    } catch (error) {
+      if (this.futuresPreviewRequestIds.get(symbolId) !== requestId) {
+        return;
+      }
+      const message = error?.message || 'Failed to load futures quote';
+      container.innerHTML = `<p class="text-sm text-error">${Utils.escapeHTML(message)}</p>`;
+    }
+  }
+
+  renderFuturesPreview(symbolId, preview) {
+    const container = document.getElementById(`futures-preview-${symbolId}`);
+    if (!container) {
+      return;
+    }
+
+    if (!preview) {
+      container.innerHTML = '<p class="text-sm text-error">Futures quote unavailable.</p>';
+      return;
+    }
+
+    const expiryLabel = preview.expiry ? this.formatExpiryDate(preview.expiry) : 'N/A';
+    const ltp = preview.quote?.ltp != null ? `₹${Utils.formatNumber(preview.quote.ltp)}` : '—';
+    const changePercent = preview.quote?.changePercent;
+    const changeText = typeof changePercent === 'number'
+      ? `${changePercent >= 0 ? '+' : ''}${changePercent.toFixed(2)}%`
+      : '—';
+    const changeClass = typeof changePercent === 'number'
+      ? (changePercent > 0 ? 'text-profit' : (changePercent < 0 ? 'text-loss' : 'text-neutral-500'))
+      : 'text-neutral-500';
+
+    container.innerHTML = `
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <p class="text-xs uppercase tracking-wide text-neutral-500">Contract</p>
+          <p class="font-semibold text-base-content">${Utils.escapeHTML(preview.tradingSymbol || preview.futuresSymbol)}</p>
+          <p class="text-xs text-neutral-500">Expiry ${expiryLabel}</p>
+        </div>
+        <div class="text-right">
+          <p class="text-xs uppercase tracking-wide text-neutral-500">LTP</p>
+          <p class="text-2xl font-semibold ${changeClass}">${ltp}</p>
+          <p class="text-xs ${changeClass}">${changeText}</p>
+        </div>
+      </div>
+    `;
+  }
+
   /**
    * Fetch available expiries for a symbol
    */
-  async fetchAvailableExpiries(underlyingSymbol, exchange, tradeMode) {
-    const normalizedUnderlying = (underlyingSymbol || '').trim() || this.extractUnderlying(underlyingSymbol);
+  async fetchAvailableExpiries(underlyingSymbol, exchange, tradeMode, baseExchange) {
+    const cleanedInput = (underlyingSymbol || '').trim();
+    const normalizedUnderlying = this.extractUnderlying(cleanedInput) || cleanedInput;
     const derivativeExchange = this.getDerivativeExchange(exchange);
+    const shouldUseSymbolMatch = ['NSE_INDEX', 'BSE_INDEX'].includes((baseExchange || '').toUpperCase());
+    const primaryMatchField = shouldUseSymbolMatch ? 'symbol' : 'name';
     const instrumentTypes = this.getInstrumentTypesForMode(tradeMode);
     console.log(`[QuickOrder] fetchAvailableExpiries: underlying=${normalizedUnderlying}, exchange=${exchange}, derivative=${derivativeExchange}, instruments=${instrumentTypes.join('/') || 'any'}`);
 
-    const attemptFetch = async (options = {}) => {
+    const fetchWithField = async (field, options = {}) => {
       const response = await api.getExpiry(normalizedUnderlying, {
         exchange: derivativeExchange,
         instrumentTypes,
-        matchField: 'name',
+        matchField: field,
         ...options,
       });
       if (response?.data && Array.isArray(response.data)) {
@@ -901,7 +1069,15 @@ class QuickOrderHandler {
 
     try {
       // Fast path: rely on instruments cache (no instanceId required)
-      const cachedExpiries = await attemptFetch();
+      let cachedExpiries = await fetchWithField(primaryMatchField);
+
+      if (cachedExpiries.length === 0) {
+        const fallbackField = primaryMatchField === 'symbol' ? 'name' : 'symbol';
+        if (fallbackField !== primaryMatchField) {
+          cachedExpiries = await fetchWithField(fallbackField);
+        }
+      }
+
       if (cachedExpiries.length > 0) {
         console.log(`[QuickOrder] Expiries resolved via instruments cache (${cachedExpiries.length} items)`);
         return cachedExpiries;
@@ -926,7 +1102,13 @@ class QuickOrderHandler {
 
       const fallbackInstance = activeInstances[0];
       console.log(`[QuickOrder] Using instance ${fallbackInstance.name} (ID: ${fallbackInstance.id}) for expiry refresh`);
-      const refreshedExpiries = await attemptFetch({ instanceId: fallbackInstance.id });
+      let refreshedExpiries = await fetchWithField(primaryMatchField, { instanceId: fallbackInstance.id });
+      if (refreshedExpiries.length === 0) {
+        const fallbackField = primaryMatchField === 'symbol' ? 'name' : 'symbol';
+        if (fallbackField !== primaryMatchField) {
+          refreshedExpiries = await fetchWithField(fallbackField, { instanceId: fallbackInstance.id });
+        }
+      }
       console.log(`[QuickOrder] Refreshed ${refreshedExpiries.length} expiries from broker`);
       return refreshedExpiries;
     } catch (error) {
@@ -963,8 +1145,10 @@ class QuickOrderHandler {
     //           NIFTY25DEC50FUT -> NIFTY
 
     // Try to match pattern with numbers/dates
-    const match = symbol.match(/^([A-Z]+)/);
-    return match ? match[1] : symbol;
+    if (!symbol) return symbol;
+    const upper = String(symbol).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!upper) return symbol;
+    return upper.replace(/\d+$/, '');
   }
 
   getInstrumentTypesForMode(tradeMode) {
@@ -1050,13 +1234,14 @@ class QuickOrderHandler {
       const symbol = symbolRow.dataset.symbol;
       const exchange = symbolRow.dataset.exchange;
 
-      const tradeMode = this.selectedTradeModes.get(symbolId) || 'EQUITY';
-      const optionsLeg = this.selectedOptionsLegs.get(symbolId) || 'ATM';
-      const quantity = this.defaultQuantities.get(symbolId) || 1;
-      const selectedExpiry = this.selectedExpiries.get(symbolId);
-      const operatingMode = this.operatingModes.get(symbolId) || 'BUYER';
-      const strikePolicy = this.strikePolicies.get(symbolId) || 'FLOAT_OFS';
-      const stepLots = this.stepLots.get(symbolId) || quantity;
+    const tradeMode = this.selectedTradeModes.get(symbolId) || 'EQUITY';
+    const optionsLeg = this.selectedOptionsLegs.get(symbolId) || 'ATM';
+    const quantity = this.defaultQuantities.get(symbolId) || 1;
+    const selectedExpiry = this.selectedExpiries.get(symbolId);
+    const operatingMode = this.operatingModes.get(symbolId) || 'BUYER';
+    const strikePolicy = this.strikePolicies.get(symbolId) || 'FLOAT_OFS';
+    const stepLots = this.stepLots.get(symbolId) || quantity;
+    const selectedProduct = this.selectedProducts.get(symbolId) || 'MIS';
 
       console.log('[QuickOrder] placeOrder - Settings retrieved:', {
         symbolId,
@@ -1082,6 +1267,7 @@ class QuickOrderHandler {
         action,
         tradeMode,
         quantity,
+        product: selectedProduct,
       };
 
       if ((tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') && selectedExpiry) {
@@ -1109,7 +1295,11 @@ class QuickOrderHandler {
         });
       }
 
-      console.log('[QuickOrder] Final order data being sent:', orderData);
+      console.log('[QuickOrder] Final order data being sent to backend:', {
+        payload: orderData,
+        symbol,
+        exchange,
+      });
 
       const actionButtons = document.querySelectorAll(`#expansion-content-${symbolId} .btn-quick-action`);
       actionButtons.forEach(btn => {
@@ -1144,7 +1334,10 @@ class QuickOrderHandler {
               fullResult: result,
             });
           } else {
-            console.log(`[QuickOrder] Order ${index + 1} SUCCESS:`, result);
+            console.log(`[QuickOrder] Order ${index + 1} SUCCESS:`, {
+              ...result,
+              backend_resolved_symbol: result.symbol || result.resolved_symbol,
+            });
           }
         });
       }
