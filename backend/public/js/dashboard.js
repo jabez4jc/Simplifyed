@@ -39,6 +39,7 @@ class DashboardApp {
     this.tradesPollingInterval = null;
     this.tradesLastUpdatedAt = null;
     this.tradesPayload = null;
+    this.tradesInstanceStore = new Map();
   }
 
   /**
