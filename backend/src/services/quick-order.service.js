@@ -427,7 +427,12 @@ class QuickOrderService {
       product,
       { forceLive: true }
     );
-    const lotSize = await this._resolveLotSize(finalSymbol, finalExchange, resolvedLotSize || symbol.lot_size);
+    const lotSize = await this._resolveLotSize(
+      finalSymbol,
+      finalExchange,
+      resolvedLotSize || symbol.lot_size,
+      instance
+    );
     const normalizedPosition = lotSize > 1
       ? Math.sign(rawPosition) * Math.floor(Math.abs(rawPosition) / lotSize) * lotSize
       : rawPosition;
@@ -1236,7 +1241,7 @@ class QuickOrderService {
     return positionBook;
   }
 
-  async _resolveLotSize(symbol, exchange, fallbackLotSize) {
+  async _resolveLotSize(symbol, exchange, fallbackLotSize, instance = null) {
     const fallback = fallbackLotSize && fallbackLotSize > 0 ? fallbackLotSize : 1;
     try {
       const instrument = await instrumentsService.findInstrument(symbol, exchange);
@@ -1252,6 +1257,32 @@ class QuickOrderService {
       }
     } catch (error) {
       log.warn('Lot size resolution fallback hit', { symbol, exchange, error: error.message });
+    }
+    // Try to infer from current open positions if available
+    if (instance) {
+      try {
+        const positions = await this._getPositionBook(instance, { forceLive: true });
+        const symbolKey = this._normalizeSymbolKey(symbol);
+        const exchangeKey = this._normalizeExchange(exchange);
+        for (const pos of positions) {
+          const posSymbol = this._normalizeSymbolKey(pos.symbol || pos.trading_symbol || pos.tradingsymbol);
+          const posExchange = this._normalizeExchange(pos.exchange || pos.exch);
+          if (posSymbol === symbolKey && posExchange === exchangeKey) {
+            const qty =
+              parseIntSafe(pos.quantity) ||
+              parseIntSafe(pos.netqty) ||
+              parseIntSafe(pos.net_quantity) ||
+              parseIntSafe(pos.net) ||
+              parseIntSafe(pos.netQty) ||
+              0;
+            if (qty && Math.abs(qty) > 0) {
+              return Math.abs(qty);
+            }
+          }
+        }
+      } catch (posError) {
+        log.warn('Lot size inference from positions failed', { symbol, exchange, error: posError.message });
+      }
     }
     return fallback;
   }
