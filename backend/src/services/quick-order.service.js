@@ -16,6 +16,7 @@ import orderPayloadFactory from './order-payload.factory.js';
 import orderRepository from './order-repository.js';
 import { ValidationError, NotFoundError } from '../core/errors.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
+import instrumentsService from './instruments.service.js';
 
 class QuickOrderService {
   constructor() {
@@ -426,7 +427,7 @@ class QuickOrderService {
       product,
       { forceLive: true }
     );
-    const lotSize = resolvedLotSize || symbol.lot_size || 1;
+    const lotSize = await this._resolveLotSize(finalSymbol, finalExchange, resolvedLotSize || symbol.lot_size);
     const normalizedPosition = lotSize > 1
       ? Math.sign(rawPosition) * Math.floor(Math.abs(rawPosition) / lotSize) * lotSize
       : rawPosition;
@@ -1233,6 +1234,26 @@ class QuickOrderService {
     const positionBook = await openalgoClient.getPositionBook(instance);
     marketDataFeedService.setPositionSnapshot(instance.id, positionBook);
     return positionBook;
+  }
+
+  async _resolveLotSize(symbol, exchange, fallbackLotSize) {
+    const fallback = fallbackLotSize && fallbackLotSize > 0 ? fallbackLotSize : 1;
+    try {
+      const instrument = await instrumentsService.findInstrument(symbol, exchange);
+      if (instrument) {
+        const resolved =
+          instrument.lot_size ||
+          instrument.lotsize ||
+          instrument.contract_size ||
+          instrument.lotSize;
+        if (resolved && resolved > 0) {
+          return resolved;
+        }
+      }
+    } catch (error) {
+      log.warn('Lot size resolution fallback hit', { symbol, exchange, error: error.message });
+    }
+    return fallback;
   }
 
   /**
