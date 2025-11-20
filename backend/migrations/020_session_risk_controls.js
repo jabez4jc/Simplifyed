@@ -2,6 +2,9 @@
  * Migration 020 - Add session risk controls and P&L tracking fields
  */
 
+export const version = '020';
+export const name = 'session_risk_controls';
+
 export const up = async (db) => {
   // Add new columns to instances table
   await db.run(`
