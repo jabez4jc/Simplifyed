@@ -434,6 +434,9 @@ class QuickOrderService {
       baseLotSize,
       instance
     );
+    if (!lotSize || lotSize <= 0) {
+      throw new ValidationError(`Unable to resolve lot size for ${finalExchange}:${finalSymbol}`);
+    }
     const normalizedPosition = lotSize > 1
       ? Math.sign(rawPosition) * Math.floor(Math.abs(rawPosition) / lotSize) * lotSize
       : rawPosition;
@@ -1298,7 +1301,7 @@ class QuickOrderService {
    */
   async _getCurrentPositionSize(instance, symbol, exchange, product, opts = {}) {
     try {
-      const positionBook = await this._getPositionBook(instance, opts);
+    const positionBook = await this._getPositionBook(instance, { ...opts, forceLive: true });
       const targetSymbol = this._normalizeSymbolKey(symbol);
       const targetExchange = this._normalizeExchange(exchange);
       const targetProduct = this._normalizeProduct(product);
@@ -1373,7 +1376,7 @@ class QuickOrderService {
    */
   async _getOpenOptionsPositions(instance, underlying, expiry, optionType, product) {
     try {
-      const positionBook = await this._getPositionBook(instance);
+      const positionBook = await this._getPositionBook(instance, { forceLive: true });
       const targetUnderlying = (underlying || '').toUpperCase();
       const canonicalTarget = targetUnderlying.replace(/[^A-Z0-9]/g, '').replace(/\d+$/, '');
       const targetOptionType = (optionType || '').toUpperCase();
@@ -1441,7 +1444,7 @@ class QuickOrderService {
    */
   async _getOpenPositionsForSymbol(instance, symbol, exchange, product) {
     try {
-      const positionBook = await this._getPositionBook(instance);
+      const positionBook = await this._getPositionBook(instance, { forceLive: true });
 
       const positions = positionBook.filter(p => {
         const matchesSymbol = p.symbol === symbol;
@@ -2765,7 +2768,10 @@ class QuickOrderService {
 
   _normalizeSymbolKey(symbol) {
     if (!symbol) return null;
-    return String(symbol).trim().toUpperCase().replace(/\s+/g, '');
+    return String(symbol)
+      .trim()
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '');
   }
 
   _normalizeExchange(exchange) {
