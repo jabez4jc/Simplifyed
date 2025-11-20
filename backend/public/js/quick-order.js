@@ -376,16 +376,23 @@ class QuickOrderHandler {
         title="Number of lots per order. Controls both position step size and order size. Example: 2 lots × 25 lot size = 50 contracts">`
     );
 
+    const isDerivativeMode = tradeMode === 'FUTURES' || tradeMode === 'OPTIONS' || (symbolType === 'FUTURES' || symbolType === 'OPTIONS');
     const productField = renderField(
       'Product',
-      'Choose the product type to send for all instances (CNC for equity delivery, MIS for intraday, NRML for derivatives).',
-      `<select class="form-select"
-              data-symbol-id="${symbolId}"
-              onchange="quickOrder.selectProduct(${symbolId}, this.value)">
-         <option value="MIS" ${selectedProduct === 'MIS' ? 'selected' : ''}>MIS (Intraday)</option>
-         <option value="NRML" ${selectedProduct === 'NRML' ? 'selected' : ''}>NRML (Derivatives)</option>
-         <option value="CNC" ${selectedProduct === 'CNC' ? 'selected' : ''}>CNC (Delivery)</option>
-       </select>`
+      isDerivativeMode
+        ? 'Futures/Options must use NRML.'
+        : 'Choose the product type to send for all instances.',
+      isDerivativeMode
+        ? `<select class="form-select" disabled>
+             <option value="NRML" selected>NRML (Derivatives)</option>
+           </select>`
+        : `<select class="form-select"
+                data-symbol-id="${symbolId}"
+                onchange="quickOrder.selectProduct(${symbolId}, this.value)">
+             <option value="MIS" ${selectedProduct === 'MIS' ? 'selected' : ''}>MIS (Intraday)</option>
+             <option value="NRML" ${selectedProduct === 'NRML' ? 'selected' : ''}>NRML (Derivatives)</option>
+             <option value="CNC" ${selectedProduct === 'CNC' ? 'selected' : ''}>CNC (Delivery)</option>
+           </select>`
     );
 
     const futuresPreviewBlock = tradeMode === 'FUTURES' && capabilities.futures
@@ -679,6 +686,10 @@ class QuickOrderHandler {
     }
 
     this.selectedTradeModes.set(symbolId, mode);
+    // Force NRML for derivatives
+    if (mode === 'FUTURES' || mode === 'OPTIONS') {
+      this.selectedProducts.set(symbolId, 'NRML');
+    }
     this.selectedExpiries.delete(symbolId);
     this.availableExpiries.delete(symbolId);
     this.reloadExpansionContent(symbolId);
@@ -720,6 +731,11 @@ class QuickOrderHandler {
 
   selectProduct(symbolId, product) {
     console.log('[QuickOrder] selectProduct called:', { symbolId, product });
+    const tradeMode = this.selectedTradeModes.get(symbolId) || 'EQUITY';
+    if ((tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') && product !== 'NRML') {
+      this.selectedProducts.set(symbolId, 'NRML');
+      return;
+    }
     this.selectedProducts.set(symbolId, product);
   }
 
