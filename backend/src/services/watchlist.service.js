@@ -334,7 +334,12 @@ class WatchlistService {
       );
 
       if (existing) {
-        throw new ConflictError('Instance already assigned to this watchlist');
+        // Idempotent: return existing assignment instead of failing
+        log.info('Instance already assigned to watchlist; skipping duplicate', {
+          watchlistId,
+          instanceId,
+        });
+        return existing;
       }
 
       // Create assignment
