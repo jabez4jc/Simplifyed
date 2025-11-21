@@ -2846,11 +2846,13 @@ class QuickOrderService {
     const normalizedProduct = this._normalizeProduct(product) || 'MIS';
     const trade = String(tradeMode || '').toUpperCase();
     const symbolType = String(symbol.symbol_type || '').toUpperCase();
+    const exch = String(symbol.exchange || symbol.brexchange || '').toUpperCase();
 
     const isDerivativeTrade = trade === 'FUTURES' || trade === 'OPTIONS';
     const isDerivativeSymbol = symbolType === 'FUTURES' || symbolType === 'OPTIONS';
+    const isDerivativeExchange = ['NFO', 'BFO', 'MCX'].includes(exch);
 
-    if (isDerivativeTrade || isDerivativeSymbol) {
+    if (isDerivativeTrade || isDerivativeSymbol || isDerivativeExchange) {
       return 'NRML';
     }
 
