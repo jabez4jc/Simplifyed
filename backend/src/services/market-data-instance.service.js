@@ -93,25 +93,30 @@ class MarketDataInstanceService {
 
   /**
    * Get all market data instances (primary and secondary) for status display
-   * @returns {Promise<Array>} Array of instances with market_data_role
+   * @returns {Promise<Array>} Array of instances eligible for market data
    */
   async getMarketDataInstances() {
     try {
       const instances = await db.all(
-        `SELECT id, name, host_url, api_key, broker, market_data_role, health_status, is_active, last_health_check
+        `SELECT id, name, host_url, api_key, broker, market_data_role, market_data_enabled, health_status, is_active, last_health_check
          FROM instances
-         WHERE market_data_role IN ('primary', 'secondary')
-         ORDER BY
-           CASE market_data_role
-             WHEN 'primary' THEN 1
-             WHEN 'secondary' THEN 2
-           END`
+         WHERE is_active = 1 AND (market_data_enabled = 1 OR market_data_role IN ('primary','secondary'))
+         ORDER BY created_at DESC`
       );
       return instances;
     } catch (error) {
       log.error('Error fetching market data instances', { error: error.message });
       return [];
     }
+  }
+
+  /**
+   * Get pooled market data instances (healthy+enabled)
+   */
+  async getMarketDataPool() {
+    const all = await this.getMarketDataInstances();
+    return all.filter(inst => inst.market_data_enabled || inst.market_data_role === 'primary' || inst.market_data_role === 'secondary')
+      .filter(inst => inst.is_active && this._isHealthy(inst));
   }
 }
 

@@ -914,6 +914,11 @@ class InstanceService {
       }
     }
 
+    // Market data enabled (new flag)
+    if (data.market_data_enabled !== undefined) {
+      normalized.market_data_enabled = parseBooleanSafe(data.market_data_enabled, false) ? 1 : 0;
+    }
+
     // Admin flags
     if (data.is_primary_admin !== undefined) {
       normalized.is_primary_admin = parseBooleanSafe(data.is_primary_admin, false);

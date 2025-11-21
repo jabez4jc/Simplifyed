@@ -84,23 +84,33 @@ class MarketDataFeedService extends EventEmitter {
     this.lastQuoteRefreshAt = now;
 
     try {
-      const marketDataInstances = await marketDataInstanceService.getMarketDataInstances();
+      const marketDataInstances = await marketDataInstanceService.getMarketDataPool();
       const symbolList = await this._buildGlobalSymbolList();
 
-      if (symbolList.length === 0) {
-        log.debug('No tracked symbols found. Skipping quote refresh.');
+      if (symbolList.length === 0 || marketDataInstances.length === 0) {
+        log.debug('No tracked symbols or no market data instances. Skipping quote refresh.');
         return;
       }
 
-      await Promise.all(marketDataInstances.map(async (inst) => {
+      const chunks = this._chunkSymbols(symbolList, symbolList.length > 5 ? 5 : symbolList.length);
+      const assignments = new Map(); // inst.id -> symbols[]
+      chunks.forEach((chunk, idx) => {
+        const inst = marketDataInstances[idx % marketDataInstances.length];
+        if (!assignments.has(inst.id)) assignments.set(inst.id, []);
+        assignments.get(inst.id).push(...chunk);
+      });
+
+      await Promise.all(Array.from(assignments.entries()).map(async ([instId, symbols]) => {
+        const inst = marketDataInstances.find(i => i.id === instId);
+        if (!inst) return;
         const circuitKey = this._getCircuitKey(inst.id, 'quotes');
         if (this._shouldSkipPolling(circuitKey)) {
           return;
         }
         try {
-          const snapshot = await openalgoClient.getQuotes(inst, symbolList);
+          const snapshot = await openalgoClient.getQuotes(inst, symbols);
           this.setQuoteSnapshot(inst.id, snapshot);
-          log.debug('Quotes refreshed', { instance: inst.name, count: snapshot.length });
+          log.debug('Quotes refreshed', { instance: inst.name, count: snapshot.length, symbols: symbols.length });
           this._resetFailureState(circuitKey);
         } catch (error) {
           log.warn('Failed to refresh quotes for instance', {
@@ -337,6 +347,14 @@ class MarketDataFeedService extends EventEmitter {
 
   _getCircuitKey(instanceId, feed) {
     return `${instanceId}:${feed}`;
+  }
+
+  _chunkSymbols(symbols = [], chunkSize = 5) {
+    const chunks = [];
+    for (let i = 0; i < symbols.length; i += chunkSize) {
+      chunks.push(symbols.slice(i, i + chunkSize));
+    }
+    return chunks;
   }
 
   _shouldSkipPolling(key) {
