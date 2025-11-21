@@ -79,7 +79,8 @@ class OpenAlgoClient {
     this.currentTasks = 0;
     this.maxConcurrentTasks = 10;
     this.rpsLimitPerInstance = 5;
-    this.rpmLimitGlobal = 300;
+    this.rpmLimitPerInstance = 300;
+    this.rpmLimitGlobal = Number.POSITIVE_INFINITY; // optional global cap (disabled by default)
     this.ordersPerSecondLimit = 10;
     this.errorCounters = new Map(); // instKey -> { day, count404, countInvalid, backoffUntil }
     this.instanceMeta = new Map();
@@ -386,7 +387,7 @@ class OpenAlgoClient {
       const globalOrders = this.globalOrders.length;
 
       const rpsOver = instRps >= this.rpsLimitPerInstance;
-      const rpmOver = globalRpm >= this.rpmLimitGlobal;
+      const rpmOver = instRpm >= this.rpmLimitPerInstance || (Number.isFinite(this.rpmLimitGlobal) && globalRpm >= this.rpmLimitGlobal);
       const ordersOver = isOrderPlacement && (instOrders >= this.ordersPerSecondLimit || globalOrders >= this.ordersPerSecondLimit);
 
       if (!rpsOver && !rpmOver && !ordersOver) {
@@ -395,7 +396,8 @@ class OpenAlgoClient {
 
       const nextExpiry = Math.min(
         rpsOver && state.rps[0] ? state.rps[0] + 1000 - now : Infinity,
-        rpmOver && this.globalRpm[0] ? this.globalRpm[0] + 60000 - now : Infinity,
+        rpmOver && state.rpm[0] ? state.rpm[0] + 60000 - now : Infinity,
+        rpmOver && Number.isFinite(this.rpmLimitGlobal) && this.globalRpm[0] ? this.globalRpm[0] + 60000 - now : Infinity,
         ordersOver && state.orders[0] ? state.orders[0] + 1000 - now : Infinity,
         ordersOver && this.globalOrders[0] ? this.globalOrders[0] + 1000 - now : Infinity,
       );
@@ -518,6 +520,7 @@ class OpenAlgoClient {
         return Number.isNaN(val) ? fallback : val;
       };
       this.rpsLimitPerInstance = getNum('rate_limits.rps_per_instance', this.rpsLimitPerInstance);
+      this.rpmLimitPerInstance = getNum('rate_limits.rpm_per_instance', getNum('rate_limits.rpm_global', this.rpmLimitPerInstance));
       this.rpmLimitGlobal = getNum('rate_limits.rpm_global', this.rpmLimitGlobal);
       this.ordersPerSecondLimit = getNum('rate_limits.orders_per_second', this.ordersPerSecondLimit);
       this.maxConcurrentTasks = getNum('rate_limits.max_concurrent_tasks', this.maxConcurrentTasks);
