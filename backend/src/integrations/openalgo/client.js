@@ -34,12 +34,13 @@ class OpenAlgoClient extends EventEmitter {
     this.nonCriticalRetries = config.openalgo.nonCritical.maxRetries;
     this.nonCriticalRetryDelay = config.openalgo.nonCritical.retryDelay;
 
-    // Default dispatcher with HTTP/2 support and aggressive connection reuse
+    // Default dispatcher with HTTP/2 support and connection reuse
+    // Conservative timeouts to avoid ECONNRESET from stale connections
     this.dispatcher = new Agent({
-      keepAliveTimeout: 120000,      // 2 minutes keep-alive
-      keepAliveMaxTimeout: 300000,   // 5 minutes max
+      keepAliveTimeout: 30000,       // 30 seconds keep-alive (reduced from 2 min)
+      keepAliveMaxTimeout: 60000,    // 1 minute max (reduced from 5 min)
       pipelining: 10,                // Enable HTTP pipelining for multiplexing
-      connections: 50,               // Increased connection pool per host
+      connections: 20,               // Conservative connection pool (reduced from 50)
       allowH2: true,                 // Enable HTTP/2 when available
     });
 
@@ -94,37 +95,55 @@ class OpenAlgoClient extends EventEmitter {
     this.limitsCache = {
       loadedAt: 0,
       ttl: 10 * 60 * 1000,  // 10 minutes (increased from 1 minute)
-      initialized: false
+      initialized: false,
+      initPromise: null,    // Promise-based lock for concurrent init calls
     };
 
-    // Symbol resolution cache for futures/options
+    // Symbol resolution cache for futures/options (bounded to prevent memory growth)
     this.symbolResolutionCache = new Map(); // key: underlying|exchange|expiry -> { symbol, resolvedAt }
     this.symbolResolutionTtl = 5 * 60 * 1000; // 5 minutes
+    this.symbolResolutionCacheMaxSize = 1000; // Max entries to prevent unbounded growth
 
-    // Lot size cache
+    // Lot size cache (bounded to prevent memory growth)
     this.lotSizeCache = new Map(); // key: exchange|symbol -> { lotSize, cachedAt }
     this.lotSizeCacheTtl = 24 * 60 * 60 * 1000; // 24 hours (lot sizes rarely change)
+    this.lotSizeCacheMaxSize = 500; // Max entries to prevent unbounded growth
   }
 
   /**
    * Initialize rate limit settings from database (called once at startup)
+   * Uses promise-based locking to prevent race conditions from concurrent calls
    * @returns {Promise<void>}
    */
   async initializeRateLimits() {
+    // Already initialized - return immediately
     if (this.limitsCache.initialized) return;
 
-    try {
-      await this._loadRateLimitSettings();
-      this.limitsCache.initialized = true;
-      log.info('Rate limit settings initialized', {
-        rpsPerInstance: this.rpsLimitPerInstance,
-        rpmPerInstance: this.rpmLimitPerInstance,
-        ordersPerSecond: this.ordersPerSecondLimit,
-        maxConcurrentTasks: this.maxConcurrentTasks,
-      });
-    } catch (error) {
-      log.warn('Failed to initialize rate limit settings, using defaults', { error: error.message });
+    // If initialization is in progress, wait for it to complete
+    if (this.limitsCache.initPromise) {
+      return this.limitsCache.initPromise;
     }
+
+    // Start initialization with promise-based lock
+    this.limitsCache.initPromise = (async () => {
+      try {
+        await this._loadRateLimitSettings();
+        this.limitsCache.initialized = true;
+        log.info('Rate limit settings initialized', {
+          rpsPerInstance: this.rpsLimitPerInstance,
+          rpmPerInstance: this.rpmLimitPerInstance,
+          ordersPerSecond: this.ordersPerSecondLimit,
+          maxConcurrentTasks: this.maxConcurrentTasks,
+        });
+      } catch (error) {
+        log.warn('Failed to initialize rate limit settings, using defaults', { error: error.message });
+      } finally {
+        // Clear the promise after completion (success or failure)
+        this.limitsCache.initPromise = null;
+      }
+    })();
+
+    return this.limitsCache.initPromise;
   }
 
   /**
@@ -167,7 +186,8 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   /**
-   * Cache a resolved symbol
+   * Cache a resolved symbol with bounded size
+   * Evicts oldest entries when cache exceeds max size
    * @param {string} underlying - Underlying symbol
    * @param {string} exchange - Exchange
    * @param {string} expiry - Expiry date
@@ -175,6 +195,12 @@ class OpenAlgoClient extends EventEmitter {
    */
   cacheResolvedSymbol(underlying, exchange, expiry, resolved) {
     const key = `${underlying}|${exchange}|${expiry}`;
+
+    // Evict oldest entries if cache is at max size
+    if (this.symbolResolutionCache.size >= this.symbolResolutionCacheMaxSize) {
+      this._evictOldestEntries(this.symbolResolutionCache, 'resolvedAt', 100);
+    }
+
     this.symbolResolutionCache.set(key, {
       ...resolved,
       resolvedAt: Date.now(),
@@ -198,13 +224,20 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   /**
-   * Cache lot size for a symbol
+   * Cache lot size for a symbol with bounded size
+   * Evicts oldest entries when cache exceeds max size
    * @param {string} exchange - Exchange
    * @param {string} symbol - Symbol
    * @param {number} lotSize - Lot size
    */
   cacheLotSize(exchange, symbol, lotSize) {
     const key = `${exchange}|${symbol}`;
+
+    // Evict oldest entries if cache is at max size
+    if (this.lotSizeCache.size >= this.lotSizeCacheMaxSize) {
+      this._evictOldestEntries(this.lotSizeCache, 'cachedAt', 50);
+    }
+
     this.lotSizeCache.set(key, {
       lotSize,
       cachedAt: Date.now(),
@@ -237,6 +270,31 @@ class OpenAlgoClient extends EventEmitter {
       }
     }
     log.debug('Pre-loaded lot sizes', { count: symbols.length });
+  }
+
+  /**
+   * Evict oldest entries from a cache Map
+   * Removes entries with the oldest timestamp values
+   * @private
+   * @param {Map} cache - The cache Map to evict from
+   * @param {string} timestampKey - The key in cache values containing the timestamp
+   * @param {number} count - Number of entries to evict
+   */
+  _evictOldestEntries(cache, timestampKey, count) {
+    // Convert to array and sort by timestamp (oldest first)
+    const entries = [...cache.entries()]
+      .sort((a, b) => (a[1][timestampKey] || 0) - (b[1][timestampKey] || 0));
+
+    // Delete oldest entries
+    const toDelete = Math.min(count, entries.length);
+    for (let i = 0; i < toDelete; i++) {
+      cache.delete(entries[i][0]);
+    }
+
+    log.debug('Cache eviction performed', {
+      evicted: toDelete,
+      remainingSize: cache.size,
+    });
   }
 
   /**
