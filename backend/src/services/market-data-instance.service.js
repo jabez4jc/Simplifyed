@@ -17,6 +17,15 @@ class MarketDataInstanceService {
    * @throws {NotFoundError} If no healthy primary or secondary instance is available
    */
   async getMarketDataInstance() {
+    const rr = await this.getRoundRobinInstance();
+    if (rr) {
+      log.debug('Using pooled market data instance (round robin)', {
+        instanceId: rr.id,
+        instanceName: rr.name,
+      });
+      return rr;
+    }
+
     // Try primary first
     const primary = await this._getInstanceByRole('primary');
     if (primary && this._isHealthy(primary)) {

@@ -1170,17 +1170,12 @@ class DashboardApp {
         return;
       }
 
-      // Get the designated market data instance (primary with failover to secondary)
-      // This instance does not need to be mapped to the watchlist
-      let marketDataInstance;
-      try {
-        const mdResponse = await api.getMarketDataInstance();
-        marketDataInstance = mdResponse.data;
-        console.log(`Using market data instance: ${marketDataInstance.name} (${marketDataInstance.market_data_role})`);
-      } catch (error) {
-        console.warn('No healthy market data instance available for quotes:', error.message);
+      // Get pooled market data instances (global, not watchlist bound)
+      const mdResp = await api.getAllMarketDataInstances();
+      const mdInstances = (mdResp.data || []).filter(inst => inst.is_active);
+      if (mdInstances.length === 0) {
         this.updateWatchlistQuoteMeta(watchlistId, {
-          statusText: 'Market data feed unavailable',
+          statusText: 'No market data instances available',
           source: null,
           total: symbols.length,
           filled: 0,
@@ -1194,16 +1189,29 @@ class DashboardApp {
         symbol: s.symbol
       }));
 
-      // Fetch quotes from the market data instance
-      const quotesResponse = await api.getQuotes(symbolsForQuotes, marketDataInstance.id);
-      const quotes = quotesResponse.data || [];
-      const snapshotTimestamp = quotesResponse.cachedAt || Date.now();
+      // Batch and distribute across instances (3–5 per request, round-robin)
+      const batchSize = Math.max(3, Math.min(5, Math.ceil(symbolsForQuotes.length / mdInstances.length)));
+      const chunks = this.chunkArray(symbolsForQuotes, batchSize);
+      let allQuotes = [];
+      for (let i = 0; i < chunks.length; i++) {
+        const inst = mdInstances[i % mdInstances.length];
+        try {
+          const resp = await api.getQuotes(chunks[i], inst.id);
+          if (resp?.data?.length) {
+            allQuotes = allQuotes.concat(resp.data);
+          }
+        } catch (err) {
+          console.warn('Quote batch failed for instance', inst.name, err.message);
+        }
+      }
+
+      const snapshotTimestamp = Date.now();
 
       this.updateWatchlistQuoteMeta(watchlistId, {
         timestamp: snapshotTimestamp,
-        source: quotesResponse.source || 'live',
+        source: 'live',
         total: symbols.length,
-        filled: quotes.length,
+        filled: allQuotes.length,
       });
 
       const lastSnapshotTs = this.watchlistQuoteSnapshots.get(watchlistId);
@@ -1214,7 +1222,7 @@ class DashboardApp {
       this.watchlistQuoteSnapshots.set(watchlistId, snapshotTimestamp);
 
       // Update UI for each symbol
-      quotes.forEach(quote => {
+      allQuotes.forEach(quote => {
         const normalizedQuoteSymbol = this.normalizeQuoteSymbol(quote.symbol);
         const symbol = symbols.find(s => {
           const exactMatch = s.exchange === quote.exchange;
@@ -1252,6 +1260,14 @@ class DashboardApp {
       return normalized.split(':').pop();
     }
     return normalized;
+  }
+
+  chunkArray(arr = [], size = 5) {
+    const chunks = [];
+    for (let i = 0; i < arr.length; i += size) {
+      chunks.push(arr.slice(i, i + size));
+    }
+    return chunks;
   }
 
   /**
