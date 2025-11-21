@@ -2206,14 +2206,13 @@ class DashboardApp {
             </div>
 
             <div class="form-group">
-              <label class="form-label">Market Data Role</label>
-              <select name="market_data_role" class="form-select">
-                <option value="none">None - Don't use for market data</option>
-                <option value="primary">Primary - Use first for market data calls</option>
-                <option value="secondary">Secondary - Fallback for market data calls</option>
-              </select>
+              <label class="form-label">Market Data</label>
+              <label class="inline-flex items-center gap-2">
+                <input type="checkbox" name="market_data_enabled" class="form-checkbox">
+                <span>Use this instance for market data</span>
+              </label>
               <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                Only Primary/Secondary instances will be used for fetching market data (quotes, depth, etc.)
+                Enabled instances will be pooled and load-balanced for quotes/LTP/depth.
               </small>
             </div>
 
@@ -2268,12 +2267,7 @@ class DashboardApp {
     const formData = new FormData(form);
     const data = Object.fromEntries(formData.entries());
 
-    // Check if broker was detected
-    const brokerField = document.getElementById('instance-broker');
-    if (!brokerField.value) {
-      Utils.showToast('Please test connection to detect broker before adding instance', 'warning');
-      return;
-    }
+    data.market_data_enabled = form.querySelector('input[name="market_data_enabled"]').checked;
 
     try {
       await api.createInstance(data);
@@ -3701,20 +3695,14 @@ class DashboardApp {
               </div>
 
               <div class="form-group">
-                <label class="form-label">Market Data Role</label>
-                <select name="market_data_role" class="form-select">
-                  <option value="none" ${instance.market_data_role === 'none' ? 'selected' : ''}>
-                    None - Don't use for market data
-                  </option>
-                  <option value="primary" ${instance.market_data_role === 'primary' ? 'selected' : ''}>
-                    Primary - Use first for market data calls
-                  </option>
-                  <option value="secondary" ${instance.market_data_role === 'secondary' ? 'selected' : ''}>
-                    Secondary - Fallback for market data calls
-                  </option>
-                </select>
+                <label class="form-label">Market Data</label>
+                <label class="inline-flex items-center gap-2">
+                  <input type="checkbox" name="market_data_enabled" class="form-checkbox"
+                         ${instance.market_data_enabled ? 'checked' : ''}>
+                  <span>Use this instance for market data</span>
+                </label>
                 <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                  Only Primary/Secondary instances will be used for fetching market data
+                  Enabled instances are pooled and load-balanced for quotes/LTP/depth.
                 </small>
               </div>
 
@@ -3795,6 +3783,8 @@ class DashboardApp {
 
     // Remove broker field - it's immutable
     delete data.broker;
+
+    data.market_data_enabled = form.querySelector('input[name="market_data_enabled"]').checked;
 
     try {
       await api.updateInstance(instanceId, data);

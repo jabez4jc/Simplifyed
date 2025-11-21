@@ -906,11 +906,6 @@ class InstanceService {
       const role = String(data.market_data_role).toLowerCase();
       if (validRoles.includes(role)) {
         normalized.market_data_role = role;
-      } else if (!isUpdate) {
-        errors.push({
-          field: 'market_data_role',
-          message: 'Market data role must be one of: none, primary, secondary',
-        });
       }
     }
 
