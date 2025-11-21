@@ -437,7 +437,20 @@ class QuickOrderService {
     if (!lotSize || lotSize <= 0) {
       throw new ValidationError(`Unable to resolve lot size for ${finalExchange}:${finalSymbol}`);
     }
-    const currentPosition = rawPosition;
+    // Normalize position units: some brokers return position quantity in lots instead of contracts.
+    let currentPosition = rawPosition;
+    if (lotSize > 1 && Math.abs(currentPosition) > 0 && Math.abs(currentPosition) < lotSize && Number.isInteger(currentPosition)) {
+      currentPosition = currentPosition * lotSize;
+      log.warn('Normalized position from lots to contracts', {
+        instance_id: instance.id,
+        instance_name: instance.name,
+        symbol: finalSymbol,
+        exchange: finalExchange,
+        rawPosition,
+        normalizedPosition: currentPosition,
+        lotSize,
+      });
+    }
 
     const tradeQuantity = quantity * lotSize;
 
