@@ -498,16 +498,7 @@ class QuickOrderService {
       algoAction = 'BUY';
       targetPosition = Math.min(currentPosition + tradeQuantity, 0);
     } else if (action === 'EXIT') {
-      if (currentPosition === 0) {
-        return {
-          order_id: null,
-          status: 'noop',
-          symbol: finalSymbol,
-          quantity: 0,
-          action: 'EXIT',
-          message: 'No open position to exit',
-        };
-      }
+      // Always send an EXIT to enforce position_size = 0, even if currently flat
       targetPosition = 0;
       algoAction = currentPosition > 0 ? 'SELL' : 'BUY';
     } else {
@@ -525,7 +516,7 @@ class QuickOrderService {
 
     // Place order using placesmartorder
     const orderQuantity = Math.abs(targetPosition - currentPosition);
-    if (!orderQuantity) {
+    if (!orderQuantity && action !== 'EXIT') {
       return {
         order_id: null,
         status: 'noop',
