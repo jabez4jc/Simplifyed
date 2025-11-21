@@ -425,7 +425,7 @@ class QuickOrderService {
       finalSymbol,
       finalExchange,
       product,
-      { forceLive: true }
+      { forceLive: true, failOnError: true }
     );
     const baseLotSize = resolvedLotSize || symbol.lot_size || symbol.lotsize || 1;
     const lotSize = await this._resolveLotSize(
@@ -565,6 +565,35 @@ class QuickOrderService {
       expiry: expiry || null,
     });
 
+    // Verify final position using live positionbook
+    let finalPosition = null;
+    try {
+      finalPosition = await this._getCurrentPositionSize(
+        instance,
+        finalSymbol,
+        finalExchange,
+        finalProduct,
+        { forceLive: true, failOnError: true }
+      );
+      if (finalPosition !== targetPosition) {
+        log.warn('Post-trade position mismatch', {
+          instance_id: instance.id,
+          instance_name: instance.name,
+          symbol: finalSymbol,
+          expected: targetPosition,
+          actual: finalPosition,
+          action,
+        });
+      }
+    } catch (verifyErr) {
+      log.warn('Failed to verify final position post-trade', {
+        instance_id: instance.id,
+        instance_name: instance.name,
+        symbol: finalSymbol,
+        error: verifyErr.message,
+      });
+    }
+
     // Record order in database
     await this._recordQuickOrder({
       watchlist_id: symbol.watchlist_id,
@@ -576,7 +605,7 @@ class QuickOrderService {
       action: algoAction,
       trade_mode: tradeMode,
       quantity: tradeQuantity,
-      product,
+      product: finalProduct,
       order_type: orderType,
       price,
       order_id: orderResult.orderid,
@@ -592,6 +621,7 @@ class QuickOrderService {
       symbol: finalSymbol,
       quantity: tradeQuantity,
       action: algoAction,
+      final_position: finalPosition,
     };
   }
 
@@ -686,6 +716,11 @@ class QuickOrderService {
 
     // Determine the correct derivatives exchange
     const derivativeExchange = derivativeResolutionService.getDerivativeExchange(symbol.exchange);
+    const finalProduct = this._resolveProductForOrder(
+      product,
+      'OPTIONS',
+      { symbol_type: 'OPTIONS', exchange: derivativeExchange }
+    );
 
     // Determine scope: TYPE-level or LEG-level position calculation
     // FLOAT_OFS + reduce/close actions → TYPE scope (aggregate across strikes)
@@ -711,7 +746,7 @@ class QuickOrderService {
         underlying,
         expiry,
         optionType,
-        product
+        finalProduct
       );
 
       if (allOpenPositions.length === 0) {
@@ -778,6 +813,12 @@ class QuickOrderService {
       }
 
       const orderPromises = ordersToPlace.map(async order => {
+        const floatProduct = this._resolveProductForOrder(
+          product,
+          'OPTIONS',
+          { symbol_type: 'OPTIONS', exchange: derivativeExchange }
+        );
+
         const orderDataToSend = orderPayloadFactory.buildOptionsOrder({
           strategy: symbol.watchlist_name || 'default',
           exchange: derivativeExchange,
@@ -785,7 +826,7 @@ class QuickOrderService {
           action: order.action,
           quantity: order.quantity,
           position_size: order.position_size,
-          product,
+          product: floatProduct,
           pricetype: orderType,
           price,
         });
@@ -818,7 +859,7 @@ class QuickOrderService {
           order.strike,
           order.position_size,
           0,
-          product
+          floatProduct
         );
 
         await this._recordQuickOrder({
@@ -832,7 +873,7 @@ class QuickOrderService {
           trade_mode: 'OPTIONS',
           options_leg: symbol.options_strike_selection,
           quantity: order.quantity,
-          product,
+          product: floatProduct,
           order_type: orderType,
           price,
           resolved_symbol: optionSymbol.symbol,
@@ -966,7 +1007,7 @@ class QuickOrderService {
       action: algoAction,
       quantity,
       position_size: targetPosition,
-      product,
+      product: finalProduct,
       pricetype: orderType,
       price,
     });
@@ -995,7 +1036,7 @@ class QuickOrderService {
       strike,
       targetPosition,  // New net position
       0,  // We don't have avg price yet, will be updated by polling
-      product
+      finalProduct
     );
 
     // Record order in database
@@ -1010,7 +1051,7 @@ class QuickOrderService {
       trade_mode: 'OPTIONS',
       options_leg: symbol.options_strike_selection,
       quantity,
-      product,
+      product: finalProduct,
       order_type: orderType,
       price,
       resolved_symbol: optionSymbol.symbol,
@@ -1021,6 +1062,43 @@ class QuickOrderService {
       status: orderResult.status,
       message: orderResult.message || `${operatingMode} mode: ${action} executed successfully`,
     });
+
+    // Verify final position post-trade
+    let finalPosition = null;
+    try {
+      if (useTypeScope) {
+        finalPosition = await this._getAggregatedTypePosition(
+          instance,
+          underlying,
+          expiry,
+          optionType,
+          finalProduct
+        );
+      } else {
+        finalPosition = await this._getCurrentPositionSize(
+          instance,
+          optionSymbol.symbol,
+          derivativeExchange,
+          finalProduct,
+          { forceLive: true, failOnError: true }
+        );
+      }
+      if (finalPosition !== targetPosition) {
+        log.warn('Post-trade position mismatch (options)', {
+          instance_id: instance.id,
+          symbol: optionSymbol.symbol,
+          expected: targetPosition,
+          actual: finalPosition,
+          scope: useTypeScope ? 'TYPE' : 'LEG',
+        });
+      }
+    } catch (verifyErr) {
+      log.warn('Failed to verify final options position', {
+        instance_id: instance.id,
+        symbol: optionSymbol.symbol,
+        error: verifyErr.message,
+      });
+    }
 
     this._invalidateInstanceCaches(instance.id);
 
@@ -1036,6 +1114,7 @@ class QuickOrderService {
       strike_policy: strikePolicy,
       current_position: currentPosition,
       target_position: targetPosition,
+      final_position: finalPosition,
     };
   }
 
@@ -1362,7 +1441,7 @@ class QuickOrderService {
    */
   async _getCurrentPositionSize(instance, symbol, exchange, product, opts = {}) {
     try {
-    const positionBook = await this._getPositionBook(instance, { ...opts, forceLive: true });
+      const positionBook = await this._getPositionBook(instance, { ...opts, forceLive: true });
       const targetSymbol = this._normalizeSymbolKey(symbol);
       const targetExchange = this._normalizeExchange(exchange);
       const targetProduct = this._normalizeProduct(product);
@@ -1396,13 +1475,16 @@ class QuickOrderService {
         return total + qty;
       }, 0);
     } catch (error) {
-      log.warn('Failed to determine current position size from cache', {
+      log.warn('Failed to determine current position size', {
         instance_id: instance.id,
         symbol,
         exchange,
         product,
         error: error.message,
       });
+      if (opts.failOnError) {
+        throw error;
+      }
       return 0;
     }
   }
