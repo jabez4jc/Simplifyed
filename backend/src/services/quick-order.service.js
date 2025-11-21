@@ -1111,10 +1111,35 @@ class QuickOrderService {
       positionsToClose = [...cePositions, ...pePositions];
     } else {
       // Close position for specific symbol
+      let targetSymbol = symbol.symbol;
+      let targetExchange = symbol.exchange;
+
+      if (tradeMode === 'FUTURES') {
+        const derivativeExchange = symbol.symbol_type === 'FUTURES'
+          ? symbol.exchange
+          : derivativeResolutionService.getDerivativeExchange(symbol.exchange);
+        const underlying = this._getUnderlyingForClosing(symbol);
+        const expiryInput = userExpiry ? this._normalizeExpiryInput(userExpiry) : null;
+        if (!underlying) {
+          throw new ValidationError('Underlying symbol is required to close futures positions.');
+        }
+        if (!expiryInput) {
+          throw new ValidationError('Expiry is required to close futures positions.');
+        }
+        const futuresSymbol = await derivativeResolutionService.resolveFuturesSymbol(
+          instance,
+          underlying,
+          derivativeExchange,
+          expiryInput
+        );
+        targetSymbol = futuresSymbol.symbol;
+        targetExchange = derivativeExchange;
+      }
+
       const positions = await this._getOpenPositionsForSymbol(
         instance,
-        symbol.symbol,
-        symbol.exchange,
+        targetSymbol,
+        targetExchange,
         product
       );
 
