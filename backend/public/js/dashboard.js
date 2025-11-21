@@ -43,6 +43,7 @@ class DashboardApp {
     this.positionsInstanceStore = new Map();
     // Track expanded instances in positions view; default is collapsed
     this.positionsExpanded = new Set();
+    this.isPaused = true; // start paused until user resumes
   }
 
   /**
@@ -64,6 +65,7 @@ class DashboardApp {
       // Load initial view based on stored state or hash
       const initialView = this.determineInitialView();
       this.switchView(initialView, { updateHash: false, forceReload: true });
+      this.updatePauseButtonUI();
 
       // Note: Auto-refresh disabled to prevent page flicker
       // Individual polling mechanisms (quotes, positions) handle their own updates
@@ -102,6 +104,37 @@ class DashboardApp {
     this.isSidebarCollapsed = !this.isSidebarCollapsed;
     this.applySidebarState();
     localStorage.setItem('sidebarCollapsed', this.isSidebarCollapsed ? 'true' : 'false');
+  }
+
+  togglePause() {
+    this.isPaused = !this.isPaused;
+    this.updatePauseButtonUI();
+    if (!this.isPaused) {
+      Utils.showToast('Resumed data fetching', 'success');
+      this.refreshCurrentView(true);
+    } else {
+      Utils.showToast('Paused all background data fetching', 'info');
+      this.stopAllWatchlistPolling();
+      this.stopTradesPolling();
+      this.stopPositionsPolling();
+    }
+  }
+
+  updatePauseButtonUI() {
+    const btn = document.getElementById('pause-toggle-btn');
+    const path = document.getElementById('pause-play-path');
+    if (!btn || !path) return;
+    if (this.isPaused) {
+      // show play icon
+      path.setAttribute('d', 'M8 5v14l11-7z');
+      btn.setAttribute('title', 'Resume data fetching');
+      btn.setAttribute('aria-label', 'Resume data fetching');
+    } else {
+      // show pause icon
+      path.setAttribute('d', 'M6 4h4v16H6zM14 4h4v16h-4z');
+      btn.setAttribute('title', 'Pause data fetching');
+      btn.setAttribute('aria-label', 'Pause data fetching');
+    }
   }
 
   /**
@@ -333,6 +366,10 @@ class DashboardApp {
    * Render Dashboard View
    */
   async renderDashboardView() {
+    if (this.isPaused) {
+      this.renderPausedPlaceholder('Dashboard');
+      return;
+    }
     const contentArea = document.getElementById('content-area');
 
     // Fetch data
@@ -482,6 +519,10 @@ class DashboardApp {
    */
   async renderInstancesView() {
     const contentArea = document.getElementById('content-area');
+    if (this.isPaused) {
+      this.renderPausedPlaceholder('Instances');
+      return;
+    }
 
     // Fetch instances and metrics
     const [instancesRes, metricsRes] = await Promise.all([
@@ -691,6 +732,10 @@ class DashboardApp {
    * Render Watchlists View (Accordion Style)
    */
   async renderWatchlistsView() {
+    if (this.isPaused) {
+      this.renderPausedPlaceholder('Watchlists');
+      return;
+    }
     const contentArea = document.getElementById('content-area');
 
     if (window.quickOrder && typeof window.quickOrder.stopAllOptionPreviewPolling === 'function') {
@@ -1074,6 +1119,7 @@ class DashboardApp {
    * Start polling quotes for a watchlist
    */
   async startWatchlistPolling(watchlistId) {
+    if (this.isPaused) return;
     // Stop existing poller if any
     this.stopWatchlistPolling(watchlistId);
 
@@ -1082,6 +1128,7 @@ class DashboardApp {
 
     // Start 10-second polling
     const intervalId = setInterval(async () => {
+      if (this.isPaused) return;
       await this.updateWatchlistQuotes(watchlistId);
     }, 10000);
 
@@ -1144,6 +1191,9 @@ class DashboardApp {
   }
 
   requestWatchlistRefresh({ showLoader = false, force = false } = {}) {
+    if (this.isPaused && !force) {
+      return;
+    }
     if (force) {
       this.refreshWatchlistPositions({ showLoader });
       return;
@@ -1153,6 +1203,7 @@ class DashboardApp {
   }
 
   async updateWatchlistQuotes(watchlistId, { force = false } = {}) {
+    if (this.isPaused && !force) return;
     try {
       // Check if watchlist table exists in DOM (view might be re-rendering)
       const table = document.getElementById(`watchlist-table-${watchlistId}`);
@@ -1445,6 +1496,10 @@ class DashboardApp {
    */
   async renderOrdersView() {
     const contentArea = document.getElementById('content-area');
+    if (this.isPaused) {
+      this.renderPausedPlaceholder('Orders');
+      return;
+    }
     this.currentOrderFilter = this.currentOrderFilter || '';
 
     contentArea.innerHTML = `
@@ -1738,6 +1793,10 @@ class DashboardApp {
    * Render Trades View
    */
   async renderTradesView() {
+    if (this.isPaused) {
+      this.renderPausedPlaceholder('Trades');
+      return;
+    }
     const contentArea = document.getElementById('content-area');
     this.stopTradesPolling();
 
@@ -2001,6 +2060,10 @@ class DashboardApp {
    */
   async renderPositionsView() {
     const contentArea = document.getElementById('content-area');
+    if (this.isPaused) {
+      this.renderPausedPlaceholder('Positions');
+      return;
+    }
     if (!this.positionsInstanceStore) {
       this.positionsInstanceStore = new Map();
     }
@@ -4030,6 +4093,25 @@ class DashboardApp {
   async filterOrders(status) {
     this.currentOrderFilter = status || '';
     await this.loadOrders(this.currentOrderFilter);
+  }
+
+  renderPausedPlaceholder(viewLabel = 'Dashboard') {
+    const contentArea = document.getElementById('content-area');
+    if (!contentArea) return;
+    contentArea.innerHTML = `
+      <div class="card">
+        <div class="card-header flex items-center justify-between">
+          <div>
+            <h3 class="card-title">${Utils.escapeHTML(viewLabel)} (Paused)</h3>
+            <p class="text-sm text-neutral-600">Data fetching is paused. Click the play button in the header to resume.</p>
+          </div>
+        </div>
+        <div class="p-6 text-center text-neutral-500">
+          <p>Data fetching is currently paused to avoid triggering rate limits after restart.</p>
+          <button class="btn btn-primary mt-4" onclick="app.togglePause()">Resume</button>
+        </div>
+      </div>
+    `;
   }
 }
 

@@ -38,6 +38,11 @@
           <h2 id="view-title" class="text-2xl font-bold text-base-content">Dashboard</h2>
         </div>
         <div class="flex-none gap-2 navbar-actions">
+          <button id="pause-toggle-btn" class="icon-button" onclick="app.togglePause()" title="Pause/Resume data fetching" aria-label="Pause/Resume">
+            <svg id="pause-play-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path id="pause-play-path" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 4h4v16H6zM14 4l8 8-8 8z" />
+            </svg>
+          </button>
           <button class="icon-button" onclick="app.refreshCurrentView()" title="Refresh dashboard" aria-label="Refresh dashboard">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h4M20 20v-5h-4M5 9a7 7 0 0112-4M19 15a7 7 0 01-12 4" />
