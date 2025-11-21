@@ -1483,28 +1483,56 @@ body {
   background-color: #0d9668;
 }
 
-/* SELL buttons (red) */
-.btn-sell,
+/* SELL buttons (yellow for direct/futures) */
+.btn-sell {
+  background-color: #f59e0b;
+  color: white;
+}
+
+.btn-sell:hover:not(:disabled) {
+  background-color: #d97706;
+}
+
+/* SELL buttons for options (keep red) */
 .btn-sell-ce,
 .btn-sell-pe {
   background-color: var(--color-loss);
   color: white;
 }
 
-.btn-sell:hover:not(:disabled),
 .btn-sell-ce:hover:not(:disabled),
 .btn-sell-pe:hover:not(:disabled) {
   background-color: #dc2626;
 }
 
-/* EXIT buttons (orange/warning) */
+/* SHORT buttons (orange) */
+.btn-short {
+  background-color: #f97316;
+  color: white;
+}
+
+.btn-short:hover:not(:disabled) {
+  background-color: #ea580c;
+}
+
+/* COVER buttons (yellow) */
+.btn-cover {
+  background-color: #f59e0b;
+  color: white;
+}
+
+.btn-cover:hover:not(:disabled) {
+  background-color: #d97706;
+}
+
+/* EXIT buttons (red) */
 .btn-exit {
-  background-color: var(--color-warning);
+  background-color: var(--color-loss);
   color: white;
 }
 
 .btn-exit:hover:not(:disabled) {
-  background-color: #d97706;
+  background-color: #dc2626;
 }
 
 /* EXIT ALL button (dark orange) */
