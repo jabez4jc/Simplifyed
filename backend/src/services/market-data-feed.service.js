@@ -40,6 +40,8 @@ class MarketDataFeedService extends EventEmitter {
     this.orderbookRefreshTimestamps = new Map();
     this.tradebookCache = new Map();
     this.tradebookRefreshTimestamps = new Map();
+    this.symbolQuoteCache = new Map(); // key: EXCHANGE|SYMBOL -> { quote, fetchedAt }
+    this.SYMBOL_QUOTE_TTL_MS = 2000;
   }
 
   async start(config = {}) {
@@ -151,7 +153,63 @@ class MarketDataFeedService extends EventEmitter {
     }
 
     this.quoteCache.set(instanceId, snapshot);
+    // Update symbol-level cache
+    dataArray.forEach((q) => {
+      if (!q?.symbol) return;
+      const key = this._symbolKey(q.exchange, q.symbol);
+      this.symbolQuoteCache.set(key, { quote: q, fetchedAt: snapshot.fetchedAt });
+    });
     this.emit('quotes:update', { instanceId, data: snapshot.data });
+  }
+
+  /**
+   * Retrieve cached quotes for symbols if fresh, and return missing symbols
+   */
+  getCachedQuotesForSymbols(symbols = [], ttlMs = this.SYMBOL_QUOTE_TTL_MS) {
+    const now = Date.now();
+    const cached = [];
+    const missing = [];
+    symbols.forEach((s) => {
+      const key = this._symbolKey(s.exchange, s.symbol);
+      const entry = this.symbolQuoteCache.get(key);
+      if (entry && entry.fetchedAt && now - entry.fetchedAt <= ttlMs) {
+        cached.push(entry.quote);
+      } else {
+        missing.push(s);
+      }
+    });
+    return { cached, missing };
+  }
+
+  /**
+   * Fetch quotes for a set of symbols using pooled market data instances (batched)
+   */
+  async fetchQuotesForSymbols(symbols = []) {
+    const unique = this._dedupeSymbols(symbols);
+    if (unique.length === 0) return [];
+    const pool = await marketDataInstanceService.getMarketDataPool();
+    if (pool.length === 0) {
+      log.warn('No market data instances available for ad-hoc quotes fetch');
+      return [];
+    }
+
+    const batchSize = Math.max(3, Math.min(5, Math.ceil(unique.length / pool.length)));
+    const chunks = this._chunkSymbols(unique, batchSize);
+    let collected = [];
+
+    for (let i = 0; i < chunks.length; i++) {
+      const inst = pool[i % pool.length];
+      try {
+        const quotes = await openalgoClient.getQuotes(inst, chunks[i]);
+        if (Array.isArray(quotes)) {
+          this.setQuoteSnapshot(inst.id, quotes, { fetchedAt: Date.now() });
+          collected = collected.concat(quotes);
+        }
+      } catch (error) {
+        log.warn('Ad-hoc quote fetch failed for instance', { instance: inst.name, error: error.message });
+      }
+    }
+    return collected;
   }
 
   /**
@@ -357,6 +415,23 @@ class MarketDataFeedService extends EventEmitter {
       chunks.push(symbols.slice(i, i + chunkSize));
     }
     return chunks;
+  }
+
+  _symbolKey(exchange = '', symbol = '') {
+    return `${(exchange || '').toUpperCase()}|${(symbol || '').toUpperCase()}`;
+  }
+
+  _dedupeSymbols(symbols = []) {
+    const seen = new Set();
+    const result = [];
+    symbols.forEach((s) => {
+      const key = this._symbolKey(s.exchange, s.symbol);
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.push({ exchange: s.exchange, symbol: s.symbol });
+      }
+    });
+    return result;
   }
 
   _shouldSkipPolling(key) {

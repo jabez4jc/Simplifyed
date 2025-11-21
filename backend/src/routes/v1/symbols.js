@@ -122,58 +122,36 @@ router.post('/validate', async (req, res, next) => {
 /**
  * POST /api/v1/symbols/quotes
  * Get quotes for multiple symbols
- * Body: { symbols: [{exchange, symbol}], instanceId }
+ * Body: { symbols: [{exchange, symbol}], instanceId? }
  */
 router.post('/quotes', async (req, res, next) => {
   try {
-    const { symbols, instanceId } = req.body;
+    const { symbols, instanceId } = req.body || {};
 
     if (!symbols || !Array.isArray(symbols)) {
       throw new ValidationError('symbols array is required');
     }
 
-    if (!instanceId) {
-      throw new ValidationError('instanceId parameter is required');
+    const ttlMs = 2000;
+    const { cached, missing } = marketDataFeedService.getCachedQuotesForSymbols(symbols, ttlMs);
+    let liveQuotes = [];
+
+    if (missing.length > 0) {
+      if (instanceId) {
+        const instance = await instanceService.getInstanceById(parseInt(instanceId, 10));
+        const quotes = await openalgoClient.getQuotes(instance, missing);
+        marketDataFeedService.setQuoteSnapshot(instance.id, quotes);
+        liveQuotes = quotes;
+      } else {
+        liveQuotes = await marketDataFeedService.fetchQuotesForSymbols(missing);
+      }
     }
-
-    const cache = marketDataFeedService.getQuoteSnapshot(parseInt(instanceId, 10));
-    const cached = cache?.data || [];
-
-    const normalizeExchange = (value = '') => (value || '').toUpperCase().replace(/_INDEX$/, '');
-
-    const matchesSymbol = (quote, symbol) => {
-      const exchangeMatch =
-        quote.exchange === symbol.exchange ||
-        normalizeExchange(quote.exchange) === normalizeExchange(symbol.exchange);
-      const symbolMatch = quote.symbol === symbol.symbol;
-      return exchangeMatch && symbolMatch;
-    };
-
-    const matchingCache = symbols.map(sym => cached.find(quote => matchesSymbol(quote, sym)));
-    const hasFullCache = matchingCache.every(Boolean);
-
-    if (hasFullCache) {
-      res.json({
-        status: 'success',
-        data: matchingCache.filter(Boolean),
-        count: matchingCache.filter(Boolean).length,
-        cachedAt: cache.fetchedAt,
-        source: 'cache',
-      });
-      return;
-    }
-
-    const instance = await instanceService.getInstanceById(
-      parseInt(instanceId, 10)
-    );
-    const quotes = await openalgoClient.getQuotes(instance, symbols);
-    marketDataFeedService.setQuoteSnapshot(instance.id, quotes);
 
     res.json({
       status: 'success',
-      data: quotes,
-      count: quotes.length,
-      source: 'live',
+      data: [...cached, ...liveQuotes],
+      count: cached.length + liveQuotes.length,
+      source: missing.length > 0 ? 'mixed' : 'cache',
     });
   } catch (error) {
     next(error);
