@@ -527,6 +527,12 @@ class QuickOrderService {
       };
     }
 
+    // Final product enforcement (force NRML for any derivative/futures trade)
+    const finalProduct = this._resolveProductForOrder(product, tradeMode, {
+      symbol_type: 'FUTURES',
+      exchange: finalExchange,
+    });
+
     const orderPayload = orderPayloadFactory.buildEquityOrder({
       strategy: symbol.watchlist_name || 'default',
       exchange: finalExchange,
@@ -534,7 +540,7 @@ class QuickOrderService {
       action: algoAction,
       quantity: orderQuantity,
       position_size: targetPosition,
-      product,
+      product: finalProduct,
       pricetype: orderType,
       price,
     });
