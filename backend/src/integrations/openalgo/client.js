@@ -583,6 +583,7 @@ class OpenAlgoClient {
           url,
           response.status
         );
+        jsonError.statusCode = response.status;
 
         if (looksHtml) {
           jsonError.isHtmlResponse = true;

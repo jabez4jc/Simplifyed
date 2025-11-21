@@ -217,9 +217,15 @@ class OptionsResolutionService {
 
       return this._processOptionChain(chainData);
     } catch (error) {
-      log.error('Failed to fetch option chain from OpenAlgo', error, {
+      const isHtml = error?.isHtmlResponse;
+      const statusCode = error?.statusCode;
+      const logFn = isHtml || statusCode === 404 ? log.warn : log.error;
+      logFn('Failed to fetch option chain from OpenAlgo', {
         underlying,
         expiry: openalgoExpiry,
+        statusCode,
+        rawBody: error?.rawBody,
+        message: error?.message,
       });
 
       // If OpenAlgo option chain fails, try to get symbols via search
