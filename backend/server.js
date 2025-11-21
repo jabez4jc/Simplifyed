@@ -17,6 +17,8 @@ import autoExitService from './src/services/auto-exit.service.js';
 // Order monitor service removed - no longer needed after target/stoploss removal
 // import orderMonitorService from './src/services/order-monitor.service.js';
 import telegramService from './src/services/telegram.service.js';
+import openalgoClient from './src/integrations/openalgo/client.js';
+import settingsService from './src/services/settings.service.js';
 
 // Middleware
 import { configureSession, configurePassport, requireAuth, optionalAuth } from './src/middleware/auth.js';
@@ -166,6 +168,18 @@ async function startServer() {
     // Load configuration from database
     await config.loadFromDatabase();
     log.info('Configuration loaded from database');
+
+    // Initialize OpenAlgo client rate limits from database
+    await openalgoClient.initializeRateLimits();
+    log.info('OpenAlgo rate limits initialized');
+
+    // Set up event-driven rate limit reload on settings change
+    settingsService.on('settings:changed', async (data) => {
+      if (data.category === 'rate_limits') {
+        log.info('Rate limit settings changed, reloading...');
+        await openalgoClient.reloadRateLimits();
+      }
+    });
 
     // Ensure test user exists in development
     if (config.env === 'development' && !config.auth.googleClientId) {
