@@ -460,8 +460,11 @@ class QuickOrderService {
     let algoAction;
 
     if (action === 'BUY') {
+      // If already long or flat, add; if short, flip to desired long size
       algoAction = 'BUY';
-      targetPosition = currentPosition + tradeQuantity;
+      targetPosition = currentPosition >= 0
+        ? currentPosition + tradeQuantity
+        : tradeQuantity;
     } else if (action === 'SELL') {
       if (currentPosition <= 0) {
         return {
@@ -476,8 +479,11 @@ class QuickOrderService {
       algoAction = 'SELL';
       targetPosition = Math.max(currentPosition - tradeQuantity, 0);
     } else if (action === 'SHORT') {
+      // If already short or flat, add; if long, flip to desired short size
       algoAction = 'SELL';
-      targetPosition = currentPosition - tradeQuantity;
+      targetPosition = currentPosition <= 0
+        ? currentPosition - tradeQuantity
+        : -tradeQuantity;
     } else if (action === 'COVER') {
       if (currentPosition >= 0) {
         return {
