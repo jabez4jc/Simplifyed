@@ -366,10 +366,6 @@ class DashboardApp {
    * Render Dashboard View
    */
   async renderDashboardView() {
-    if (this.isPaused) {
-      this.renderPausedPlaceholder('Dashboard');
-      return;
-    }
     const contentArea = document.getElementById('content-area');
 
     // Fetch data
@@ -519,10 +515,6 @@ class DashboardApp {
    */
   async renderInstancesView() {
     const contentArea = document.getElementById('content-area');
-    if (this.isPaused) {
-      this.renderPausedPlaceholder('Instances');
-      return;
-    }
 
     // Fetch instances and metrics
     const [instancesRes, metricsRes] = await Promise.all([
@@ -732,10 +724,6 @@ class DashboardApp {
    * Render Watchlists View (Accordion Style)
    */
   async renderWatchlistsView() {
-    if (this.isPaused) {
-      this.renderPausedPlaceholder('Watchlists');
-      return;
-    }
     const contentArea = document.getElementById('content-area');
 
     if (window.quickOrder && typeof window.quickOrder.stopAllOptionPreviewPolling === 'function') {
@@ -1496,10 +1484,6 @@ class DashboardApp {
    */
   async renderOrdersView() {
     const contentArea = document.getElementById('content-area');
-    if (this.isPaused) {
-      this.renderPausedPlaceholder('Orders');
-      return;
-    }
     this.currentOrderFilter = this.currentOrderFilter || '';
 
     contentArea.innerHTML = `
@@ -1793,10 +1777,6 @@ class DashboardApp {
    * Render Trades View
    */
   async renderTradesView() {
-    if (this.isPaused) {
-      this.renderPausedPlaceholder('Trades');
-      return;
-    }
     const contentArea = document.getElementById('content-area');
     this.stopTradesPolling();
 
@@ -1823,7 +1803,9 @@ class DashboardApp {
     `;
 
     await this.loadTrades();
-    this.tradesPollingInterval = setInterval(() => this.loadTrades(true), 5000);
+    if (!this.isPaused) {
+      this.tradesPollingInterval = setInterval(() => this.loadTrades(true), 5000);
+    }
   }
 
   async loadTrades(isAuto = false) {
@@ -2060,10 +2042,6 @@ class DashboardApp {
    */
   async renderPositionsView() {
     const contentArea = document.getElementById('content-area');
-    if (this.isPaused) {
-      this.renderPausedPlaceholder('Positions');
-      return;
-    }
     if (!this.positionsInstanceStore) {
       this.positionsInstanceStore = new Map();
     }
@@ -4095,24 +4073,7 @@ class DashboardApp {
     await this.loadOrders(this.currentOrderFilter);
   }
 
-  renderPausedPlaceholder(viewLabel = 'Dashboard') {
-    const contentArea = document.getElementById('content-area');
-    if (!contentArea) return;
-    contentArea.innerHTML = `
-      <div class="card">
-        <div class="card-header flex items-center justify-between">
-          <div>
-            <h3 class="card-title">${Utils.escapeHTML(viewLabel)} (Paused)</h3>
-            <p class="text-sm text-neutral-600">Data fetching is paused. Click the play button in the header to resume.</p>
-          </div>
-        </div>
-        <div class="p-6 text-center text-neutral-500">
-          <p>Data fetching is currently paused to avoid triggering rate limits after restart.</p>
-          <button class="btn btn-primary mt-4" onclick="app.togglePause()">Resume</button>
-        </div>
-      </div>
-    `;
-  }
+  renderPausedPlaceholder() {}
 }
 
 // Initialize app when DOM is ready and expose globally for inline handlers
