@@ -8,6 +8,7 @@ import { log } from '../../core/logger.js';
 import { OpenAlgoError } from '../../core/errors.js';
 import config from '../../core/config.js';
 import { maskApiKey } from '../../utils/sanitizers.js';
+import settingsService from '../../services/settings.service.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -82,6 +83,7 @@ class OpenAlgoClient {
     this.ordersPerSecondLimit = 10;
     this.errorCounters = new Map(); // instKey -> { day, count404, countInvalid, backoffUntil }
     this.instanceMeta = new Map();
+    this.limitsCache = { loadedAt: 0, ttl: 60 * 1000 }; // 1-minute refresh
   }
 
   /**
@@ -147,6 +149,7 @@ class OpenAlgoClient {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const startTime = Date.now();
+        await this._ensureLimits();
         this._ensureBackoffWindow(instKey, endpoint);
         await this._throttle(instance, endpoint, isOrderPlacement);
         const response = await this._executeWithConcurrency(instance, endpoint, method, url, payload, isOrderPlacement);
@@ -499,6 +502,29 @@ class OpenAlgoClient {
       });
     }
     return metrics;
+  }
+
+  async _ensureLimits() {
+    const now = Date.now();
+    if (this.limitsCache.loadedAt && now - this.limitsCache.loadedAt < this.limitsCache.ttl) {
+      return;
+    }
+    try {
+      const settings = await settingsService.getSettingsByCategory('rate_limits');
+      const getNum = (key, fallback) => {
+        const entry = settings[key];
+        const raw = entry ? (entry.pendingValue ?? entry.value ?? entry.rawValue) : undefined;
+        const val = parseFloat(raw);
+        return Number.isNaN(val) ? fallback : val;
+      };
+      this.rpsLimitPerInstance = getNum('rate_limits.rps_per_instance', this.rpsLimitPerInstance);
+      this.rpmLimitGlobal = getNum('rate_limits.rpm_global', this.rpmLimitGlobal);
+      this.ordersPerSecondLimit = getNum('rate_limits.orders_per_second', this.ordersPerSecondLimit);
+      this.maxConcurrentTasks = getNum('rate_limits.max_concurrent_tasks', this.maxConcurrentTasks);
+      this.limitsCache.loadedAt = now;
+    } catch (error) {
+      log.warn('Failed to load rate limit settings, using defaults', { error: error.message });
+    }
   }
 
   /**
