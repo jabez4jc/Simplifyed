@@ -97,6 +97,7 @@ class OpenAlgoClient extends EventEmitter {
       ttl: 10 * 60 * 1000,  // 10 minutes (increased from 1 minute)
       initialized: false,
       initPromise: null,    // Promise-based lock for concurrent init calls
+      reloadPromise: null,  // Promise-based lock for concurrent reload calls
     };
 
     // Symbol resolution cache for futures/options (bounded to prevent memory growth)
@@ -148,21 +149,35 @@ class OpenAlgoClient extends EventEmitter {
 
   /**
    * Reload rate limit settings (called on settings change event)
+   * Uses promise-based locking to prevent concurrent reloads from multiple settings changes
    * @returns {Promise<void>}
    */
   async reloadRateLimits() {
-    try {
-      await this._loadRateLimitSettings();
-      log.info('Rate limit settings reloaded', {
-        rpsPerInstance: this.rpsLimitPerInstance,
-        rpmPerInstance: this.rpmLimitPerInstance,
-        ordersPerSecond: this.ordersPerSecondLimit,
-        maxConcurrentTasks: this.maxConcurrentTasks,
-      });
-      this.emit('rateLimitsReloaded');
-    } catch (error) {
-      log.warn('Failed to reload rate limit settings', { error: error.message });
+    // If reload is already in progress, wait for it to complete
+    if (this.limitsCache.reloadPromise) {
+      return this.limitsCache.reloadPromise;
     }
+
+    // Start reload with promise-based lock
+    this.limitsCache.reloadPromise = (async () => {
+      try {
+        await this._loadRateLimitSettings();
+        log.info('Rate limit settings reloaded', {
+          rpsPerInstance: this.rpsLimitPerInstance,
+          rpmPerInstance: this.rpmLimitPerInstance,
+          ordersPerSecond: this.ordersPerSecondLimit,
+          maxConcurrentTasks: this.maxConcurrentTasks,
+        });
+        this.emit('rateLimitsReloaded');
+      } catch (error) {
+        log.warn('Failed to reload rate limit settings', { error: error.message });
+      } finally {
+        // Clear the promise after completion
+        this.limitsCache.reloadPromise = null;
+      }
+    })();
+
+    return this.limitsCache.reloadPromise;
   }
 
   /**
@@ -1118,16 +1133,38 @@ class OpenAlgoClient extends EventEmitter {
       return quotes;
     }
 
+    // Early exit: No point retrying on same instance if we only have one
+    if (instances.length === 1) {
+      log.warn('Single instance fallback - no alternate instances available for retry', {
+        failedCount: failed.length,
+        symbols: failed.map(f => `${f.exchange}:${f.symbol}`),
+      });
+      return quotes;
+    }
+
     // Retry failed quotes on alternate instances
     let pendingSymbols = failed.map(f => ({ exchange: f.exchange, symbol: f.symbol }));
     const finalQuotes = [...quotes];
+    const triedInstances = new Set([primaryInstance.id]); // Track which instances we've tried
 
     for (let attempt = 0; attempt < maxRetries && pendingSymbols.length > 0; attempt++) {
-      // Use next instance in pool for retry
+      // Use next instance in pool for retry (round-robin through alternatives)
       const retryInstance = instances[(attempt + 1) % instances.length];
-      if (retryInstance.id === primaryInstance.id && instances.length > 1) {
-        continue; // Skip same instance if we have alternatives
+
+      // Skip if we've already tried this instance (prevents cycling back to failed ones)
+      if (triedInstances.has(retryInstance.id)) {
+        // If we've tried all instances, no point continuing
+        if (triedInstances.size >= instances.length) {
+          log.debug('All instances exhausted for quote fallback', {
+            triedCount: triedInstances.size,
+            remainingFailures: pendingSymbols.length,
+          });
+          break;
+        }
+        continue;
       }
+
+      triedInstances.add(retryInstance.id);
 
       log.debug('Retrying failed quotes on alternate instance', {
         attempt: attempt + 1,
@@ -1158,6 +1195,7 @@ class OpenAlgoClient extends EventEmitter {
       log.warn('Some quotes failed after all retries', {
         failedCount: pendingSymbols.length,
         symbols: pendingSymbols.map(s => `${s.exchange}:${s.symbol}`),
+        instancesTried: triedInstances.size,
       });
     }
 

@@ -357,7 +357,7 @@ class MarketDataFeedService extends EventEmitter {
    * @param {Array} instances - Array of instance objects
    * @param {Object} options - Options
    * @param {boolean} options.forceLive - Force live fetch (bypass cache)
-   * @returns {Promise<Map>} - Map of instanceId -> positions array
+   * @returns {Promise<Map>} - Map of instanceId -> { positions, success, error?, fromCache }
    */
   async fetchPositionsForInstances(instances, { forceLive = false } = {}) {
     const now = Date.now();
@@ -372,7 +372,7 @@ class MarketDataFeedService extends EventEmitter {
         const cached = this.positionCache.get(instanceId);
         const last = this.positionRefreshTimestamps.get(instanceId) || 0;
         if (cached && now - last < this.POSITION_TTL_MS) {
-          return { instanceId, positions: cached.data, fromCache: true };
+          return { instanceId, positions: cached.data, success: true, fromCache: true };
         }
       }
 
@@ -381,7 +381,12 @@ class MarketDataFeedService extends EventEmitter {
         const circuitKey = this._getCircuitKey(instanceId, 'positions');
         if (this._shouldSkipPolling(circuitKey)) {
           const cached = this.positionCache.get(instanceId);
-          return { instanceId, positions: cached?.data || [], fromCache: true, skipped: true };
+          // Only return success if we have valid cached data
+          if (cached?.data) {
+            return { instanceId, positions: cached.data, success: true, fromCache: true, skipped: true };
+          }
+          // No cache available and circuit is open - this is a failure
+          return { instanceId, positions: [], success: false, fromCache: false, skipped: true, error: 'Circuit breaker open, no cached data' };
         }
 
         const positionBook = await openalgoClient.getPositionBook(instance);
@@ -389,7 +394,7 @@ class MarketDataFeedService extends EventEmitter {
         this.positionRefreshTimestamps.set(instanceId, now);
         this._resetFailureState(circuitKey);
 
-        return { instanceId, positions: positionBook, fromCache: false };
+        return { instanceId, positions: positionBook, success: true, fromCache: false };
       } catch (error) {
         log.warn('Failed to fetch positions for instance', {
           instanceId,
@@ -399,20 +404,31 @@ class MarketDataFeedService extends EventEmitter {
         const circuitKey = this._getCircuitKey(instanceId, 'positions');
         this._recordFailure(circuitKey, error);
 
-        // Return cached data on failure
+        // Return cached data on failure if available, otherwise mark as failed
         const cached = this.positionCache.get(instanceId);
-        return { instanceId, positions: cached?.data || [], fromCache: true, error: error.message };
+        if (cached?.data) {
+          return { instanceId, positions: cached.data, success: true, fromCache: true, error: error.message };
+        }
+        // No cache - this is a critical failure, positions are unknown
+        return { instanceId, positions: [], success: false, fromCache: false, error: error.message };
       }
     });
 
     const fetchResults = await Promise.all(fetchPromises);
 
-    // Convert to Map
+    // Convert to Map with full result objects (not just positions)
     let fromCacheCount = 0;
     let liveCount = 0;
+    let failedCount = 0;
     for (const result of fetchResults) {
-      results.set(result.instanceId, result.positions);
-      if (result.fromCache) fromCacheCount++;
+      results.set(result.instanceId, {
+        positions: result.positions,
+        success: result.success,
+        fromCache: result.fromCache,
+        error: result.error,
+      });
+      if (!result.success) failedCount++;
+      else if (result.fromCache) fromCacheCount++;
       else liveCount++;
     }
 
@@ -420,6 +436,7 @@ class MarketDataFeedService extends EventEmitter {
       instanceCount: instances.length,
       fromCache: fromCacheCount,
       live: liveCount,
+      failed: failedCount,
     });
 
     return results;
