@@ -27,6 +27,39 @@ import { checkInstrumentsRefresh } from './src/middleware/instruments-refresh.mi
 // Routes
 import apiV1Routes from './src/routes/v1/index.js';
 
+let servicesStarted = false;
+const startPaused = process.env.START_PAUSED !== 'false'; // default true
+
+async function startBackgroundServices() {
+  if (servicesStarted) return;
+  await marketDataFeedService.start({
+    quoteInterval: config.polling.marketDataInterval || undefined,
+  });
+  log.info('Market data feed service started');
+
+  await autoExitService.start();
+  log.info('Auto exit service started');
+
+  await pollingService.start();
+  log.info('Polling service started');
+
+  await telegramService.startPolling();
+  log.info('Telegram polling started');
+
+  servicesStarted = true;
+}
+
+function stopBackgroundServices() {
+  try {
+    marketDataFeedService.stop && marketDataFeedService.stop();
+    pollingService.stop && pollingService.stop();
+    telegramService.stopPolling && telegramService.stopPolling();
+  } catch (err) {
+    log.warn('Error stopping background services', { error: err.message });
+  }
+  servicesStarted = false;
+}
+
 // Create Express app
 const app = express();
 
@@ -147,25 +180,12 @@ async function startServer() {
     }
 
     // Start shared market data feed service (quotes/positions/funds cache)
-    await marketDataFeedService.start({
-      quoteInterval: config.polling.marketDataInterval || undefined,
-    });
-    log.info('Market data feed service started');
-
-    await autoExitService.start();
-    log.info('Auto exit service started');
-
-    // Start polling service
-    await pollingService.start();
-    log.info('Polling service started');
-
-    // Order monitor service removed - no longer needed after target/stoploss removal
-    // await orderMonitorService.start();
-    // log.info('Order monitor service started');
-
-    // Start Telegram polling
-    await telegramService.startPolling();
-    log.info('Telegram polling started');
+    // Start background services unless paused
+    if (startPaused) {
+      log.warn('Server starting in PAUSED mode: background polling is not running until resumed');
+    } else {
+      await startBackgroundServices();
+    }
 
     // Start HTTP server
     app.listen(config.port, () => {
