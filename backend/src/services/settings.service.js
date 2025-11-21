@@ -2,13 +2,18 @@
  * Settings Service
  * Manages application settings stored in database
  * Supports runtime updates without server restart
+ * Emits events on settings change for cache invalidation
  */
 
+import EventEmitter from 'events';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { ValidationError } from '../core/errors.js';
 
-class SettingsService {
+class SettingsService extends EventEmitter {
+  constructor() {
+    super();
+  }
   /**
    * Get all settings grouped by category
    * @returns {Promise<Object>} - Settings grouped by category
@@ -214,6 +219,16 @@ class SettingsService {
       `, [stringValue, key]);
 
       log.info('Setting updated', { key, value: current.isSensitive ? '[MASKED]' : stringValue });
+
+      // Emit settings changed event for cache invalidation
+      // Mask sensitive values to prevent accidental exposure in event handlers/logs
+      this.emit('settings:changed', {
+        key,
+        category: current.category,
+        oldValue: current.isSensitive ? this.maskValue(String(current.rawValue)) : current.value,
+        newValue: current.isSensitive ? this.maskValue(String(value)) : value,
+        isSensitive: current.isSensitive,
+      });
 
       // Return updated setting
       return await this.getSetting(key);

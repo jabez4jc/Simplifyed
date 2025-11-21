@@ -2,6 +2,12 @@
  * Market Data Feed Service
  * Centralized polling + cache for OpenAlgo feeds (quotes, positions, orders, funds, etc.)
  * Step 2 of rate-limit mitigation: consolidate traffic so multiple dashboard users don't duplicate calls.
+ *
+ * Optimizations:
+ * - HTTP/2 multiplexing for parallel quote fetches
+ * - Consolidated TTLs with configurable freshness
+ * - Quote fallback to alternate instances on failure
+ * - Parallel batch processing
  */
 
 import EventEmitter from 'events';
@@ -12,9 +18,13 @@ import openalgoClient from '../integrations/openalgo/client.js';
 import config from '../core/config.js';
 import { log } from '../core/logger.js';
 
-const DEFAULT_QUOTE_INTERVAL = 2000;   // 2 seconds
+const DEFAULT_QUOTE_INTERVAL = 5000;   // 5 seconds (increased from 2s for display)
 const DEFAULT_POSITION_INTERVAL = 10000; // 10 seconds
 const DEFAULT_FUNDS_INTERVAL = 15000;
+
+// TTL configurations
+const TTL_DISPLAY = 5000;      // 5s TTL for watchlist display (relaxed)
+const TTL_ORDER_CRITICAL = 2000; // 2s TTL for order-critical operations (aggressive)
 
 class MarketDataFeedService extends EventEmitter {
   constructor() {
@@ -31,7 +41,13 @@ class MarketDataFeedService extends EventEmitter {
     this.lastQuoteRefreshAt = 0;
     this.positionRefreshTimestamps = new Map();
     this.fundsRefreshTimestamps = new Map();
-    this.QUOTE_TTL_MS = config.marketDataFeed.quoteTtlMs;
+
+    // Consolidated TTL settings
+    // Base quote TTL from config (used for display, defaults to 5s)
+    this.QUOTE_TTL_MS = Math.max(config.marketDataFeed.quoteTtlMs || 5000, TTL_DISPLAY);
+    // Order-critical TTL (always aggressive, 2s)
+    this.QUOTE_TTL_ORDER_MS = TTL_ORDER_CRITICAL;
+
     this.POSITION_TTL_MS = config.marketDataFeed.positionTtlMs;
     this.FUNDS_TTL_MS = config.marketDataFeed.fundsTtlMs;
     this.ORDERBOOK_TTL_MS = config.marketDataFeed.orderbookTtlMs;
@@ -40,8 +56,10 @@ class MarketDataFeedService extends EventEmitter {
     this.orderbookRefreshTimestamps = new Map();
     this.tradebookCache = new Map();
     this.tradebookRefreshTimestamps = new Map();
+
+    // Unified symbol quote cache (consolidated from separate SYMBOL_QUOTE_TTL_MS)
+    // TTL is now configurable per-call via ttlMs parameter
     this.symbolQuoteCache = new Map(); // key: EXCHANGE|SYMBOL -> { quote, fetchedAt }
-    this.SYMBOL_QUOTE_TTL_MS = 2000;
   }
 
   async start(config = {}) {
@@ -164,8 +182,20 @@ class MarketDataFeedService extends EventEmitter {
 
   /**
    * Retrieve cached quotes for symbols if fresh, and return missing symbols
+   * @param {Array} symbols - Array of {exchange, symbol}
+   * @param {Object} options - Options
+   * @param {number} options.ttlMs - Custom TTL in milliseconds (default: QUOTE_TTL_MS for display)
+   * @param {boolean} options.orderCritical - Use aggressive TTL for order-critical operations
+   * @returns {{ cached: Array, missing: Array }}
    */
-  getCachedQuotesForSymbols(symbols = [], ttlMs = this.SYMBOL_QUOTE_TTL_MS) {
+  getCachedQuotesForSymbols(symbols = [], options = {}) {
+    // Support legacy signature: getCachedQuotesForSymbols(symbols, ttlMs)
+    const opts = typeof options === 'number' ? { ttlMs: options } : options;
+    const { orderCritical = false } = opts;
+
+    // Determine TTL: orderCritical uses aggressive TTL, otherwise use custom or display TTL
+    const ttlMs = opts.ttlMs ?? (orderCritical ? this.QUOTE_TTL_ORDER_MS : this.QUOTE_TTL_MS);
+
     const now = Date.now();
     const cached = [];
     const missing = [];
@@ -182,34 +212,91 @@ class MarketDataFeedService extends EventEmitter {
   }
 
   /**
-   * Fetch quotes for a set of symbols using pooled market data instances (batched)
+   * Fetch quotes for a set of symbols using pooled market data instances
+   * Uses parallel batch processing with fallback to alternate instances on failure
+   * @param {Array} symbols - Array of {exchange, symbol}
+   * @param {Object} options - Options
+   * @param {number} options.ttlMs - Custom TTL for cache check before fetching
+   * @param {boolean} options.orderCritical - Use aggressive TTL for order-critical operations
+   * @param {boolean} options.useFallback - Retry failed quotes on alternate instances (default: true)
+   * @returns {Promise<Array>} - Array of quotes
    */
-  async fetchQuotesForSymbols(symbols = []) {
+  async fetchQuotesForSymbols(symbols = [], options = {}) {
+    const { ttlMs, orderCritical = false, useFallback = true } = options;
+
     const unique = this._dedupeSymbols(symbols);
     if (unique.length === 0) return [];
+
+    // Check cache first with appropriate TTL
+    const { cached, missing } = this.getCachedQuotesForSymbols(unique, { ttlMs, orderCritical });
+
+    // Return cached if all symbols are fresh
+    if (missing.length === 0) {
+      log.debug('All quotes served from cache', { count: cached.length });
+      return cached;
+    }
+
     const pool = await marketDataInstanceService.getMarketDataPool();
     if (pool.length === 0) {
       log.warn('No market data instances available for ad-hoc quotes fetch');
-      return [];
+      return cached; // Return what we have from cache
     }
 
-    const batchSize = Math.max(3, Math.min(5, Math.ceil(unique.length / pool.length)));
-    const chunks = this._chunkSymbols(unique, batchSize);
-    let collected = [];
+    let fetchedQuotes = [];
 
-    for (let i = 0; i < chunks.length; i++) {
-      const inst = pool[i % pool.length];
-      try {
-        const quotes = await openalgoClient.getQuotes(inst, chunks[i]);
-        if (Array.isArray(quotes)) {
-          this.setQuoteSnapshot(inst.id, quotes, { fetchedAt: Date.now() });
-          collected = collected.concat(quotes);
+    if (useFallback && pool.length > 1) {
+      // Use new fallback method for multi-instance pools
+      fetchedQuotes = await openalgoClient.getQuotesWithFallback(pool, missing, { maxRetries: 2 });
+    } else {
+      // Single instance or fallback disabled: use parallel batch processing
+      const batchSize = Math.max(3, Math.min(5, Math.ceil(missing.length / Math.max(1, pool.length))));
+      const chunks = this._chunkSymbols(missing, batchSize);
+
+      // PARALLEL batch processing (not sequential!)
+      const batchPromises = chunks.map(async (chunk, idx) => {
+        const inst = pool[idx % pool.length];
+        try {
+          const quotes = await openalgoClient.getQuotes(inst, chunk);
+          return { success: true, quotes: Array.isArray(quotes) ? quotes : [], inst };
+        } catch (error) {
+          log.warn('Batch quote fetch failed', { instance: inst.name, error: error.message });
+          return { success: false, quotes: [], inst };
         }
-      } catch (error) {
-        log.warn('Ad-hoc quote fetch failed for instance', { instance: inst.name, error: error.message });
+      });
+
+      const batchResults = await Promise.all(batchPromises);
+
+      // Collect all successful quotes
+      for (const result of batchResults) {
+        if (result.success && result.quotes.length > 0) {
+          this.setQuoteSnapshot(result.inst.id, result.quotes, { fetchedAt: Date.now() });
+          fetchedQuotes = fetchedQuotes.concat(result.quotes);
+        }
       }
     }
-    return collected;
+
+    // Update symbol cache with fetched quotes
+    if (fetchedQuotes.length > 0) {
+      const now = Date.now();
+      fetchedQuotes.forEach((q) => {
+        if (q?.symbol) {
+          const key = this._symbolKey(q.exchange, q.symbol);
+          this.symbolQuoteCache.set(key, { quote: q, fetchedAt: now });
+        }
+      });
+    }
+
+    // Combine cached and fetched
+    const allQuotes = [...cached, ...fetchedQuotes];
+
+    log.debug('Quote fetch completed', {
+      requested: unique.length,
+      fromCache: cached.length,
+      fetched: fetchedQuotes.length,
+      total: allQuotes.length,
+    });
+
+    return allQuotes;
   }
 
   /**
@@ -262,6 +349,104 @@ class MarketDataFeedService extends EventEmitter {
     if (refresh) {
       await this.refreshPositionsForInstance(instanceId, { force: true });
     }
+  }
+
+  /**
+   * Fetch positions for multiple instances in PARALLEL
+   * Used for multi-instance order broadcasting to reduce latency
+   * @param {Array} instances - Array of instance objects
+   * @param {Object} options - Options
+   * @param {boolean} options.forceLive - Force live fetch (bypass cache)
+   * @returns {Promise<Map>} - Map of instanceId -> positions array
+   */
+  async fetchPositionsForInstances(instances, { forceLive = false } = {}) {
+    const now = Date.now();
+    const results = new Map();
+
+    // Parallel fetch for all instances
+    const fetchPromises = instances.map(async (instance) => {
+      const instanceId = instance.id;
+
+      // Check cache first unless forceLive
+      if (!forceLive) {
+        const cached = this.positionCache.get(instanceId);
+        const last = this.positionRefreshTimestamps.get(instanceId) || 0;
+        if (cached && now - last < this.POSITION_TTL_MS) {
+          return { instanceId, positions: cached.data, fromCache: true };
+        }
+      }
+
+      // Fetch live
+      try {
+        const circuitKey = this._getCircuitKey(instanceId, 'positions');
+        if (this._shouldSkipPolling(circuitKey)) {
+          const cached = this.positionCache.get(instanceId);
+          return { instanceId, positions: cached?.data || [], fromCache: true, skipped: true };
+        }
+
+        const positionBook = await openalgoClient.getPositionBook(instance);
+        this.setPositionSnapshot(instanceId, positionBook);
+        this.positionRefreshTimestamps.set(instanceId, now);
+        this._resetFailureState(circuitKey);
+
+        return { instanceId, positions: positionBook, fromCache: false };
+      } catch (error) {
+        log.warn('Failed to fetch positions for instance', {
+          instanceId,
+          instanceName: instance.name,
+          error: error.message,
+        });
+        const circuitKey = this._getCircuitKey(instanceId, 'positions');
+        this._recordFailure(circuitKey, error);
+
+        // Return cached data on failure
+        const cached = this.positionCache.get(instanceId);
+        return { instanceId, positions: cached?.data || [], fromCache: true, error: error.message };
+      }
+    });
+
+    const fetchResults = await Promise.all(fetchPromises);
+
+    // Convert to Map
+    let fromCacheCount = 0;
+    let liveCount = 0;
+    for (const result of fetchResults) {
+      results.set(result.instanceId, result.positions);
+      if (result.fromCache) fromCacheCount++;
+      else liveCount++;
+    }
+
+    log.debug('Parallel position fetch completed', {
+      instanceCount: instances.length,
+      fromCache: fromCacheCount,
+      live: liveCount,
+    });
+
+    return results;
+  }
+
+  /**
+   * Get cached position for a specific symbol across instances
+   * Useful for close/exit operations that can use cached data
+   * @param {number} instanceId - Instance ID
+   * @param {string} symbol - Symbol to find
+   * @param {string} exchange - Exchange
+   * @returns {Object|null} - Position object or null
+   */
+  getCachedPositionForSymbol(instanceId, symbol, exchange) {
+    const cached = this.positionCache.get(instanceId);
+    if (!cached || !cached.data) return null;
+
+    const normalizedSymbol = (symbol || '').toUpperCase();
+    const normalizedExchange = (exchange || '').toUpperCase();
+
+    return cached.data.find(pos => {
+      const posSymbol = ((pos.symbol || pos.trading_symbol || pos.tradingsymbol) || '').toUpperCase();
+      const posExchange = ((pos.exchange || pos.exch) || '').toUpperCase();
+
+      return posSymbol === normalizedSymbol &&
+             (!normalizedExchange || posExchange === normalizedExchange);
+    }) || null;
   }
 
   /**
@@ -483,6 +668,67 @@ class MarketDataFeedService extends EventEmitter {
   _resetFailureState(key) {
     if (this.failureState.has(key)) {
       this.failureState.delete(key);
+    }
+  }
+
+  /**
+   * Invalidate all caches for an instance after order placement
+   * Ensures consistent cache invalidation across all layers
+   * @param {number} instanceId - Instance ID
+   * @param {Object} options - Options
+   * @param {boolean} options.refresh - Whether to refresh after invalidation
+   * @param {Array} options.feeds - Specific feeds to invalidate (default: all)
+   */
+  async invalidateInstanceCaches(instanceId, options = {}) {
+    const { refresh = false, feeds = ['positions', 'funds', 'orderbook', 'tradebook'] } = options;
+
+    log.debug('Invalidating instance caches', { instanceId, feeds, refresh });
+
+    const invalidationPromises = [];
+
+    if (feeds.includes('positions')) {
+      this.positionCache.delete(instanceId);
+      this.positionRefreshTimestamps.delete(instanceId);
+      if (refresh) {
+        invalidationPromises.push(this.refreshPositionsForInstance(instanceId, { force: true }));
+      }
+    }
+
+    if (feeds.includes('funds')) {
+      this.fundsCache.delete(instanceId);
+      this.fundsRefreshTimestamps.delete(instanceId);
+      if (refresh) {
+        invalidationPromises.push(this.refreshFundsForInstance(instanceId, { force: true }));
+      }
+    }
+
+    if (feeds.includes('orderbook')) {
+      this.orderbookCache.delete(instanceId);
+      this.orderbookRefreshTimestamps.delete(instanceId);
+    }
+
+    if (feeds.includes('tradebook')) {
+      this.tradebookCache.delete(instanceId);
+      this.tradebookRefreshTimestamps.delete(instanceId);
+    }
+
+    // Wait for refresh operations if requested
+    if (refresh && invalidationPromises.length > 0) {
+      await Promise.allSettled(invalidationPromises);
+    }
+
+    this.emit('cache:invalidated', { instanceId, feeds });
+  }
+
+  /**
+   * Invalidate symbol-level quote cache for specific symbols
+   * Useful when quote data needs to be refreshed for specific symbols
+   * @param {Array} symbols - Array of {exchange, symbol}
+   */
+  invalidateSymbolQuotes(symbols = []) {
+    for (const s of symbols) {
+      const key = this._symbolKey(s.exchange, s.symbol);
+      this.symbolQuoteCache.delete(key);
     }
   }
 }

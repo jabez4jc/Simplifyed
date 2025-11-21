@@ -10,6 +10,7 @@ import openalgoClient from '../integrations/openalgo/client.js';
 import optionsResolutionService from './options-resolution.service.js';
 import expiryManagementService from './expiry-management.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
+import marketDataInstanceService from './market-data-instance.service.js';
 import derivativeResolutionService, { NSE_INDEX_UNDERLYINGS, BSE_INDEX_UNDERLYINGS } from './derivative-resolution.service.js';
 import orderPlacementService from './order-placement.service.js';
 import orderPayloadFactory from './order-payload.factory.js';
@@ -295,8 +296,15 @@ class QuickOrderService {
   /**
    * Execute order strategy
    * @private
+   *
+   * OPTIMIZATIONS:
+   * - Pre-fetch all instance positions in PARALLEL before processing orders
+   * - Use cached positions for CLOSE_POSITIONS strategy
+   * - Enables position-aware order sizing without N sequential API calls
    */
   async _executeOrderStrategy(strategy, symbol, instances, orderParams) {
+    const { action } = orderParams;
+
     // For OPTIONS strategy, resolve option symbol ONCE using primary market data instance
     let preResolvedOptionSymbol = null;
     if (strategy === 'OPTIONS_WITH_RECONCILIATION') {
@@ -313,13 +321,50 @@ class QuickOrderService {
       });
     }
 
+    // OPTIMIZATION: Pre-fetch all instance positions in PARALLEL
+    // For CLOSE_POSITIONS, use cached positions (EXIT/CLOSE don't need live position for sizing)
+    // For DIRECT_ORDER and OPTIONS, fetch live positions once before processing
+    const isCloseAction = strategy === 'CLOSE_POSITIONS' ||
+                          ['EXIT', 'EXIT_ALL', 'CLOSE_ALL_CE', 'CLOSE_ALL_PE'].includes(action);
+
+    let preloadedPositions = null;
+    if (instances.length > 1 && !isCloseAction) {
+      // Pre-fetch positions for all instances in parallel (for entry/add orders)
+      log.info('Pre-fetching positions for all instances in parallel', {
+        instanceCount: instances.length,
+        strategy,
+      });
+      preloadedPositions = await marketDataFeedService.fetchPositionsForInstances(instances, {
+        forceLive: true,
+      });
+    }
+
+    // Track broadcast results for transaction logging
+    const broadcastTransaction = {
+      transactionId: `broadcast_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      strategy,
+      action,
+      symbol: symbol.symbol,
+      instanceCount: instances.length,
+      startedAt: Date.now(),
+      results: [],
+    };
+
     const perInstanceTasks = instances.map(async (instance) => {
+      const instanceResult = {
+        instanceId: instance.id,
+        instanceName: instance.name,
+        startedAt: Date.now(),
+      };
+
       try {
         let result;
 
         switch (strategy) {
           case 'DIRECT_ORDER':
-            result = await this._executeDirectOrder(instance, symbol, orderParams);
+            result = await this._executeDirectOrder(instance, symbol, orderParams, {
+              preloadedPositions,
+            });
             break;
 
           case 'OPTIONS_WITH_RECONCILIATION':
@@ -327,17 +372,26 @@ class QuickOrderService {
               instance,
               symbol,
               orderParams,
-              preResolvedOptionSymbol
+              preResolvedOptionSymbol,
+              { preloadedPositions }
             );
             break;
 
           case 'CLOSE_POSITIONS':
-            result = await this._closePositions(instance, symbol, orderParams);
+            // OPTIMIZATION: Close/Exit orders can use cached positions
+            result = await this._closePositions(instance, symbol, orderParams, {
+              useCachedPositions: true,
+            });
             break;
 
           default:
             throw new ValidationError(`Unknown strategy: ${strategy}`);
         }
+
+        instanceResult.success = true;
+        instanceResult.completedAt = Date.now();
+        instanceResult.durationMs = instanceResult.completedAt - instanceResult.startedAt;
+        broadcastTransaction.results.push({ ...instanceResult, ...result });
 
         return {
           success: true,
@@ -351,6 +405,12 @@ class QuickOrderService {
           symbol_id: symbol.id,
         });
 
+        instanceResult.success = false;
+        instanceResult.error = error.message;
+        instanceResult.completedAt = Date.now();
+        instanceResult.durationMs = instanceResult.completedAt - instanceResult.startedAt;
+        broadcastTransaction.results.push(instanceResult);
+
         return {
           success: false,
           instance_id: instance.id,
@@ -360,15 +420,136 @@ class QuickOrderService {
       }
     });
 
-    return Promise.all(perInstanceTasks);
+    const results = await Promise.all(perInstanceTasks);
+
+    // Log broadcast transaction for reconciliation
+    broadcastTransaction.completedAt = Date.now();
+    broadcastTransaction.totalDurationMs = broadcastTransaction.completedAt - broadcastTransaction.startedAt;
+    broadcastTransaction.successCount = results.filter(r => r.success).length;
+    broadcastTransaction.failureCount = results.filter(r => !r.success).length;
+
+    if (broadcastTransaction.failureCount > 0) {
+      log.warn('Broadcast transaction completed with failures', {
+        transactionId: broadcastTransaction.transactionId,
+        strategy,
+        action,
+        symbol: symbol.symbol,
+        successCount: broadcastTransaction.successCount,
+        failureCount: broadcastTransaction.failureCount,
+        failedInstances: broadcastTransaction.results
+          .filter(r => !r.success)
+          .map(r => ({ name: r.instanceName, error: r.error })),
+      });
+
+      // For close/exit orders, retry failed instances
+      if (isCloseAction && broadcastTransaction.failureCount > 0) {
+        const failedInstances = instances.filter(inst =>
+          results.find(r => r.instance_id === inst.id && !r.success)
+        );
+
+        if (failedInstances.length > 0) {
+          log.info('Retrying failed close/exit orders', {
+            instanceCount: failedInstances.length,
+          });
+
+          const retryResults = await this._retryFailedCloseOrders(
+            failedInstances,
+            symbol,
+            orderParams
+          );
+
+          // Merge retry results
+          for (const retryResult of retryResults) {
+            const idx = results.findIndex(r => r.instance_id === retryResult.instance_id);
+            if (idx >= 0 && retryResult.success) {
+              results[idx] = retryResult;
+              broadcastTransaction.successCount++;
+              broadcastTransaction.failureCount--;
+            }
+          }
+        }
+      }
+    } else {
+      log.info('Broadcast transaction completed successfully', {
+        transactionId: broadcastTransaction.transactionId,
+        strategy,
+        instanceCount: instances.length,
+        totalDurationMs: broadcastTransaction.totalDurationMs,
+      });
+    }
+
+    return results;
+  }
+
+  /**
+   * Retry failed close/exit orders with exponential backoff
+   * @private
+   */
+  async _retryFailedCloseOrders(failedInstances, symbol, orderParams, maxRetries = 2) {
+    const results = [];
+    // Create a mutable copy to track remaining instances
+    let remaining = [...failedInstances];
+
+    for (let attempt = 1; attempt <= maxRetries && remaining.length > 0; attempt++) {
+      const backoffMs = Math.pow(2, attempt) * 500; // 1s, 2s
+      await new Promise(resolve => setTimeout(resolve, backoffMs));
+
+      // Process all remaining instances and build new remaining list
+      const stillFailing = [];
+
+      for (const instance of remaining) {
+        try {
+          const result = await this._closePositions(instance, symbol, orderParams, {
+            useCachedPositions: false, // Use live positions for retry
+          });
+
+          results.push({
+            success: true,
+            instance_id: instance.id,
+            instance_name: instance.name,
+            retryAttempt: attempt,
+            ...result,
+          });
+          // Successfully retried - don't add to stillFailing
+        } catch (error) {
+          log.warn('Retry failed for close/exit order', {
+            instanceId: instance.id,
+            attempt,
+            error: error.message,
+          });
+
+          if (attempt === maxRetries) {
+            // Final attempt failed - record failure
+            results.push({
+              success: false,
+              instance_id: instance.id,
+              instance_name: instance.name,
+              retryAttempt: attempt,
+              error: error.message,
+            });
+          } else {
+            // Not final attempt - add to stillFailing for next retry
+            stillFailing.push(instance);
+          }
+        }
+      }
+
+      // Update remaining list for next iteration
+      remaining = stillFailing;
+    }
+
+    return results;
   }
 
   /**
    * Execute direct order (EQUITY/FUTURES BUY/SELL)
    * @private
+   * @param {Object} options - Options
+   * @param {Map} options.preloadedPositions - Pre-fetched positions map (instanceId -> positions[])
    */
-  async _executeDirectOrder(instance, symbol, orderParams) {
+  async _executeDirectOrder(instance, symbol, orderParams, options = {}) {
     const { action, tradeMode, quantity, product, orderType, price, expiry } = orderParams;
+    const { preloadedPositions } = options;
 
     // Determine final symbol based on trade mode
     let finalSymbol = symbol.symbol;
@@ -420,13 +601,25 @@ class QuickOrderService {
     }
 
     // Get current position size (signed: positive for long, negative for short)
-    const rawPosition = await this._getCurrentPositionSize(
-      instance,
-      finalSymbol,
-      finalExchange,
-      product,
-      { forceLive: true, failOnError: true }
-    );
+    // OPTIMIZATION: Use preloaded positions if available (from parallel pre-fetch)
+    let rawPosition;
+    if (preloadedPositions && preloadedPositions.has(instance.id)) {
+      const positions = preloadedPositions.get(instance.id);
+      rawPosition = this._extractPositionFromBook(positions, finalSymbol, finalExchange, product);
+      log.debug('Using preloaded position', {
+        instanceId: instance.id,
+        symbol: finalSymbol,
+        position: rawPosition,
+      });
+    } else {
+      rawPosition = await this._getCurrentPositionSize(
+        instance,
+        finalSymbol,
+        finalExchange,
+        product,
+        { forceLive: true, failOnError: true }
+      );
+    }
     const baseLotSize = resolvedLotSize || symbol.lot_size || symbol.lotsize || 1;
     const lotSize = await this._resolveLotSize(
       finalSymbol,
@@ -629,8 +822,10 @@ class QuickOrderService {
    * Execute options order with Buyer/Writer position-aware targeting
    * Implements Options Mode Implementation Guide v1.4
    * @private
+   * @param {Object} options - Options
+   * @param {Map} options.preloadedPositions - Pre-fetched positions map (instanceId -> positions[])
    */
-  async _executeOptionsOrder(instance, symbol, orderParams, preResolvedOptionSymbol = null) {
+  async _executeOptionsOrder(instance, symbol, orderParams, preResolvedOptionSymbol = null, options = {}) {
     const {
       action,
       product,
@@ -640,6 +835,7 @@ class QuickOrderService {
       strikePolicy = 'FLOAT_OFS',
       stepLots = 1,
     } = orderParams;
+    const { preloadedPositions } = options;
 
     // Get writer guard from symbol configuration (optional)
     const writerGuard = symbol.writer_guard_enabled !== 0;  // Default true
@@ -933,12 +1129,27 @@ class QuickOrderService {
       });
     } else {
       // Single leg position
-      currentPosition = await this._getCurrentPositionSize(
-        instance,
-        optionSymbol.symbol,
-        derivativeExchange,
-        product
-      );
+      // Use preloaded positions if available to avoid additional API call
+      if (preloadedPositions && preloadedPositions.has(instance.id)) {
+        currentPosition = this._extractPositionFromBook(
+          preloadedPositions.get(instance.id),
+          optionSymbol.symbol,
+          derivativeExchange,
+          product
+        );
+        log.debug('Using preloaded position for options', {
+          instanceId: instance.id,
+          symbol: optionSymbol.symbol,
+          position: currentPosition,
+        });
+      } else {
+        currentPosition = await this._getCurrentPositionSize(
+          instance,
+          optionSymbol.symbol,
+          derivativeExchange,
+          product
+        );
+      }
       log.info('Using LEG-scoped position', {
         symbol: optionSymbol.symbol,
         currentPosition,
@@ -1121,9 +1332,17 @@ class QuickOrderService {
   /**
    * Close positions (EXIT or EXIT_ALL)
    * @private
+   * @param {Object} options - Options
+   * @param {boolean} options.useCachedPositions - Use cached positions instead of live fetch
+   *
+   * OPTIMIZATION: Close/Exit orders can use cached positions because:
+   * - We're closing to position_size=0, so exact current quantity isn't critical
+   * - The broker handles the actual quantity calculation based on position_size
+   * - This saves 1 API call per close order
    */
-  async _closePositions(instance, symbol, orderParams) {
+  async _closePositions(instance, symbol, orderParams, options = {}) {
     const { action, tradeMode, product, expiry: userExpiry } = orderParams;
+    const { useCachedPositions = false } = options;
 
     const underlying = this._getUnderlyingForClosing(symbol);
 
@@ -1158,7 +1377,8 @@ class QuickOrderService {
         underlying,
         expiry,
         optionType,
-        product
+        product,
+        { useCached: useCachedPositions }
       );
 
       if (!expiry) {
@@ -1189,7 +1409,8 @@ class QuickOrderService {
         underlying,
         expiry,
         'CE',
-        product
+        product,
+        { useCached: useCachedPositions }
       );
 
       const pePositions = await this._getOpenOptionsPositions(
@@ -1197,7 +1418,8 @@ class QuickOrderService {
         underlying,
         expiry,
         'PE',
-        product
+        product,
+        { useCached: useCachedPositions }
       );
 
       positionsToClose = [...cePositions, ...pePositions];
@@ -1516,10 +1738,24 @@ class QuickOrderService {
   /**
    * Get open options positions for underlying and expiry
    * @private
+   * @param {Object} options - Options
+   * @param {boolean} options.useCached - Use cached positions instead of live fetch
    */
-  async _getOpenOptionsPositions(instance, underlying, expiry, optionType, product) {
+  async _getOpenOptionsPositions(instance, underlying, expiry, optionType, product, options = {}) {
+    const { useCached = false } = options;
     try {
-      const positionBook = await this._getPositionBook(instance, { forceLive: true });
+      // Use cached positions if requested (for close/exit operations where exact quantity is less critical)
+      let positionBook;
+      if (useCached) {
+        const cached = marketDataFeedService.getPositionSnapshot(instance.id);
+        positionBook = cached?.data || [];
+        log.debug('Using cached positions for options lookup', {
+          instanceId: instance.id,
+          positionCount: positionBook.length,
+        });
+      } else {
+        positionBook = await this._getPositionBook(instance, { forceLive: true });
+      }
       const targetUnderlying = (underlying || '').toUpperCase();
       const canonicalTarget = targetUnderlying.replace(/[^A-Z0-9]/g, '').replace(/\d+$/, '');
       const targetOptionType = (optionType || '').toUpperCase();
@@ -2834,28 +3070,67 @@ class QuickOrderService {
     }
   }
 
+  /**
+   * Invalidate all instance caches after order placement
+   * Uses centralized cache invalidation from market-data-feed service
+   * @private
+   */
   _invalidateInstanceCaches(instanceId, options = {}) {
-    const { positions = true, funds = true, orderbook = true } = options;
+    const {
+      refresh = true,
+      feeds = ['positions', 'funds', 'orderbook', 'tradebook']
+    } = options;
 
-    if (positions) {
-      marketDataFeedService.invalidatePositions(instanceId, { refresh: true })
-        .catch(error => log.warn('Failed to refresh position cache', {
-          instance_id: instanceId,
-          error: error.message,
+    // Use centralized cache invalidation
+    marketDataFeedService.invalidateInstanceCaches(instanceId, { refresh, feeds })
+      .catch(error => log.warn('Failed to invalidate instance caches', {
+        instance_id: instanceId,
+        error: error.message,
       }));
+  }
+
+  /**
+   * Extract position size from a position book array
+   * Used to get position from preloaded positions without additional API calls
+   * @private
+   */
+  _extractPositionFromBook(positionBook, symbol, exchange, product) {
+    if (!positionBook || !Array.isArray(positionBook)) {
+      return 0;
     }
 
-    if (orderbook) {
-      marketDataFeedService.invalidateOrderbook(instanceId);
-    }
+    const targetSymbol = this._normalizeSymbolKey(symbol);
+    const targetExchange = this._normalizeExchange(exchange);
+    const targetProduct = this._normalizeProduct(product);
 
-    if (funds) {
-      marketDataFeedService.invalidateFunds(instanceId, { refresh: true })
-        .catch(error => log.warn('Failed to refresh funds cache', {
-          instance_id: instanceId,
-          error: error.message,
-        }));
-    }
+    return positionBook.reduce((total, pos) => {
+      const posSymbol = this._normalizeSymbolKey(
+        pos.symbol || pos.trading_symbol || pos.tradingsymbol
+      );
+      if (!posSymbol || posSymbol !== targetSymbol) {
+        return total;
+      }
+
+      const posExchange = this._normalizeExchange(pos.exchange || pos.exch);
+      if (targetExchange && posExchange && posExchange !== targetExchange) {
+        return total;
+      }
+
+      const posProduct = this._normalizeProduct(pos.product || pos.producttype);
+      if (targetProduct && posProduct && posProduct !== targetProduct) {
+        return total;
+      }
+
+      const qty =
+        parseIntSafe(pos.quantity) ||
+        parseIntSafe(pos.netqty) ||
+        parseIntSafe(pos.net_quantity) ||
+        parseIntSafe(pos.net) ||
+        parseIntSafe(pos.netQty) ||
+        0;
+
+      return total + qty;
+    }, 0);
   }
 
   async _getQuotesFromCache(instance, requests = []) {

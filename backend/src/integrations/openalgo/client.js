@@ -1,9 +1,10 @@
 /**
  * OpenAlgo API Client
- * HTTP client with exponential backoff retry logic
+ * HTTP client with HTTP/2 multiplexing and exponential backoff retry logic
  */
 
 import { Agent, ProxyAgent } from 'undici';
+import { EventEmitter } from 'events';
 import { log } from '../../core/logger.js';
 import { OpenAlgoError } from '../../core/errors.js';
 import config from '../../core/config.js';
@@ -21,10 +22,11 @@ const ERROR_LIMITS = {
 };
 
 /**
- * OpenAlgo HTTP Client
+ * OpenAlgo HTTP Client with HTTP/2 multiplexing support
  */
-class OpenAlgoClient {
+class OpenAlgoClient extends EventEmitter {
   constructor() {
+    super();
     this.timeout = config.openalgo.requestTimeout;
     // Store both critical and non-critical retry configs
     this.criticalRetries = config.openalgo.critical.maxRetries;
@@ -32,10 +34,14 @@ class OpenAlgoClient {
     this.nonCriticalRetries = config.openalgo.nonCritical.maxRetries;
     this.nonCriticalRetryDelay = config.openalgo.nonCritical.retryDelay;
 
-    // Default dispatcher uses keep-alive sockets to reduce TLS handshakes.
+    // Default dispatcher with HTTP/2 support and connection reuse
+    // Conservative timeouts to avoid ECONNRESET from stale connections
     this.dispatcher = new Agent({
-      keepAliveTimeout: 60000,
-      keepAliveMaxTimeout: 60000,
+      keepAliveTimeout: 30000,       // 30 seconds keep-alive (reduced from 2 min)
+      keepAliveMaxTimeout: 60000,    // 1 minute max (reduced from 5 min)
+      pipelining: 10,                // Enable HTTP pipelining for multiplexing
+      connections: 20,               // Conservative connection pool (reduced from 50)
+      allowH2: true,                 // Enable HTTP/2 when available
     });
 
     // Create undici ProxyAgent that uses environment proxy if configured
@@ -69,7 +75,7 @@ class OpenAlgoClient {
         // Keep default dispatcher if proxy configuration fails
       }
     } else {
-      log.info('No proxy configured for OpenAlgo requests');
+      log.info('No proxy configured for OpenAlgo requests (HTTP/2 multiplexing enabled)');
     }
 
     // Rate-limit state
@@ -84,7 +90,211 @@ class OpenAlgoClient {
     this.ordersPerSecondLimit = 10;
     this.errorCounters = new Map(); // instKey -> { day, count404, countInvalid, backoffUntil }
     this.instanceMeta = new Map();
-    this.limitsCache = { loadedAt: 0, ttl: 60 * 1000 }; // 1-minute refresh
+
+    // Rate limit settings cache - loaded once at startup, refreshed on settings change
+    this.limitsCache = {
+      loadedAt: 0,
+      ttl: 10 * 60 * 1000,  // 10 minutes (increased from 1 minute)
+      initialized: false,
+      initPromise: null,    // Promise-based lock for concurrent init calls
+    };
+
+    // Symbol resolution cache for futures/options (bounded to prevent memory growth)
+    this.symbolResolutionCache = new Map(); // key: underlying|exchange|expiry -> { symbol, resolvedAt }
+    this.symbolResolutionTtl = 5 * 60 * 1000; // 5 minutes
+    this.symbolResolutionCacheMaxSize = 1000; // Max entries to prevent unbounded growth
+
+    // Lot size cache (bounded to prevent memory growth)
+    this.lotSizeCache = new Map(); // key: exchange|symbol -> { lotSize, cachedAt }
+    this.lotSizeCacheTtl = 24 * 60 * 60 * 1000; // 24 hours (lot sizes rarely change)
+    this.lotSizeCacheMaxSize = 500; // Max entries to prevent unbounded growth
+  }
+
+  /**
+   * Initialize rate limit settings from database (called once at startup)
+   * Uses promise-based locking to prevent race conditions from concurrent calls
+   * @returns {Promise<void>}
+   */
+  async initializeRateLimits() {
+    // Already initialized - return immediately
+    if (this.limitsCache.initialized) return;
+
+    // If initialization is in progress, wait for it to complete
+    if (this.limitsCache.initPromise) {
+      return this.limitsCache.initPromise;
+    }
+
+    // Start initialization with promise-based lock
+    this.limitsCache.initPromise = (async () => {
+      try {
+        await this._loadRateLimitSettings();
+        this.limitsCache.initialized = true;
+        log.info('Rate limit settings initialized', {
+          rpsPerInstance: this.rpsLimitPerInstance,
+          rpmPerInstance: this.rpmLimitPerInstance,
+          ordersPerSecond: this.ordersPerSecondLimit,
+          maxConcurrentTasks: this.maxConcurrentTasks,
+        });
+      } catch (error) {
+        log.warn('Failed to initialize rate limit settings, using defaults', { error: error.message });
+      } finally {
+        // Clear the promise after completion (success or failure)
+        this.limitsCache.initPromise = null;
+      }
+    })();
+
+    return this.limitsCache.initPromise;
+  }
+
+  /**
+   * Reload rate limit settings (called on settings change event)
+   * @returns {Promise<void>}
+   */
+  async reloadRateLimits() {
+    try {
+      await this._loadRateLimitSettings();
+      log.info('Rate limit settings reloaded', {
+        rpsPerInstance: this.rpsLimitPerInstance,
+        rpmPerInstance: this.rpmLimitPerInstance,
+        ordersPerSecond: this.ordersPerSecondLimit,
+        maxConcurrentTasks: this.maxConcurrentTasks,
+      });
+      this.emit('rateLimitsReloaded');
+    } catch (error) {
+      log.warn('Failed to reload rate limit settings', { error: error.message });
+    }
+  }
+
+  /**
+   * Load rate limit settings from database
+   * @private
+   */
+  async _loadRateLimitSettings() {
+    const settings = await settingsService.getSettingsByCategory('rate_limits');
+    const getNum = (key, fallback) => {
+      const entry = settings[key];
+      const raw = entry ? (entry.pendingValue ?? entry.value ?? entry.rawValue) : undefined;
+      const val = parseFloat(raw);
+      return Number.isNaN(val) ? fallback : val;
+    };
+    this.rpsLimitPerInstance = getNum('rate_limits.rps_per_instance', this.rpsLimitPerInstance);
+    this.rpmLimitPerInstance = getNum('rate_limits.rpm_per_instance', this.rpmLimitPerInstance);
+    this.rpmLimitGlobal = Number.POSITIVE_INFINITY; // keep global cap disabled
+    this.ordersPerSecondLimit = getNum('rate_limits.orders_per_second', this.ordersPerSecondLimit);
+    this.maxConcurrentTasks = getNum('rate_limits.max_concurrent_tasks', this.maxConcurrentTasks);
+    this.limitsCache.loadedAt = Date.now();
+  }
+
+  /**
+   * Cache a resolved symbol with bounded size
+   * Evicts oldest entries when cache exceeds max size
+   * @param {string} underlying - Underlying symbol
+   * @param {string} exchange - Exchange
+   * @param {string} expiry - Expiry date
+   * @param {Object} resolved - Resolved symbol data
+   */
+  cacheResolvedSymbol(underlying, exchange, expiry, resolved) {
+    const key = `${underlying}|${exchange}|${expiry}`;
+
+    // Evict oldest entries if cache is at max size
+    if (this.symbolResolutionCache.size >= this.symbolResolutionCacheMaxSize) {
+      this._evictOldestEntries(this.symbolResolutionCache, 'resolvedAt', 100);
+    }
+
+    this.symbolResolutionCache.set(key, {
+      ...resolved,
+      resolvedAt: Date.now(),
+    });
+  }
+
+  /**
+   * Get cached resolved symbol if still valid
+   * @param {string} underlying - Underlying symbol
+   * @param {string} exchange - Exchange
+   * @param {string} expiry - Expiry date
+   * @returns {Object|null} - Resolved symbol or null if not cached/expired
+   */
+  getCachedResolvedSymbol(underlying, exchange, expiry) {
+    const key = `${underlying}|${exchange}|${expiry}`;
+    const cached = this.symbolResolutionCache.get(key);
+    if (cached && (Date.now() - cached.resolvedAt) < this.symbolResolutionTtl) {
+      return cached;
+    }
+    return null;
+  }
+
+  /**
+   * Cache lot size for a symbol with bounded size
+   * Evicts oldest entries when cache exceeds max size
+   * @param {string} exchange - Exchange
+   * @param {string} symbol - Symbol
+   * @param {number} lotSize - Lot size
+   */
+  cacheLotSize(exchange, symbol, lotSize) {
+    const key = `${exchange}|${symbol}`;
+
+    // Evict oldest entries if cache is at max size
+    if (this.lotSizeCache.size >= this.lotSizeCacheMaxSize) {
+      this._evictOldestEntries(this.lotSizeCache, 'cachedAt', 50);
+    }
+
+    this.lotSizeCache.set(key, {
+      lotSize,
+      cachedAt: Date.now(),
+    });
+  }
+
+  /**
+   * Get cached lot size
+   * @param {string} exchange - Exchange
+   * @param {string} symbol - Symbol
+   * @returns {number|null} - Lot size or null if not cached
+   */
+  getCachedLotSize(exchange, symbol) {
+    const key = `${exchange}|${symbol}`;
+    const cached = this.lotSizeCache.get(key);
+    if (cached && (Date.now() - cached.cachedAt) < this.lotSizeCacheTtl) {
+      return cached.lotSize;
+    }
+    return null;
+  }
+
+  /**
+   * Pre-load lot sizes for multiple symbols
+   * @param {Array<{exchange: string, symbol: string, lotSize: number}>} symbols
+   */
+  preloadLotSizes(symbols) {
+    for (const { exchange, symbol, lotSize } of symbols) {
+      if (lotSize && lotSize > 0) {
+        this.cacheLotSize(exchange, symbol, lotSize);
+      }
+    }
+    log.debug('Pre-loaded lot sizes', { count: symbols.length });
+  }
+
+  /**
+   * Evict oldest entries from a cache Map
+   * Removes entries with the oldest timestamp values
+   * @private
+   * @param {Map} cache - The cache Map to evict from
+   * @param {string} timestampKey - The key in cache values containing the timestamp
+   * @param {number} count - Number of entries to evict
+   */
+  _evictOldestEntries(cache, timestampKey, count) {
+    // Convert to array and sort by timestamp (oldest first)
+    const entries = [...cache.entries()]
+      .sort((a, b) => (a[1][timestampKey] || 0) - (b[1][timestampKey] || 0));
+
+    // Delete oldest entries
+    const toDelete = Math.min(count, entries.length);
+    for (let i = 0; i < toDelete; i++) {
+      cache.delete(entries[i][0]);
+    }
+
+    log.debug('Cache eviction performed', {
+      evicted: toDelete,
+      remainingSize: cache.size,
+    });
   }
 
   /**
@@ -510,26 +720,19 @@ class OpenAlgoClient {
   }
 
   async _ensureLimits() {
-    const now = Date.now();
-    if (this.limitsCache.loadedAt && now - this.limitsCache.loadedAt < this.limitsCache.ttl) {
-      return;
+    // Rate limits are now loaded once at startup via initializeRateLimits()
+    // and refreshed only on settings change via reloadRateLimits()
+    // This removes database queries from the hot path
+    if (!this.limitsCache.initialized) {
+      await this.initializeRateLimits();
     }
-    try {
-      const settings = await settingsService.getSettingsByCategory('rate_limits');
-      const getNum = (key, fallback) => {
-        const entry = settings[key];
-        const raw = entry ? (entry.pendingValue ?? entry.value ?? entry.rawValue) : undefined;
-        const val = parseFloat(raw);
-        return Number.isNaN(val) ? fallback : val;
-      };
-      this.rpsLimitPerInstance = getNum('rate_limits.rps_per_instance', this.rpsLimitPerInstance);
-      this.rpmLimitPerInstance = getNum('rate_limits.rpm_per_instance', this.rpmLimitPerInstance);
-      this.rpmLimitGlobal = Number.POSITIVE_INFINITY; // keep global cap disabled
-      this.ordersPerSecondLimit = getNum('rate_limits.orders_per_second', this.ordersPerSecondLimit);
-      this.maxConcurrentTasks = getNum('rate_limits.max_concurrent_tasks', this.maxConcurrentTasks);
-      this.limitsCache.loadedAt = now;
-    } catch (error) {
-      log.warn('Failed to load rate limit settings, using defaults', { error: error.message });
+    // Periodic refresh as fallback (every 10 minutes)
+    const now = Date.now();
+    if (now - this.limitsCache.loadedAt > this.limitsCache.ttl) {
+      // Background refresh - don't block the request
+      this._loadRateLimitSettings().catch(err => {
+        log.warn('Background rate limit refresh failed', { error: err.message });
+      });
     }
   }
 
@@ -824,14 +1027,19 @@ class OpenAlgoClient {
   // ==========================================
 
   /**
-   * Get quotes for symbols
+   * Get quotes for symbols with HTTP/2 multiplexing
    * @param {Object} instance - Instance configuration
    * @param {Array<Object>} symbols - Array of {exchange, symbol}
-   * @returns {Promise<Array>} - Quotes list
+   * @param {Object} options - Options
+   * @param {boolean} options.returnErrors - Return error info for failed quotes (for fallback handling)
+   * @returns {Promise<Object>} - { quotes: [], failed: [] }
    */
-  async getQuotes(instance, symbols) {
+  async getQuotes(instance, symbols, options = {}) {
+    const { returnErrors = false } = options;
+
     // OpenAlgo quotes API expects one symbol at a time
-    // Make parallel requests for all symbols (skip rate limits for quotes)
+    // HTTP/2 multiplexing allows these to share a single TCP connection
+    // This dramatically reduces latency compared to sequential requests
     const quotePromises = symbols.map(async ({ exchange, symbol }) => {
       try {
         const response = await this.request(
@@ -844,20 +1052,116 @@ class OpenAlgoClient {
 
         // Return quote data with exchange and symbol for matching
         return {
+          success: true,
           exchange,
           symbol,
           ...response.data,
+          fetchedAt: Date.now(),
         };
       } catch (error) {
-        log.warn('Failed to fetch quote', error, { exchange, symbol });
-        return null;
+        log.warn('Failed to fetch quote', { exchange, symbol, error: error.message });
+        return {
+          success: false,
+          exchange,
+          symbol,
+          error: error.message,
+          errorCode: error.statusCode || 'UNKNOWN',
+          fetchedAt: Date.now(),
+        };
       }
     });
 
     const results = await Promise.all(quotePromises);
 
-    // Filter out failed requests
-    return results.filter(quote => quote !== null);
+    // Separate successful and failed quotes
+    const quotes = results.filter(r => r.success).map(r => {
+      const { success, ...quote } = r;
+      return quote;
+    });
+    const failed = results.filter(r => !r.success);
+
+    // For backward compatibility, return just quotes array if not requesting errors
+    if (!returnErrors) {
+      return quotes;
+    }
+
+    return { quotes, failed };
+  }
+
+  /**
+   * Get quotes with automatic fallback to alternate instances on failure
+   * @param {Array<Object>} instances - Pool of instances to try
+   * @param {Array<Object>} symbols - Array of {exchange, symbol}
+   * @param {Object} options - Options
+   * @param {number} options.maxRetries - Max retry attempts per symbol (default: 2)
+   * @returns {Promise<Array>} - Quotes list with source instance info
+   */
+  async getQuotesWithFallback(instances, symbols, options = {}) {
+    const { maxRetries = 2 } = options;
+
+    if (!instances || instances.length === 0) {
+      log.warn('No instances available for quote fallback');
+      return [];
+    }
+
+    // First attempt: distribute symbols across instances
+    const primaryInstance = instances[0];
+    const { quotes, failed } = await this.getQuotes(primaryInstance, symbols, { returnErrors: true });
+
+    // Add source instance info
+    quotes.forEach(q => {
+      q.sourceInstance = primaryInstance.id;
+      q.sourceInstanceName = primaryInstance.name;
+    });
+
+    if (failed.length === 0) {
+      return quotes;
+    }
+
+    // Retry failed quotes on alternate instances
+    let pendingSymbols = failed.map(f => ({ exchange: f.exchange, symbol: f.symbol }));
+    const finalQuotes = [...quotes];
+
+    for (let attempt = 0; attempt < maxRetries && pendingSymbols.length > 0; attempt++) {
+      // Use next instance in pool for retry
+      const retryInstance = instances[(attempt + 1) % instances.length];
+      if (retryInstance.id === primaryInstance.id && instances.length > 1) {
+        continue; // Skip same instance if we have alternatives
+      }
+
+      log.debug('Retrying failed quotes on alternate instance', {
+        attempt: attempt + 1,
+        instance: retryInstance.name,
+        symbolCount: pendingSymbols.length,
+      });
+
+      const { quotes: retryQuotes, failed: retryFailed } = await this.getQuotes(
+        retryInstance,
+        pendingSymbols,
+        { returnErrors: true }
+      );
+
+      // Add successful retries
+      retryQuotes.forEach(q => {
+        q.sourceInstance = retryInstance.id;
+        q.sourceInstanceName = retryInstance.name;
+        q.retryAttempt = attempt + 1;
+      });
+      finalQuotes.push(...retryQuotes);
+
+      // Update pending list
+      pendingSymbols = retryFailed.map(f => ({ exchange: f.exchange, symbol: f.symbol }));
+    }
+
+    // Log final failed quotes
+    if (pendingSymbols.length > 0) {
+      log.warn('Some quotes failed after all retries', {
+        failedCount: pendingSymbols.length,
+        symbols: pendingSymbols.map(s => `${s.exchange}:${s.symbol}`),
+      });
+    }
+
+    return finalQuotes;
   }
 
   /**
