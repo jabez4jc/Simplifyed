@@ -13,7 +13,6 @@ import instrumentsRoutes from './instruments.js';
 import pollingRoutes from './polling.js';
 import quickOrderRoutes from './quickorders.js';
 import dashboardRoutes from './dashboard.js';
-import telegramRoutes from './telegram.js';
 import monitorRoutes from './monitor.js';
 import settingsRoutes from './settings.js';
 import optionChainRoutes from './option-chain.js';
@@ -32,7 +31,7 @@ router.use('/instruments', instrumentsRoutes);
 router.use('/polling', pollingRoutes);
 router.use('/quickorders', quickOrderRoutes);
 router.use('/dashboard', dashboardRoutes);
-router.use('/telegram', telegramRoutes);
+// Telegram routes disabled temporarily
 router.use('/monitor', monitorRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/option-chain', optionChainRoutes);
