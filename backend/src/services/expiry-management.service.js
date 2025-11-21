@@ -294,19 +294,12 @@ class ExpiryManagementService {
       }
 
       // Get a market data instance for fetching
-      const instances = await db.all(
-        `SELECT * FROM instances
-         WHERE is_active = 1 AND (market_data_role = 'primary' OR market_data_role = 'secondary')
-         ORDER BY market_data_role ASC
-         LIMIT 1`
-      );
+      const instance = await marketDataInstanceService.getRoundRobinInstance();
 
-      if (instances.length === 0) {
+      if (!instance) {
         log.warn('No active market data instance available for expiry refresh');
         return;
       }
-
-      const instance = instances[0];
 
       // Refresh expiries for each symbol
       const results = await Promise.allSettled(

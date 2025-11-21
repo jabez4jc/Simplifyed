@@ -8,6 +8,9 @@ import log from '../core/logger.js';
 import { NotFoundError } from '../core/errors.js';
 
 class MarketDataInstanceService {
+  constructor() {
+    this.poolIndex = 0;
+  }
   /**
    * Get the instance to use for market data API calls with failover logic
    * @returns {Promise<Object>} Instance object with id, name, host_url, api_key, etc.
@@ -115,8 +118,22 @@ class MarketDataInstanceService {
    */
   async getMarketDataPool() {
     const all = await this.getMarketDataInstances();
-    return all.filter(inst => inst.market_data_enabled || inst.market_data_role === 'primary' || inst.market_data_role === 'secondary')
-      .filter(inst => inst.is_active && this._isHealthy(inst));
+    return all.filter(inst =>
+      inst.is_active &&
+      (inst.market_data_enabled || inst.market_data_role === 'primary' || inst.market_data_role === 'secondary') &&
+      this._isHealthy(inst)
+    );
+  }
+
+  /**
+   * Get a market data instance using round-robin across the pool
+   */
+  async getRoundRobinInstance() {
+    const pool = await this.getMarketDataPool();
+    if (pool.length === 0) return null;
+    const inst = pool[this.poolIndex % pool.length];
+    this.poolIndex = (this.poolIndex + 1) % pool.length;
+    return inst;
   }
 }
 

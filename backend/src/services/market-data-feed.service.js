@@ -92,7 +92,9 @@ class MarketDataFeedService extends EventEmitter {
         return;
       }
 
-      const chunks = this._chunkSymbols(symbolList, symbolList.length > 5 ? 5 : symbolList.length);
+      const poolSize = Math.max(1, marketDataInstances.length);
+      const chunkSize = Math.max(3, Math.min(5, Math.ceil(symbolList.length / poolSize)));
+      const chunks = this._chunkSymbols(symbolList, chunkSize);
       const assignments = new Map(); // inst.id -> symbols[]
       chunks.forEach((chunk, idx) => {
         const inst = marketDataInstances[idx % marketDataInstances.length];

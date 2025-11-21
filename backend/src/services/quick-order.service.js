@@ -1889,26 +1889,27 @@ class QuickOrderService {
 
   /**
    * Get market data instance from list of instances
-   * Prefers instances with market_data_role='primary', falls back to first instance
+   * Uses round-robin across enabled market data instances
    * @private
    */
   async _getMarketDataInstance(instances) {
-    // Try to find primary market data instance
-    const primaryInstance = instances.find(i => i.market_data_role === 'primary');
-    if (primaryInstance) {
-      log.debug('Using primary market data instance', {
-        instance_id: primaryInstance.id,
-        name: primaryInstance.name,
+    const rr = await marketDataInstanceService.getRoundRobinInstance();
+    if (rr) {
+      log.debug('Using round-robin market data instance', {
+        instance_id: rr.id,
+        name: rr.name,
       });
-      return primaryInstance;
+      return rr;
     }
-
-    // Fallback to first instance
-    log.debug('No primary market data instance, using first instance', {
-      instance_id: instances[0].id,
-      name: instances[0].name,
-    });
-    return instances[0];
+    // Fallback: use provided instances list if any
+    if (instances && instances.length > 0) {
+      log.warn('Round-robin market data pool empty, using fallback instance list', {
+        instance_id: instances[0].id,
+        name: instances[0].name,
+      });
+      return instances[0];
+    }
+    throw new Error('No market data instance available');
   }
 
   /**
