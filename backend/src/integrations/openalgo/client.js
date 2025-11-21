@@ -99,7 +99,7 @@ class OpenAlgoClient {
    */
   async request(instance, endpoint, data = {}, method = 'POST', options = {}) {
     const { host_url, api_key } = instance;
-    const { isCritical = false } = options;
+    const { isCritical = false, skipRateLimit = false } = options;
 
     if (!host_url || !api_key) {
       throw new OpenAlgoError('Instance host_url and api_key are required', endpoint);
@@ -150,10 +150,14 @@ class OpenAlgoClient {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const startTime = Date.now();
-        await this._ensureLimits();
-        this._ensureBackoffWindow(instKey, endpoint);
-        await this._throttle(instance, endpoint, isOrderPlacement);
-        const response = await this._executeWithConcurrency(instance, endpoint, method, url, payload, isOrderPlacement);
+        if (!skipRateLimit) {
+          await this._ensureLimits();
+          this._ensureBackoffWindow(instKey, endpoint);
+          await this._throttle(instance, endpoint, isOrderPlacement);
+        }
+        const response = skipRateLimit
+          ? await this._makeRequest(url, method, payload)
+          : await this._executeWithConcurrency(instance, endpoint, method, url, payload, isOrderPlacement);
         const duration = Date.now() - startTime;
 
         log.openalgo(method, endpoint, duration, true);
@@ -827,13 +831,16 @@ class OpenAlgoClient {
    */
   async getQuotes(instance, symbols) {
     // OpenAlgo quotes API expects one symbol at a time
-    // Make parallel requests for all symbols
+    // Make parallel requests for all symbols (skip rate limits for quotes)
     const quotePromises = symbols.map(async ({ exchange, symbol }) => {
       try {
-        const response = await this.request(instance, 'quotes', {
-          exchange,
-          symbol,
-        });
+        const response = await this.request(
+          instance,
+          'quotes',
+          { exchange, symbol },
+          'POST',
+          { skipRateLimit: true }
+        );
 
         // Return quote data with exchange and symbol for matching
         return {
