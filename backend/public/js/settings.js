@@ -37,9 +37,6 @@ class SettingsHandler {
             <div class="card">
               <div class="card-header">
                 <h3 class="card-title">⚙️ Application Settings</h3>
-                <p class="text-sm text-neutral-600 mt-1">
-                  Configure application settings. Changes take effect immediately.
-                </p>
               </div>
               <div class="p-6">
                 ${this.renderApplicationSettings()}
@@ -100,6 +97,9 @@ class SettingsHandler {
   renderApplicationSettings() {
     return `
       <div class="settings-container">
+        <div class="text-sm text-neutral-600 mb-3">
+          Configure application settings. Changes are saved when you click “Save Changes”.
+        </div>
         ${this.renderCustomizableValuesLegend()}
         <!-- Category Tabs -->
         <div class="settings-tabs">
