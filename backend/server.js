@@ -28,7 +28,7 @@ import { checkInstrumentsRefresh } from './src/middleware/instruments-refresh.mi
 import apiV1Routes from './src/routes/v1/index.js';
 
 let servicesStarted = false;
-const startPaused = process.env.START_PAUSED !== 'false'; // default true
+const startPaused = process.env.START_PAUSED === 'true'; // default to false unless explicitly set
 
 async function startBackgroundServices() {
   if (servicesStarted) return;

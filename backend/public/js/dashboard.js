@@ -43,7 +43,7 @@ class DashboardApp {
     this.positionsInstanceStore = new Map();
     // Track expanded instances in positions view; default is collapsed
     this.positionsExpanded = new Set();
-    this.isPaused = true; // start paused until user resumes
+    this.isPaused = false; // default running; user can pause manually
   }
 
   /**
