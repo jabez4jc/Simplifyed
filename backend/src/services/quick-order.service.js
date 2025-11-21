@@ -10,6 +10,7 @@ import openalgoClient from '../integrations/openalgo/client.js';
 import optionsResolutionService from './options-resolution.service.js';
 import expiryManagementService from './expiry-management.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
+import marketDataInstanceService from './market-data-instance.service.js';
 import derivativeResolutionService, { NSE_INDEX_UNDERLYINGS, BSE_INDEX_UNDERLYINGS } from './derivative-resolution.service.js';
 import orderPlacementService from './order-placement.service.js';
 import orderPayloadFactory from './order-payload.factory.js';
@@ -486,12 +487,17 @@ class QuickOrderService {
    */
   async _retryFailedCloseOrders(failedInstances, symbol, orderParams, maxRetries = 2) {
     const results = [];
+    // Create a mutable copy to track remaining instances
+    let remaining = [...failedInstances];
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    for (let attempt = 1; attempt <= maxRetries && remaining.length > 0; attempt++) {
       const backoffMs = Math.pow(2, attempt) * 500; // 1s, 2s
       await new Promise(resolve => setTimeout(resolve, backoffMs));
 
-      for (const instance of failedInstances) {
+      // Process all remaining instances and build new remaining list
+      const stillFailing = [];
+
+      for (const instance of remaining) {
         try {
           const result = await this._closePositions(instance, symbol, orderParams, {
             useCachedPositions: false, // Use live positions for retry
@@ -504,10 +510,7 @@ class QuickOrderService {
             retryAttempt: attempt,
             ...result,
           });
-
-          // Remove from failed list
-          const idx = failedInstances.indexOf(instance);
-          if (idx >= 0) failedInstances.splice(idx, 1);
+          // Successfully retried - don't add to stillFailing
         } catch (error) {
           log.warn('Retry failed for close/exit order', {
             instanceId: instance.id,
@@ -516,6 +519,7 @@ class QuickOrderService {
           });
 
           if (attempt === maxRetries) {
+            // Final attempt failed - record failure
             results.push({
               success: false,
               instance_id: instance.id,
@@ -523,11 +527,15 @@ class QuickOrderService {
               retryAttempt: attempt,
               error: error.message,
             });
+          } else {
+            // Not final attempt - add to stillFailing for next retry
+            stillFailing.push(instance);
           }
         }
       }
 
-      if (failedInstances.length === 0) break;
+      // Update remaining list for next iteration
+      remaining = stillFailing;
     }
 
     return results;
@@ -814,8 +822,10 @@ class QuickOrderService {
    * Execute options order with Buyer/Writer position-aware targeting
    * Implements Options Mode Implementation Guide v1.4
    * @private
+   * @param {Object} options - Options
+   * @param {Map} options.preloadedPositions - Pre-fetched positions map (instanceId -> positions[])
    */
-  async _executeOptionsOrder(instance, symbol, orderParams, preResolvedOptionSymbol = null) {
+  async _executeOptionsOrder(instance, symbol, orderParams, preResolvedOptionSymbol = null, options = {}) {
     const {
       action,
       product,
@@ -825,6 +835,7 @@ class QuickOrderService {
       strikePolicy = 'FLOAT_OFS',
       stepLots = 1,
     } = orderParams;
+    const { preloadedPositions } = options;
 
     // Get writer guard from symbol configuration (optional)
     const writerGuard = symbol.writer_guard_enabled !== 0;  // Default true
@@ -1118,12 +1129,27 @@ class QuickOrderService {
       });
     } else {
       // Single leg position
-      currentPosition = await this._getCurrentPositionSize(
-        instance,
-        optionSymbol.symbol,
-        derivativeExchange,
-        product
-      );
+      // Use preloaded positions if available to avoid additional API call
+      if (preloadedPositions && preloadedPositions.has(instance.id)) {
+        currentPosition = this._extractPositionFromBook(
+          preloadedPositions.get(instance.id),
+          optionSymbol.symbol,
+          derivativeExchange,
+          product
+        );
+        log.debug('Using preloaded position for options', {
+          instanceId: instance.id,
+          symbol: optionSymbol.symbol,
+          position: currentPosition,
+        });
+      } else {
+        currentPosition = await this._getCurrentPositionSize(
+          instance,
+          optionSymbol.symbol,
+          derivativeExchange,
+          product
+        );
+      }
       log.info('Using LEG-scoped position', {
         symbol: optionSymbol.symbol,
         currentPosition,
@@ -1351,7 +1377,8 @@ class QuickOrderService {
         underlying,
         expiry,
         optionType,
-        product
+        product,
+        { useCached: useCachedPositions }
       );
 
       if (!expiry) {
@@ -1382,7 +1409,8 @@ class QuickOrderService {
         underlying,
         expiry,
         'CE',
-        product
+        product,
+        { useCached: useCachedPositions }
       );
 
       const pePositions = await this._getOpenOptionsPositions(
@@ -1390,7 +1418,8 @@ class QuickOrderService {
         underlying,
         expiry,
         'PE',
-        product
+        product,
+        { useCached: useCachedPositions }
       );
 
       positionsToClose = [...cePositions, ...pePositions];
@@ -1709,10 +1738,24 @@ class QuickOrderService {
   /**
    * Get open options positions for underlying and expiry
    * @private
+   * @param {Object} options - Options
+   * @param {boolean} options.useCached - Use cached positions instead of live fetch
    */
-  async _getOpenOptionsPositions(instance, underlying, expiry, optionType, product) {
+  async _getOpenOptionsPositions(instance, underlying, expiry, optionType, product, options = {}) {
+    const { useCached = false } = options;
     try {
-      const positionBook = await this._getPositionBook(instance, { forceLive: true });
+      // Use cached positions if requested (for close/exit operations where exact quantity is less critical)
+      let positionBook;
+      if (useCached) {
+        const cached = marketDataFeedService.getPositionSnapshot(instance.id);
+        positionBook = cached?.data || [];
+        log.debug('Using cached positions for options lookup', {
+          instanceId: instance.id,
+          positionCount: positionBook.length,
+        });
+      } else {
+        positionBook = await this._getPositionBook(instance, { forceLive: true });
+      }
       const targetUnderlying = (underlying || '').toUpperCase();
       const canonicalTarget = targetUnderlying.replace(/[^A-Z0-9]/g, '').replace(/\d+$/, '');
       const targetOptionType = (optionType || '').toUpperCase();

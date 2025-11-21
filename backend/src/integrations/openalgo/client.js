@@ -34,10 +34,6 @@ class OpenAlgoClient extends EventEmitter {
     this.nonCriticalRetries = config.openalgo.nonCritical.maxRetries;
     this.nonCriticalRetryDelay = config.openalgo.nonCritical.retryDelay;
 
-    // HTTP/2 multiplexed connection pools per host
-    // This allows multiple concurrent requests over a single TCP connection
-    this.hostPools = new Map(); // host -> Agent with HTTP/2 support
-
     // Default dispatcher with HTTP/2 support and aggressive connection reuse
     this.dispatcher = new Agent({
       keepAliveTimeout: 120000,      // 2 minutes keep-alive
@@ -168,24 +164,6 @@ class OpenAlgoClient extends EventEmitter {
     this.ordersPerSecondLimit = getNum('rate_limits.orders_per_second', this.ordersPerSecondLimit);
     this.maxConcurrentTasks = getNum('rate_limits.max_concurrent_tasks', this.maxConcurrentTasks);
     this.limitsCache.loadedAt = Date.now();
-  }
-
-  /**
-   * Get or create HTTP/2 enabled pool for a specific host
-   * @private
-   */
-  _getHostPool(hostUrl) {
-    if (!this.hostPools.has(hostUrl)) {
-      const pool = new Agent({
-        keepAliveTimeout: 120000,
-        keepAliveMaxTimeout: 300000,
-        pipelining: 10,
-        connections: 20,
-        allowH2: true,
-      });
-      this.hostPools.set(hostUrl, pool);
-    }
-    return this.hostPools.get(hostUrl);
   }
 
   /**

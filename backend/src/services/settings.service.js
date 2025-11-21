@@ -221,11 +221,13 @@ class SettingsService extends EventEmitter {
       log.info('Setting updated', { key, value: current.isSensitive ? '[MASKED]' : stringValue });
 
       // Emit settings changed event for cache invalidation
+      // Mask sensitive values to prevent accidental exposure in event handlers/logs
       this.emit('settings:changed', {
         key,
         category: current.category,
-        oldValue: current.value,
-        newValue: value,
+        oldValue: current.isSensitive ? this.maskValue(String(current.rawValue)) : current.value,
+        newValue: current.isSensitive ? this.maskValue(String(value)) : value,
+        isSensitive: current.isSensitive,
       });
 
       // Return updated setting
