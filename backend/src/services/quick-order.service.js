@@ -1157,6 +1157,7 @@ class QuickOrderService {
         closeResults.push({
           success: true,
           symbol: position.symbol,
+          resolved_symbol: position.symbol,
           quantity: closeQuantity,
           order_id: orderResult.orderid,
         });
@@ -1467,19 +1468,43 @@ class QuickOrderService {
   async _getOpenPositionsForSymbol(instance, symbol, exchange, product) {
     try {
       const positionBook = await this._getPositionBook(instance, { forceLive: true });
+      const targetSymbol = this._normalizeSymbolKey(symbol);
+      const targetExchange = this._normalizeExchange(exchange);
+      const targetProduct = this._normalizeProduct(product);
 
       const positions = positionBook.filter(p => {
-        const matchesSymbol = p.symbol === symbol;
-        const hasQuantity = p.quantity && p.quantity !== '0' && parseInt(p.quantity) !== 0;
+        const posSymbol = this._normalizeSymbolKey(
+          p.symbol || p.trading_symbol || p.tradingsymbol
+        );
+        const posExchange = this._normalizeExchange(p.exchange || p.exch);
+        const posProduct = this._normalizeProduct(p.product || p.producttype);
+        const qty =
+          parseIntSafe(p.quantity) ||
+          parseIntSafe(p.netqty) ||
+          parseIntSafe(p.net_quantity) ||
+          parseIntSafe(p.net) ||
+          parseIntSafe(p.netQty) ||
+          0;
+        const hasQuantity = qty !== 0;
 
-        return matchesSymbol && hasQuantity;
+        const symbolMatch = posSymbol === targetSymbol;
+        const exchangeMatch = !targetExchange || !posExchange || posExchange === targetExchange;
+        const productMatch = !targetProduct || !posProduct || posProduct === targetProduct;
+
+        return symbolMatch && exchangeMatch && productMatch && hasQuantity;
       });
 
       return positions.map(p => ({
-        symbol: p.symbol,
-        exchange: p.exchange,
-        quantity: parseIntSafe(p.quantity, 0),
-        product: p.product,
+        symbol: p.symbol || p.trading_symbol || p.tradingsymbol,
+        exchange: p.exchange || p.exch,
+        quantity:
+          parseIntSafe(p.quantity) ||
+          parseIntSafe(p.netqty) ||
+          parseIntSafe(p.net_quantity) ||
+          parseIntSafe(p.net) ||
+          parseIntSafe(p.netQty) ||
+          0,
+        product: p.product || p.producttype || product,
       }));
     } catch (error) {
       log.error('Failed to get positions for symbol', error);
