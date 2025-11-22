@@ -450,7 +450,8 @@ function normalizeExpiryToISO(expiry) {
     // 2-digit year assumed to be 2000-2099 (appropriate for trading contracts)
     const fullYear = `20${year}`;
     const paddedMonth = String(month + 1).padStart(2, '0');
-    return `${fullYear}-${paddedMonth}-${day}`;
+    const paddedDay = day.padStart(2, '0'); // Ensure day is zero-padded
+    return `${fullYear}-${paddedMonth}-${paddedDay}`;
   }
 
   return expiry;
@@ -474,11 +475,13 @@ function buildOptionSymbol(underlying, expiry, strike, optionType) {
   let day, month, year;
 
   if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
-    // YYYY-MM-DD format
-    const date = new Date(expiry);
-    day = String(date.getDate()).padStart(2, '0');
-    month = MONTH_NAMES[date.getMonth()];
-    year = String(date.getFullYear()).slice(-2);
+    // YYYY-MM-DD format - parse directly to avoid timezone issues
+    // Using new Date() on YYYY-MM-DD parses as UTC, but getDate() returns local time,
+    // causing off-by-one errors in timezones behind UTC
+    const [yearStr, monthStr, dayStr] = expiry.split('-');
+    day = dayStr;
+    month = MONTH_NAMES[parseInt(monthStr, 10) - 1];
+    year = yearStr.slice(-2);
   } else if (/^\d{2}-[A-Z]{3}-\d{2}$/i.test(expiry)) {
     // DD-MMM-YY format
     [day, month, year] = expiry.split('-');
@@ -510,11 +513,13 @@ function buildFuturesSymbol(underlying, expiry) {
   let day, month, year;
 
   if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
-    // YYYY-MM-DD format
-    const date = new Date(expiry);
-    day = String(date.getDate()).padStart(2, '0');
-    month = MONTH_NAMES[date.getMonth()];
-    year = String(date.getFullYear()).slice(-2);
+    // YYYY-MM-DD format - parse directly to avoid timezone issues
+    // Using new Date() on YYYY-MM-DD parses as UTC, but getDate() returns local time,
+    // causing off-by-one errors in timezones behind UTC
+    const [yearStr, monthStr, dayStr] = expiry.split('-');
+    day = dayStr;
+    month = MONTH_NAMES[parseInt(monthStr, 10) - 1];
+    year = yearStr.slice(-2);
   } else if (/^\d{2}-[A-Z]{3}-\d{2}$/i.test(expiry)) {
     // DD-MMM-YY format
     [day, month, year] = expiry.split('-');
