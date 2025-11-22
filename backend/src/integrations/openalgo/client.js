@@ -1143,31 +1143,39 @@ class OpenAlgoClient extends EventEmitter {
     }
 
     // Retry failed quotes on alternate instances
+    // Use separate counters: actualAttempts for real retries, instanceIndex for instance selection
     let pendingSymbols = failed.map(f => ({ exchange: f.exchange, symbol: f.symbol }));
     const finalQuotes = [...quotes];
     const triedInstances = new Set([primaryInstance.id]); // Track which instances we've tried
 
-    for (let attempt = 0; attempt < maxRetries && pendingSymbols.length > 0; attempt++) {
-      // Use next instance in pool for retry (round-robin through alternatives)
-      const retryInstance = instances[(attempt + 1) % instances.length];
+    let actualAttempts = 0;
+    let instanceIndex = 1; // Start from second instance
 
-      // Skip if we've already tried this instance (prevents cycling back to failed ones)
+    while (actualAttempts < maxRetries && pendingSymbols.length > 0) {
+      // Check if we've exhausted all instances
+      if (triedInstances.size >= instances.length) {
+        log.debug('All instances exhausted for quote fallback', {
+          triedCount: triedInstances.size,
+          remainingFailures: pendingSymbols.length,
+          actualAttempts,
+        });
+        break;
+      }
+
+      // Find next untried instance
+      const retryInstance = instances[instanceIndex % instances.length];
+      instanceIndex++;
+
+      // Skip if we've already tried this instance
       if (triedInstances.has(retryInstance.id)) {
-        // If we've tried all instances, no point continuing
-        if (triedInstances.size >= instances.length) {
-          log.debug('All instances exhausted for quote fallback', {
-            triedCount: triedInstances.size,
-            remainingFailures: pendingSymbols.length,
-          });
-          break;
-        }
-        continue;
+        continue; // Don't count as an attempt, just move to next instance
       }
 
       triedInstances.add(retryInstance.id);
+      actualAttempts++; // Count this as an actual retry attempt
 
       log.debug('Retrying failed quotes on alternate instance', {
-        attempt: attempt + 1,
+        attempt: actualAttempts,
         instance: retryInstance.name,
         symbolCount: pendingSymbols.length,
       });
@@ -1182,7 +1190,7 @@ class OpenAlgoClient extends EventEmitter {
       retryQuotes.forEach(q => {
         q.sourceInstance = retryInstance.id;
         q.sourceInstanceName = retryInstance.name;
-        q.retryAttempt = attempt + 1;
+        q.retryAttempt = actualAttempts;
       });
       finalQuotes.push(...retryQuotes);
 

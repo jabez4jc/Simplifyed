@@ -301,10 +301,16 @@ router.post('/utils', async (req, res, next) => {
 
     // Handle batch operations
     if (operation === 'batch' && Array.isArray(operations)) {
-      const results = operations.map(op => {
+      // Validate batch operations have required fields
+      if (operations.some(op => !op || typeof op.operation !== 'string')) {
+        throw new ValidationError('Each batch operation must have an operation field');
+      }
+
+      const results = operations.map((op, index) => {
         try {
           return { success: true, result: executeSymbolOperation(op.operation, op.params || {}) };
         } catch (error) {
+          log.warn('Batch operation failed', { index, operation: op.operation, error: error.message });
           return { success: false, error: error.message };
         }
       });
@@ -412,7 +418,14 @@ function executeSymbolOperation(operation, params) {
 }
 
 /**
- * Convert DD-MMM-YY to YYYY-MM-DD
+ * Convert DD-MMM-YY to YYYY-MM-DD (ISO format)
+ *
+ * Note: 2-digit years are assumed to be in the 2000-2099 range.
+ * This is appropriate for trading applications where contracts
+ * typically don't exceed 1-2 years in the future.
+ *
+ * @param {string} expiry - Expiry in DD-MMM-YY format (e.g., "28-NOV-25")
+ * @returns {string|null} Expiry in YYYY-MM-DD format (e.g., "2025-11-28")
  */
 function normalizeExpiryToISO(expiry) {
   if (!expiry) return null;
@@ -423,6 +436,7 @@ function normalizeExpiryToISO(expiry) {
   }
 
   // Convert DD-MMM-YY to YYYY-MM-DD
+  // Note: Assumes 20xx century for 2-digit years (valid for trading contracts)
   if (/^\d{2}-[A-Z]{3}-\d{2}$/i.test(expiry)) {
     const [day, monthStr, year] = expiry.split('-');
     const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
@@ -433,6 +447,7 @@ function normalizeExpiryToISO(expiry) {
       return expiry; // Return as-is if invalid
     }
 
+    // 2-digit year assumed to be 2000-2099 (appropriate for trading contracts)
     const fullYear = `20${year}`;
     const paddedMonth = String(month + 1).padStart(2, '0');
     return `${fullYear}-${paddedMonth}-${day}`;
@@ -515,7 +530,7 @@ function buildFuturesSymbol(underlying, expiry) {
 /**
  * Parse option symbol to extract components
  * Format: SYMBOL + DDMMMYY + STRIKE + CE/PE
- * @param {string} symbol - Option symbol (e.g., NIFTY28NOV2524000CE)
+ * @param {string} symbol - Option symbol (e.g., NIFTY28NOV2524000CE, MCDOWELL-N28NOV25292.5CE)
  * @returns {Object} Parsed components { underlying, expiry, strike, optionType }
  */
 function parseOptionSymbol(symbol) {
@@ -530,7 +545,9 @@ function parseOptionSymbol(symbol) {
   }
 
   // Match: UNDERLYING + DDMMMYY + STRIKE + CE/PE
-  const match = normalized.match(/^([A-Z]+)(\d{2})([A-Z]{3})(\d{2})(\d+(?:\.\d+)?)(CE|PE)$/);
+  // Underlying can contain letters, digits, and hyphens (e.g., MCDOWELL-N, 726GS2033)
+  // Use non-greedy match to correctly separate underlying from date
+  const match = normalized.match(/^([A-Z][A-Z0-9\-]*)(\d{2})([A-Z]{3})(\d{2})(\d+(?:\.\d+)?)(CE|PE)$/);
   if (!match) {
     return { underlying: null, expiry: null, strike: null, optionType: null, error: 'Invalid format' };
   }
@@ -542,6 +559,7 @@ function parseOptionSymbol(symbol) {
     return { underlying: null, expiry: null, strike: null, optionType: null, error: 'Invalid month' };
   }
 
+  // 2-digit year assumed to be 2000-2099 (appropriate for trading contracts)
   const expiry = `20${year}-${String(monthIndex + 1).padStart(2, '0')}-${day}`;
   const strike = parseFloat(strikeStr);
 
@@ -551,7 +569,7 @@ function parseOptionSymbol(symbol) {
 /**
  * Parse futures symbol to extract components
  * Format: SYMBOL + DDMMMYY + FUT
- * @param {string} symbol - Futures symbol (e.g., NIFTY28NOV25FUT)
+ * @param {string} symbol - Futures symbol (e.g., NIFTY28NOV25FUT, 726GS203325APR24FUT)
  * @returns {Object} Parsed components { underlying, expiry }
  */
 function parseFuturesSymbol(symbol) {
@@ -566,7 +584,8 @@ function parseFuturesSymbol(symbol) {
   }
 
   // Match: UNDERLYING + DDMMMYY + FUT
-  const match = normalized.match(/^([A-Z]+)(\d{2})([A-Z]{3})(\d{2})FUT$/);
+  // Underlying can contain letters, digits, and hyphens (e.g., 726GS2033, MCDOWELL-N)
+  const match = normalized.match(/^([A-Z][A-Z0-9\-]*)(\d{2})([A-Z]{3})(\d{2})FUT$/);
   if (!match) {
     return { underlying: null, expiry: null, error: 'Invalid format' };
   }
@@ -578,6 +597,7 @@ function parseFuturesSymbol(symbol) {
     return { underlying: null, expiry: null, error: 'Invalid month' };
   }
 
+  // 2-digit year assumed to be 2000-2099 (appropriate for trading contracts)
   const expiry = `20${year}-${String(monthIndex + 1).padStart(2, '0')}-${day}`;
 
   return { underlying, expiry };
@@ -625,23 +645,23 @@ router.post('/quotes/subscribe', async (req, res, next) => {
       useFallback: true,
     });
 
-    // Create lookup map for response
-    const quoteMap = new Map();
-    quotes.forEach(q => {
-      if (q?.symbol && q?.exchange) {
-        quoteMap.set(`${q.exchange}|${q.symbol}`, q);
-      }
-    });
+    // Pre-build lookup Sets for O(1) membership checks (avoids O(n*m) complexity)
+    const watchlistSet = new Set(watchlistSymbols.map(s => `${s.exchange}|${s.symbol}`));
+    const positionsSet = new Set(positionSymbols.map(s => `${s.exchange}|${s.symbol}`));
+    const additionalSet = new Set(additionalSymbols.map(s => `${s.exchange}|${s.symbol}`));
 
-    // Tag quotes by source for debugging
-    const taggedQuotes = quotes.map(q => ({
-      ...q,
-      sources: {
-        watchlist: watchlistSymbols.some(s => s.symbol === q.symbol && s.exchange === q.exchange),
-        positions: positionSymbols.some(s => s.symbol === q.symbol && s.exchange === q.exchange),
-        additional: additionalSymbols.some(s => s.symbol === q.symbol && s.exchange === q.exchange),
-      },
-    }));
+    // Tag quotes by source for debugging (O(n) complexity with Set lookups)
+    const taggedQuotes = quotes.map(q => {
+      const key = `${q.exchange}|${q.symbol}`;
+      return {
+        ...q,
+        sources: {
+          watchlist: watchlistSet.has(key),
+          positions: positionsSet.has(key),
+          additional: additionalSet.has(key),
+        },
+      };
+    });
 
     log.debug('Consolidated quote subscription', {
       watchlistCount: watchlistSymbols.length,
