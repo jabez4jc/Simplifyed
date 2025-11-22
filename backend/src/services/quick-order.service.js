@@ -1949,7 +1949,8 @@ class QuickOrderService {
   }
 
   /**
-   * Get underlying LTP
+   * Get underlying LTP with aggressive retry logic
+   * LTP is critical for order placement and derivatives resolution
    * @private
    */
   async _getUnderlyingLTP(instance, underlying, exchange) {
@@ -1961,6 +1962,7 @@ class QuickOrderService {
         exchange,
       });
 
+      // Check cache first (from instance or symbol cache)
       const cachedQuote = this._findQuoteInSnapshot(
         marketDataFeedService.getQuoteSnapshot(instance.id),
         exchange,
@@ -1969,7 +1971,7 @@ class QuickOrderService {
 
       if (cachedQuote) {
         const cachedLtp = this._extractLtpFromQuote(cachedQuote);
-        if (cachedLtp) {
+        if (cachedLtp && cachedLtp > 0) {
           log.debug('Using cached LTP for underlying', {
             instance_id: instance.id,
             underlying,
@@ -1980,30 +1982,74 @@ class QuickOrderService {
         }
       }
 
-      const quotes = await openalgoClient.getQuotes(instance, [
-        { exchange, symbol: underlying },
-      ]);
+      // Also check symbol-level cache
+      const { cached } = marketDataFeedService.getCachedQuotesForSymbols(
+        [{ exchange, symbol: underlying }],
+        { orderCritical: true } // Use aggressive TTL for LTP
+      );
 
-      if (!quotes || quotes.length === 0) {
-        throw new NotFoundError(`No quote found for ${underlying}`);
+      if (cached.length > 0) {
+        const cachedLtp = this._extractLtpFromQuote(cached[0]);
+        if (cachedLtp && cachedLtp > 0) {
+          log.debug('Using symbol cache LTP for underlying', {
+            instance_id: instance.id,
+            underlying,
+            ltp: cachedLtp,
+            source: 'symbol_cache',
+          });
+          return cachedLtp;
+        }
       }
 
-      const ltp = this._extractLtpFromQuote(quotes[0]);
+      // Get market data pool for fallback capability
+      // LTP is critical - use all available instances for reliability
+      let instancePool = [instance];
+      try {
+        const marketDataPool = await marketDataInstanceService.getMarketDataPool();
+        if (marketDataPool.length > 0) {
+          // Put the requested instance first, then add others
+          instancePool = [instance, ...marketDataPool.filter(i => i.id !== instance.id)];
+        }
+      } catch (poolError) {
+        log.warn('Failed to get market data pool, using single instance', {
+          error: poolError.message,
+        });
+      }
 
-      if (!ltp) {
-        throw new ValidationError(`Invalid LTP received for ${underlying}`);
+      // Pause non-critical polling during LTP fetch to prioritize bandwidth
+      marketDataFeedService.pauseNonCriticalPolling(3000);
+
+      // Use getLtpWithRetry for aggressive retry with exponential backoff
+      // Strategy: Try different instances first, then do another round if needed
+      const result = await openalgoClient.getLtpWithRetry(
+        instancePool,
+        exchange,
+        underlying,
+        {
+          maxRounds: 2,         // 2 rounds through all instances
+          baseDelayMs: 50,      // 50ms between rounds
+        }
+      );
+
+      // Update cache with fresh LTP
+      if (result.quote) {
+        marketDataFeedService.setQuoteSnapshot(result.instanceId, [result.quote], {
+          fetchedAt: Date.now(),
+          source: 'ltp_retry',
+        });
       }
 
       log.debug('LTP fetched successfully', {
         instance_id: instance.id,
         underlying,
-        ltp,
-        source: 'live',
+        ltp: result.ltp,
+        source: result.source,
+        attempts: result.attempts,
       });
 
-      return ltp;
+      return result.ltp;
     } catch (error) {
-      log.error('Failed to get underlying LTP', error, {
+      log.error('Failed to get underlying LTP after retries', error, {
         instance_id: instance.id,
         instance_name: instance.name,
         underlying,

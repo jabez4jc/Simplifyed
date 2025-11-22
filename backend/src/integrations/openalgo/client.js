@@ -1214,6 +1214,179 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   /**
+   * Get LTP (Last Traded Price) with aggressive retry logic
+   * Critical for order placement and derivatives resolution
+   *
+   * Strategy: Try different instances FIRST before retrying same instance
+   * This improves reliability when one instance has stale/invalid data
+   *
+   * @param {Object|Array} instanceOrPool - Single instance or pool of instances
+   * @param {string} exchange - Exchange code
+   * @param {string} symbol - Trading symbol
+   * @param {Object} options - Options
+   * @param {number} options.maxRounds - Max retry rounds across all instances (default: 2)
+   * @param {number} options.baseDelayMs - Base delay for exponential backoff (default: 50ms)
+   * @returns {Promise<Object>} - { ltp: number, quote: Object, source: string, attempts: number }
+   */
+  async getLtpWithRetry(instanceOrPool, exchange, symbol, options = {}) {
+    const {
+      maxRounds = 2,      // Number of complete rounds through all instances
+      baseDelayMs = 50,
+    } = options;
+
+    const instances = Array.isArray(instanceOrPool) ? instanceOrPool : [instanceOrPool];
+    if (instances.length === 0) {
+      throw new Error('No instances provided for LTP fetch');
+    }
+
+    let lastError = null;
+    let totalAttempts = 0;
+    const failedInstances = new Map(); // Track failure count per instance
+
+    // Strategy: Rotate through instances, trying each one before retrying any
+    // This ensures we try all available instances before repeating
+    for (let round = 0; round < maxRounds; round++) {
+      // Add delay between rounds (not on first round)
+      if (round > 0) {
+        const delay = baseDelayMs * Math.pow(2, round - 1);
+        log.debug('Waiting before retry round', { round: round + 1, delayMs: delay });
+        await this._sleep(delay);
+      }
+
+      // Try each instance in this round
+      for (let instIndex = 0; instIndex < instances.length; instIndex++) {
+        const instance = instances[instIndex];
+        totalAttempts++;
+
+        try {
+          log.debug('Fetching LTP', {
+            instance: instance.name,
+            exchange,
+            symbol,
+            round: round + 1,
+            instanceIndex: instIndex + 1,
+            totalAttempts,
+          });
+
+          const response = await this.request(
+            instance,
+            'quotes',
+            { exchange, symbol },
+            'POST',
+            { skipRateLimit: true } // LTP is critical, skip rate limit
+          );
+
+          const quote = response.data || {};
+          const ltp = this._extractLtp(quote);
+
+          // Validate LTP - must be a positive number
+          if (ltp === null || ltp <= 0) {
+            log.warn('Invalid LTP received, trying next instance', {
+              instance: instance.name,
+              exchange,
+              symbol,
+              round: round + 1,
+              ltp,
+              remainingInstances: instances.length - instIndex - 1,
+            });
+            lastError = new Error(`Invalid LTP value: ${ltp}`);
+            failedInstances.set(instance.id, (failedInstances.get(instance.id) || 0) + 1);
+            continue; // Try next instance immediately
+          }
+
+          log.debug('LTP fetched successfully', {
+            instance: instance.name,
+            exchange,
+            symbol,
+            ltp,
+            totalAttempts,
+            round: round + 1,
+          });
+
+          return {
+            ltp,
+            quote: { ...quote, exchange, symbol, fetchedAt: Date.now() },
+            source: `${instance.name}`,
+            attempts: totalAttempts,
+            instanceId: instance.id,
+            instanceName: instance.name,
+            round: round + 1,
+          };
+        } catch (error) {
+          lastError = error;
+          failedInstances.set(instance.id, (failedInstances.get(instance.id) || 0) + 1);
+          log.warn('LTP fetch failed, trying next instance', {
+            instance: instance.name,
+            exchange,
+            symbol,
+            round: round + 1,
+            error: error.message,
+            remainingInstances: instances.length - instIndex - 1,
+          });
+          // Continue to next instance immediately (no delay within same round)
+        }
+      }
+
+      // Log end of round
+      log.debug('Completed LTP fetch round', {
+        round: round + 1,
+        maxRounds,
+        totalAttempts,
+        willRetry: round < maxRounds - 1,
+      });
+    }
+
+    // All retries exhausted
+    const errorMessage = `Failed to get valid LTP for ${exchange}:${symbol} after ${totalAttempts} attempts across ${maxRounds} rounds: ${lastError?.message || 'Unknown error'}`;
+    log.error('LTP fetch exhausted all retries', {
+      exchange,
+      symbol,
+      totalAttempts,
+      rounds: maxRounds,
+      instancesTried: instances.length,
+      failuresByInstance: Object.fromEntries(failedInstances),
+      lastError: lastError?.message,
+    });
+
+    throw new Error(errorMessage);
+  }
+
+  /**
+   * Extract LTP from quote response
+   * @private
+   */
+  _extractLtp(quote) {
+    if (!quote) return null;
+
+    const candidates = [
+      quote.ltp,
+      quote.LTP,
+      quote.last_price,
+      quote.lastPrice,
+      quote.last_traded_price,
+      quote.lastTradedPrice,
+      quote.close,
+    ];
+
+    for (const value of candidates) {
+      const parsed = parseFloat(value);
+      if (!isNaN(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Sleep helper for retry delays
+   * @private
+   */
+  _sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
    * Get market depth
    * @param {Object} instance - Instance configuration
    * @param {string} exchange - Exchange code
