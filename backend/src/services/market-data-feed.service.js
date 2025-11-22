@@ -18,9 +18,10 @@ import openalgoClient from '../integrations/openalgo/client.js';
 import config from '../core/config.js';
 import { log } from '../core/logger.js';
 
-const DEFAULT_QUOTE_INTERVAL = 5000;   // 5 seconds (increased from 2s for display)
-const DEFAULT_POSITION_INTERVAL = 10000; // 10 seconds
-const DEFAULT_FUNDS_INTERVAL = 15000;
+const DEFAULT_QUOTE_INTERVAL = 5000;               // 5 seconds for quote refresh
+const DEFAULT_POSITION_INTERVAL_IDLE = 30000;      // 30 seconds when no open positions
+const DEFAULT_POSITION_INTERVAL_ACTIVE = 5000;     // 5 seconds when positions open (for SL/target tracking)
+const DEFAULT_FUNDS_INTERVAL = 30 * 60 * 1000;     // 30 minutes for funds refresh
 
 // TTL configurations
 const TTL_DISPLAY = 5000;      // 5s TTL for watchlist display (relaxed)
@@ -60,6 +61,10 @@ class MarketDataFeedService extends EventEmitter {
     // Unified symbol quote cache (consolidated from separate SYMBOL_QUOTE_TTL_MS)
     // TTL is now configurable per-call via ttlMs parameter
     this.symbolQuoteCache = new Map(); // key: EXCHANGE|SYMBOL -> { quote, fetchedAt }
+
+    // Track whether there are open positions for dynamic refresh interval
+    this.hasOpenPositions = false;
+    this.positionIntervalHandle = null;
   }
 
   async start(config = {}) {
@@ -67,7 +72,6 @@ class MarketDataFeedService extends EventEmitter {
     this.isRunning = true;
 
     const quoteInterval = config.quoteInterval ?? DEFAULT_QUOTE_INTERVAL;
-    const positionInterval = config.positionInterval ?? DEFAULT_POSITION_INTERVAL;
     const fundsInterval = config.fundsInterval ?? DEFAULT_FUNDS_INTERVAL;
 
     await Promise.allSettled([
@@ -77,15 +81,26 @@ class MarketDataFeedService extends EventEmitter {
     ]);
 
     this.intervals.push(setInterval(() => this.refreshQuotes(), quoteInterval));
-    this.intervals.push(setInterval(() => this.refreshPositions(), positionInterval));
+    // Position refresh uses dynamic interval based on open positions
+    this._startDynamicPositionRefresh();
     this.intervals.push(setInterval(() => this.refreshFunds(), fundsInterval));
 
-    log.info('MarketDataFeedService started', { quoteInterval, positionInterval, fundsInterval });
+    log.info('MarketDataFeedService started', {
+      quoteInterval,
+      positionIntervalIdle: DEFAULT_POSITION_INTERVAL_IDLE,
+      positionIntervalActive: DEFAULT_POSITION_INTERVAL_ACTIVE,
+      fundsInterval,
+    });
   }
 
   stop() {
     this.intervals.forEach(clearInterval);
     this.intervals = [];
+    // Clear dynamic position refresh interval
+    if (this.positionIntervalHandle) {
+      clearInterval(this.positionIntervalHandle);
+      this.positionIntervalHandle = null;
+    }
     this.isRunning = false;
   }
 
@@ -867,6 +882,129 @@ class MarketDataFeedService extends EventEmitter {
       return false;
     }
     return true;
+  }
+
+  /**
+   * Start dynamic position refresh with adaptive intervals
+   * - 30 seconds when no open positions (idle)
+   * - 5 seconds when positions are open (for SL/target tracking)
+   * @private
+   */
+  _startDynamicPositionRefresh() {
+    // Initial interval based on current state
+    const initialInterval = this.hasOpenPositions
+      ? DEFAULT_POSITION_INTERVAL_ACTIVE
+      : DEFAULT_POSITION_INTERVAL_IDLE;
+
+    this._schedulePositionRefresh(initialInterval);
+  }
+
+  /**
+   * Schedule next position refresh and detect open positions
+   * @private
+   * @param {number} intervalMs - Interval until next refresh
+   */
+  _schedulePositionRefresh(intervalMs) {
+    // Clear existing interval if any
+    if (this.positionIntervalHandle) {
+      clearTimeout(this.positionIntervalHandle);
+      this.positionIntervalHandle = null;
+    }
+
+    // Schedule next refresh
+    this.positionIntervalHandle = setTimeout(async () => {
+      if (!this.isRunning) return;
+
+      try {
+        // Refresh positions
+        await this.refreshPositions({ force: false });
+
+        // Detect open positions across all instances
+        const hadOpenPositions = this.hasOpenPositions;
+        this.hasOpenPositions = this._detectOpenPositions();
+
+        // Log interval change if position state changed
+        if (hadOpenPositions !== this.hasOpenPositions) {
+          const newInterval = this.hasOpenPositions
+            ? DEFAULT_POSITION_INTERVAL_ACTIVE
+            : DEFAULT_POSITION_INTERVAL_IDLE;
+          log.info('Position refresh interval changed', {
+            hasOpenPositions: this.hasOpenPositions,
+            newIntervalMs: newInterval,
+            reason: this.hasOpenPositions
+              ? 'Open positions detected - switching to active refresh for SL/target tracking'
+              : 'No open positions - switching to idle refresh',
+          });
+        }
+
+        // Schedule next refresh with appropriate interval
+        const nextInterval = this.hasOpenPositions
+          ? DEFAULT_POSITION_INTERVAL_ACTIVE
+          : DEFAULT_POSITION_INTERVAL_IDLE;
+        this._schedulePositionRefresh(nextInterval);
+      } catch (error) {
+        log.warn('Dynamic position refresh failed', { error: error.message });
+        // On error, retry with idle interval
+        this._schedulePositionRefresh(DEFAULT_POSITION_INTERVAL_IDLE);
+      }
+    }, intervalMs);
+  }
+
+  /**
+   * Detect if there are any open positions across all cached instances
+   * An open position has non-zero quantity
+   * @private
+   * @returns {boolean} - True if any open positions exist
+   */
+  _detectOpenPositions() {
+    for (const [instanceId, snapshot] of this.positionCache.entries()) {
+      if (!snapshot?.data || !Array.isArray(snapshot.data)) continue;
+
+      for (const position of snapshot.data) {
+        // Check for open position (non-zero net quantity)
+        const netQty = this._getPositionNetQuantity(position);
+        if (netQty !== 0) {
+          log.debug('Open position detected', {
+            instanceId,
+            symbol: position.symbol || position.trading_symbol || position.tradingsymbol,
+            netQty,
+          });
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Extract net quantity from position object
+   * Handles different broker response formats
+   * @private
+   * @param {Object} position - Position object
+   * @returns {number} - Net quantity (0 if no position)
+   */
+  _getPositionNetQuantity(position) {
+    if (!position) return 0;
+
+    // Try various field names used by different brokers
+    const candidates = [
+      position.netqty,
+      position.net_qty,
+      position.netQty,
+      position.quantity,
+      position.qty,
+      position.buyqty - position.sellqty,
+      position.buy_qty - position.sell_qty,
+    ];
+
+    for (const value of candidates) {
+      const parsed = parseInt(value, 10);
+      if (!isNaN(parsed)) {
+        return parsed;
+      }
+    }
+
+    return 0;
   }
 }
 
