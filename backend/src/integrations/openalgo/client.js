@@ -16,9 +16,10 @@ function sleep(ms) {
 }
 
 const ERROR_LIMITS = {
-  max404PerDay: 50,           // Increased from 20 to allow more attempts
-  maxInvalidApiPerDay: 10,
-  backoffMs: 2 * 60 * 1000,   // 2 minutes (reduced from 10 minutes for critical operations)
+  max404PerDay: 20,              // Max 404 errors per instance per reset interval
+  maxInvalidApiPerDay: 10,       // Max invalid API key errors per reset interval
+  backoffMs: 5 * 60 * 1000,      // 5 minutes backoff when limits exceeded
+  resetIntervalMs: 30 * 60 * 1000, // Reset counters every 30 minutes
 };
 
 /**
@@ -112,13 +113,12 @@ class OpenAlgoClient extends EventEmitter {
 
     // Instance health tracking for circuit breaker pattern
     // Tracks instances that return HTML/error responses and puts them in cooldown
-    // NOTE: Cooldown times are intentionally SHORT to ensure critical operations can proceed
     this.instanceHealth = new Map(); // key: instanceId -> { failures, cooldownUntil, lastError, isHtml }
     this.instanceHealthConfig = {
-      failureThreshold: 3,      // 3 failures before cooldown (increased for tolerance)
-      cooldownMs: 10000,        // 10 seconds cooldown (reduced for faster recovery)
-      htmlCooldownMs: 15000,    // 15 seconds cooldown for HTML responses
-      maxCooldownMs: 60000,     // 1 minute max cooldown (reduced from 5 minutes)
+      failureThreshold: 3,           // 3 consecutive failures before cooldown
+      cooldownMs: 5 * 60 * 1000,     // 5 minutes cooldown for consecutive failures
+      htmlCooldownMs: 60 * 1000,     // 1 minute immediate cooldown for HTML responses
+      maxCooldownMs: 30 * 60 * 1000, // 30 minutes max cooldown with exponential backoff
     };
   }
 
@@ -666,21 +666,22 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   _getErrorState(instKey) {
-    const today = new Date().toISOString().slice(0, 10);
+    const now = Date.now();
     if (!this.errorCounters.has(instKey)) {
       this.errorCounters.set(instKey, {
-        day: today,
+        resetAt: now,
         count404: 0,
         countInvalid: 0,
         backoffUntil: null,
       });
     }
     const state = this.errorCounters.get(instKey);
-    if (state.day !== today) {
-      state.day = today;
+    // Reset counters every 30 minutes (instead of daily)
+    if (now - state.resetAt >= ERROR_LIMITS.resetIntervalMs) {
+      state.resetAt = now;
       state.count404 = 0;
       state.countInvalid = 0;
-      state.backoffUntil = null;
+      // Don't reset backoffUntil - let it expire naturally
     }
     return state;
   }
