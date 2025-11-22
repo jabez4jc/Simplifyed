@@ -468,8 +468,15 @@ class MarketDataFeedService extends EventEmitter {
 
   /**
    * Funds / balances (per trading instance)
+   * Non-critical: Can be paused during order-critical LTP operations
    */
   async refreshFunds({ force = false } = {}) {
+    // Skip if non-critical polling is paused (LTP operations in progress)
+    if (!force && this._isNonCriticalPaused()) {
+      log.debug('Skipping funds refresh - non-critical polling paused for LTP priority');
+      return;
+    }
+
     try {
       const instances = await instanceService.getAllInstances({ is_active: true });
       await Promise.all(instances.map(inst => this.refreshFundsForInstance(inst.id, { force })));
@@ -488,6 +495,12 @@ class MarketDataFeedService extends EventEmitter {
   }
 
   async refreshFundsForInstance(instanceId, { force = false } = {}) {
+    // Skip if non-critical polling is paused (LTP operations in progress)
+    if (!force && this._isNonCriticalPaused()) {
+      log.debug('Skipping funds refresh for instance - non-critical polling paused', { instanceId });
+      return;
+    }
+
     try {
       const circuitKey = this._getCircuitKey(instanceId, 'funds');
       if (this._shouldSkipPolling(circuitKey)) {
@@ -747,6 +760,113 @@ class MarketDataFeedService extends EventEmitter {
       const key = this._symbolKey(s.exchange, s.symbol);
       this.symbolQuoteCache.delete(key);
     }
+  }
+
+  /**
+   * Fetch LTP for a single symbol with aggressive retry
+   * Critical for order placement and derivatives resolution
+   * This method bypasses normal TTL and uses dedicated retry logic
+   * @param {string} exchange - Exchange code
+   * @param {string} symbol - Trading symbol
+   * @param {Object} options - Options
+   * @param {number} options.maxRounds - Number of retry rounds across all instances (default: 2)
+   *                                     Each round tries all healthy instances before moving to next round
+   * @param {boolean} options.bypassCache - Skip cache check entirely (default: false)
+   * @returns {Promise<Object>} - { ltp, quote, source, attempts }
+   */
+  async fetchLtpForSymbol(exchange, symbol, options = {}) {
+    const { maxRounds = 2, bypassCache = false } = options;
+
+    // Check cache first unless bypassed (use order-critical TTL)
+    if (!bypassCache) {
+      const { cached } = this.getCachedQuotesForSymbols(
+        [{ exchange, symbol }],
+        { orderCritical: true }
+      );
+
+      if (cached.length > 0) {
+        const quote = cached[0];
+        const ltp = this._extractLtpFromQuote(quote);
+        if (ltp && ltp > 0) {
+          log.debug('LTP served from cache', { exchange, symbol, ltp });
+          return { ltp, quote, source: 'cache', attempts: 0 };
+        }
+      }
+    }
+
+    // Get market data pool for retry/failover
+    const pool = await marketDataInstanceService.getMarketDataPool();
+    if (pool.length === 0) {
+      throw new Error('No market data instances available for LTP fetch');
+    }
+
+    // Pause non-critical polling during LTP fetch to prioritize bandwidth
+    this.pauseNonCriticalPolling(3000);
+
+    // Use getLtpWithRetry for aggressive retry with exponential backoff
+    // Strategy: Try different instances first, then do another round if needed
+    const result = await openalgoClient.getLtpWithRetry(pool, exchange, symbol, {
+      maxRounds: Math.max(1, maxRounds), // Ensure at least 1 round
+      baseDelayMs: 50,
+    });
+
+    // Update caches
+    if (result.quote) {
+      const key = this._symbolKey(exchange, symbol);
+      this.symbolQuoteCache.set(key, { quote: result.quote, fetchedAt: Date.now() });
+    }
+
+    return result;
+  }
+
+  /**
+   * Extract LTP from quote (helper method)
+   * @private
+   */
+  _extractLtpFromQuote(quote) {
+    if (!quote) return null;
+
+    const candidates = [
+      quote.ltp,
+      quote.LTP,
+      quote.last_price,
+      quote.lastPrice,
+      quote.last_traded_price,
+      quote.lastTradedPrice,
+      quote.close,
+    ];
+
+    for (const value of candidates) {
+      const parsed = parseFloat(value);
+      if (!isNaN(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Pause non-critical polling (Funds, Ping) temporarily
+   * Use during order-critical operations to prioritize LTP
+   * @param {number} durationMs - Duration to pause in milliseconds (default: 5000)
+   */
+  pauseNonCriticalPolling(durationMs = 5000) {
+    this._nonCriticalPausedUntil = Date.now() + durationMs;
+    log.debug('Non-critical polling paused', { resumeInMs: durationMs });
+  }
+
+  /**
+   * Check if non-critical polling should be skipped
+   * @private
+   */
+  _isNonCriticalPaused() {
+    if (!this._nonCriticalPausedUntil) return false;
+    if (Date.now() >= this._nonCriticalPausedUntil) {
+      this._nonCriticalPausedUntil = null;
+      return false;
+    }
+    return true;
   }
 }
 

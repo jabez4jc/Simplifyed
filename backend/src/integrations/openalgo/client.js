@@ -109,6 +109,112 @@ class OpenAlgoClient extends EventEmitter {
     this.lotSizeCache = new Map(); // key: exchange|symbol -> { lotSize, cachedAt }
     this.lotSizeCacheTtl = 24 * 60 * 60 * 1000; // 24 hours (lot sizes rarely change)
     this.lotSizeCacheMaxSize = 500; // Max entries to prevent unbounded growth
+
+    // Instance health tracking for circuit breaker pattern
+    // Tracks instances that return HTML/error responses and puts them in cooldown
+    this.instanceHealth = new Map(); // key: instanceId -> { failures, cooldownUntil, lastError, isHtml }
+    this.instanceHealthConfig = {
+      failureThreshold: 2,      // Number of failures before cooldown
+      cooldownMs: 30000,        // 30 seconds cooldown (reduced for faster recovery)
+      htmlCooldownMs: 60000,    // 60 seconds cooldown for HTML responses (instance likely down)
+      maxCooldownMs: 300000,    // 5 minutes max cooldown
+    };
+  }
+
+  /**
+   * Check if an instance is healthy (not in cooldown)
+   * @param {number|string} instanceId - Instance ID
+   * @returns {boolean} - True if healthy, false if in cooldown
+   */
+  isInstanceHealthy(instanceId) {
+    const health = this.instanceHealth.get(instanceId);
+    if (!health) return true;
+
+    const now = Date.now();
+    if (health.cooldownUntil && now < health.cooldownUntil) {
+      return false;
+    }
+
+    // Cooldown expired, reset health state
+    this.instanceHealth.delete(instanceId);
+    return true;
+  }
+
+  /**
+   * Get remaining cooldown time for an instance
+   * @param {number|string} instanceId - Instance ID
+   * @returns {number} - Remaining cooldown in ms, or 0 if healthy
+   */
+  getInstanceCooldownRemaining(instanceId) {
+    const health = this.instanceHealth.get(instanceId);
+    if (!health || !health.cooldownUntil) return 0;
+
+    const remaining = health.cooldownUntil - Date.now();
+    return remaining > 0 ? remaining : 0;
+  }
+
+  /**
+   * Record an instance failure and potentially put it in cooldown
+   * @param {number|string} instanceId - Instance ID
+   * @param {Error} error - The error that occurred
+   * @param {Object} options - Additional options
+   * @param {boolean} options.isHtml - Whether the response was HTML (instance likely down)
+   */
+  recordInstanceFailure(instanceId, error, options = {}) {
+    const { isHtml = false } = options;
+    const now = Date.now();
+
+    let health = this.instanceHealth.get(instanceId) || {
+      failures: 0,
+      cooldownUntil: null,
+      lastError: null,
+      isHtml: false,
+      cooldownCount: 0, // Track number of cooldowns for exponential backoff
+    };
+
+    health.failures += 1;
+    health.lastError = error?.message || 'Unknown error';
+    health.isHtml = isHtml;
+    health.lastFailureAt = now;
+
+    // Determine if we should enter cooldown
+    const { failureThreshold, cooldownMs, htmlCooldownMs, maxCooldownMs } = this.instanceHealthConfig;
+
+    if (isHtml || health.failures >= failureThreshold) {
+      // Calculate cooldown with exponential backoff based on cooldown count
+      // Use cooldownCount instead of failures to maintain backoff across cycles
+      const baseCooldown = isHtml ? htmlCooldownMs : cooldownMs;
+      // Clamp exponent to prevent fractional multipliers (min 0)
+      const backoffExponent = Math.max(0, health.cooldownCount);
+      const backoffMultiplier = Math.min(Math.pow(2, backoffExponent), 8);
+      const calculatedCooldown = Math.min(baseCooldown * backoffMultiplier, maxCooldownMs);
+
+      health.cooldownUntil = now + calculatedCooldown;
+      health.cooldownCount += 1; // Increment cooldown count for next escalation
+      health.failures = 0; // Reset failures after entering cooldown
+
+      log.warn('Instance entered cooldown', {
+        instanceId,
+        cooldownMs: calculatedCooldown,
+        cooldownCount: health.cooldownCount,
+        reason: isHtml ? 'html_response' : 'repeated_failures',
+        lastError: health.lastError,
+        resumeAt: new Date(health.cooldownUntil).toISOString(),
+      });
+    }
+
+    this.instanceHealth.set(instanceId, health);
+  }
+
+  /**
+   * Reset instance health after successful request
+   * @param {number|string} instanceId - Instance ID
+   */
+  resetInstanceHealth(instanceId) {
+    if (this.instanceHealth.has(instanceId)) {
+      this.instanceHealth.delete(instanceId);
+      log.debug('Instance health reset', { instanceId });
+    }
   }
 
   /**
@@ -1211,6 +1317,202 @@ class OpenAlgoClient extends EventEmitter {
     }
 
     return finalQuotes;
+  }
+
+  /**
+   * Get LTP (Last Traded Price) with aggressive retry logic
+   * Critical for order placement and derivatives resolution
+   *
+   * Strategy: Try different instances FIRST before retrying same instance
+   * This improves reliability when one instance has stale/invalid data
+   * Skips unhealthy instances that are in cooldown (circuit breaker pattern)
+   *
+   * @param {Object|Array} instanceOrPool - Single instance or pool of instances
+   * @param {string} exchange - Exchange code
+   * @param {string} symbol - Trading symbol
+   * @param {Object} options - Options
+   * @param {number} options.maxRounds - Max retry rounds across all instances (default: 2)
+   * @param {number} options.baseDelayMs - Base delay for exponential backoff (default: 50ms)
+   * @returns {Promise<Object>} - { ltp: number, quote: Object, source: string, attempts: number }
+   */
+  async getLtpWithRetry(instanceOrPool, exchange, symbol, options = {}) {
+    const {
+      maxRounds = 2,      // Number of complete rounds through all instances
+      baseDelayMs = 50,
+    } = options;
+
+    const instances = Array.isArray(instanceOrPool) ? instanceOrPool : [instanceOrPool];
+    if (instances.length === 0) {
+      throw new Error('No instances provided for LTP fetch');
+    }
+
+    let lastError = null;
+    let totalAttempts = 0;
+    const failedInstances = new Map(); // Track failure count per instance
+    let skippedUnhealthy = 0;
+
+    // Strategy: Rotate through instances, trying each one before retrying any
+    // This ensures we try all available instances before repeating
+    for (let round = 0; round < maxRounds; round++) {
+      // Add delay between rounds (not on first round)
+      if (round > 0) {
+        const delay = baseDelayMs * Math.pow(2, round - 1);
+        log.debug('Waiting before retry round', { round: round + 1, delayMs: delay });
+        await this._sleep(delay);
+      }
+
+      // Try each instance in this round
+      for (let instIndex = 0; instIndex < instances.length; instIndex++) {
+        const instance = instances[instIndex];
+
+        // Skip unhealthy instances (circuit breaker pattern)
+        if (!this.isInstanceHealthy(instance.id)) {
+          const cooldownRemaining = this.getInstanceCooldownRemaining(instance.id);
+          log.debug('Skipping unhealthy instance', {
+            instance: instance.name,
+            instanceId: instance.id,
+            cooldownRemainingMs: cooldownRemaining,
+            round: round + 1,
+          });
+          skippedUnhealthy++;
+          continue; // Skip this instance, don't count as attempt
+        }
+
+        totalAttempts++;
+
+        try {
+          log.debug('Fetching LTP', {
+            instance: instance.name,
+            exchange,
+            symbol,
+            round: round + 1,
+            instanceIndex: instIndex + 1,
+            totalAttempts,
+          });
+
+          const response = await this.request(
+            instance,
+            'quotes',
+            { exchange, symbol },
+            'POST',
+            { skipRateLimit: true } // LTP is critical, skip rate limit
+          );
+
+          const quote = response.data || {};
+          const ltp = this._extractLtp(quote);
+
+          // Validate LTP - must be a positive number
+          if (ltp === null || ltp <= 0) {
+            log.warn('Invalid LTP received, trying next instance', {
+              instance: instance.name,
+              exchange,
+              symbol,
+              round: round + 1,
+              ltp,
+              remainingInstances: instances.length - instIndex - 1,
+            });
+            lastError = new Error(`Invalid LTP value: ${ltp}`);
+            failedInstances.set(instance.id, (failedInstances.get(instance.id) || 0) + 1);
+            // Record failure but don't immediately put in cooldown for invalid LTP
+            // This allows retry on next round
+            continue; // Try next instance immediately
+          }
+
+          // Success! Reset instance health
+          this.resetInstanceHealth(instance.id);
+
+          log.debug('LTP fetched successfully', {
+            instance: instance.name,
+            exchange,
+            symbol,
+            ltp,
+            totalAttempts,
+            round: round + 1,
+          });
+
+          return {
+            ltp,
+            quote: { ...quote, exchange, symbol, fetchedAt: Date.now() },
+            source: `${instance.name}`,
+            attempts: totalAttempts,
+            instanceId: instance.id,
+            instanceName: instance.name,
+            round: round + 1,
+          };
+        } catch (error) {
+          lastError = error;
+          failedInstances.set(instance.id, (failedInstances.get(instance.id) || 0) + 1);
+
+          // Check if this is an HTML response (instance likely down)
+          const isHtml = error.isHtmlResponse === true ||
+                        (error.message && error.message.includes('Invalid JSON response'));
+
+          // Record failure with circuit breaker
+          this.recordInstanceFailure(instance.id, error, { isHtml });
+
+          log.warn('LTP fetch failed, trying next instance', {
+            instance: instance.name,
+            exchange,
+            symbol,
+            round: round + 1,
+            error: error.message,
+            isHtml,
+            remainingInstances: instances.length - instIndex - 1,
+          });
+          // Continue to next instance immediately (no delay within same round)
+        }
+      }
+
+      // Log end of round
+      log.debug('Completed LTP fetch round', {
+        round: round + 1,
+        maxRounds,
+        totalAttempts,
+        willRetry: round < maxRounds - 1,
+      });
+    }
+
+    // All retries exhausted
+    const errorMessage = `Failed to get valid LTP for ${exchange}:${symbol} after ${totalAttempts} attempts across ${maxRounds} rounds: ${lastError?.message || 'Unknown error'}`;
+    log.error('LTP fetch exhausted all retries', {
+      exchange,
+      symbol,
+      totalAttempts,
+      rounds: maxRounds,
+      instancesTried: instances.length,
+      skippedUnhealthy,
+      failuresByInstance: Object.fromEntries(failedInstances),
+      lastError: lastError?.message,
+    });
+
+    throw new Error(errorMessage);
+  }
+
+  /**
+   * Extract LTP from quote response
+   * @private
+   */
+  _extractLtp(quote) {
+    if (!quote) return null;
+
+    const candidates = [
+      quote.ltp,
+      quote.LTP,
+      quote.last_price,
+      quote.lastPrice,
+      quote.last_traded_price,
+      quote.lastTradedPrice,
+      quote.close,
+    ];
+
+    for (const value of candidates) {
+      const parsed = parseFloat(value);
+      if (!isNaN(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+
+    return null;
   }
 
   /**
