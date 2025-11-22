@@ -18,7 +18,7 @@ function sleep(ms) {
 const ERROR_LIMITS = {
   max404PerDay: 20,
   maxInvalidApiPerDay: 10,
-  backoffMs: 60 * 60 * 1000, // 1 hour
+  backoffMs: 10 * 60 * 1000, // 10 minutes (reduced from 1 hour for faster recovery)
 };
 
 /**
@@ -1792,15 +1792,102 @@ class OpenAlgoClient extends EventEmitter {
    * @param {string} symbol - Underlying symbol
    * @param {string} expiry - Expiry date
    * @param {string} exchange - Exchange code
+   * @param {Object} options - Options
+   * @param {boolean} options.skipBackoff - Skip backoff check for critical operations
    * @returns {Promise<Object>} - Option chain data
    */
-  async getOptionChain(instance, symbol, expiry, exchange = 'NFO') {
+  async getOptionChain(instance, symbol, expiry, exchange = 'NFO', options = {}) {
+    const { skipBackoff = false } = options;
     const response = await this.request(instance, 'optionchain', {
       symbol,
       expiry,
       exchange,
-    });
+    }, 'POST', { skipRateLimit: skipBackoff });
     return response.data || response;
+  }
+
+  /**
+   * Get option chain with fallback to alternate instances
+   * Critical for options resolution - tries multiple instances before failing
+   * @param {Array} instances - Pool of instances to try
+   * @param {string} symbol - Underlying symbol
+   * @param {string} expiry - Expiry date
+   * @param {string} exchange - Exchange code
+   * @returns {Promise<Object>} - Option chain data
+   */
+  async getOptionChainWithFallback(instances, symbol, expiry, exchange = 'NFO') {
+    if (!instances || instances.length === 0) {
+      throw new Error('No instances available for option chain fetch');
+    }
+
+    let lastError = null;
+    let skippedUnhealthy = 0;
+
+    for (const instance of instances) {
+      // Skip unhealthy instances
+      if (!this.isInstanceHealthy(instance.id)) {
+        skippedUnhealthy++;
+        log.debug('Skipping unhealthy instance for option chain', {
+          instance: instance.name,
+          cooldownRemaining: this.getInstanceCooldownRemaining(instance.id),
+        });
+        continue;
+      }
+
+      try {
+        log.debug('Fetching option chain', {
+          instance: instance.name,
+          symbol,
+          expiry,
+          exchange,
+        });
+
+        const result = await this.getOptionChain(instance, symbol, expiry, exchange, {
+          skipBackoff: true, // Critical operation - bypass backoff
+        });
+
+        // Success - reset instance health
+        this.resetInstanceHealth(instance.id);
+
+        log.debug('Option chain fetched successfully', {
+          instance: instance.name,
+          symbol,
+          expiry,
+        });
+
+        return result;
+      } catch (error) {
+        lastError = error;
+
+        // Check if this is an HTML response (instance down)
+        const isHtml = error.isHtmlResponse === true ||
+                      (error.message && error.message.includes('Invalid JSON response'));
+
+        // Record failure with circuit breaker
+        this.recordInstanceFailure(instance.id, error, { isHtml });
+
+        log.warn('Option chain fetch failed, trying next instance', {
+          instance: instance.name,
+          symbol,
+          expiry,
+          error: error.message,
+          isHtml,
+        });
+      }
+    }
+
+    // All instances failed
+    const errorMessage = `Failed to fetch option chain for ${symbol} ${expiry} after trying ${instances.length - skippedUnhealthy} instances`;
+    log.error('Option chain fetch exhausted all instances', {
+      symbol,
+      expiry,
+      exchange,
+      instancesTried: instances.length - skippedUnhealthy,
+      skippedUnhealthy,
+      lastError: lastError?.message,
+    });
+
+    throw lastError || new Error(errorMessage);
   }
 
   // ==========================================
