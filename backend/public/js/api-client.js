@@ -410,6 +410,52 @@ class APIClient {
   }
 
   /**
+   * Build option symbol in OpenAlgo format
+   * @param {string} underlying - Underlying symbol (e.g., NIFTY)
+   * @param {string} expiry - Expiry date (YYYY-MM-DD or DD-MMM-YY)
+   * @param {number|string} strike - Strike price
+   * @param {string} optionType - CE or PE
+   * @returns {Promise<string>} - Option symbol (e.g., NIFTY28NOV2524000CE)
+   * @see https://docs.openalgo.in/symbol-format
+   */
+  async buildOptionSymbol(underlying, expiry, strike, optionType) {
+    const result = await this.symbolUtils('buildOptionSymbol', { underlying, expiry, strike, optionType });
+    return result.data?.symbol;
+  }
+
+  /**
+   * Build futures symbol in OpenAlgo format
+   * @param {string} underlying - Underlying symbol (e.g., NIFTY)
+   * @param {string} expiry - Expiry date (YYYY-MM-DD or DD-MMM-YY)
+   * @returns {Promise<string>} - Futures symbol (e.g., NIFTY28NOV25FUT)
+   * @see https://docs.openalgo.in/symbol-format
+   */
+  async buildFuturesSymbol(underlying, expiry) {
+    const result = await this.symbolUtils('buildFuturesSymbol', { underlying, expiry });
+    return result.data?.symbol;
+  }
+
+  /**
+   * Parse option symbol to extract components
+   * @param {string} symbol - Option symbol (e.g., NIFTY28NOV2524000CE)
+   * @returns {Promise<Object>} - { underlying, expiry, strike, optionType }
+   */
+  async parseOptionSymbol(symbol) {
+    const result = await this.symbolUtils('parseOptionSymbol', { symbol });
+    return result.data;
+  }
+
+  /**
+   * Parse futures symbol to extract components
+   * @param {string} symbol - Futures symbol (e.g., NIFTY28NOV25FUT)
+   * @returns {Promise<Object>} - { underlying, expiry }
+   */
+  async parseFuturesSymbol(symbol) {
+    const result = await this.symbolUtils('parseFuturesSymbol', { symbol });
+    return result.data;
+  }
+
+  /**
    * Consolidated quote subscription - fetches quotes for multiple symbol sources
    * Deduplicates and batches requests to avoid fetching same symbol multiple times
    * @param {Object} sources - Symbol sources

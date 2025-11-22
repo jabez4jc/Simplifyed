@@ -2794,9 +2794,10 @@ class QuickOrderService {
    * @private
    */
   /**
-   * Construct option symbol from components
-   * Format: UNDERLYING + DD + MMM + YYYY + CE/PE + STRIKE
-   * Example: NIFTY + 18 + NOV + 2025 + CE + 26000 → NIFTY18NOV2526000CE
+   * Construct option symbol from components (OpenAlgo format)
+   * Format: UNDERLYING + DDMMMYY + STRIKE + CE/PE
+   * Example: NIFTY + 18NOV25 + 26000 + CE → NIFTY18NOV2526000CE
+   * @see https://docs.openalgo.in/symbol-format
    * @private
    */
   _constructOptionSymbol(underlying, expiry, optionType, strike) {
@@ -2805,10 +2806,10 @@ class QuickOrderService {
     const day = String(date.getDate()).padStart(2, '0');
     const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
     const month = months[date.getMonth()];
-    const year = String(date.getFullYear());  // Use FULL year, not just last 2 digits
+    const year = String(date.getFullYear()).slice(-2);  // Use 2-digit year (OpenAlgo format)
 
-    // Construct symbol: NIFTY18NOV2526000CE
-    return `${underlying}${day}${month}${year}${optionType}${strike}`;
+    // Construct symbol: NIFTY18NOV2526000CE (OpenAlgo format: SYMBOL + DATE + STRIKE + TYPE)
+    return `${underlying}${day}${month}${year}${strike}${optionType}`;
   }
 
   async _getAllOpenPositions(instance, underlying, expiry, optionType, product) {

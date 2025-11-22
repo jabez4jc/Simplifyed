@@ -366,6 +366,46 @@ function executeSymbolOperation(operation, params) {
       };
     }
 
+    case 'buildOptionSymbol': {
+      // Build option symbol in OpenAlgo format: SYMBOL + DDMMMYY + STRIKE + CE/PE
+      // Example: NIFTY + 2025-11-28 + 24000 + CE → NIFTY28NOV2524000CE
+      const { underlying, expiry, strike, optionType } = params;
+      if (!underlying || !expiry || !strike || !optionType) {
+        throw new ValidationError('underlying, expiry, strike, and optionType are required');
+      }
+      return { symbol: buildOptionSymbol(underlying, expiry, strike, optionType) };
+    }
+
+    case 'buildFuturesSymbol': {
+      // Build futures symbol in OpenAlgo format: SYMBOL + DDMMMYY + FUT
+      // Example: NIFTY + 2025-11-28 → NIFTY28NOV25FUT
+      const { underlying, expiry } = params;
+      if (!underlying || !expiry) {
+        throw new ValidationError('underlying and expiry are required');
+      }
+      return { symbol: buildFuturesSymbol(underlying, expiry) };
+    }
+
+    case 'parseOptionSymbol': {
+      // Parse option symbol to extract components
+      // Example: NIFTY28NOV2524000CE → { underlying, expiry, strike, optionType }
+      const { symbol } = params;
+      if (!symbol) {
+        throw new ValidationError('symbol is required');
+      }
+      return parseOptionSymbol(symbol);
+    }
+
+    case 'parseFuturesSymbol': {
+      // Parse futures symbol to extract components
+      // Example: NIFTY28NOV25FUT → { underlying, expiry }
+      const { symbol } = params;
+      if (!symbol) {
+        throw new ValidationError('symbol is required');
+      }
+      return parseFuturesSymbol(symbol);
+    }
+
     default:
       throw new ValidationError(`Unknown operation: ${operation}`);
   }
@@ -399,6 +439,148 @@ function normalizeExpiryToISO(expiry) {
   }
 
   return expiry;
+}
+
+const MONTH_NAMES = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+  'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+
+/**
+ * Build option symbol in OpenAlgo format
+ * Format: SYMBOL + DDMMMYY + STRIKE + CE/PE
+ * @see https://docs.openalgo.in/symbol-format
+ * @param {string} underlying - Underlying symbol (e.g., NIFTY)
+ * @param {string} expiry - Expiry date (YYYY-MM-DD or DD-MMM-YY)
+ * @param {number|string} strike - Strike price
+ * @param {string} optionType - CE or PE
+ * @returns {string} Option symbol (e.g., NIFTY28NOV2524000CE)
+ */
+function buildOptionSymbol(underlying, expiry, strike, optionType) {
+  // Normalize expiry to get date parts
+  let day, month, year;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
+    // YYYY-MM-DD format
+    const date = new Date(expiry);
+    day = String(date.getDate()).padStart(2, '0');
+    month = MONTH_NAMES[date.getMonth()];
+    year = String(date.getFullYear()).slice(-2);
+  } else if (/^\d{2}-[A-Z]{3}-\d{2}$/i.test(expiry)) {
+    // DD-MMM-YY format
+    [day, month, year] = expiry.split('-');
+    month = month.toUpperCase();
+  } else {
+    throw new ValidationError(`Invalid expiry format: ${expiry}`);
+  }
+
+  // Normalize option type
+  const type = optionType.toUpperCase();
+  if (!['CE', 'PE'].includes(type)) {
+    throw new ValidationError(`Invalid option type: ${optionType}`);
+  }
+
+  // Build symbol: NIFTY28NOV2524000CE
+  return `${underlying.toUpperCase()}${day}${month}${year}${strike}${type}`;
+}
+
+/**
+ * Build futures symbol in OpenAlgo format
+ * Format: SYMBOL + DDMMMYY + FUT
+ * @see https://docs.openalgo.in/symbol-format
+ * @param {string} underlying - Underlying symbol (e.g., NIFTY)
+ * @param {string} expiry - Expiry date (YYYY-MM-DD or DD-MMM-YY)
+ * @returns {string} Futures symbol (e.g., NIFTY28NOV25FUT)
+ */
+function buildFuturesSymbol(underlying, expiry) {
+  // Normalize expiry to get date parts
+  let day, month, year;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
+    // YYYY-MM-DD format
+    const date = new Date(expiry);
+    day = String(date.getDate()).padStart(2, '0');
+    month = MONTH_NAMES[date.getMonth()];
+    year = String(date.getFullYear()).slice(-2);
+  } else if (/^\d{2}-[A-Z]{3}-\d{2}$/i.test(expiry)) {
+    // DD-MMM-YY format
+    [day, month, year] = expiry.split('-');
+    month = month.toUpperCase();
+  } else {
+    throw new ValidationError(`Invalid expiry format: ${expiry}`);
+  }
+
+  // Build symbol: NIFTY28NOV25FUT
+  return `${underlying.toUpperCase()}${day}${month}${year}FUT`;
+}
+
+/**
+ * Parse option symbol to extract components
+ * Format: SYMBOL + DDMMMYY + STRIKE + CE/PE
+ * @param {string} symbol - Option symbol (e.g., NIFTY28NOV2524000CE)
+ * @returns {Object} Parsed components { underlying, expiry, strike, optionType }
+ */
+function parseOptionSymbol(symbol) {
+  if (!symbol) {
+    return { underlying: null, expiry: null, strike: null, optionType: null };
+  }
+
+  // Normalize: uppercase, remove exchange prefix
+  let normalized = symbol.toUpperCase();
+  if (normalized.includes(':')) {
+    normalized = normalized.split(':').pop();
+  }
+
+  // Match: UNDERLYING + DDMMMYY + STRIKE + CE/PE
+  const match = normalized.match(/^([A-Z]+)(\d{2})([A-Z]{3})(\d{2})(\d+(?:\.\d+)?)(CE|PE)$/);
+  if (!match) {
+    return { underlying: null, expiry: null, strike: null, optionType: null, error: 'Invalid format' };
+  }
+
+  const [, underlying, day, monthStr, year, strikeStr, optionType] = match;
+
+  const monthIndex = MONTH_NAMES.indexOf(monthStr);
+  if (monthIndex === -1) {
+    return { underlying: null, expiry: null, strike: null, optionType: null, error: 'Invalid month' };
+  }
+
+  const expiry = `20${year}-${String(monthIndex + 1).padStart(2, '0')}-${day}`;
+  const strike = parseFloat(strikeStr);
+
+  return { underlying, expiry, strike, optionType };
+}
+
+/**
+ * Parse futures symbol to extract components
+ * Format: SYMBOL + DDMMMYY + FUT
+ * @param {string} symbol - Futures symbol (e.g., NIFTY28NOV25FUT)
+ * @returns {Object} Parsed components { underlying, expiry }
+ */
+function parseFuturesSymbol(symbol) {
+  if (!symbol) {
+    return { underlying: null, expiry: null };
+  }
+
+  // Normalize: uppercase, remove exchange prefix
+  let normalized = symbol.toUpperCase();
+  if (normalized.includes(':')) {
+    normalized = normalized.split(':').pop();
+  }
+
+  // Match: UNDERLYING + DDMMMYY + FUT
+  const match = normalized.match(/^([A-Z]+)(\d{2})([A-Z]{3})(\d{2})FUT$/);
+  if (!match) {
+    return { underlying: null, expiry: null, error: 'Invalid format' };
+  }
+
+  const [, underlying, day, monthStr, year] = match;
+
+  const monthIndex = MONTH_NAMES.indexOf(monthStr);
+  if (monthIndex === -1) {
+    return { underlying: null, expiry: null, error: 'Invalid month' };
+  }
+
+  const expiry = `20${year}-${String(monthIndex + 1).padStart(2, '0')}-${day}`;
+
+  return { underlying, expiry };
 }
 
 /**
