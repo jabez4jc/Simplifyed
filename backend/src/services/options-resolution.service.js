@@ -8,6 +8,7 @@ import { log } from '../core/logger.js';
 import db from '../core/database.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import instrumentsService from './instruments.service.js';
+import marketDataInstanceService from './market-data-instance.service.js';
 import { NotFoundError, ValidationError } from '../core/errors.js';
 import { parseFloatSafe } from '../utils/sanitizers.js';
 
@@ -163,7 +164,7 @@ class OptionsResolutionService {
 
   /**
    * Get option chain for underlying and expiry
-   * Uses cache if available, otherwise fetches from OpenAlgo
+   * Uses cache if available, otherwise fetches from OpenAlgo with instance fallback
    * @private
    */
   async _getOptionChain(underlying, exchange, expiry, instance) {
@@ -202,16 +203,39 @@ class OptionsResolutionService {
       return this._processOptionChain(cached);
     }
 
-    // Fetch from OpenAlgo as fallback
-    log.debug('Fetching option chain from OpenAlgo', { underlying, expiry: openalgoExpiry });
+    // Fetch from OpenAlgo with instance fallback for reliability
+    log.debug('Fetching option chain from OpenAlgo with fallback', { underlying, expiry: openalgoExpiry });
 
     try {
-      const chainData = await openalgoClient.getOptionChain(
-        instance,
-        underlying,
-        openalgoExpiry, // Use OpenAlgo format
-        exchange
-      );
+      // Get market data pool for fallback capability
+      let instancePool = [instance];
+      try {
+        const marketDataPool = await marketDataInstanceService.getMarketDataPool();
+        if (marketDataPool.length > 0) {
+          // Put the requested instance first, then add others
+          instancePool = [instance, ...marketDataPool.filter(i => i.id !== instance.id)];
+        }
+      } catch (poolError) {
+        log.warn('Failed to get market data pool for option chain, using single instance', {
+          error: poolError.message,
+        });
+      }
+
+      // Use fallback method if we have multiple instances
+      const chainData = instancePool.length > 1
+        ? await openalgoClient.getOptionChainWithFallback(
+            instancePool,
+            underlying,
+            openalgoExpiry,
+            exchange
+          )
+        : await openalgoClient.getOptionChain(
+            instance,
+            underlying,
+            openalgoExpiry,
+            exchange,
+            { skipBackoff: true } // Critical operation
+          );
 
       await this._cacheOptionChain(underlying, exchange, openalgoExpiry, chainData);
 
@@ -224,7 +248,7 @@ class OptionsResolutionService {
         underlying,
         expiry: openalgoExpiry,
         statusCode,
-        rawBody: error?.rawBody,
+        rawBody: error?.rawBody?.substring?.(0, 200),
         message: error?.message,
       });
 
