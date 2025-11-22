@@ -169,6 +169,7 @@ class OpenAlgoClient extends EventEmitter {
       cooldownUntil: null,
       lastError: null,
       isHtml: false,
+      cooldownCount: 0, // Track number of cooldowns for exponential backoff
     };
 
     health.failures += 1;
@@ -180,17 +181,22 @@ class OpenAlgoClient extends EventEmitter {
     const { failureThreshold, cooldownMs, htmlCooldownMs, maxCooldownMs } = this.instanceHealthConfig;
 
     if (isHtml || health.failures >= failureThreshold) {
-      // Calculate cooldown with exponential backoff for repeated failures
+      // Calculate cooldown with exponential backoff based on cooldown count
+      // Use cooldownCount instead of failures to maintain backoff across cycles
       const baseCooldown = isHtml ? htmlCooldownMs : cooldownMs;
-      const backoffMultiplier = Math.min(Math.pow(2, health.failures - failureThreshold), 8);
+      // Clamp exponent to prevent fractional multipliers (min 0)
+      const backoffExponent = Math.max(0, health.cooldownCount);
+      const backoffMultiplier = Math.min(Math.pow(2, backoffExponent), 8);
       const calculatedCooldown = Math.min(baseCooldown * backoffMultiplier, maxCooldownMs);
 
       health.cooldownUntil = now + calculatedCooldown;
+      health.cooldownCount += 1; // Increment cooldown count for next escalation
       health.failures = 0; // Reset failures after entering cooldown
 
       log.warn('Instance entered cooldown', {
         instanceId,
         cooldownMs: calculatedCooldown,
+        cooldownCount: health.cooldownCount,
         reason: isHtml ? 'html_response' : 'repeated_failures',
         lastError: health.lastError,
         resumeAt: new Date(health.cooldownUntil).toISOString(),
@@ -1507,14 +1513,6 @@ class OpenAlgoClient extends EventEmitter {
     }
 
     return null;
-  }
-
-  /**
-   * Sleep helper for retry delays
-   * @private
-   */
-  _sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**

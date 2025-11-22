@@ -769,12 +769,13 @@ class MarketDataFeedService extends EventEmitter {
    * @param {string} exchange - Exchange code
    * @param {string} symbol - Trading symbol
    * @param {Object} options - Options
-   * @param {number} options.maxRetries - Max retry attempts per instance (default: 3)
+   * @param {number} options.maxRounds - Number of retry rounds across all instances (default: 2)
+   *                                     Each round tries all healthy instances before moving to next round
    * @param {boolean} options.bypassCache - Skip cache check entirely (default: false)
    * @returns {Promise<Object>} - { ltp, quote, source, attempts }
    */
   async fetchLtpForSymbol(exchange, symbol, options = {}) {
-    const { maxRetries = 3, bypassCache = false } = options;
+    const { maxRounds = 2, bypassCache = false } = options;
 
     // Check cache first unless bypassed (use order-critical TTL)
     if (!bypassCache) {
@@ -805,7 +806,7 @@ class MarketDataFeedService extends EventEmitter {
     // Use getLtpWithRetry for aggressive retry with exponential backoff
     // Strategy: Try different instances first, then do another round if needed
     const result = await openalgoClient.getLtpWithRetry(pool, exchange, symbol, {
-      maxRounds: maxRetries > 1 ? 2 : 1,  // 2 rounds through all instances
+      maxRounds: Math.max(1, maxRounds), // Ensure at least 1 round
       baseDelayMs: 50,
     });
 
