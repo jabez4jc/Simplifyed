@@ -1,6 +1,7 @@
 /**
  * Market Data Instance Service
- * Manages primary/secondary instance failover for market data API calls
+ * Manages market data instances with round-robin load balancing
+ * Uses instances with "use_for_market_data" flag enabled
  */
 
 import db from '../core/database.js';
@@ -12,11 +13,12 @@ class MarketDataInstanceService {
     this.poolIndex = 0;
   }
   /**
-   * Get the instance to use for market data API calls with failover logic
+   * Get the instance to use for market data API calls with round-robin selection
    * @returns {Promise<Object>} Instance object with id, name, host_url, api_key, etc.
-   * @throws {NotFoundError} If no healthy primary or secondary instance is available
+   * @throws {NotFoundError} If no healthy market data instance is available
    */
   async getMarketDataInstance() {
+    // Use round-robin from market data pool
     const rr = await this.getRoundRobinInstance();
     if (rr) {
       log.debug('Using pooled market data instance (round robin)', {
@@ -26,49 +28,29 @@ class MarketDataInstanceService {
       return rr;
     }
 
-    // Try primary first
+    // Fallback: Try legacy primary role
     const primary = await this._getInstanceByRole('primary');
     if (primary && this._isHealthy(primary)) {
-      log.debug('Using primary market data instance', {
+      log.debug('Using primary market data instance (legacy fallback)', {
         instanceId: primary.id,
         instanceName: primary.name,
       });
       return primary;
     }
 
-    if (primary) {
-      log.warn('Primary market data instance is unhealthy, failing over to secondary', {
-        instanceId: primary.id,
-        instanceName: primary.name,
-        healthStatus: primary.health_status,
-      });
-    } else {
-      log.warn('No primary market data instance configured, trying secondary');
-    }
-
-    // Fall back to secondary
+    // Fallback: Try legacy secondary role
     const secondary = await this._getInstanceByRole('secondary');
     if (secondary && this._isHealthy(secondary)) {
-      log.debug('Using secondary market data instance', {
+      log.debug('Using secondary market data instance (legacy fallback)', {
         instanceId: secondary.id,
         instanceName: secondary.name,
       });
       return secondary;
     }
 
-    if (secondary) {
-      log.error('Secondary market data instance is also unhealthy', {
-        instanceId: secondary.id,
-        instanceName: secondary.name,
-        healthStatus: secondary.health_status,
-      });
-    } else {
-      log.error('No secondary market data instance configured');
-    }
-
     // No healthy instance available
     throw new NotFoundError(
-      'No healthy market data instance available. Please ensure primary or secondary instance is configured and healthy.'
+      'No healthy market data instance available. Please enable "Use this instance for market data" on at least one active instance.'
     );
   }
 
@@ -104,7 +86,8 @@ class MarketDataInstanceService {
   }
 
   /**
-   * Get all market data instances (primary and secondary) for status display
+   * Get all market data instances for status display
+   * Includes instances with market_data_enabled flag or legacy primary/secondary roles
    * @returns {Promise<Array>} Array of instances eligible for market data
    */
   async getMarketDataInstances() {
