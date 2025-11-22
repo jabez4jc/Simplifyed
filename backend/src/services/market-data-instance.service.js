@@ -106,15 +106,13 @@ class MarketDataInstanceService {
   }
 
   /**
-   * Get pooled market data instances (healthy+enabled)
+   * Get pooled market data instances (healthy only)
+   * Note: getMarketDataInstances() already filters by is_active and market_data eligibility
    */
   async getMarketDataPool() {
     const all = await this.getMarketDataInstances();
-    return all.filter(inst =>
-      inst.is_active &&
-      (inst.market_data_enabled || inst.market_data_role === 'primary' || inst.market_data_role === 'secondary') &&
-      this._isHealthy(inst)
-    );
+    // Only filter by health - eligibility already enforced by SQL query
+    return all.filter(inst => this._isHealthy(inst));
   }
 
   /**

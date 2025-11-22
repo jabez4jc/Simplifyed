@@ -1349,29 +1349,11 @@ class OpenAlgoClient extends EventEmitter {
 
     let lastError = null;
     let totalAttempts = 0;
+    let totalSkipped = 0;
     const failedInstances = new Map(); // Track failure count per instance
-    let skippedUnhealthy = 0;
 
-    // Separate healthy and unhealthy instances
-    const healthyInstances = instances.filter(i => this.isInstanceHealthy(i.id));
-    const unhealthyInstances = instances.filter(i => !this.isInstanceHealthy(i.id));
-
-    // CRITICAL: If all instances are unhealthy, force try the first one anyway
-    // This ensures we always make at least one attempt for critical LTP operations
-    const instancesToTry = healthyInstances.length > 0
-      ? healthyInstances
-      : [instances[0]]; // Force try first instance if all unhealthy
-
-    if (healthyInstances.length === 0) {
-      log.warn('All instances unhealthy for LTP fetch, forcing attempt on first instance', {
-        exchange,
-        symbol,
-        totalInstances: instances.length,
-        forcedInstance: instances[0]?.name,
-      });
-    }
-
-    // Strategy: Rotate through instances, trying each one before retrying any
+    // Strategy: Rotate through instances, checking health at each round
+    // This respects cooldowns that occur mid-retry
     for (let round = 0; round < maxRounds; round++) {
       // Add delay between rounds (not on first round)
       if (round > 0) {
@@ -1380,7 +1362,36 @@ class OpenAlgoClient extends EventEmitter {
         await this._sleep(delay);
       }
 
-      // Try each instance in this round
+      // Re-check health at start of each round to respect new cooldowns
+      const healthyThisRound = instances.filter(i => this.isInstanceHealthy(i.id));
+      const skippedThisRound = instances.length - healthyThisRound.length;
+
+      // CRITICAL: If all instances are unhealthy, force try the first one anyway
+      // This ensures we always make at least one attempt for critical LTP operations
+      let instancesToTry = healthyThisRound;
+      if (healthyThisRound.length === 0) {
+        if (round === 0) {
+          // Only force on first round to ensure at least one attempt
+          instancesToTry = [instances[0]];
+          log.warn('All instances unhealthy for LTP fetch, forcing attempt on first instance', {
+            exchange,
+            symbol,
+            round: round + 1,
+            totalInstances: instances.length,
+            forcedInstance: instances[0]?.name,
+          });
+        } else {
+          // On subsequent rounds, skip if all unhealthy (already tried)
+          log.debug('All instances still unhealthy, skipping round', {
+            round: round + 1,
+            totalInstances: instances.length,
+          });
+          totalSkipped += instances.length;
+          continue;
+        }
+      }
+
+      // Try each healthy instance in this round
       for (let instIndex = 0; instIndex < instancesToTry.length; instIndex++) {
         const instance = instancesToTry[instIndex];
         totalAttempts++;
@@ -1483,9 +1494,9 @@ class OpenAlgoClient extends EventEmitter {
       exchange,
       symbol,
       totalAttempts,
+      totalSkipped,
       rounds: maxRounds,
-      instancesTried: instances.length,
-      skippedUnhealthy,
+      totalInstances: instances.length,
       failuresByInstance: Object.fromEntries(failedInstances),
       lastError: lastError?.message,
     });
@@ -1891,19 +1902,30 @@ class OpenAlgoClient extends EventEmitter {
       }
     }
 
-    // All instances failed
-    const errorMessage = `Failed to fetch option chain for ${symbol} ${expiry} after trying ${attemptsMade} instances`;
+    // All instances failed - enrich error with context for upstream callers
+    const healthyCount = healthyInstances.length;
+    const totalCount = instances.length;
+    const errorMessage = `Failed to fetch option chain for ${symbol} ${expiry} after ${attemptsMade} attempts (${healthyCount}/${totalCount} healthy): ${lastError?.message || 'Unknown error'}`;
+
     log.error('Option chain fetch exhausted all instances', {
       symbol,
       expiry,
       exchange,
       attemptsMade,
-      totalInstances: instances.length,
-      healthyInstances: healthyInstances.length,
+      totalInstances: totalCount,
+      healthyInstances: healthyCount,
+      unhealthyInstances: totalCount - healthyCount,
       lastError: lastError?.message,
     });
 
-    throw lastError || new Error(errorMessage);
+    // Create enriched error with metadata for upstream handling
+    const enrichedError = new Error(errorMessage);
+    enrichedError.attemptsMade = attemptsMade;
+    enrichedError.totalInstances = totalCount;
+    enrichedError.healthyInstances = healthyCount;
+    enrichedError.originalError = lastError;
+
+    throw enrichedError;
   }
 
   // ==========================================
