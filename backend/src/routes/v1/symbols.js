@@ -10,6 +10,7 @@ import instrumentsService from '../../services/instruments.service.js';
 import expiryManagementService from '../../services/expiry-management.service.js';
 import openalgoClient from '../../integrations/openalgo/client.js';
 import optionChainService from '../../services/option-chain.service.js';
+import derivativeResolutionService from '../../services/derivative-resolution.service.js';
 import db from '../../core/database.js';
 import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
@@ -277,6 +278,206 @@ router.get('/option-chain', async (req, res, next) => {
       status: 'success',
       data: optionChain,
       source: 'instruments',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/symbols/utils
+ * Symbol utility functions - consolidates frontend/backend logic
+ * Body: { operation: string, params: object }
+ * Operations:
+ *   - getDerivativeExchange: { exchange }
+ *   - extractUnderlying: { symbol }
+ *   - formatExpiry: { expiry } (YYYY-MM-DD -> DD-MMM-YY)
+ *   - normalizeExpiry: { expiry } (DD-MMM-YY -> YYYY-MM-DD)
+ *   - batch: { operations: [{operation, params}] }
+ */
+router.post('/utils', async (req, res, next) => {
+  try {
+    const { operation, params = {}, operations } = req.body || {};
+
+    // Handle batch operations
+    if (operation === 'batch' && Array.isArray(operations)) {
+      const results = operations.map(op => {
+        try {
+          return { success: true, result: executeSymbolOperation(op.operation, op.params || {}) };
+        } catch (error) {
+          return { success: false, error: error.message };
+        }
+      });
+      return res.json({ status: 'success', data: results });
+    }
+
+    if (!operation) {
+      throw new ValidationError('operation is required');
+    }
+
+    const result = executeSymbolOperation(operation, params);
+    res.json({ status: 'success', data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Execute a symbol utility operation
+ */
+function executeSymbolOperation(operation, params) {
+  switch (operation) {
+    case 'getDerivativeExchange': {
+      const { exchange } = params;
+      return { exchange: derivativeResolutionService.getDerivativeExchange(exchange) };
+    }
+
+    case 'extractUnderlying': {
+      const { symbol, exchange, symbol_type } = params;
+      return {
+        underlying: derivativeResolutionService.getDerivativeUnderlying({
+          symbol,
+          exchange,
+          symbol_type,
+        }),
+      };
+    }
+
+    case 'formatExpiry': {
+      // Convert YYYY-MM-DD to DD-MMM-YY (OpenAlgo format)
+      const { expiry } = params;
+      return { expiry: derivativeResolutionService.convertExpiryToOpenAlgoFormat(expiry) };
+    }
+
+    case 'normalizeExpiry': {
+      // Convert DD-MMM-YY to YYYY-MM-DD (ISO format)
+      const { expiry } = params;
+      return { expiry: normalizeExpiryToISO(expiry) };
+    }
+
+    case 'classifySymbol': {
+      const { symbol, exchange, instrumenttype } = params;
+      return {
+        symbol_type: symbolValidationService.classifySymbol({
+          symbol,
+          exchange,
+          instrumenttype,
+        }),
+      };
+    }
+
+    default:
+      throw new ValidationError(`Unknown operation: ${operation}`);
+  }
+}
+
+/**
+ * Convert DD-MMM-YY to YYYY-MM-DD
+ */
+function normalizeExpiryToISO(expiry) {
+  if (!expiry) return null;
+
+  // Already in YYYY-MM-DD format
+  if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
+    return expiry;
+  }
+
+  // Convert DD-MMM-YY to YYYY-MM-DD
+  if (/^\d{2}-[A-Z]{3}-\d{2}$/i.test(expiry)) {
+    const [day, monthStr, year] = expiry.split('-');
+    const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+      'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    const month = monthNames.indexOf(monthStr.toUpperCase());
+
+    if (month === -1) {
+      return expiry; // Return as-is if invalid
+    }
+
+    const fullYear = `20${year}`;
+    const paddedMonth = String(month + 1).padStart(2, '0');
+    return `${fullYear}-${paddedMonth}-${day}`;
+  }
+
+  return expiry;
+}
+
+/**
+ * POST /api/v1/symbols/quotes/subscribe
+ * Subscribe to quotes for multiple symbol sources
+ * Consolidates watchlist, positions, and ad-hoc symbols into a single request
+ * Body: {
+ *   watchlistSymbols: [{exchange, symbol}],
+ *   positionSymbols: [{exchange, symbol}],
+ *   additionalSymbols: [{exchange, symbol}],
+ *   orderCritical: boolean
+ * }
+ */
+router.post('/quotes/subscribe', async (req, res, next) => {
+  try {
+    const {
+      watchlistSymbols = [],
+      positionSymbols = [],
+      additionalSymbols = [],
+      orderCritical = false,
+    } = req.body || {};
+
+    // Consolidate all symbol sources into unique list
+    const allSymbols = [
+      ...watchlistSymbols,
+      ...positionSymbols,
+      ...additionalSymbols,
+    ];
+
+    if (allSymbols.length === 0) {
+      return res.json({
+        status: 'success',
+        data: [],
+        count: 0,
+        sources: { watchlist: 0, positions: 0, additional: 0 },
+      });
+    }
+
+    // Fetch quotes with deduplication (handled by fetchQuotesForSymbols)
+    const quotes = await marketDataFeedService.fetchQuotesForSymbols(allSymbols, {
+      orderCritical,
+      useFallback: true,
+    });
+
+    // Create lookup map for response
+    const quoteMap = new Map();
+    quotes.forEach(q => {
+      if (q?.symbol && q?.exchange) {
+        quoteMap.set(`${q.exchange}|${q.symbol}`, q);
+      }
+    });
+
+    // Tag quotes by source for debugging
+    const taggedQuotes = quotes.map(q => ({
+      ...q,
+      sources: {
+        watchlist: watchlistSymbols.some(s => s.symbol === q.symbol && s.exchange === q.exchange),
+        positions: positionSymbols.some(s => s.symbol === q.symbol && s.exchange === q.exchange),
+        additional: additionalSymbols.some(s => s.symbol === q.symbol && s.exchange === q.exchange),
+      },
+    }));
+
+    log.debug('Consolidated quote subscription', {
+      watchlistCount: watchlistSymbols.length,
+      positionsCount: positionSymbols.length,
+      additionalCount: additionalSymbols.length,
+      uniqueCount: quotes.length,
+      orderCritical,
+    });
+
+    res.json({
+      status: 'success',
+      data: taggedQuotes,
+      count: taggedQuotes.length,
+      sources: {
+        watchlist: watchlistSymbols.length,
+        positions: positionSymbols.length,
+        additional: additionalSymbols.length,
+      },
     });
   } catch (error) {
     next(error);

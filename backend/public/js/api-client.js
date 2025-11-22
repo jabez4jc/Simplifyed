@@ -342,6 +342,95 @@ class APIClient {
     return this.request(`/symbols/market-data/${exchange}/${symbol}`);
   }
 
+  /**
+   * Symbol utility operations - consolidates frontend/backend logic
+   * @param {string} operation - Operation name (getDerivativeExchange, extractUnderlying, formatExpiry, normalizeExpiry, classifySymbol, batch)
+   * @param {Object} params - Operation parameters
+   * @returns {Promise<Object>} - Operation result
+   */
+  async symbolUtils(operation, params = {}) {
+    return this.request('/symbols/utils', {
+      method: 'POST',
+      body: { operation, params },
+    });
+  }
+
+  /**
+   * Batch symbol utility operations
+   * @param {Array<{operation: string, params: Object}>} operations - Array of operations
+   * @returns {Promise<Object>} - Array of results
+   */
+  async symbolUtilsBatch(operations) {
+    return this.request('/symbols/utils', {
+      method: 'POST',
+      body: { operation: 'batch', operations },
+    });
+  }
+
+  /**
+   * Get derivative exchange for a given exchange
+   * @param {string} exchange - Cash exchange (NSE, BSE, etc.)
+   * @returns {Promise<string>} - Derivative exchange (NFO, BFO, etc.)
+   */
+  async getDerivativeExchange(exchange) {
+    const result = await this.symbolUtils('getDerivativeExchange', { exchange });
+    return result.data?.exchange;
+  }
+
+  /**
+   * Extract underlying symbol from derivative symbol
+   * @param {string} symbol - Full symbol name
+   * @param {string} exchange - Exchange
+   * @param {string} symbol_type - Symbol type
+   * @returns {Promise<string>} - Underlying symbol
+   */
+  async extractUnderlying(symbol, exchange, symbol_type) {
+    const result = await this.symbolUtils('extractUnderlying', { symbol, exchange, symbol_type });
+    return result.data?.underlying;
+  }
+
+  /**
+   * Format expiry from ISO to OpenAlgo format
+   * @param {string} expiry - Expiry in YYYY-MM-DD format
+   * @returns {Promise<string>} - Expiry in DD-MMM-YY format
+   */
+  async formatExpiry(expiry) {
+    const result = await this.symbolUtils('formatExpiry', { expiry });
+    return result.data?.expiry;
+  }
+
+  /**
+   * Normalize expiry from OpenAlgo to ISO format
+   * @param {string} expiry - Expiry in DD-MMM-YY format
+   * @returns {Promise<string>} - Expiry in YYYY-MM-DD format
+   */
+  async normalizeExpiry(expiry) {
+    const result = await this.symbolUtils('normalizeExpiry', { expiry });
+    return result.data?.expiry;
+  }
+
+  /**
+   * Consolidated quote subscription - fetches quotes for multiple symbol sources
+   * Deduplicates and batches requests to avoid fetching same symbol multiple times
+   * @param {Object} sources - Symbol sources
+   * @param {Array<{exchange, symbol}>} sources.watchlistSymbols - Watchlist symbols
+   * @param {Array<{exchange, symbol}>} sources.positionSymbols - Position symbols
+   * @param {Array<{exchange, symbol}>} sources.additionalSymbols - Additional symbols
+   * @param {boolean} orderCritical - Use aggressive TTL for order-critical operations
+   * @returns {Promise<Object>} - Quotes with source tags
+   */
+  async subscribeQuotes(sources = {}, orderCritical = false) {
+    return this.request('/symbols/quotes/subscribe', {
+      method: 'POST',
+      body: {
+        watchlistSymbols: sources.watchlistSymbols || [],
+        positionSymbols: sources.positionSymbols || [],
+        additionalSymbols: sources.additionalSymbols || [],
+        orderCritical,
+      },
+    });
+  }
+
   async getExpiry(symbol, options = {}) {
     const {
       exchange = 'NFO',
