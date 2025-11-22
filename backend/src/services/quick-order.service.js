@@ -604,13 +604,30 @@ class QuickOrderService {
     // OPTIMIZATION: Use preloaded positions if available (from parallel pre-fetch)
     let rawPosition;
     if (preloadedPositions && preloadedPositions.has(instance.id)) {
-      const positions = preloadedPositions.get(instance.id);
-      rawPosition = this._extractPositionFromBook(positions, finalSymbol, finalExchange, product);
-      log.debug('Using preloaded position', {
-        instanceId: instance.id,
-        symbol: finalSymbol,
-        position: rawPosition,
-      });
+      const preloaded = preloadedPositions.get(instance.id);
+      // Only use preloaded positions if fetch was successful
+      if (preloaded.success) {
+        rawPosition = this._extractPositionFromBook(preloaded.positions, finalSymbol, finalExchange, product);
+        log.debug('Using preloaded position', {
+          instanceId: instance.id,
+          symbol: finalSymbol,
+          position: rawPosition,
+          fromCache: preloaded.fromCache,
+        });
+      } else {
+        // Prefetch failed - fall back to live fetch with strict error handling
+        log.warn('Preloaded position fetch failed, falling back to live fetch', {
+          instanceId: instance.id,
+          error: preloaded.error,
+        });
+        rawPosition = await this._getCurrentPositionSize(
+          instance,
+          finalSymbol,
+          finalExchange,
+          product,
+          { forceLive: true, failOnError: true }
+        );
+      }
     } else {
       rawPosition = await this._getCurrentPositionSize(
         instance,
@@ -1131,17 +1148,35 @@ class QuickOrderService {
       // Single leg position
       // Use preloaded positions if available to avoid additional API call
       if (preloadedPositions && preloadedPositions.has(instance.id)) {
-        currentPosition = this._extractPositionFromBook(
-          preloadedPositions.get(instance.id),
-          optionSymbol.symbol,
-          derivativeExchange,
-          product
-        );
-        log.debug('Using preloaded position for options', {
-          instanceId: instance.id,
-          symbol: optionSymbol.symbol,
-          position: currentPosition,
-        });
+        const preloaded = preloadedPositions.get(instance.id);
+        // Only use preloaded positions if fetch was successful
+        if (preloaded.success) {
+          currentPosition = this._extractPositionFromBook(
+            preloaded.positions,
+            optionSymbol.symbol,
+            derivativeExchange,
+            product
+          );
+          log.debug('Using preloaded position for options', {
+            instanceId: instance.id,
+            symbol: optionSymbol.symbol,
+            position: currentPosition,
+            fromCache: preloaded.fromCache,
+          });
+        } else {
+          // Prefetch failed - fall back to live fetch
+          log.warn('Preloaded position fetch failed for options, falling back to live fetch', {
+            instanceId: instance.id,
+            error: preloaded.error,
+          });
+          currentPosition = await this._getCurrentPositionSize(
+            instance,
+            optionSymbol.symbol,
+            derivativeExchange,
+            product,
+            { forceLive: true, failOnError: true }
+          );
+        }
       } else {
         currentPosition = await this._getCurrentPositionSize(
           instance,
@@ -2759,9 +2794,10 @@ class QuickOrderService {
    * @private
    */
   /**
-   * Construct option symbol from components
-   * Format: UNDERLYING + DD + MMM + YYYY + CE/PE + STRIKE
-   * Example: NIFTY + 18 + NOV + 2025 + CE + 26000 → NIFTY18NOV2526000CE
+   * Construct option symbol from components (OpenAlgo format)
+   * Format: UNDERLYING + DDMMMYY + STRIKE + CE/PE
+   * Example: NIFTY + 18NOV25 + 26000 + CE → NIFTY18NOV2526000CE
+   * @see https://docs.openalgo.in/symbol-format
    * @private
    */
   _constructOptionSymbol(underlying, expiry, optionType, strike) {
@@ -2770,10 +2806,10 @@ class QuickOrderService {
     const day = String(date.getDate()).padStart(2, '0');
     const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
     const month = months[date.getMonth()];
-    const year = String(date.getFullYear());  // Use FULL year, not just last 2 digits
+    const year = String(date.getFullYear()).slice(-2);  // Use 2-digit year (OpenAlgo format)
 
-    // Construct symbol: NIFTY18NOV2526000CE
-    return `${underlying}${day}${month}${year}${optionType}${strike}`;
+    // Construct symbol: NIFTY18NOV2526000CE (OpenAlgo format: SYMBOL + DATE + STRIKE + TYPE)
+    return `${underlying}${day}${month}${year}${strike}${optionType}`;
   }
 
   async _getAllOpenPositions(instance, underlying, expiry, optionType, product) {
