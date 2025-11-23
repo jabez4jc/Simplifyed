@@ -375,8 +375,8 @@ router.get('/:id/circuit-breaker', async (req, res, next) => {
       data: circuitBreakerStatus || {
         isHealthy: true,
         requiresManualRefresh: false,
-        retryCount: 0,
-        maxRetries: openalgoClient.instanceHealthConfig.maxRetries,
+        dnsRetryCount: 0,
+        maxDnsRetries: openalgoClient.instanceHealthConfig.maxDnsRetries,
         cooldownRemaining: 0,
         cooldownUntil: null,
         lastError: null,

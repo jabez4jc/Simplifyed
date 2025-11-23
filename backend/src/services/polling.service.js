@@ -180,7 +180,9 @@ class PollingService {
         instance_id: instanceId,
         previousHealthState: previousHealthState ? {
           requiresManualRefresh: previousHealthState.requiresManualRefresh,
-          retryCount: previousHealthState.retryCount,
+          dnsRetryCount: previousHealthState.dnsRetryCount,
+          isDnsError: previousHealthState.isDnsError,
+          isHtmlError: previousHealthState.isHtmlError,
           lastError: previousHealthState.lastError,
         } : null,
       });
