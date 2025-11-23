@@ -113,32 +113,88 @@ class OpenAlgoClient extends EventEmitter {
 
     // Instance health tracking for circuit breaker pattern
     // Tracks instances that return HTML/error responses and puts them in cooldown
-    this.instanceHealth = new Map(); // key: instanceId -> { failures, cooldownUntil, lastError, isHtml }
+    this.instanceHealth = new Map(); // key: instanceId -> { failures, cooldownUntil, lastError, isHtml, isDnsError, retryCount, requiresManualRefresh }
     this.instanceHealthConfig = {
-      failureThreshold: 3,           // 3 consecutive failures before cooldown
-      cooldownMs: 5 * 60 * 1000,     // 5 minutes cooldown for consecutive failures
-      htmlCooldownMs: 60 * 1000,     // 1 minute immediate cooldown for HTML responses
-      maxCooldownMs: 30 * 60 * 1000, // 30 minutes max cooldown with exponential backoff
+      failureThreshold: 1,             // Immediate cooldown for DNS/HTML errors
+      cooldownMs: 2 * 60 * 1000,       // 2 minutes cooldown between retries
+      htmlCooldownMs: 2 * 60 * 1000,   // 2 minutes cooldown for HTML responses
+      dnsCooldownMs: 2 * 60 * 1000,    // 2 minutes cooldown for DNS errors
+      maxCooldownMs: 2 * 60 * 1000,    // 2 minutes max (no exponential backoff for these errors)
+      maxRetries: 3,                   // Max 3 retries before requiring manual refresh (6 mins total)
     };
   }
 
   /**
-   * Check if an instance is healthy (not in cooldown)
+   * Check if an instance is healthy (not in cooldown or requiring manual refresh)
    * @param {number|string} instanceId - Instance ID
-   * @returns {boolean} - True if healthy, false if in cooldown
+   * @returns {boolean} - True if healthy, false if in cooldown or requires manual refresh
    */
   isInstanceHealthy(instanceId) {
     const health = this.instanceHealth.get(instanceId);
     if (!health) return true;
+
+    // Instance requires manual refresh - don't auto-recover
+    if (health.requiresManualRefresh) {
+      return false;
+    }
 
     const now = Date.now();
     if (health.cooldownUntil && now < health.cooldownUntil) {
       return false;
     }
 
-    // Cooldown expired, reset health state
-    this.instanceHealth.delete(instanceId);
+    // Cooldown expired but check if max retries reached
+    if (health.retryCount >= this.instanceHealthConfig.maxRetries) {
+      // Mark as requiring manual refresh
+      health.requiresManualRefresh = true;
+      health.cooldownUntil = null; // No more auto-cooldowns
+      this.instanceHealth.set(instanceId, health);
+
+      log.warn('Instance requires manual refresh - max retries reached', {
+        instanceId,
+        retryCount: health.retryCount,
+        lastError: health.lastError,
+      });
+      return false;
+    }
+
+    // Cooldown expired and retries remaining, allow next attempt
     return true;
+  }
+
+  /**
+   * Check if instance requires manual refresh
+   * @param {number|string} instanceId - Instance ID
+   * @returns {boolean} - True if instance requires manual refresh
+   */
+  instanceRequiresManualRefresh(instanceId) {
+    const health = this.instanceHealth.get(instanceId);
+    return health?.requiresManualRefresh === true;
+  }
+
+  /**
+   * Get instance health status for display
+   * @param {number|string} instanceId - Instance ID
+   * @returns {Object|null} - Health status or null if healthy
+   */
+  getInstanceHealthStatus(instanceId) {
+    const health = this.instanceHealth.get(instanceId);
+    if (!health) return null;
+
+    const now = Date.now();
+    const cooldownRemaining = health.cooldownUntil ? Math.max(0, health.cooldownUntil - now) : 0;
+
+    return {
+      isHealthy: this.isInstanceHealthy(instanceId),
+      requiresManualRefresh: health.requiresManualRefresh || false,
+      retryCount: health.retryCount || 0,
+      maxRetries: this.instanceHealthConfig.maxRetries,
+      cooldownRemaining,
+      cooldownUntil: health.cooldownUntil,
+      lastError: health.lastError,
+      isDnsError: health.isDnsError || false,
+      isHtmlError: health.isHtml || false,
+    };
   }
 
   /**
@@ -156,49 +212,83 @@ class OpenAlgoClient extends EventEmitter {
 
   /**
    * Record an instance failure and potentially put it in cooldown
+   * For DNS errors (getaddrinfo ENOTFOUND) and HTML responses, immediately enter cooldown
+   * After max retries (3 attempts = 6 minutes total), stop retrying until manual refresh
+   *
    * @param {number|string} instanceId - Instance ID
    * @param {Error} error - The error that occurred
    * @param {Object} options - Additional options
    * @param {boolean} options.isHtml - Whether the response was HTML (instance likely down)
+   * @param {boolean} options.isDnsError - Whether this is a DNS resolution error
    */
   recordInstanceFailure(instanceId, error, options = {}) {
-    const { isHtml = false } = options;
+    const { isHtml = false, isDnsError = false } = options;
     const now = Date.now();
+    const { cooldownMs, htmlCooldownMs, dnsCooldownMs, maxRetries } = this.instanceHealthConfig;
+
+    // Check if this is a critical error (DNS or HTML) that requires immediate cooldown
+    const isCriticalError = isHtml || isDnsError;
 
     let health = this.instanceHealth.get(instanceId) || {
       failures: 0,
       cooldownUntil: null,
       lastError: null,
       isHtml: false,
-      cooldownCount: 0, // Track number of cooldowns for exponential backoff
+      isDnsError: false,
+      retryCount: 0,              // Number of retry attempts (increments on cooldown entry)
+      requiresManualRefresh: false,
     };
 
     health.failures += 1;
     health.lastError = error?.message || 'Unknown error';
-    health.isHtml = isHtml;
+    health.isHtml = isHtml || health.isHtml;
+    health.isDnsError = isDnsError || health.isDnsError;
     health.lastFailureAt = now;
 
-    // Determine if we should enter cooldown
-    const { failureThreshold, cooldownMs, htmlCooldownMs, maxCooldownMs } = this.instanceHealthConfig;
+    // For critical errors (DNS/HTML), immediately enter cooldown
+    if (isCriticalError) {
+      health.retryCount += 1;
 
-    if (isHtml || health.failures >= failureThreshold) {
-      // Calculate cooldown with exponential backoff based on cooldown count
-      // Use cooldownCount instead of failures to maintain backoff across cycles
-      const baseCooldown = isHtml ? htmlCooldownMs : cooldownMs;
-      // Clamp exponent to prevent fractional multipliers (min 0)
-      const backoffExponent = Math.max(0, health.cooldownCount);
-      const backoffMultiplier = Math.min(Math.pow(2, backoffExponent), 8);
-      const calculatedCooldown = Math.min(baseCooldown * backoffMultiplier, maxCooldownMs);
+      // Check if max retries reached
+      if (health.retryCount >= maxRetries) {
+        health.requiresManualRefresh = true;
+        health.cooldownUntil = null; // No more automatic retries
 
-      health.cooldownUntil = now + calculatedCooldown;
-      health.cooldownCount += 1; // Increment cooldown count for next escalation
+        log.error('Instance marked unhealthy - requires manual refresh', {
+          instanceId,
+          retryCount: health.retryCount,
+          reason: isDnsError ? 'dns_error' : 'html_response',
+          lastError: health.lastError,
+          message: 'Instance will not be retried until user performs manual refresh',
+        });
+      } else {
+        // Enter 2-minute cooldown for next retry
+        const baseCooldown = isDnsError ? dnsCooldownMs : htmlCooldownMs;
+        health.cooldownUntil = now + baseCooldown;
+
+        log.warn('Instance entered cooldown - will retry', {
+          instanceId,
+          cooldownMs: baseCooldown,
+          retryCount: health.retryCount,
+          maxRetries,
+          retriesRemaining: maxRetries - health.retryCount,
+          reason: isDnsError ? 'dns_error' : 'html_response',
+          lastError: health.lastError,
+          resumeAt: new Date(health.cooldownUntil).toISOString(),
+        });
+      }
+
       health.failures = 0; // Reset failures after entering cooldown
+    } else if (health.failures >= this.instanceHealthConfig.failureThreshold) {
+      // For non-critical repeated failures, use standard cooldown
+      health.cooldownUntil = now + cooldownMs;
+      health.retryCount += 1;
+      health.failures = 0;
 
-      log.warn('Instance entered cooldown', {
+      log.warn('Instance entered cooldown due to repeated failures', {
         instanceId,
-        cooldownMs: calculatedCooldown,
-        cooldownCount: health.cooldownCount,
-        reason: isHtml ? 'html_response' : 'repeated_failures',
+        cooldownMs,
+        retryCount: health.retryCount,
         lastError: health.lastError,
         resumeAt: new Date(health.cooldownUntil).toISOString(),
       });
@@ -209,12 +299,45 @@ class OpenAlgoClient extends EventEmitter {
 
   /**
    * Reset instance health after successful request
+   * Only resets if instance doesn't require manual refresh
    * @param {number|string} instanceId - Instance ID
    */
   resetInstanceHealth(instanceId) {
-    if (this.instanceHealth.has(instanceId)) {
-      this.instanceHealth.delete(instanceId);
-      log.debug('Instance health reset', { instanceId });
+    const health = this.instanceHealth.get(instanceId);
+    if (!health) return;
+
+    // Don't auto-reset if instance requires manual refresh
+    if (health.requiresManualRefresh) {
+      log.debug('Instance requires manual refresh - not auto-resetting', { instanceId });
+      return;
+    }
+
+    this.instanceHealth.delete(instanceId);
+    log.debug('Instance health reset after successful request', { instanceId });
+  }
+
+  /**
+   * Force reset instance health (called on manual refresh by user)
+   * This clears all health state including requiresManualRefresh flag
+   * @param {number|string} instanceId - Instance ID
+   */
+  forceResetInstanceHealth(instanceId) {
+    const hadHealth = this.instanceHealth.has(instanceId);
+    const previousState = this.instanceHealth.get(instanceId);
+
+    this.instanceHealth.delete(instanceId);
+
+    if (hadHealth) {
+      log.info('Instance health force reset via manual refresh', {
+        instanceId,
+        previousState: previousState ? {
+          requiresManualRefresh: previousState.requiresManualRefresh,
+          retryCount: previousState.retryCount,
+          lastError: previousState.lastError,
+          isDnsError: previousState.isDnsError,
+          isHtml: previousState.isHtml,
+        } : null,
+      });
     }
   }
 
@@ -956,10 +1079,26 @@ class OpenAlgoClient extends EventEmitter {
         throw error;
       }
 
-      throw new OpenAlgoError(
+      // Check for DNS resolution errors (getaddrinfo ENOTFOUND, etc.)
+      const errorMessage = error.message || '';
+      const isDnsError = errorMessage.includes('getaddrinfo') ||
+                         errorMessage.includes('ENOTFOUND') ||
+                         errorMessage.includes('EAI_AGAIN') ||
+                         errorMessage.includes('ECONNREFUSED') ||
+                         errorMessage.includes('ENETUNREACH') ||
+                         errorMessage.includes('EHOSTUNREACH');
+
+      const networkError = new OpenAlgoError(
         `Network error: ${error.message}`,
         url
       );
+
+      // Mark DNS errors so circuit breaker can handle them appropriately
+      if (isDnsError) {
+        networkError.isDnsError = true;
+      }
+
+      throw networkError;
     }
   }
 
@@ -1464,8 +1603,16 @@ class OpenAlgoClient extends EventEmitter {
           const isHtml = error.isHtmlResponse === true ||
                         (error.message && error.message.includes('Invalid JSON response'));
 
+          // Check if this is a DNS/network connectivity error
+          const isDnsError = error.isDnsError === true ||
+                            (error.message && (
+                              error.message.includes('getaddrinfo') ||
+                              error.message.includes('ENOTFOUND') ||
+                              error.message.includes('ECONNREFUSED')
+                            ));
+
           // Record failure with circuit breaker
-          this.recordInstanceFailure(instance.id, error, { isHtml });
+          this.recordInstanceFailure(instance.id, error, { isHtml, isDnsError });
 
           log.warn('LTP fetch failed, trying next instance', {
             instance: instance.name,
@@ -1474,6 +1621,7 @@ class OpenAlgoClient extends EventEmitter {
             round: round + 1,
             error: error.message,
             isHtml,
+            isDnsError,
             remainingInstances: instances.length - instIndex - 1,
           });
           // Continue to next instance immediately (no delay within same round)
@@ -1890,8 +2038,16 @@ class OpenAlgoClient extends EventEmitter {
         const isHtml = error.isHtmlResponse === true ||
                       (error.message && error.message.includes('Invalid JSON response'));
 
+        // Check if this is a DNS/network connectivity error
+        const isDnsError = error.isDnsError === true ||
+                          (error.message && (
+                            error.message.includes('getaddrinfo') ||
+                            error.message.includes('ENOTFOUND') ||
+                            error.message.includes('ECONNREFUSED')
+                          ));
+
         // Record failure with circuit breaker
-        this.recordInstanceFailure(instance.id, error, { isHtml });
+        this.recordInstanceFailure(instance.id, error, { isHtml, isDnsError });
 
         log.warn('Option chain fetch failed, trying next instance', {
           instance: instance.name,
@@ -1899,6 +2055,7 @@ class OpenAlgoClient extends EventEmitter {
           expiry,
           error: error.message,
           isHtml,
+          isDnsError,
         });
       }
     }
