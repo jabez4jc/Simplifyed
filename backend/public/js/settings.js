@@ -10,6 +10,63 @@ class SettingsHandler {
     this.settings = {};
     this.activeCategory = 'server';
     this.isSaving = false;
+    this.searchQuery = '';
+
+    // Category metadata with icons and descriptions
+    this.categoryMeta = {
+      'server': {
+        icon: '🖥️',
+        description: 'Server configuration and environment settings'
+      },
+      'polling': {
+        icon: '🔄',
+        description: 'Polling intervals for data refresh'
+      },
+      'openalgo': {
+        icon: '📡',
+        description: 'OpenAlgo API connection and retry settings'
+      },
+      'database': {
+        icon: '💾',
+        description: 'Database storage configuration'
+      },
+      'session': {
+        icon: '🔐',
+        description: 'User session and authentication settings'
+      },
+      'cors': {
+        icon: '🌐',
+        description: 'Cross-origin resource sharing policies'
+      },
+      'logging': {
+        icon: '📝',
+        description: 'Application logging configuration'
+      },
+      'rate_limit': {
+        icon: '⚡',
+        description: 'API rate limiting and throttling'
+      },
+      'oauth': {
+        icon: '🔑',
+        description: 'OAuth authentication providers'
+      },
+      'test': {
+        icon: '🧪',
+        description: 'Test mode and debugging options'
+      },
+      'proxy': {
+        icon: '🔀',
+        description: 'Proxy server configuration'
+      },
+      'options': {
+        icon: '📊',
+        description: 'Options trading default settings'
+      },
+      'market_data_feed': {
+        icon: '📈',
+        description: 'Market data caching and TTL settings'
+      }
+    };
   }
 
   /**
@@ -95,30 +152,87 @@ class SettingsHandler {
    * Render application settings section
    */
   renderApplicationSettings() {
+    const activeMeta = this.categoryMeta[this.activeCategory] || { icon: '⚙️', description: '' };
+
     return `
       <div class="settings-container">
-        <div class="text-sm text-neutral-600 mb-3">
-          Configure application settings. Changes are saved when you click “Save Changes”.
-        </div>
-        ${this.renderCustomizableValuesLegend()}
-        <!-- Category Tabs -->
-        <div class="settings-tabs">
-          ${this.categories.map(cat => `
-            <button
-              class="settings-tab ${cat.category === this.activeCategory ? 'active' : ''}"
-              data-category="${cat.category}"
-              onclick="settings.switchCategory('${cat.category}')"
-            >
-              ${this.formatCategoryName(cat.category)}
-              <span class="settings-tab-count">${cat.count}</span>
-            </button>
-          `).join('')}
+        <!-- Header with Search -->
+        <div class="settings-header">
+          <div class="settings-header-info">
+            <p class="text-sm text-neutral-600">
+              Configure application settings. Changes are saved when you click "Save Changes".
+            </p>
+          </div>
+          <div class="settings-search-wrapper">
+            <div class="settings-search">
+              <svg class="settings-search-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
+              </svg>
+              <input
+                type="text"
+                class="settings-search-input"
+                placeholder="Search settings..."
+                id="settings-search"
+                value="${this.searchQuery}"
+                oninput="settings.handleSearch(this.value)"
+              />
+              ${this.searchQuery ? `
+                <button class="settings-search-clear" onclick="settings.clearSearch()">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
+                  </svg>
+                </button>
+              ` : ''}
+            </div>
+          </div>
         </div>
 
-        <!-- Settings Form -->
-        <div class="settings-content" id="settings-content">
-          ${this.renderSettingsForm(this.activeCategory)}
-        </div>
+        ${this.searchQuery ? this.renderSearchResults() : `
+          <!-- Category Sidebar + Content Layout -->
+          <div class="settings-layout">
+            <!-- Category Sidebar -->
+            <div class="settings-sidebar">
+              <div class="settings-sidebar-header">
+                <span class="text-xs font-semibold uppercase tracking-wider text-neutral-500">Categories</span>
+              </div>
+              <nav class="settings-nav">
+                ${this.categories.map(cat => {
+                  const meta = this.categoryMeta[cat.category] || { icon: '⚙️', description: '' };
+                  return `
+                    <button
+                      class="settings-nav-item ${cat.category === this.activeCategory ? 'active' : ''}"
+                      data-category="${cat.category}"
+                      onclick="settings.switchCategory('${cat.category}')"
+                    >
+                      <span class="settings-nav-icon">${meta.icon}</span>
+                      <span class="settings-nav-label">${this.formatCategoryName(cat.category)}</span>
+                      <span class="settings-nav-count">${cat.count}</span>
+                    </button>
+                  `;
+                }).join('')}
+              </nav>
+            </div>
+
+            <!-- Settings Content -->
+            <div class="settings-main">
+              <!-- Category Header -->
+              <div class="settings-category-header">
+                <div class="settings-category-title">
+                  <span class="settings-category-icon">${activeMeta.icon}</span>
+                  <div>
+                    <h3 class="text-lg font-semibold text-neutral-900">${this.formatCategoryName(this.activeCategory)}</h3>
+                    <p class="text-sm text-neutral-600">${activeMeta.description}</p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Settings Form -->
+              <div class="settings-content" id="settings-content">
+                ${this.renderSettingsForm(this.activeCategory)}
+              </div>
+            </div>
+          </div>
+        `}
 
         <!-- Save Button -->
         <div class="settings-actions">
@@ -142,6 +256,113 @@ class SettingsHandler {
   }
 
   /**
+   * Handle search input
+   */
+  handleSearch(query) {
+    this.searchQuery = query.toLowerCase().trim();
+
+    // Re-render the settings section
+    const settingsContainer = document.querySelector('.settings-container');
+    if (settingsContainer) {
+      settingsContainer.innerHTML = this.renderApplicationSettings().replace(/<div class="settings-container">/, '').replace(/<\/div>\s*$/, '');
+      // Actually need to re-render properly
+    }
+
+    // Just update the content area
+    this.refreshApplicationSettings();
+  }
+
+  /**
+   * Clear search
+   */
+  clearSearch() {
+    this.searchQuery = '';
+    this.refreshApplicationSettings();
+  }
+
+  /**
+   * Refresh application settings display
+   */
+  refreshApplicationSettings() {
+    const card = document.querySelector('.card .p-6');
+    if (card) {
+      card.innerHTML = this.renderApplicationSettings();
+      this.initCategoryTabs();
+    }
+  }
+
+  /**
+   * Render search results
+   */
+  renderSearchResults() {
+    const results = [];
+
+    Object.entries(this.settings).forEach(([category, categorySettings]) => {
+      Object.entries(categorySettings).forEach(([key, setting]) => {
+        const settingName = this.formatSettingName(key).toLowerCase();
+        const description = (setting.description || '').toLowerCase();
+        const keyLower = key.toLowerCase();
+
+        if (settingName.includes(this.searchQuery) ||
+            description.includes(this.searchQuery) ||
+            keyLower.includes(this.searchQuery)) {
+          results.push({
+            key,
+            category,
+            setting,
+            name: this.formatSettingName(key),
+            categoryName: this.formatCategoryName(category)
+          });
+        }
+      });
+    });
+
+    if (results.length === 0) {
+      return `
+        <div class="settings-search-empty">
+          <div class="settings-search-empty-icon">🔍</div>
+          <p class="text-neutral-600">No settings found matching "<strong>${Utils.escapeHTML(this.searchQuery)}</strong>"</p>
+          <button class="btn btn-secondary btn-sm mt-3" onclick="settings.clearSearch()">Clear Search</button>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="settings-search-results">
+        <div class="settings-search-results-header">
+          <span class="text-sm text-neutral-600">Found ${results.length} setting${results.length !== 1 ? 's' : ''}</span>
+        </div>
+        <div class="settings-content">
+          ${results.map(result => {
+            const inputId = `setting-${result.key.replace(/\./g, '-')}`;
+            const inputValue = result.setting.pendingValue ?? result.setting.rawValue ?? result.setting.value;
+            const meta = this.categoryMeta[result.category] || { icon: '⚙️' };
+
+            return `
+              <div class="settings-field settings-field-search">
+                <label for="${inputId}" class="settings-field-label">
+                  <div class="settings-field-title">
+                    <span class="font-medium">${result.name}</span>
+                    ${result.setting.isSensitive ? '<span class="settings-sensitive-badge">Sensitive</span>' : ''}
+                  </div>
+                  <span class="settings-field-category">
+                    <span>${meta.icon}</span>
+                    <span>${result.categoryName}</span>
+                  </span>
+                  ${result.setting.description ? `<span class="text-sm text-neutral-500 block mt-1">${result.setting.description}</span>` : ''}
+                </label>
+                <div class="settings-field-input">
+                  ${this.renderInputField(inputId, result.key, result.setting.dataType, inputValue, result.setting.isSensitive)}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  /**
    * Render settings form for a category
    */
   renderSettingsForm(category) {
@@ -150,14 +371,17 @@ class SettingsHandler {
     const inputs = Object.entries(categorySettings).map(([key, setting]) => {
       const inputId = `setting-${key.replace(/\./g, '-')}`;
       const isSensitive = setting.isSensitive;
-      const displayValue = isSensitive ? setting.value : setting.value;
       const inputValue = setting.pendingValue ?? setting.rawValue ?? setting.value;
 
       return `
-        <div class="settings-field">
+        <div class="settings-field ${isSensitive ? 'settings-field-sensitive' : ''}">
           <label for="${inputId}" class="settings-field-label">
-            <span class="font-medium">${this.formatSettingName(key)}</span>
-            ${setting.description ? `<span class="text-sm text-neutral-600 block mt-1">${setting.description}</span>` : ''}
+            <div class="settings-field-title">
+              <span class="font-medium text-neutral-800">${this.formatSettingName(key)}</span>
+              ${isSensitive ? '<span class="settings-sensitive-badge">🔒 Sensitive</span>' : ''}
+            </div>
+            ${setting.description ? `<span class="text-sm text-neutral-500 block mt-1">${setting.description}</span>` : ''}
+            <span class="settings-field-key">${key}</span>
           </label>
           <div class="settings-field-input">
             ${this.renderInputField(inputId, key, setting.dataType, inputValue, isSensitive)}
@@ -166,14 +390,15 @@ class SettingsHandler {
       `;
     }).join('');
 
-    return `
-      <div class="space-y-4">
-        <h4 class="font-semibold text-lg text-neutral-800 mb-4">
-          ${this.formatCategoryName(category)} Settings
-        </h4>
-        ${inputs}
-      </div>
-    `;
+    if (Object.keys(categorySettings).length === 0) {
+      return `
+        <div class="settings-empty">
+          <p class="text-neutral-500">No settings available in this category.</p>
+        </div>
+      `;
+    }
+
+    return `<div class="settings-fields">${inputs}</div>`;
   }
 
   /**
@@ -188,22 +413,61 @@ class SettingsHandler {
 
     switch (dataType) {
       case 'boolean':
+        const isChecked = value === 'true' || value === true;
         return `
-          <select ${baseProps} class="form-select">
-            <option value="true" ${value === 'true' ? 'selected' : ''}>True</option>
-            <option value="false" ${value === 'false' ? 'selected' : ''}>False</option>
-          </select>
+          <label class="settings-toggle">
+            <input type="checkbox" ${baseProps} class="settings-toggle-input" ${isChecked ? 'checked' : ''} />
+            <span class="settings-toggle-track">
+              <span class="settings-toggle-thumb"></span>
+            </span>
+            <span class="settings-toggle-label">${isChecked ? 'Enabled' : 'Disabled'}</span>
+          </label>
         `;
 
       case 'number':
         return `
-          <input type="number" ${baseProps} class="form-input" value="${value}" />
+          <div class="settings-input-wrapper">
+            <input type="number" ${baseProps} class="form-input settings-number-input" value="${value}" />
+            ${this.getUnitSuffix(key) ? `<span class="settings-input-suffix">${this.getUnitSuffix(key)}</span>` : ''}
+          </div>
         `;
 
       default:
+        const inputType = isSensitive ? 'password' : 'text';
         return `
-          <input type="text" ${baseProps} class="form-input" value="${value}" />
+          <div class="settings-input-wrapper">
+            <input type="${inputType}" ${baseProps} class="form-input" value="${Utils.escapeHTML(String(value))}" ${isSensitive ? 'autocomplete="off"' : ''} />
+            ${isSensitive ? `
+              <button type="button" class="settings-toggle-visibility" onclick="settings.togglePasswordVisibility('${id}')">
+                <svg class="eye-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" />
+                  <path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
+                </svg>
+              </button>
+            ` : ''}
+          </div>
         `;
+    }
+  }
+
+  /**
+   * Get unit suffix for number fields
+   */
+  getUnitSuffix(key) {
+    if (key.includes('_ms') || key.endsWith('_ms')) return 'ms';
+    if (key.includes('port')) return '';
+    if (key.includes('retries') || key.includes('max_')) return '';
+    if (key.includes('_ttl')) return 'ms';
+    return '';
+  }
+
+  /**
+   * Toggle password visibility
+   */
+  togglePasswordVisibility(inputId) {
+    const input = document.getElementById(inputId);
+    if (input) {
+      input.type = input.type === 'password' ? 'text' : 'password';
     }
   }
 
@@ -256,10 +520,21 @@ class SettingsHandler {
    */
   initCategoryTabs() {
     // Add change event listeners to all inputs
-    const inputs = document.querySelectorAll('#settings-content input, #settings-content select');
+    const inputs = document.querySelectorAll('#settings-content input, #settings-content select, .settings-search-results input');
     inputs.forEach(input => {
       input.addEventListener('change', (e) => {
         this.handleSettingChange(e.target);
+      });
+    });
+
+    // Handle toggle label updates for boolean switches
+    const toggleInputs = document.querySelectorAll('.settings-toggle-input');
+    toggleInputs.forEach(input => {
+      input.addEventListener('change', (e) => {
+        const label = e.target.closest('.settings-toggle').querySelector('.settings-toggle-label');
+        if (label) {
+          label.textContent = e.target.checked ? 'Enabled' : 'Disabled';
+        }
       });
     });
 
@@ -308,9 +583,17 @@ class SettingsHandler {
       this.settings[category][key] = { dataType, isSensitive: false };
     }
 
-    this.settings[category][key].pendingValue = input.value;
+    // Handle checkbox (boolean) values
+    let value;
+    if (input.type === 'checkbox') {
+      value = input.checked ? 'true' : 'false';
+    } else {
+      value = input.value;
+    }
 
-    console.log(`[Settings] Setting changed: ${key} = ${input.value}`);
+    this.settings[category][key].pendingValue = value;
+
+    console.log(`[Settings] Setting changed: ${key} = ${value}`);
   }
 
   handleTradingSessionChange(input) {
@@ -562,45 +845,6 @@ class SettingsHandler {
     }
 
     return key.split('.').pop().replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-  }
-
-  renderCustomizableValuesLegend() {
-    const entries = [];
-    Object.keys(this.settings).forEach(category => {
-      Object.entries(this.settings[category] || {}).forEach(([key, setting]) => {
-        entries.push({
-          key,
-          label: this.formatSettingName(key),
-          description: setting.description || 'No description available',
-          value: setting.value,
-        });
-      });
-    });
-
-    if (entries.length === 0) {
-      return '';
-    }
-
-    return `
-      <div class="mb-6">
-        <h4 class="font-semibold text-lg text-neutral-800 mb-2">Customizable Values Overview</h4>
-        <p class="text-sm text-neutral-600 mb-4">
-          Every setting below is editable via the tabs. This section summarizes the key knobs you can adjust and what they control.
-        </p>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-          ${entries.map(item => `
-            <div class="p-3 rounded-lg border border-base-200 bg-base-100 shadow-sm space-y-1">
-              <div class="flex items-center justify-between text-xs uppercase tracking-wide text-neutral-500">
-                <span>${item.key}</span>
-                <span class="font-semibold">${item.value}</span>
-              </div>
-              <p class="font-medium text-neutral-800">${item.label}</p>
-              <p class="text-sm text-neutral-600">${item.description}</p>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    `;
   }
 
   /**
