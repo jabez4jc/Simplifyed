@@ -650,6 +650,7 @@ class QuickOrderService {
       throw new ValidationError(`Unable to resolve lot size for ${finalExchange}:${finalSymbol}`);
     }
 
+    const currentPosition = rawPosition;
     const tradeQuantity = quantity * lotSize;
     const currentLots = lotSize > 0 ? currentPosition / lotSize : currentPosition;
     const tradeLots = quantity;
