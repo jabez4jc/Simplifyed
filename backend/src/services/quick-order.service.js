@@ -1377,7 +1377,7 @@ class QuickOrderService {
     const { action, tradeMode, product, expiry: userExpiry } = orderParams;
     const { useCachedPositions = false } = options;
 
-    const underlying = this._getUnderlyingForClosing(symbol);
+    let underlying = this._getUnderlyingForClosing(symbol);
 
     let positionsToClose = [];
 
@@ -1465,11 +1465,28 @@ class QuickOrderService {
         const derivativeExchange = symbol.symbol_type === 'FUTURES'
           ? symbol.exchange
           : derivativeResolutionService.getDerivativeExchange(symbol.exchange);
-        const underlying = this._getUnderlyingForClosing(symbol);
+
+        // Try to parse the symbol if it's already a futures symbol (e.g., NATGASMINI24NOV25FUT)
+        const symbolStr = symbol.symbol || symbol.trading_symbol || '';
+        const parsed = this._parseFuturesSymbol(symbolStr);
+
+        underlying = parsed.underlying || this._getUnderlyingForClosing(symbol);
         let expiryInput = userExpiry ? this._normalizeExpiryInput(userExpiry) : null;
+
+        // If we parsed expiry from the symbol, use it
+        if (!expiryInput && parsed.expiry) {
+          expiryInput = this._normalizeExpiryInput(parsed.expiry);
+          log.info('Extracted expiry from futures symbol', {
+            symbol: symbolStr,
+            underlying,
+            expiry: expiryInput
+          });
+        }
+
         if (!underlying) {
           throw new ValidationError('Underlying symbol is required to close futures positions.');
         }
+
         // Fallback to nearest expiry if not provided (similar to OPTIONS mode)
         if (!expiryInput) {
           expiryInput = await expiryManagementService.getNearestExpiry(
@@ -1482,9 +1499,11 @@ class QuickOrderService {
           }
           log.info('Using fallback expiry for futures close', { underlying, expiry: expiryInput });
         }
+
         if (!expiryInput) {
           throw new ValidationError('Unable to determine expiry for closing futures position. Please specify an expiry.');
         }
+
         const futuresSymbol = await derivativeResolutionService.resolveFuturesSymbol(
           instance,
           underlying,
@@ -2390,6 +2409,43 @@ class QuickOrderService {
 
   _getUnderlyingForClosing(symbol = {}) {
     return derivativeResolutionService.getUnderlyingForClosing(symbol);
+  }
+
+  /**
+   * Parse futures symbol to extract underlying and expiry
+   * Format: SYMBOL + DDMMMYY + FUT (e.g., NATGASMINI24NOV25FUT)
+   * @private
+   */
+  _parseFuturesSymbol(symbolStr) {
+    if (!symbolStr) {
+      return { underlying: null, expiry: null };
+    }
+
+    const MONTH_NAMES = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+
+    // Normalize: uppercase, remove exchange prefix
+    let normalized = symbolStr.toUpperCase();
+    if (normalized.includes(':')) {
+      normalized = normalized.split(':').pop();
+    }
+
+    // Match: UNDERLYING + DDMMMYY + FUT
+    const match = normalized.match(/^([A-Z][A-Z0-9\-]*)(\d{2})([A-Z]{3})(\d{2})FUT$/);
+    if (!match) {
+      return { underlying: null, expiry: null };
+    }
+
+    const [, underlying, day, monthStr, year] = match;
+
+    const monthIndex = MONTH_NAMES.indexOf(monthStr);
+    if (monthIndex === -1) {
+      return { underlying: null, expiry: null };
+    }
+
+    // 2-digit year assumed to be 2000-2099
+    const expiry = `20${year}-${String(monthIndex + 1).padStart(2, '0')}-${day}`;
+
+    return { underlying, expiry };
   }
 
   /**
