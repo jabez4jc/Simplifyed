@@ -460,20 +460,48 @@ class InstrumentsService {
 
       // Get all options for this symbol and expiry
       const normalizedSymbol = String(symbol || '').toUpperCase();
-      let options = await db.all(
-        `SELECT * FROM instruments
-         WHERE underlying_key = ? AND expiry = ? AND exchange = ? AND strike IS NOT NULL
-         ORDER BY strike ASC`,
-        [normalizedSymbol, expiry, exchange]
-      );
 
-      if (!options || options.length === 0) {
+      // Try multiple expiry formats since DB might store different formats
+      const expiryFormats = this._getExpiryFormats(expiry);
+
+      let options = [];
+      for (const expiryFormat of expiryFormats) {
         options = await db.all(
           `SELECT * FROM instruments
-           WHERE symbol LIKE ? AND expiry = ? AND exchange = ? AND strike IS NOT NULL
+           WHERE underlying_key = ? AND expiry = ? AND exchange = ? AND strike IS NOT NULL
            ORDER BY strike ASC`,
-          [`${normalizedSymbol}%`, expiry, exchange]
+          [normalizedSymbol, expiryFormat, exchange]
         );
+
+        if (options && options.length > 0) {
+          log.debug('Found options with expiry format', {
+            symbol: normalizedSymbol,
+            expiryFormat,
+            count: options.length
+          });
+          break;
+        }
+      }
+
+      // Fallback: try symbol LIKE match with multiple expiry formats
+      if (!options || options.length === 0) {
+        for (const expiryFormat of expiryFormats) {
+          options = await db.all(
+            `SELECT * FROM instruments
+             WHERE symbol LIKE ? AND expiry = ? AND exchange = ? AND strike IS NOT NULL
+             ORDER BY strike ASC`,
+            [`${normalizedSymbol}%`, expiryFormat, exchange]
+          );
+
+          if (options && options.length > 0) {
+            log.debug('Found options via symbol LIKE with expiry format', {
+              symbol: normalizedSymbol,
+              expiryFormat,
+              count: options.length
+            });
+            break;
+          }
+        }
       }
 
       // Separate CE and PE options
@@ -699,6 +727,68 @@ class InstrumentsService {
     }
 
     return null;
+  }
+
+  /**
+   * Generate multiple expiry format variants to try when querying
+   * Different brokers store expiry in different formats
+   * @param {string} expiry - Input expiry date
+   * @returns {Array<string>} - Array of expiry formats to try
+   * @private
+   */
+  _getExpiryFormats(expiry) {
+    if (!expiry) return [];
+
+    const formats = new Set();
+    const trimmed = String(expiry).trim().toUpperCase();
+    formats.add(trimmed);
+
+    const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+
+    // Try to parse ISO format (YYYY-MM-DD)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      const [year, month, day] = trimmed.split('-');
+      const monthName = months[parseInt(month, 10) - 1];
+      const shortYear = year.slice(-2);
+
+      // Add variants: DD-MMM-YY, DDMMMYY
+      formats.add(`${day}-${monthName}-${shortYear}`);
+      formats.add(`${day}${monthName}${shortYear}`);
+      formats.add(`${day}-${monthName}-${year}`);
+    }
+
+    // Try to parse DD-MMM-YY format
+    const ddMmmYyMatch = trimmed.match(/^(\d{2})-([A-Z]{3})-(\d{2})$/);
+    if (ddMmmYyMatch) {
+      const [, day, monthStr, shortYear] = ddMmmYyMatch;
+      const monthIndex = months.indexOf(monthStr);
+      if (monthIndex !== -1) {
+        const isoMonth = String(monthIndex + 1).padStart(2, '0');
+        const fullYear = `20${shortYear}`;
+
+        // Add variants: YYYY-MM-DD, DDMMMYY, DD-MMM-YYYY
+        formats.add(`${fullYear}-${isoMonth}-${day}`);
+        formats.add(`${day}${monthStr}${shortYear}`);
+        formats.add(`${day}-${monthStr}-${fullYear}`);
+      }
+    }
+
+    // Try to parse DDMMMYY format (no dashes)
+    const ddMmmYyNoDash = trimmed.match(/^(\d{2})([A-Z]{3})(\d{2})$/);
+    if (ddMmmYyNoDash) {
+      const [, day, monthStr, shortYear] = ddMmmYyNoDash;
+      const monthIndex = months.indexOf(monthStr);
+      if (monthIndex !== -1) {
+        const isoMonth = String(monthIndex + 1).padStart(2, '0');
+        const fullYear = `20${shortYear}`;
+
+        // Add variants: YYYY-MM-DD, DD-MMM-YY
+        formats.add(`${fullYear}-${isoMonth}-${day}`);
+        formats.add(`${day}-${monthStr}-${shortYear}`);
+      }
+    }
+
+    return Array.from(formats);
   }
 
   /**
