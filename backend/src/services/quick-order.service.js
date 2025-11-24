@@ -1468,12 +1468,24 @@ class QuickOrderService {
           ? symbol.exchange
           : derivativeResolutionService.getDerivativeExchange(symbol.exchange);
         const underlying = this._getUnderlyingForClosing(symbol);
-        const expiryInput = userExpiry ? this._normalizeExpiryInput(userExpiry) : null;
+        let expiryInput = userExpiry ? this._normalizeExpiryInput(userExpiry) : null;
         if (!underlying) {
           throw new ValidationError('Underlying symbol is required to close futures positions.');
         }
+        // Fallback to nearest expiry if not provided (similar to OPTIONS mode)
         if (!expiryInput) {
-          throw new ValidationError('Expiry is required to close futures positions.');
+          expiryInput = await expiryManagementService.getNearestExpiry(
+            underlying,
+            derivativeExchange,
+            instance
+          );
+          if (expiryInput) {
+            expiryInput = this._normalizeExpiryInput(expiryInput);
+          }
+          log.info('Using fallback expiry for futures close', { underlying, expiry: expiryInput });
+        }
+        if (!expiryInput) {
+          throw new ValidationError('Unable to determine expiry for closing futures position. Please specify an expiry.');
         }
         const futuresSymbol = await derivativeResolutionService.resolveFuturesSymbol(
           instance,
