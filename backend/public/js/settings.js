@@ -46,6 +46,10 @@ class SettingsHandler {
         icon: '⚡',
         description: 'API rate limiting and throttling'
       },
+      'rate_limits': {
+        icon: '⚡',
+        description: 'API rate limiting, throttling, and circuit breaker settings'
+      },
       'oauth': {
         icon: '🔑',
         description: 'OAuth authentication providers'
@@ -810,6 +814,7 @@ class SettingsHandler {
       'cors': 'CORS',
       'logging': 'Logging',
       'rate_limit': 'Rate Limiting',
+      'rate_limits': 'Rate Limits',
       'oauth': 'OAuth',
       'test': 'Test Mode',
       'proxy': 'Proxy',

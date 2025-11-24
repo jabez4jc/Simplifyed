@@ -132,6 +132,11 @@ class OpenAlgoClient extends EventEmitter {
    * @returns {boolean} - True if healthy, false if in cooldown or requires manual refresh
    */
   isInstanceHealthy(instanceId) {
+    // If circuit breaker is disabled, always return healthy
+    if (this.circuitBreakerDisabled) {
+      return true;
+    }
+
     const health = this.instanceHealth.get(instanceId);
     if (!health) return true;
 
@@ -447,12 +452,31 @@ class OpenAlgoClient extends EventEmitter {
       const val = parseFloat(raw);
       return Number.isNaN(val) ? fallback : val;
     };
+    const getBool = (key, fallback) => {
+      const entry = settings[key];
+      const raw = entry ? (entry.pendingValue ?? entry.value ?? entry.rawValue) : undefined;
+      if (raw === undefined || raw === null) return fallback;
+      return raw === true || raw === 'true' || raw === '1';
+    };
+
     this.rpsLimitPerInstance = getNum('rate_limits.rps_per_instance', this.rpsLimitPerInstance);
     this.rpmLimitPerInstance = getNum('rate_limits.rpm_per_instance', this.rpmLimitPerInstance);
     this.rpmLimitGlobal = Number.POSITIVE_INFINITY; // keep global cap disabled
     this.ordersPerSecondLimit = getNum('rate_limits.orders_per_second', this.ordersPerSecondLimit);
     this.maxConcurrentTasks = getNum('rate_limits.max_concurrent_tasks', this.maxConcurrentTasks);
+
+    // Testing/debug settings
+    this.rateLimitsDisabled = getBool('rate_limits.disabled', false);
+    this.circuitBreakerDisabled = getBool('rate_limits.circuit_breaker_disabled', false);
+
     this.limitsCache.loadedAt = Date.now();
+
+    if (this.rateLimitsDisabled) {
+      log.warn('Rate limits are DISABLED - all requests will bypass throttling');
+    }
+    if (this.circuitBreakerDisabled) {
+      log.warn('Circuit breaker is DISABLED - unhealthy instances will still be used');
+    }
   }
 
   /**
@@ -853,6 +877,11 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   async _throttle(instance, endpoint, isOrderPlacement) {
+    // Skip throttling if rate limits are disabled
+    if (this.rateLimitsDisabled) {
+      return;
+    }
+
     const instKey = this._instanceKey(instance);
     const state = this._getRateState(instKey);
     let waitedOnce = false;
@@ -906,6 +935,11 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   _ensureBackoffWindow(instKey, endpoint) {
+    // Skip backoff check if circuit breaker is disabled
+    if (this.circuitBreakerDisabled) {
+      return;
+    }
+
     const errState = this._getErrorState(instKey);
     if (errState.backoffUntil && Date.now() < errState.backoffUntil) {
       const waitMs = errState.backoffUntil - Date.now();
