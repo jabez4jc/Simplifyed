@@ -7,6 +7,8 @@ import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import session from 'express-session';
 import connectSqlite3 from 'connect-sqlite3';
+import fs from 'fs';
+import path from 'path';
 import db from '../core/database.js';
 import { config } from '../core/config.js';
 import { log } from '../core/logger.js';
@@ -34,18 +36,31 @@ export function configureSession() {
     },
   };
 
+  // CRITICAL FIX: Ensure ./data directory exists before creating SQLiteStore
+  // This prevents SQLITE_CANTOPEN error on fresh checkouts
+  const dataDir = path.join(process.cwd(), 'data');
+  if (!fs.existsSync(dataDir)) {
+    try {
+      fs.mkdirSync(dataDir, { recursive: true });
+      log.info('Created data directory for session storage', { path: dataDir });
+    } catch (error) {
+      log.error('Failed to create data directory for sessions', error);
+      throw new Error(`Cannot create session storage directory: ${error.message}`);
+    }
+  }
+
   // Use persistent SQLite session store
   // This ensures sessions persist across restarts
   sessionConfig.store = new SQLiteStore({
     db: 'sessions.db',
-    dir: './data',
+    dir: dataDir,
     table: 'sessions',
     // Clean up expired sessions every hour
     concurrentDB: true,
   });
 
   log.info('Session store configured with SQLite persistence', {
-    dbPath: './data/sessions.db',
+    dbPath: path.join(dataDir, 'sessions.db'),
     ttl: '24 hours'
   });
 

@@ -30,9 +30,13 @@ class OrderPlacementService {
         payload.action
       );
 
-      // Validate price for LIMIT orders
-      if (payload.pricetype && payload.pricetype !== 'MARKET') {
-        orderValidation.validatePrice(payload.price, payload.pricetype);
+      // Validate price based on order type
+      // Default to MARKET if pricetype is undefined (per order-payload.factory.js defaults)
+      const effectivePriceType = payload.pricetype || 'MARKET';
+
+      if (effectivePriceType !== 'MARKET') {
+        // For LIMIT, SL, SL-M orders, price validation is required
+        orderValidation.validatePrice(payload.price, effectivePriceType);
       }
 
       // Update payload with validated quantity
