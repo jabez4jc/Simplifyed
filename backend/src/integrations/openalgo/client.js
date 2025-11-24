@@ -575,19 +575,50 @@ class OpenAlgoClient extends EventEmitter {
    * @param {number} count - Number of entries to evict
    */
   _evictOldestEntries(cache, timestampKey, count) {
-    // Convert to array and sort by timestamp (oldest first)
-    const entries = [...cache.entries()]
-      .sort((a, b) => (a[1][timestampKey] || 0) - (b[1][timestampKey] || 0));
+    // CRITICAL FIX: More efficient cache eviction
+    // Old: O(n log n) sort on every eviction
+    // New: O(n) for large deletions, O(n * count) for small deletions (better for typical use)
+    const toDelete = Math.min(count, cache.size);
 
-    // Delete oldest entries
-    const toDelete = Math.min(count, entries.length);
-    for (let i = 0; i < toDelete; i++) {
-      cache.delete(entries[i][0]);
+    if (toDelete === 0) return;
+
+    // Strategy: If deleting >30%, sort is worth it. Otherwise, iterate to find oldest.
+    const deletionRatio = toDelete / cache.size;
+
+    if (deletionRatio > 0.3 || cache.size < 100) {
+      // For large deletions or small caches, sorting is efficient
+      const entries = [...cache.entries()]
+        .sort((a, b) => (a[1][timestampKey] || 0) - (b[1][timestampKey] || 0));
+
+      for (let i = 0; i < toDelete; i++) {
+        cache.delete(entries[i][0]);
+      }
+    } else {
+      // For small deletions in large cache, find oldest iteratively (avoids full sort)
+      for (let i = 0; i < toDelete; i++) {
+        let oldestKey = null;
+        let oldestTimestamp = Infinity;
+
+        for (const [key, value] of cache.entries()) {
+          const ts = value[timestampKey] || 0;
+          if (ts < oldestTimestamp) {
+            oldestTimestamp = ts;
+            oldestKey = key;
+          }
+        }
+
+        if (oldestKey !== null) {
+          cache.delete(oldestKey);
+        } else {
+          break;
+        }
+      }
     }
 
     log.debug('Cache eviction performed', {
       evicted: toDelete,
       remainingSize: cache.size,
+      strategy: deletionRatio > 0.3 ? 'sorted' : 'iterative'
     });
   }
 
@@ -1565,20 +1596,37 @@ class OpenAlgoClient extends EventEmitter {
       const healthyThisRound = instances.filter(i => this.isInstanceHealthy(i.id));
       const skippedThisRound = instances.length - healthyThisRound.length;
 
-      // CRITICAL: If all instances are unhealthy, force try the first one anyway
-      // This ensures we always make at least one attempt for critical LTP operations
+      // CRITICAL FIX: If all instances are unhealthy, check for manual refresh requirement
+      // Don't force attempts on instances that require manual intervention
       let instancesToTry = healthyThisRound;
       if (healthyThisRound.length === 0) {
         if (round === 0) {
-          // Only force on first round to ensure at least one attempt
-          instancesToTry = [instances[0]];
-          log.warn('All instances unhealthy for LTP fetch, forcing attempt on first instance', {
-            exchange,
-            symbol,
-            round: round + 1,
-            totalInstances: instances.length,
-            forcedInstance: instances[0]?.name,
+          // Find first instance that doesn't require manual refresh
+          const firstAvailableInstance = instances.find(inst => {
+            const health = this.instanceHealth.get(inst.id);
+            return !health?.requiresManualRefresh;
           });
+
+          if (firstAvailableInstance) {
+            // Only force on first round if instance doesn't require manual refresh
+            instancesToTry = [firstAvailableInstance];
+            log.warn('All instances unhealthy for LTP fetch, forcing attempt on first available instance', {
+              exchange,
+              symbol,
+              round: round + 1,
+              totalInstances: instances.length,
+              forcedInstance: firstAvailableInstance.name,
+            });
+          } else {
+            // All instances require manual refresh - cannot proceed
+            log.error('All instances require manual refresh - cannot fetch LTP', {
+              exchange,
+              symbol,
+              totalInstances: instances.length,
+            });
+            totalSkipped += instances.length;
+            continue;
+          }
         } else {
           // On subsequent rounds, skip if all unhealthy (already tried)
           log.debug('All instances still unhealthy, skipping round', {
@@ -1737,13 +1785,14 @@ class OpenAlgoClient extends EventEmitter {
       }
     }
 
-    // Fallback 1: use min(bid, ask) if both are valid and non-zero
+    // Fallback 1: use mid-price (bid + ask) / 2 if both are valid and non-zero
+    // CRITICAL FIX: Changed from Math.min(bid, ask) to mid-price for accuracy
     const bid = parseFloat(quote.bid);
     const ask = parseFloat(quote.ask);
 
     if (!isNaN(bid) && bid > 0 && !isNaN(ask) && ask > 0) {
-      const fallbackLtp = Math.min(bid, ask);
-      log.debug('Using bid/ask fallback for LTP', {
+      const fallbackLtp = (bid + ask) / 2;
+      log.debug('Using bid/ask mid-price fallback for LTP', {
         bid,
         ask,
         fallbackLtp,

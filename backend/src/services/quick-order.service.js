@@ -23,7 +23,8 @@ import instrumentsService from './instruments.service.js';
 class QuickOrderService {
   constructor() {
     this.symbolResolutionCache = new Map();
-    this.symbolResolutionCacheTtl = 60 * 1000;
+    this.symbolResolutionCacheTtl = 60 * 1000; // 60 seconds
+    this.symbolResolutionCacheMaxSize = 1000; // CRITICAL FIX: Add max cache size to prevent memory leak
   }
   /**
    * Place quick order from watchlist
@@ -422,7 +423,15 @@ class QuickOrderService {
       }
     });
 
-    const results = await Promise.all(perInstanceTasks);
+    // CRITICAL FIX: Use Promise.allSettled to capture partial results
+    // If any instance fails, we still need to record which orders succeeded
+    const settledResults = await Promise.allSettled(perInstanceTasks);
+    const results = settledResults.map(result =>
+      result.status === 'fulfilled' ? result.value : {
+        success: false,
+        error: result.reason?.message || 'Unknown error'
+      }
+    );
 
     // Log broadcast transaction for reconciliation
     broadcastTransaction.completedAt = Date.now();
@@ -1107,9 +1116,33 @@ class QuickOrderService {
         };
       });
 
-      const orderResults = await Promise.all(orderPromises);
+      // CRITICAL FIX: Use Promise.allSettled to handle partial failures
+      // If any order fails, we still want to record which orders succeeded
+      const settledOrders = await Promise.allSettled(orderPromises);
+      const orderResults = [];
+      const failedOrders = [];
 
-      log.info('FLOAT_OFS REDUCE/INCEASE: All orders placed successfully', {
+      settledOrders.forEach((result, index) => {
+        if (result.status === 'fulfilled') {
+          orderResults.push(result.value);
+        } else {
+          failedOrders.push({
+            order: ordersToPlace[index],
+            error: result.reason?.message || 'Unknown error'
+          });
+        }
+      });
+
+      if (failedOrders.length > 0) {
+        log.error('FLOAT_OFS: Some orders failed', {
+          action,
+          successCount: orderResults.length,
+          failureCount: failedOrders.length,
+          failures: failedOrders
+        });
+      }
+
+      log.info('FLOAT_OFS REDUCE/INCEASE: Orders placed', {
         action,
         orderCount: orderResults.length,
         orders: orderResults,
@@ -2607,8 +2640,43 @@ class QuickOrderService {
     });
 
     const resolution = { underlying, expiry, optionSymbol };
+
+    // CRITICAL FIX: Clean up cache before adding new entry to prevent memory leak
+    this._cleanupSymbolResolutionCache();
     this.symbolResolutionCache.set(cacheKey, { value: resolution, ts: now });
+
     return resolution;
+  }
+
+  /**
+   * Clean up expired entries and enforce max cache size
+   * CRITICAL: Prevents memory leak from unbounded cache growth
+   * @private
+   */
+  _cleanupSymbolResolutionCache() {
+    const now = Date.now();
+
+    // First pass: Remove expired entries
+    for (const [key, entry] of this.symbolResolutionCache.entries()) {
+      if (now - entry.ts >= this.symbolResolutionCacheTtl) {
+        this.symbolResolutionCache.delete(key);
+      }
+    }
+
+    // Second pass: If still over limit, remove oldest entries
+    if (this.symbolResolutionCache.size >= this.symbolResolutionCacheMaxSize) {
+      const entries = Array.from(this.symbolResolutionCache.entries())
+        .sort((a, b) => a[1].ts - b[1].ts); // Sort by timestamp ascending (oldest first)
+
+      const toRemove = entries.slice(0, Math.floor(this.symbolResolutionCacheMaxSize * 0.1)); // Remove oldest 10%
+      toRemove.forEach(([key]) => this.symbolResolutionCache.delete(key));
+
+      log.debug('Symbol resolution cache cleanup performed', {
+        removed: toRemove.length,
+        currentSize: this.symbolResolutionCache.size,
+        maxSize: this.symbolResolutionCacheMaxSize
+      });
+    }
   }
 
   /**

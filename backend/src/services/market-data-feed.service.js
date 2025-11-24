@@ -144,18 +144,46 @@ class MarketDataFeedService extends EventEmitter {
         if (this._shouldSkipPolling(circuitKey)) {
           return;
         }
-        try {
-          const snapshot = await openalgoClient.getQuotes(inst, symbols);
-          this.setQuoteSnapshot(inst.id, snapshot);
-          log.debug('Quotes refreshed', { instance: inst.name, count: snapshot.length, symbols: symbols.length });
-          this._resetFailureState(circuitKey);
-        } catch (error) {
-          log.warn('Failed to refresh quotes for instance', {
-            instance: inst.name,
-            error: error.message,
-          });
-          this._recordFailure(circuitKey, error);
+
+        // CRITICAL FIX: Add retry logic before circuit breaker opens
+        const maxRetries = 2; // 2 retries = 3 total attempts
+        let lastError = null;
+
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+          try {
+            const snapshot = await openalgoClient.getQuotes(inst, symbols);
+            this.setQuoteSnapshot(inst.id, snapshot);
+            log.debug('Quotes refreshed', {
+              instance: inst.name,
+              count: snapshot.length,
+              symbols: symbols.length,
+              attempt: attempt + 1
+            });
+            this._resetFailureState(circuitKey);
+            return; // Success - exit retry loop
+          } catch (error) {
+            lastError = error;
+            if (attempt < maxRetries) {
+              const delay = Math.min(1000 * Math.pow(2, attempt), 5000); // Exponential backoff, max 5s
+              log.debug('Quote refresh failed, retrying', {
+                instance: inst.name,
+                attempt: attempt + 1,
+                maxRetries: maxRetries + 1,
+                retryInMs: delay,
+                error: error.message
+              });
+              await new Promise(resolve => setTimeout(resolve, delay));
+            }
+          }
         }
+
+        // All retries failed
+        log.warn('Failed to refresh quotes after retries', {
+          instance: inst.name,
+          attempts: maxRetries + 1,
+          error: lastError?.message,
+        });
+        this._recordFailure(circuitKey, lastError);
       }));
     } catch (error) {
       log.warn('Failed to refresh quotes', { error: error.message });

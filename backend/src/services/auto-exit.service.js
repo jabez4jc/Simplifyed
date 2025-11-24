@@ -10,6 +10,7 @@ import watchlistService from './watchlist.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import quickOrderService from './quick-order.service.js';
 import riskControlsService from './risk-controls.service.js';
+import { extractLtp, extractAveragePrice } from '../utils/price-extraction.js';
 
 const TRADE_MODE_MAP = {
   direct: 'EQUITY',
@@ -117,9 +118,9 @@ class AutoExitService {
       return;
     }
 
-    const fallbackPrice = this._extractPrice(position, ['ltp', 'ltp_value', 'last_price', 'lastprice', 'price']);
-    const entryPrice = this._extractPrice(position, ['average_price', 'avg_price', 'avgprice', 'open_price']);
-    const currentPrice = fallbackPrice;
+    // Use shared utility for price extraction
+    const currentPrice = extractLtp(position);
+    const entryPrice = extractAveragePrice(position);
     if (!currentPrice || !entryPrice) {
       return;
     }
@@ -254,22 +255,6 @@ class AutoExitService {
   _getPositionQuantity(position) {
     const qty = position.quantity ?? position.netqty ?? position.netQty ?? position.net ?? position.pos ?? 0;
     return parseFloat(qty) || 0;
-  }
-
-  _extractPrice(position, keys) {
-    for (const key of keys) {
-      const value = position[key];
-      if (typeof value === 'number' && value > 0) {
-        return value;
-      }
-      if (typeof value === 'string' && value.trim()) {
-        const parsed = parseFloat(value);
-        if (!Number.isNaN(parsed)) {
-          return parsed;
-        }
-      }
-    }
-    return null;
   }
 
   _normalizeSymbol(symbol) {

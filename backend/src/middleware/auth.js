@@ -6,32 +6,26 @@
 import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import session from 'express-session';
+import connectSqlite3 from 'connect-sqlite3';
+import fs from 'fs';
+import path from 'path';
 import db from '../core/database.js';
 import { config } from '../core/config.js';
 import { log } from '../core/logger.js';
 import { UnauthorizedError, ForbiddenError } from '../core/errors.js';
 
 /**
- * Configure session middleware
+ * Configure session middleware with persistent SQLite store
  *
- * WARNING: Currently uses in-memory session store for development.
- * For production deployments:
- * - Sessions will be lost on server restart
- * - Multi-instance deployments will have inconsistent sessions
- *
- * Production alternatives:
- * - connect-sqlite3 for single-instance deployments
- * - connect-redis for multi-instance deployments
- * - @quixo3/prisma-session-store for existing Prisma setups
+ * CRITICAL FIX: Now uses SQLite session store for persistence
+ * - Sessions persist across server restarts
+ * - Suitable for single-instance deployments
+ * - For multi-instance deployments, consider Redis instead
  */
 export function configureSession() {
-  // TODO: Implement persistent session store for production
-  // Use environment variable to select store type
-  if (config.env === 'production') {
-    log.warn('Using in-memory session store in production - sessions will not persist across restarts');
-  }
+  const SQLiteStore = connectSqlite3(session);
 
-  return session({
+  const sessionConfig = {
     secret: config.session.secret,
     resave: false,
     saveUninitialized: false,
@@ -40,7 +34,37 @@ export function configureSession() {
       secure: config.env === 'production',
       maxAge: 24 * 60 * 60 * 1000, // 24 hours
     },
+  };
+
+  // CRITICAL FIX: Ensure ./data directory exists before creating SQLiteStore
+  // This prevents SQLITE_CANTOPEN error on fresh checkouts
+  const dataDir = path.join(process.cwd(), 'data');
+  if (!fs.existsSync(dataDir)) {
+    try {
+      fs.mkdirSync(dataDir, { recursive: true });
+      log.info('Created data directory for session storage', { path: dataDir });
+    } catch (error) {
+      log.error('Failed to create data directory for sessions', error);
+      throw new Error(`Cannot create session storage directory: ${error.message}`);
+    }
+  }
+
+  // Use persistent SQLite session store
+  // This ensures sessions persist across restarts
+  sessionConfig.store = new SQLiteStore({
+    db: 'sessions.db',
+    dir: dataDir,
+    table: 'sessions',
+    // Clean up expired sessions every hour
+    concurrentDB: true,
   });
+
+  log.info('Session store configured with SQLite persistence', {
+    dbPath: path.join(dataDir, 'sessions.db'),
+    ttl: '24 hours'
+  });
+
+  return session(sessionConfig);
 }
 
 /**
@@ -119,10 +143,21 @@ export function configurePassport() {
 /**
  * Middleware to require authentication
  * In test mode, creates a test user
+ *
+ * SECURITY FIX: Test mode now requires explicit ENABLE_TEST_MODE=true flag
+ * to prevent accidental unauthenticated access
  */
 export function requireAuth(req, res, next) {
-  // Test mode: Allow all requests with test user
-  if (config.env === 'development' && !config.auth.googleClientId) {
+  // CRITICAL: Test mode MUST be explicitly enabled via environment variable
+  // This prevents accidental admin access if Google OAuth is misconfigured
+  const testModeEnabled = config.auth.enableTestMode === true ||
+                          process.env.ENABLE_TEST_MODE === 'true';
+
+  if (config.env === 'development' && testModeEnabled && !config.auth.googleClientId) {
+    log.warn('⚠️  TEST MODE ACTIVE - Bypassing authentication (INSECURE)', {
+      endpoint: req.path,
+      method: req.method
+    });
     req.user = {
       id: 1,
       email: 'test@example.com',
@@ -140,10 +175,19 @@ export function requireAuth(req, res, next) {
 
 /**
  * Middleware to require admin access
+ *
+ * SECURITY FIX: Test mode now requires explicit ENABLE_TEST_MODE=true flag
  */
 export function requireAdmin(req, res, next) {
-  // Test mode: Allow all requests
-  if (config.env === 'development' && !config.auth.googleClientId) {
+  // CRITICAL: Test mode MUST be explicitly enabled
+  const testModeEnabled = config.auth.enableTestMode === true ||
+                          process.env.ENABLE_TEST_MODE === 'true';
+
+  if (config.env === 'development' && testModeEnabled && !config.auth.googleClientId) {
+    log.warn('⚠️  TEST MODE ACTIVE - Bypassing admin check (INSECURE)', {
+      endpoint: req.path,
+      method: req.method
+    });
     return next();
   }
 
@@ -161,10 +205,15 @@ export function requireAdmin(req, res, next) {
 /**
  * Optional auth middleware
  * Attaches user if authenticated, but doesn't require it
+ *
+ * SECURITY FIX: Test mode now requires explicit ENABLE_TEST_MODE=true flag
  */
 export function optionalAuth(req, res, next) {
-  // Test mode: Add test user
-  if (config.env === 'development' && !config.auth.googleClientId) {
+  // CRITICAL: Test mode MUST be explicitly enabled
+  const testModeEnabled = config.auth.enableTestMode === true ||
+                          process.env.ENABLE_TEST_MODE === 'true';
+
+  if (config.env === 'development' && testModeEnabled && !config.auth.googleClientId) {
     req.user = {
       id: 1,
       email: 'test@example.com',
