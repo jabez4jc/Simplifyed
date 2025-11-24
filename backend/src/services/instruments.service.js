@@ -895,29 +895,28 @@ class InstrumentsService {
   _deriveUnderlyingKey(instrument) {
     if (!instrument) return null;
     const symbol = (instrument.symbol || '').toUpperCase().replace(/\s+/g, '');
-    const name = (instrument.name || '').toUpperCase();
     const instrumentType = (instrument.instrumenttype || '').toUpperCase();
 
     if (!symbol) {
-      return name || null;
+      return null;
     }
 
-    const isDerivative = instrumentType.startsWith('FUT') || instrumentType.startsWith('OPT');
+    // For non-derivatives (EQ, INDEX), use the symbol directly
+    const isDerivative = instrumentType.startsWith('FUT') || instrumentType.startsWith('OPT') ||
+                         instrumentType === 'CE' || instrumentType === 'PE';
     if (!isDerivative) {
       return symbol;
     }
 
+    // For derivatives, extract the alphabetic prefix from symbol
     const cleaned = symbol.replace(/[^A-Z0-9]/g, '');
     const prefixMatch = cleaned.match(/^([A-Z]+)/);
     if (prefixMatch && prefixMatch[1]) {
       return prefixMatch[1];
     }
 
-    if (name) {
-      return name.replace(/[^A-Z0-9]/g, '').replace(/\d+$/, '');
-    }
-
-    return cleaned;
+    // If no alphabetic prefix found, return the cleaned symbol
+    return cleaned || null;
   }
 
   /**

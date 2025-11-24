@@ -169,24 +169,30 @@ class OptionsResolutionService {
    */
   async _getOptionChain(underlying, exchange, expiry, instance) {
     const isoExpiry = this._normalizeExpiryToISO(expiry);
-    if (isoExpiry) {
+    const openalgoExpiry = this._convertToOpenAlgoExpiryFormat(expiry);
+
+    // Try both expiry formats when querying DB
+    const expiryFormatsToTry = [isoExpiry, openalgoExpiry, expiry].filter(Boolean);
+    const uniqueFormats = [...new Set(expiryFormatsToTry)];
+
+    for (const expiryFormat of uniqueFormats) {
       try {
-        const dbChain = await this._buildOptionChainFromDb(underlying, isoExpiry, exchange);
+        const dbChain = await this._buildOptionChainFromDb(underlying, expiryFormat, exchange);
         if (dbChain) {
+          log.debug('Found option chain in DB', { underlying, expiryFormat, exchange });
           return dbChain;
         }
       } catch (error) {
-        log.warn('Failed to build option chain from instruments cache', {
+        log.debug('DB option chain lookup failed for format', {
           underlying,
-          expiry: isoExpiry,
+          expiryFormat,
           exchange,
           error: error.message,
         });
       }
     }
 
-    // Convert expiry to OpenAlgo format (DD-MMM-YY) for API calls and cache lookup
-    const openalgoExpiry = this._convertToOpenAlgoExpiryFormat(expiry);
+    // Use OpenAlgo format for API calls and cache lookup
     log.debug('Expiry format conversion', {
       inputExpiry: expiry,
       openalgoExpiry,
@@ -385,11 +391,17 @@ class OptionsResolutionService {
       });
 
       // Filter for options with matching expiry
+      // Use flexible matching for underlying - check name, symbol prefix, or underlying_key
+      const normalizedUnderlying = underlying.toUpperCase();
       const options = searchResults.filter(result => {
         // Options have instrumenttype as 'CE' or 'PE', not 'OPT'
         const isOption = result.instrumenttype === 'CE' || result.instrumenttype === 'PE';
         const matchesExpiry = result.expiry === expiry;
-        const matchesUnderlying = result.name === underlying;
+        // Flexible underlying match: name, symbol starts with underlying, or underlying_key
+        const matchesUnderlying =
+          (result.name && result.name.toUpperCase() === normalizedUnderlying) ||
+          (result.symbol && result.symbol.toUpperCase().startsWith(normalizedUnderlying)) ||
+          (result.underlying_key && result.underlying_key.toUpperCase() === normalizedUnderlying);
         return isOption && matchesExpiry && matchesUnderlying;
       });
 
