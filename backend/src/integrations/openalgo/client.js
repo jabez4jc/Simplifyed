@@ -1714,31 +1714,30 @@ class OpenAlgoClient extends EventEmitter {
 
   /**
    * Extract LTP from quote response
-   * Falls back to min(bid, ask) if LTP is unavailable but bid/ask are present
+   * Falls back to bid/ask or other price fields if LTP is unavailable
    * @private
    */
   _extractLtp(quote) {
     if (!quote) return null;
 
-    // Primary candidates: various LTP field names
-    const candidates = [
+    // Primary candidates: various LTP field names (most reliable)
+    const primaryCandidates = [
       quote.ltp,
       quote.LTP,
       quote.last_price,
       quote.lastPrice,
       quote.last_traded_price,
       quote.lastTradedPrice,
-      quote.close,
     ];
 
-    for (const value of candidates) {
+    for (const value of primaryCandidates) {
       const parsed = parseFloat(value);
       if (!isNaN(parsed) && parsed > 0) {
         return parsed;
       }
     }
 
-    // Fallback: use min(bid, ask) if both are valid and non-zero
+    // Fallback 1: use min(bid, ask) if both are valid and non-zero
     const bid = parseFloat(quote.bid);
     const ask = parseFloat(quote.ask);
 
@@ -1753,7 +1752,7 @@ class OpenAlgoClient extends EventEmitter {
       return fallbackLtp;
     }
 
-    // If only one of bid/ask is valid, use that
+    // Fallback 2: use bid or ask alone
     if (!isNaN(bid) && bid > 0) {
       log.debug('Using bid as LTP fallback', { bid, reason: 'LTP and ask unavailable' });
       return bid;
@@ -1761,6 +1760,28 @@ class OpenAlgoClient extends EventEmitter {
     if (!isNaN(ask) && ask > 0) {
       log.debug('Using ask as LTP fallback', { ask, reason: 'LTP and bid unavailable' });
       return ask;
+    }
+
+    // Fallback 3: use close, prev_close, open, high, low (for indices that might not have bid/ask)
+    const secondaryCandidates = [
+      quote.close,
+      quote.prev_close,
+      quote.prevClose,
+      quote.previous_close,
+      quote.open,
+      quote.high,
+      quote.low,
+    ];
+
+    for (const value of secondaryCandidates) {
+      const parsed = parseFloat(value);
+      if (!isNaN(parsed) && parsed > 0) {
+        log.debug('Using secondary price fallback for LTP', {
+          value: parsed,
+          reason: 'LTP and bid/ask unavailable',
+        });
+        return parsed;
+      }
     }
 
     return null;
