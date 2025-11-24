@@ -6,9 +6,7 @@
 
 import { log } from '../core/logger.js';
 import db from '../core/database.js';
-import openalgoClient from '../integrations/openalgo/client.js';
 import instrumentsService from './instruments.service.js';
-import marketDataInstanceService from './market-data-instance.service.js';
 import { NotFoundError, ValidationError } from '../core/errors.js';
 import { parseFloatSafe } from '../utils/sanitizers.js';
 
@@ -164,22 +162,34 @@ class OptionsResolutionService {
 
   /**
    * Get option chain for underlying and expiry
-   * Uses cache if available, otherwise fetches from OpenAlgo with instance fallback
+   * Derived entirely from instruments table - no OpenAlgo API calls
    * @private
    */
   async _getOptionChain(underlying, exchange, expiry, instance) {
     const isoExpiry = this._normalizeExpiryToISO(expiry);
     const openalgoExpiry = this._convertToOpenAlgoExpiryFormat(expiry);
 
-    // Try both expiry formats when querying DB
+    // Try multiple expiry formats when querying DB
     const expiryFormatsToTry = [isoExpiry, openalgoExpiry, expiry].filter(Boolean);
     const uniqueFormats = [...new Set(expiryFormatsToTry)];
+
+    log.debug('Looking up option chain from instruments DB', {
+      underlying,
+      exchange,
+      expiry,
+      formatsToTry: uniqueFormats,
+    });
 
     for (const expiryFormat of uniqueFormats) {
       try {
         const dbChain = await this._buildOptionChainFromDb(underlying, expiryFormat, exchange);
         if (dbChain) {
-          log.debug('Found option chain in DB', { underlying, expiryFormat, exchange });
+          log.debug('Found option chain in instruments DB', {
+            underlying,
+            expiryFormat,
+            exchange,
+            strikes: dbChain.strikes?.length || 0,
+          });
           return dbChain;
         }
       } catch (error) {
@@ -192,250 +202,11 @@ class OptionsResolutionService {
       }
     }
 
-    // Use OpenAlgo format for API calls and cache lookup
-    log.debug('Expiry format conversion', {
-      inputExpiry: expiry,
-      openalgoExpiry,
-    });
-
-    // Try to get from cache first (using OpenAlgo format)
-    const cached = await this._getOptionChainFromCache(underlying, exchange, openalgoExpiry);
-    if (cached && cached.length > 0) {
-      log.debug('Option chain retrieved from cache', {
-        underlying,
-        expiry: openalgoExpiry,
-        count: cached.length,
-      });
-      return this._processOptionChain(cached);
-    }
-
-    // Fetch from OpenAlgo with instance fallback for reliability
-    log.debug('Fetching option chain from OpenAlgo with fallback', { underlying, expiry: openalgoExpiry });
-
-    try {
-      // Get market data pool for fallback capability
-      let instancePool = [instance];
-      try {
-        const marketDataPool = await marketDataInstanceService.getMarketDataPool();
-        if (marketDataPool.length > 0) {
-          // Put the requested instance first, then add others
-          instancePool = [instance, ...marketDataPool.filter(i => i.id !== instance.id)];
-        }
-      } catch (poolError) {
-        log.warn('Failed to get market data pool for option chain, using single instance', {
-          error: poolError.message,
-        });
-      }
-
-      // Use fallback method if we have multiple instances
-      const chainData = instancePool.length > 1
-        ? await openalgoClient.getOptionChainWithFallback(
-            instancePool,
-            underlying,
-            openalgoExpiry,
-            exchange
-          )
-        : await openalgoClient.getOptionChain(
-            instance,
-            underlying,
-            openalgoExpiry,
-            exchange,
-            { skipBackoff: true } // Critical operation
-          );
-
-      await this._cacheOptionChain(underlying, exchange, openalgoExpiry, chainData);
-
-      return this._processOptionChain(chainData);
-    } catch (error) {
-      const isHtml = error?.isHtmlResponse;
-      const statusCode = error?.statusCode;
-      const logFn = isHtml || statusCode === 404 ? log.warn : log.error;
-      logFn('Failed to fetch option chain from OpenAlgo', {
-        underlying,
-        expiry: openalgoExpiry,
-        statusCode,
-        rawBody: error?.rawBody?.substring?.(0, 200),
-        message: error?.message,
-      });
-
-      // If OpenAlgo option chain fails, try to get symbols via search
-      return await this._getOptionChainViaSearch(underlying, exchange, openalgoExpiry, instance);
-    }
-  }
-
-  /**
-   * Get option chain from cache
-   * @private
-   */
-  async _getOptionChainFromCache(underlying, exchange, expiry) {
-    try {
-      const results = await db.all(
-        `SELECT * FROM options_cache
-         WHERE underlying = ? AND exchange = ? AND expiry = ?
-         ORDER BY strike ASC`,
-        [underlying, exchange, expiry]
-      );
-
-      return results;
-    } catch (error) {
-      log.error('Failed to get option chain from cache', error);
-      return [];
-    }
-  }
-
-  /**
-   * Cache option chain data
-   * @private
-   */
-  async _cacheOptionChain(underlying, exchange, expiry, chainData) {
-    try {
-      // Extract all options from chain data
-      const options = this._extractOptionsFromChainData(chainData);
-
-      for (const option of options) {
-        if (!option.option_type || typeof option.option_type !== 'string') {
-          log.debug('Skipping option cache because option_type is missing', {
-            underlying,
-            expiry,
-            symbol: option.symbol,
-          });
-          continue;
-        }
-        await db.run(
-          `INSERT OR REPLACE INTO options_cache (
-            underlying, expiry, strike, option_type, exchange,
-            symbol, trading_symbol, lot_size, tick_size,
-            instrument_type, token, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-          [
-            underlying,
-            expiry,
-            option.strike,
-            option.option_type,
-            exchange,
-            option.symbol,
-            option.trading_symbol || option.symbol,
-            option.lot_size || 1,
-            option.tick_size || 0.05,
-            option.instrument_type || 'OPTIDX',
-            option.token || null,
-          ]
-        );
-      }
-
-      log.debug('Cached option chain', {
-        underlying,
-        expiry,
-        count: options.length,
-      });
-    } catch (error) {
-      log.error('Failed to cache option chain', error);
-      // Non-fatal error, continue without cache
-    }
-  }
-
-  /**
-   * Extract options from OpenAlgo chain data
-   * Handles different broker formats
-   * @private
-   */
-  _extractOptionsFromChainData(chainData) {
-    const options = [];
-
-    // Handle different formats from different brokers
-    if (Array.isArray(chainData)) {
-      // Format 1: Array of options
-      return chainData;
-    } else if (chainData.options && Array.isArray(chainData.options)) {
-      // Format 2: { options: [...] }
-      return chainData.options;
-    } else if (chainData.CE && chainData.PE) {
-      // Format 3: { CE: {...}, PE: {...} }
-      // Iterate through strikes
-      for (const [strike, ceData] of Object.entries(chainData.CE)) {
-        options.push({
-          ...ceData,
-          strike: parseFloat(strike),
-          option_type: 'CE',
-        });
-      }
-      for (const [strike, peData] of Object.entries(chainData.PE)) {
-        options.push({
-          ...peData,
-          strike: parseFloat(strike),
-          option_type: 'PE',
-        });
-      }
-    }
-
-    return options;
-  }
-
-  /**
-   * Get option chain via search (fallback method)
-   * @private
-   */
-  async _getOptionChainViaSearch(underlying, exchange, expiry, instance) {
-    log.debug('Fetching options via search (fallback)', { underlying, expiry });
-
-    try {
-      // Search for the underlying symbol with expiry
-      const searchQuery = underlying;
-      const searchResults = await openalgoClient.searchSymbols(instance, searchQuery);
-
-      log.debug('Search results for option chain', {
-        underlying,
-        expiry,
-        totalResults: searchResults.length,
-        sampleExpiries: searchResults.slice(0, 5).map(r => r.expiry)
-      });
-
-      // Filter for options with matching expiry
-      // Use flexible matching for underlying - check name, symbol prefix, or underlying_key
-      const normalizedUnderlying = underlying.toUpperCase();
-      const options = searchResults.filter(result => {
-        // Options have instrumenttype as 'CE' or 'PE', not 'OPT'
-        const isOption = result.instrumenttype === 'CE' || result.instrumenttype === 'PE';
-        const matchesExpiry = result.expiry === expiry;
-        // Flexible underlying match: name, symbol starts with underlying, or underlying_key
-        const matchesUnderlying =
-          (result.name && result.name.toUpperCase() === normalizedUnderlying) ||
-          (result.symbol && result.symbol.toUpperCase().startsWith(normalizedUnderlying)) ||
-          (result.underlying_key && result.underlying_key.toUpperCase() === normalizedUnderlying);
-        return isOption && matchesExpiry && matchesUnderlying;
-      });
-
-      if (options.length === 0) {
-        log.warn('No matching options found after filtering', {
-          underlying,
-          requestedExpiry: expiry,
-          uniqueExpiriesInResults: [...new Set(searchResults
-            .filter(r => r.instrumenttype === 'CE' || r.instrumenttype === 'PE')
-            .map(r => r.expiry))]
-        });
-        throw new NotFoundError(`No options found for ${underlying} with expiry ${expiry}`);
-      }
-
-      log.debug('Found options via search', {
-        underlying,
-        expiry,
-        optionsCount: options.length
-      });
-
-      // Cache these options
-      await this._cacheOptionChain(underlying, exchange, expiry, options);
-
-      return this._processOptionChain(options);
-    } catch (error) {
-      log.error('Failed to get option chain via search', error);
-      // If error is already a NotFoundError, just re-throw it to avoid duplication
-      if (error instanceof NotFoundError) {
-        throw error;
-      }
-      throw new NotFoundError(
-        `Unable to fetch option chain for ${underlying} ${expiry}: ${error.message}`
-      );
-    }
+    // If not found in DB, throw an error with helpful message
+    throw new NotFoundError(
+      `Option chain not found for ${underlying} ${expiry} on ${exchange}. ` +
+      `Please ensure instruments are loaded in the database.`
+    );
   }
 
   async _buildOptionChainFromDb(underlying, expiry, exchange) {
