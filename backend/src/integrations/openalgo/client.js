@@ -1714,11 +1714,13 @@ class OpenAlgoClient extends EventEmitter {
 
   /**
    * Extract LTP from quote response
+   * Falls back to min(bid, ask) if LTP is unavailable but bid/ask are present
    * @private
    */
   _extractLtp(quote) {
     if (!quote) return null;
 
+    // Primary candidates: various LTP field names
     const candidates = [
       quote.ltp,
       quote.LTP,
@@ -1734,6 +1736,31 @@ class OpenAlgoClient extends EventEmitter {
       if (!isNaN(parsed) && parsed > 0) {
         return parsed;
       }
+    }
+
+    // Fallback: use min(bid, ask) if both are valid and non-zero
+    const bid = parseFloat(quote.bid);
+    const ask = parseFloat(quote.ask);
+
+    if (!isNaN(bid) && bid > 0 && !isNaN(ask) && ask > 0) {
+      const fallbackLtp = Math.min(bid, ask);
+      log.debug('Using bid/ask fallback for LTP', {
+        bid,
+        ask,
+        fallbackLtp,
+        reason: 'LTP unavailable',
+      });
+      return fallbackLtp;
+    }
+
+    // If only one of bid/ask is valid, use that
+    if (!isNaN(bid) && bid > 0) {
+      log.debug('Using bid as LTP fallback', { bid, reason: 'LTP and ask unavailable' });
+      return bid;
+    }
+    if (!isNaN(ask) && ask > 0) {
+      log.debug('Using ask as LTP fallback', { ask, reason: 'LTP and bid unavailable' });
+      return ask;
     }
 
     return null;
