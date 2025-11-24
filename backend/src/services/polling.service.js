@@ -162,12 +162,30 @@ class PollingService {
 
   /**
    * Manually refresh a specific instance (bypasses cron)
+   * This also resets the circuit breaker health state, allowing
+   * instances that were marked as requiring manual refresh to be retried
    * @param {number} instanceId - Instance ID
    * @returns {Promise<Object>} - Updated instance data
    */
   async refreshInstance(instanceId) {
     try {
-      log.info('Manual refresh triggered', { instance_id: instanceId });
+      // Get previous health state for logging
+      const previousHealthState = openalgoClient.getInstanceHealthStatus(instanceId);
+
+      // Force reset instance health in circuit breaker
+      // This clears any requiresManualRefresh flag and allows retries
+      openalgoClient.forceResetInstanceHealth(instanceId);
+
+      log.info('Manual refresh triggered', {
+        instance_id: instanceId,
+        previousHealthState: previousHealthState ? {
+          requiresManualRefresh: previousHealthState.requiresManualRefresh,
+          dnsRetryCount: previousHealthState.dnsRetryCount,
+          isDnsError: previousHealthState.isDnsError,
+          isHtmlError: previousHealthState.isHtmlError,
+          lastError: previousHealthState.lastError,
+        } : null,
+      });
 
       const startTime = Date.now();
 
@@ -188,6 +206,7 @@ class PollingService {
       log.info('Manual refresh completed', {
         instance_id: instanceId,
         duration_ms: duration,
+        health_status: updated.health_status,
       });
 
       return updated;

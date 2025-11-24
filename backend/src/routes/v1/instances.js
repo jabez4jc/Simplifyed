@@ -7,6 +7,7 @@ import express from 'express';
 import instanceService from '../../services/instance.service.js';
 import pollingService from '../../services/polling.service.js';
 import marketDataInstanceService from '../../services/market-data-instance.service.js';
+import openalgoClient from '../../integrations/openalgo/client.js';
 import { log } from '../../core/logger.js';
 import {
   NotFoundError,
@@ -351,6 +352,37 @@ router.post('/:id/health', async (req, res, next) => {
       status: 'success',
       message: 'Health status updated',
       data: instance,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/instances/:id/circuit-breaker
+ * Get circuit breaker status for an instance
+ * Returns information about whether the instance is in cooldown or requires manual refresh
+ */
+router.get('/:id/circuit-breaker', async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+
+    // Get circuit breaker health status
+    const circuitBreakerStatus = openalgoClient.getInstanceHealthStatus(id);
+
+    res.json({
+      status: 'success',
+      data: circuitBreakerStatus || {
+        isHealthy: true,
+        requiresManualRefresh: false,
+        dnsRetryCount: 0,
+        maxDnsRetries: openalgoClient.instanceHealthConfig.maxDnsRetries,
+        cooldownRemaining: 0,
+        cooldownUntil: null,
+        lastError: null,
+        isDnsError: false,
+        isHtmlError: false,
+      },
     });
   } catch (error) {
     next(error);
