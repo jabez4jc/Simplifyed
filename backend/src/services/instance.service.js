@@ -21,6 +21,24 @@ import {
 } from '../utils/sanitizers.js';
 import settingsService from './settings.service.js';
 
+const INSTANCE_REQUEST_DELAY_MS = 300;
+const instanceRequestTimestamps = new Map();
+
+async function _staggeredInstanceRequest(instanceId, fn) {
+  const last = instanceRequestTimestamps.get(instanceId) || 0;
+  const now = Date.now();
+  const wait = INSTANCE_REQUEST_DELAY_MS - (now - last);
+  if (wait > 0) {
+    await new Promise(resolve => setTimeout(resolve, wait));
+  }
+
+  try {
+    return await fn();
+  } finally {
+    instanceRequestTimestamps.set(instanceId, Date.now());
+  }
+}
+
 class InstanceService {
   /**
    * Get all instances
@@ -346,7 +364,7 @@ class InstanceService {
 
       try {
         // Test connection
-        const pingResponse = await openalgoClient.ping(instance);
+        const pingResponse = await _staggeredInstanceRequest(id, () => openalgoClient.ping(instance));
         healthStatus = 'healthy';
 
         // Update last ping time
@@ -355,9 +373,9 @@ class InstanceService {
           [id]
         );
 
-        // Get analyzer status
+        // Get analyzer status (do not block health on failure)
         try {
-          const analyzerStatus = await openalgoClient.getAnalyzerStatus(instance);
+          const analyzerStatus = await _staggeredInstanceRequest(id, () => openalgoClient.getAnalyzerStatus(instance));
           analyzerMode = analyzerStatus.analyze_mode || false;
         } catch (error) {
           log.warn('Failed to get analyzer status', { id, error: error.message });
@@ -394,12 +412,10 @@ class InstanceService {
       const instance = await this.getInstanceById(id);
 
       try {
-        // Fetch data from OpenAlgo
-        const [funds, tradebook, positionbook] = await Promise.all([
-          openalgoClient.getFunds(instance),
-          openalgoClient.getTradeBook(instance),
-          openalgoClient.getPositionBook(instance),
-        ]);
+        // Fetch data from OpenAlgo (staggered to avoid simultaneous hits)
+        const funds = await _staggeredInstanceRequest(id, () => openalgoClient.getFunds(instance));
+        const tradebook = await _staggeredInstanceRequest(id, () => openalgoClient.getTradeBook(instance));
+        const positionbook = await _staggeredInstanceRequest(id, () => openalgoClient.getPositionBook(instance));
 
         // Calculate P&L
         const currentBalance = parseFloat(funds.availablecash || 0);

@@ -2132,8 +2132,12 @@ body {
 .settings-layout {
   display: grid;
   grid-template-columns: 240px 1fr;
-  gap: var(--space-5);
+  gap: var(--space-8);
   min-height: 500px;
+}
+
+.settings-main {
+  padding-left: var(--space-3);
 }
 
 /* Settings Sidebar */
@@ -2462,7 +2466,7 @@ body {
 @media (max-width: 1024px) {
   .settings-layout {
     grid-template-columns: 200px 1fr;
-    gap: var(--space-4);
+    gap: var(--space-6);
   }
 }
 

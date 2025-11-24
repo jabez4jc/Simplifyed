@@ -11,6 +11,18 @@ import { log } from '../core/logger.js';
 import { ValidationError } from '../core/errors.js';
 import { config } from '../core/config.js';
 
+const MONTH_ABBR_TO_NUMBER = {
+  JAN: '01', FEB: '02', MAR: '03', APR: '04',
+  MAY: '05', JUN: '06', JUL: '07', AUG: '08',
+  SEP: '09', OCT: '10', NOV: '11', DEC: '12'
+};
+
+const MONTH_NUMBER_TO_ABBR = Object.fromEntries(
+  Object.entries(MONTH_ABBR_TO_NUMBER).map(([abbr, num]) => [num, abbr])
+);
+
+const EXPIRY_PATTERN = /(\d{2})([A-Z]{3})(\d{2})(?=(?:\d+(?:\.\d+)?(?:CE|PE))|FUT)/;
+
 /**
  * Exchanges supported by OpenAlgo
  */
@@ -585,71 +597,51 @@ class InstrumentsService {
     const useName = matchField === 'name';
     try {
       const normalizedSymbol = String(symbol || '').toUpperCase();
-      let expiries = await this._queryExpiriesByUnderlyingKey(
+      const buildQuery = (field) => {
+        const searchValue = `${normalizedSymbol}%`;
+        let q = `
+          SELECT DISTINCT expiry
+          FROM instruments
+          WHERE UPPER(${field}) LIKE ? AND exchange = ?
+        `;
+        const params = [
+          searchValue,
+          exchange,
+        ];
+
+        if (instrumentTypes.length > 0) {
+          const clauses = instrumentTypes.map(() => 'UPPER(instrumenttype) LIKE ?').join(' OR ');
+          q += ` AND (${clauses})`;
+          instrumentTypes.forEach(type => {
+            const normalized = type.toUpperCase();
+            const isExact = normalized === 'CE' || normalized === 'PE';
+            params.push(isExact ? normalized : `${normalized}%`);
+          });
+        }
+
+        return { query: q, params };
+      };
+
+      let rows = await this._queryExpiriesByUnderlyingKey(
         normalizedSymbol,
         exchange,
         instrumentTypes
       );
+      let expiries = this._buildExpiryDisplayList(rows);
 
       if (!expiries || expiries.length === 0) {
-        const buildQuery = (field) => {
-          const searchValue = `${normalizedSymbol}%`;
-          let q = `
-            SELECT DISTINCT expiry
-            FROM instruments
-            WHERE UPPER(${field}) LIKE ? AND exchange = ? AND expiry IS NOT NULL
-          `;
-          const params = [
-            searchValue,
-            exchange,
-          ];
-
-          if (instrumentTypes.length > 0) {
-            const clauses = instrumentTypes.map(() => 'UPPER(instrumenttype) LIKE ?').join(' OR ');
-            q += ` AND (${clauses})`;
-            instrumentTypes.forEach(type => {
-              const normalized = type.toUpperCase();
-              const isExact = normalized === 'CE' || normalized === 'PE';
-              params.push(isExact ? normalized : `${normalized}%`);
-            });
-          }
-
-          return { query: q, params };
-        };
-
         let { query, params } = buildQuery(matchField);
-        expiries = await db.all(query, params);
+        let fallbackRows = await db.all(query, params);
+        expiries = this._buildExpiryDisplayList(fallbackRows);
 
         if ((!expiries || expiries.length === 0) && useName) {
           ({ query, params } = buildQuery('symbol'));
-          expiries = await db.all(query, params);
+          fallbackRows = await db.all(query, params);
+          expiries = this._buildExpiryDisplayList(fallbackRows);
         }
       }
 
-      if (!expiries || expiries.length === 0) {
-        return [];
-      }
-
-      const parsed = expiries
-        .map(row => {
-          const raw = row.expiry;
-          const normalized = this._normalizeExpiryDate(raw);
-          return {
-            raw,
-            normalized,
-            timestamp: normalized ? Date.parse(normalized) : null
-          };
-        })
-        .sort((a, b) => {
-          if (a.timestamp && b.timestamp) {
-            return a.timestamp - b.timestamp;
-          }
-          if (a.timestamp) return -1;
-          if (b.timestamp) return 1;
-          return String(a.raw).localeCompare(String(b.raw));
-        });
-
-      return parsed.map(item => item.raw);
+      return expiries || [];
     } catch (error) {
       log.error('Failed to get expiries', error, { symbol, exchange });
       return [];
@@ -727,6 +719,48 @@ class InstrumentsService {
     }
 
     return null;
+  }
+
+  _buildExpiryDisplayList(rows = []) {
+    const map = new Map();
+
+    for (const row of rows) {
+      if (!row || !row.expiry) continue;
+      const normalized = this._normalizeExpiryDate(row.expiry);
+      if (!normalized) continue;
+      if (!map.has(normalized)) {
+        const display = this._formatExpiryForDisplay(normalized) || row.expiry;
+        map.set(normalized, display);
+      }
+    }
+
+    return Array.from(map.entries())
+      .map(([normalized, display]) => ({
+        normalized,
+        display,
+        timestamp: normalized ? Date.parse(normalized) : null
+      }))
+      .sort((a, b) => {
+        if (a.timestamp && b.timestamp) {
+          return a.timestamp - b.timestamp;
+        }
+        if (a.timestamp) return -1;
+        if (b.timestamp) return 1;
+        return (a.display || '').localeCompare(b.display || '');
+      })
+      .map(entry => entry.display);
+  }
+
+  _formatExpiryForDisplay(normalizedExpiry) {
+    if (!normalizedExpiry) return null;
+    const match = normalizedExpiry.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) {
+      return normalizedExpiry;
+    }
+
+    const [, year, month, day] = match;
+    const monthName = MONTH_NUMBER_TO_ABBR[month] || month;
+    return `${day}-${monthName}-${year.slice(-2)}`;
   }
 
   /**
@@ -904,6 +938,20 @@ class InstrumentsService {
           };
           const underlyingKey = this._deriveUnderlyingKey(normalizedInstrument);
 
+          const shouldDeriveExpiry = underlyingKey &&
+            this._isDerivativeInstrumentType(normalizedInstrument.instrumenttype);
+          const derivedExpiry = shouldDeriveExpiry
+            ? this._deriveExpiryFromSymbol(
+                normalizedInstrument.symbol,
+                normalizedInstrument.instrumenttype
+              )
+            : null;
+          const rawExpiry = expiry ? expiry.trim() : '';
+          const normalizedInputExpiry = rawExpiry && rawExpiry !== '-1'
+            ? this._normalizeExpiryDate(rawExpiry)
+            : null;
+          const expiryValue = derivedExpiry || normalizedInputExpiry;
+
           const value = [
             normalizedInstrument.symbol,
             brsymbol || null,
@@ -911,7 +959,7 @@ class InstrumentsService {
             exchange ? exchange.toUpperCase() : null,
             brexchange || null,
             token || null,
-            expiry === '-1' || expiry === '' ? null : expiry,
+            expiryValue,
             strike === '-1' || strike === '' ? null : strike,
             lotsize === '-1' || lotsize === '' ? 1 : parseInt(lotsize, 10),
             normalizedInstrument.instrumenttype,
@@ -1007,6 +1055,53 @@ class InstrumentsService {
 
     // If no alphabetic prefix found, return the cleaned symbol
     return cleaned || null;
+  }
+
+  _isDerivativeInstrumentType(instrumentType) {
+    if (!instrumentType) return false;
+    const normalized = instrumentType.toUpperCase();
+    return normalized.startsWith('FUT') ||
+           normalized.startsWith('OPT') ||
+           normalized === 'CE' ||
+           normalized === 'PE';
+  }
+
+  /**
+   * Derive expiry date (ISO YYYY-MM-DD) from futures/options symbol
+   * Returns null for non-derivatives or symbols without an expiry fragment.
+   * @private
+   */
+  _deriveExpiryFromSymbol(symbol, instrumentType) {
+    if (!symbol || !this._isDerivativeInstrumentType(instrumentType)) return null;
+    const upperSymbol = symbol.toUpperCase();
+    const match = upperSymbol.match(EXPIRY_PATTERN);
+    if (!match || match.length < 4) {
+      return null;
+    }
+
+    const [, dayFragment, monthFragment, yearFragment] = match;
+    const day = String(dayFragment).padStart(2, '0');
+    const monthAbbr = monthFragment;
+    let year = yearFragment;
+
+    const monthNumber = MONTH_ABBR_TO_NUMBER[monthAbbr];
+    if (!monthNumber) {
+      return null;
+    }
+
+    if (year.length === 2) {
+      year = `20${year}`;
+    }
+    if (year.length !== 4 || Number.isNaN(Number(year))) {
+      return null;
+    }
+
+    const dayNumber = Number(day);
+    if (Number.isNaN(dayNumber) || dayNumber < 1 || dayNumber > 31) {
+      return null;
+    }
+
+    return `${year}-${monthNumber}-${day}`;
   }
 
   /**
@@ -1130,6 +1225,19 @@ class InstrumentsService {
                 name: instrument.name ? instrument.name.toUpperCase() : null,
               };
               const underlyingKey = this._deriveUnderlyingKey(normalizedInstrument);
+              const shouldDeriveExpiry = underlyingKey &&
+                this._isDerivativeInstrumentType(normalizedInstrument.instrumenttype);
+              const derivedExpiry = shouldDeriveExpiry
+                ? this._deriveExpiryFromSymbol(
+                    normalizedInstrument.symbol,
+                    normalizedInstrument.instrumenttype
+                  )
+                : null;
+              const expiryInput = instrument.expiry ? String(instrument.expiry).trim() : '';
+              const normalizedInputExpiry = expiryInput && expiryInput !== '-1'
+                ? this._normalizeExpiryDate(expiryInput)
+                : null;
+              const expiryValue = derivedExpiry || normalizedInputExpiry;
 
               const value = [
                 normalizedInstrument.symbol,
@@ -1138,7 +1246,7 @@ class InstrumentsService {
                 (instrument.exchange || exchange || '').toUpperCase(),
                 instrument.brexchange || null,
                 instrument.token || null,
-                instrument.expiry === '-1' || !instrument.expiry ? null : instrument.expiry,
+                expiryValue,
                 instrument.strike === '-1' || !instrument.strike ? null : instrument.strike,
                 instrument.lotsize === '-1' || !instrument.lotsize ? 1 : parseInt(instrument.lotsize, 10),
                 normalizedInstrument.instrumenttype,

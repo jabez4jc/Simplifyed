@@ -322,6 +322,35 @@ class OrderService {
     }
   }
 
+  async cancelPendingOrdersForSymbol(instanceId, symbol) {
+    if (!symbol) {
+      return { cancelled: 0, total: 0 };
+    }
+
+    const pending = await db.all(
+      `SELECT id FROM watchlist_orders
+       WHERE instance_id = ? AND symbol = ? AND status IN ('pending', 'open')`,
+      [instanceId, symbol]
+    );
+
+    let cancelledCount = 0;
+    for (const order of pending) {
+      try {
+        await this.cancelOrder(order.id);
+        cancelledCount += 1;
+      } catch (cancelError) {
+        log.warn('Failed to cancel pending symbol order', {
+          instance_id: instanceId,
+          symbol,
+          order_id: order.id,
+          error: cancelError.message,
+        });
+      }
+    }
+
+    return { cancelled: cancelledCount, total: pending.length };
+  }
+
   /**
    * Get order by ID
    * @param {number} orderId - Order ID

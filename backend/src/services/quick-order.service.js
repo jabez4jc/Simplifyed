@@ -15,6 +15,7 @@ import derivativeResolutionService, { NSE_INDEX_UNDERLYINGS, BSE_INDEX_UNDERLYIN
 import orderPlacementService from './order-placement.service.js';
 import orderPayloadFactory from './order-payload.factory.js';
 import orderRepository from './order-repository.js';
+import orderService from './order.service.js';
 import { ValidationError, NotFoundError } from '../core/errors.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
 import instrumentsService from './instruments.service.js';
@@ -377,12 +378,13 @@ class QuickOrderService {
             );
             break;
 
-          case 'CLOSE_POSITIONS':
-            // OPTIMIZATION: Close/Exit orders can use cached positions
-            result = await this._closePositions(instance, symbol, orderParams, {
-              useCachedPositions: true,
-            });
-            break;
+        case 'CLOSE_POSITIONS':
+          // OPTIMIZATION: Close/Exit orders can use cached positions
+          result = await this._closePositions(instance, symbol, orderParams, {
+            useCachedPositions: true,
+          });
+          await this._forceCloseSymbolIfNeeded(instance, symbol, orderParams);
+          break;
 
           default:
             throw new ValidationError(`Unknown strategy: ${strategy}`);
@@ -647,22 +649,10 @@ class QuickOrderService {
     if (!lotSize || lotSize <= 0) {
       throw new ValidationError(`Unable to resolve lot size for ${finalExchange}:${finalSymbol}`);
     }
-    // Normalize position units: some brokers return position quantity in lots instead of contracts.
-    let currentPosition = rawPosition;
-    if (lotSize > 1 && Math.abs(currentPosition) > 0 && Math.abs(currentPosition) < lotSize && Number.isInteger(currentPosition)) {
-      currentPosition = currentPosition * lotSize;
-      log.warn('Normalized position from lots to contracts', {
-        instance_id: instance.id,
-        instance_name: instance.name,
-        symbol: finalSymbol,
-        exchange: finalExchange,
-        rawPosition,
-        normalizedPosition: currentPosition,
-        lotSize,
-      });
-    }
 
     const tradeQuantity = quantity * lotSize;
+    const currentLots = lotSize > 0 ? currentPosition / lotSize : currentPosition;
+    const tradeLots = quantity;
 
     log.info('Calculated trade quantity', {
       symbolType: symbol.symbol_type,
@@ -680,14 +670,15 @@ class QuickOrderService {
 
     // Calculate target position_size based on action
     let targetPosition;
+    let targetLots;
     let algoAction;
 
     if (action === 'BUY') {
       // If already long or flat, add; if short, flip to desired long size
       algoAction = 'BUY';
-      targetPosition = currentPosition >= 0
-        ? currentPosition + tradeQuantity
-        : tradeQuantity;
+      targetLots = currentLots >= 0
+        ? currentLots + tradeLots
+        : tradeLots;
     } else if (action === 'SELL') {
       if (currentPosition <= 0) {
         return {
@@ -700,13 +691,13 @@ class QuickOrderService {
         };
       }
       algoAction = 'SELL';
-      targetPosition = Math.max(currentPosition - tradeQuantity, 0);
+      targetLots = Math.max(currentLots - tradeLots, 0);
     } else if (action === 'SHORT') {
       // If already short or flat, add; if long, flip to desired short size
       algoAction = 'SELL';
-      targetPosition = currentPosition <= 0
-        ? currentPosition - tradeQuantity
-        : -tradeQuantity;
+      targetLots = currentLots <= 0
+        ? currentLots - tradeLots
+        : -tradeLots;
     } else if (action === 'COVER') {
       if (currentPosition >= 0) {
         return {
@@ -719,19 +710,26 @@ class QuickOrderService {
         };
       }
       algoAction = 'BUY';
-      targetPosition = Math.min(currentPosition + tradeQuantity, 0);
+      targetLots = Math.min(currentLots + tradeLots, 0);
     } else if (action === 'EXIT') {
       // Always send an EXIT to enforce position_size = 0, even if currently flat
-      targetPosition = 0;
+      targetLots = 0;
       algoAction = currentPosition > 0 ? 'SELL' : 'BUY';
     } else {
       throw new ValidationError(`Invalid action: ${action}`);
     }
 
+    if (targetLots === undefined) {
+      targetLots = currentLots;
+    }
+
+    targetPosition = lotSize > 0 ? targetLots * lotSize : targetLots;
+
     log.info('Calculated position for order', {
       action,
       currentPosition,
       tradeQuantity,
+      targetLots,
       targetPosition,
       algoAction,
       lotSize,
@@ -1570,6 +1568,36 @@ class QuickOrderService {
       closed_count: closeResults.filter(r => r.success).length,
       details: closeResults,
     };
+  }
+
+  async _forceCloseSymbolIfNeeded(instance, symbol, orderParams) {
+    const { action, tradeMode, strategy } = orderParams;
+    if (action !== 'EXIT' || (tradeMode || '').toUpperCase() === 'OPTIONS') {
+      return;
+    }
+
+    const strategyTag = strategy || symbol.watchlist_name || 'default';
+
+    try {
+      log.info('Cancelling hanging orders for EXIT symbol', {
+        instance_id: instance.id,
+        symbol: symbol.symbol,
+        strategy: strategyTag,
+      });
+      const result = await orderService.cancelPendingOrdersForSymbol(instance.id, symbol.symbol);
+      log.info('Pending symbol orders cancelled', {
+        instance_id: instance.id,
+        symbol: symbol.symbol,
+        cancelled: result.cancelled,
+        total: result.total,
+      });
+    } catch (error) {
+      log.warn('Failed to cancel pending orders for EXIT symbol', {
+        instance_id: instance.id,
+        symbol: symbol.symbol,
+        error: error.message,
+      });
+    }
   }
 
   /**
