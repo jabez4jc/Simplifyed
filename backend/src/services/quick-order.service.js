@@ -1377,7 +1377,7 @@ class QuickOrderService {
     const { action, tradeMode, product, expiry: userExpiry } = orderParams;
     const { useCachedPositions = false } = options;
 
-    const underlying = this._getUnderlyingForClosing(symbol);
+    let underlying = this._getUnderlyingForClosing(symbol);
 
     let positionsToClose = [];
 
@@ -1470,7 +1470,7 @@ class QuickOrderService {
         const symbolStr = symbol.symbol || symbol.trading_symbol || '';
         const parsed = this._parseFuturesSymbol(symbolStr);
 
-        let underlying = parsed.underlying || this._getUnderlyingForClosing(symbol);
+        underlying = parsed.underlying || this._getUnderlyingForClosing(symbol);
         let expiryInput = userExpiry ? this._normalizeExpiryInput(userExpiry) : null;
 
         // If we parsed expiry from the symbol, use it
