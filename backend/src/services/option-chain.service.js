@@ -1,6 +1,7 @@
 /**
  * Option Chain Service
  * Builds option chains from instruments data
+ * Uses underlying_key field for consistent underlying identification
  */
 
 import db from '../core/database.js';
@@ -24,16 +25,17 @@ class OptionChainService {
         ORDER BY symbol
       `);
 
-      // Get stock underlyings from both BFO and NFO exchanges
+      // Get stock underlyings from both BFO and NFO exchanges using underlying_key
       const stocks = await db.all(`
-        SELECT DISTINCT name, name as symbol, 'stock' as type
+        SELECT DISTINCT underlying_key as name, underlying_key as symbol, 'stock' as type
         FROM instruments
         WHERE exchange IN ('BFO', 'NFO')
         AND instrumenttype IN ('CE', 'PE')
-        AND name NOT IN (
+        AND underlying_key IS NOT NULL
+        AND underlying_key NOT IN (
           SELECT symbol FROM instruments WHERE exchange = 'NSE_INDEX' AND instrumenttype = 'INDEX'
         )
-        ORDER BY name
+        ORDER BY underlying_key
       `);
 
       return {
@@ -54,6 +56,8 @@ class OptionChainService {
    */
   async getExpiries(underlying, type = null) {
     try {
+      const normalizedUnderlying = underlying.toUpperCase();
+
       // Check if it's an index (from NSE_INDEX exchange)
       const indexCheck = await db.get(`
         SELECT DISTINCT symbol as underlying, 'index' as type
@@ -62,17 +66,17 @@ class OptionChainService {
         AND instrumenttype = 'INDEX'
         AND symbol = ?
         LIMIT 1
-      `, [underlying]);
+      `, [normalizedUnderlying]);
 
-      // Check if it's a stock (from BFO or NFO exchange)
+      // Check if it's a stock/derivative (from BFO or NFO exchange) using underlying_key
       const stockCheck = await db.get(`
-        SELECT DISTINCT name as underlying, 'stock' as type, exchange
+        SELECT DISTINCT underlying_key as underlying, 'stock' as type, exchange
         FROM instruments
         WHERE exchange IN ('BFO', 'NFO')
         AND instrumenttype IN ('CE', 'PE')
-        AND name = ?
+        AND underlying_key = ?
         LIMIT 1
-      `, [underlying]);
+      `, [normalizedUnderlying]);
 
       const underlyingCheck = indexCheck || stockCheck;
 
@@ -82,18 +86,19 @@ class OptionChainService {
 
       const exchange = underlyingCheck.exchange || (underlyingCheck.type === 'index' ? 'NSE_INDEX' : 'BFO');
 
-      // Get all expiries for this underlying
+      // Get all expiries for this underlying using underlying_key
       const expiries = await db.all(`
         SELECT DISTINCT expiry
         FROM instruments
-        WHERE exchange IN ('${exchange}', 'NFO', 'BFO')
+        WHERE exchange IN ('NFO', 'BFO')
         AND instrumenttype IN ('CE', 'PE')
-        AND name = ?
+        AND underlying_key = ?
+        AND expiry IS NOT NULL
         ORDER BY expiry
-      `, [underlying]);
+      `, [normalizedUnderlying]);
 
       return {
-        underlying,
+        underlying: normalizedUnderlying,
         type: underlyingCheck.type,
         exchange: underlyingCheck.type === 'index' ? 'NFO' : 'BFO,NFO',
         expiries: expiries.map(row => row.expiry)
@@ -118,6 +123,8 @@ class OptionChainService {
    */
   async getOptionChain(underlying, expiry, type = null, includeQuotes = false, strikeWindow = null) {
     try {
+      const normalizedUnderlying = underlying.toUpperCase();
+
       // Determine if it's an index or stock
       const indexCheck = await db.get(`
         SELECT symbol, 'index' as type
@@ -126,36 +133,51 @@ class OptionChainService {
         AND instrumenttype = 'INDEX'
         AND symbol = ?
         LIMIT 1
-      `, [underlying]);
+      `, [normalizedUnderlying]);
 
       const isIndex = !!indexCheck;
-      const exchangeList = isIndex ? 'NFO' : 'BFO,NFO';
 
-      // Validate underlying and expiry
+      // Validate underlying and expiry using underlying_key
       const expiryCheck = await db.get(`
         SELECT DISTINCT expiry
         FROM instruments
         WHERE exchange IN (${isIndex ? "'NFO'" : "'BFO', 'NFO'"})
         AND instrumenttype IN ('CE', 'PE')
-        AND name = ?
+        AND underlying_key = ?
         AND expiry = ?
-      `, [underlying, expiry]);
+      `, [normalizedUnderlying, expiry]);
 
       if (!expiryCheck) {
-        throw new ValidationError(`No options found for ${underlying} ${expiry}`);
+        // Try to find available expiries to give a helpful error message
+        const availableExpiries = await db.all(`
+          SELECT DISTINCT expiry
+          FROM instruments
+          WHERE exchange IN (${isIndex ? "'NFO'" : "'BFO', 'NFO'"})
+          AND instrumenttype IN ('CE', 'PE')
+          AND underlying_key = ?
+          AND expiry IS NOT NULL
+          ORDER BY expiry
+          LIMIT 5
+        `, [normalizedUnderlying]);
+
+        const expiryHint = availableExpiries.length > 0
+          ? `. Available expiries: ${availableExpiries.map(e => e.expiry).join(', ')}`
+          : '';
+
+        throw new ValidationError(`No options found for ${underlying} with expiry ${expiry}${expiryHint}`);
       }
 
-      // Get all CE and PE for this underlying + expiry
+      // Get all CE and PE for this underlying + expiry using underlying_key
       const options = await db.all(`
-        SELECT symbol, name, strike, lotsize, instrumenttype, exchange
+        SELECT symbol, underlying_key, strike, lotsize, instrumenttype, exchange
         FROM instruments
         WHERE exchange IN (${isIndex ? "'NFO'" : "'BFO', 'NFO'"})
         AND instrumenttype IN ('CE', 'PE')
-        AND name = ?
+        AND underlying_key = ?
         AND expiry = ?
         AND strike > 0
         ORDER BY strike
-      `, [underlying, expiry]);
+      `, [normalizedUnderlying, expiry]);
 
       // Pivot into chain rows
       const strikesMap = new Map();
@@ -189,7 +211,7 @@ class OptionChainService {
       // This requires getting the underlying spot price
 
       return {
-        underlying,
+        underlying: normalizedUnderlying,
         type: isIndex ? 'index' : 'stock',
         exchange: isIndex ? 'NFO' : 'BFO,NFO',
         expiry,
@@ -212,7 +234,15 @@ class OptionChainService {
    */
   async getSampleChain(underlying) {
     try {
-      const chain = await this.getOptionChain(underlying, '27-NOV-25', 'stock', false, null);
+      // First get available expiries
+      const expiriesResult = await this.getExpiries(underlying);
+      const firstExpiry = expiriesResult.expiries[0];
+
+      if (!firstExpiry) {
+        throw new ValidationError(`No expiries found for ${underlying}`);
+      }
+
+      const chain = await this.getOptionChain(underlying, firstExpiry, null, false, null);
 
       // Add sample quotes for demonstration
       chain.rows = chain.rows.map(row => {
@@ -249,7 +279,7 @@ class OptionChainService {
 
       chain.has_quotes = true;
       chain.spot = 24000 + Math.random() * 1000;
-      chain.atm_strike = chain.rows[Math.floor(chain.rows.length / 2)].strike;
+      chain.atm_strike = chain.rows[Math.floor(chain.rows.length / 2)]?.strike || 0;
       chain.strike_window = 5;
 
       return chain;
