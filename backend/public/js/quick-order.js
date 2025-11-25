@@ -1066,7 +1066,9 @@ class QuickOrderHandler {
       : 'text-neutral-500';
     const refreshedLabel = preview.quote?.fetchedAt
       ? `Refreshed ${Utils.formatDateTime(new Date(preview.quote.fetchedAt).toISOString(), true)}`
-      : '';
+      : preview.updatedAt
+        ? `Refreshed ${Utils.formatDateTime(new Date(preview.updatedAt).toISOString(), true)}`
+        : '';
 
     container.innerHTML = `
       <div class="flex flex-wrap items-center justify-between gap-4">

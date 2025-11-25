@@ -2869,6 +2869,7 @@ class QuickOrderService {
 
     const quoteKey = this._buildQuoteMatchKey(derivativeExchange, futuresResolution.symbol);
     const quote = quoteKey ? quotesMap.get(quoteKey) : null;
+    const fetchedAt = quote?.fetchedAt || Date.now();
 
     return {
       symbolId,
@@ -2883,6 +2884,7 @@ class QuickOrderService {
         ? {
             ltp: this._extractLtpFromQuote(quote),
             changePercent: this._extractChangePercentFromQuote(quote),
+            fetchedAt,
           }
         : null,
       updatedAt: new Date().toISOString(),
