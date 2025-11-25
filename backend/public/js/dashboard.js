@@ -622,8 +622,9 @@ class DashboardApp {
       return '<p class="text-center text-neutral-600">No instances found</p>';
     }
 
-    // Columns (15): [Name, Broker, Status, Health, Mode, Session Limits, Cutoff Reason, Limits, Live P&L, Analyzer P&L, Balance, Total P&L, Realized, Unrealized, Actions]
-    const baseColWidths = ['14%','10%','8%','8%','8%','12%','9%','8%','8%','8%','8%','8%','8%','8%','9%'];
+    // Fixed widths for consistent alignment (15 cols without bulk checkbox)
+    // [Name, Broker, Status, Health, Mode, Limits, Live P&L, Analyzer P&L, Balance, Total P&L, Realized, Unrealized, Session Limits, Cutoff Reason, Actions]
+    const baseColWidths = ['170px','120px','90px','90px','100px','100px','110px','110px','110px','110px','110px','110px','190px','110px','140px'];
     const colWidths = showBulkActions ? ['40px', ...baseColWidths] : baseColWidths;
 
     return `
@@ -639,8 +640,6 @@ class DashboardApp {
               <th>Status</th>
               <th>Health</th>
               <th>Mode</th>
-              <th>Session Limits</th>
-              <th>Cutoff Reason</th>
               <th>Limits</th>
               <th class="text-right">Live P&L</th>
               <th class="text-right">Analyzer P&L</th>
@@ -648,6 +647,8 @@ class DashboardApp {
               <th class="text-right">Total P&L</th>
               <th class="text-right">Realized</th>
               <th class="text-right">Unrealized</th>
+              <th>Session Limits</th>
+              <th>Cutoff Reason</th>
               <th>Actions</th>
             </tr>
         </thead>
@@ -667,15 +668,6 @@ class DashboardApp {
                 ${instance.is_analyzer_mode
                   ? '<span class="badge badge-warning">Analyzer</span>'
                   : '<span class="badge badge-success">Live</span>'}
-                ${instance.session_cutoff_reason
-                  ? `<div class="text-[11px] text-neutral-500 mt-1">${Utils.escapeHTML(instance.session_cutoff_reason.replace(/_/g, ' '))}</div>`
-                  : ''}
-              </td>
-              <td>
-                <div class="text-sm">
-                  <div><span class="text-neutral-500">Target:</span> ${instance.session_target_profit != null ? Utils.formatCurrency(instance.session_target_profit) : '—'}</div>
-                  <div><span class="text-neutral-500">Max Loss:</span> ${instance.session_max_loss != null ? Utils.formatCurrency(instance.session_max_loss) : '—'}</div>
-                </div>
               </td>
               <td>${this.renderLimitBadge(instance.limit_metrics)}</td>
               <td class="text-right ${Utils.getPnLColorClass(instance.last_live_total_pnl)}">
@@ -701,6 +693,28 @@ class DashboardApp {
               </td>
               <td class="text-right ${Utils.getPnLColorClass(instance.unrealized_pnl)}">
                 ${Utils.formatCurrency(instance.unrealized_pnl || 0)}
+              </td>
+              <td>
+                <div class="text-sm">
+                  <div><span class="text-neutral-500">Target:</span> ${instance.session_target_profit != null ? Utils.formatCurrency(instance.session_target_profit) : '—'}</div>
+                  <div><span class="text-neutral-500">Max Loss:</span> ${instance.session_max_loss != null ? Utils.formatCurrency(instance.session_max_loss) : '—'}</div>
+                </div>
+              </td>
+              <td>
+                ${instance.session_cutoff_reason
+                  ? `<div class="text-[11px] text-neutral-500 mt-1">${Utils.escapeHTML(instance.session_cutoff_reason.replace(/_/g, ' '))}</div>`
+                  : '<span class="text-neutral-400">—</span>'}
+              </td>
+              <td>
+                <div class="text-sm">
+                  <div><span class="text-neutral-500">Target:</span> ${instance.session_target_profit != null ? Utils.formatCurrency(instance.session_target_profit) : '—'}</div>
+                  <div><span class="text-neutral-500">Max Loss:</span> ${instance.session_max_loss != null ? Utils.formatCurrency(instance.session_max_loss) : '—'}</div>
+                </div>
+              </td>
+              <td>
+                ${instance.session_cutoff_reason
+                  ? `<div class="text-[11px] text-neutral-500 mt-1">${Utils.escapeHTML(instance.session_cutoff_reason.replace(/_/g, ' '))}</div>`
+                  : '<span class="text-neutral-400">—</span>'}
               </td>
               <td>
                 <div class="flex gap-2">
