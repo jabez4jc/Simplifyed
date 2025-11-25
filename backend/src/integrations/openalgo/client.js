@@ -1400,6 +1400,10 @@ class OpenAlgoClient extends EventEmitter {
    */
   async getQuotes(instance, symbols, options = {}) {
     const { returnErrors = false } = options;
+    const instanceMeta = {
+      instance_id: instance?.id || instance?.instance_id,
+      instance_name: instance?.name,
+    };
 
     // OpenAlgo quotes API expects one symbol at a time
     // HTTP/2 multiplexing allows these to share a single TCP connection
@@ -1423,7 +1427,7 @@ class OpenAlgoClient extends EventEmitter {
           fetchedAt: Date.now(),
         };
       } catch (error) {
-        log.warn('Failed to fetch quote', { exchange, symbol, error: error.message });
+        log.warn('Failed to fetch quote', { exchange, symbol, error: error.message, ...instanceMeta });
         return {
           success: false,
           exchange,
