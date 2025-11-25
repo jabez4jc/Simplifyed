@@ -683,6 +683,17 @@ class MarketDataFeedService extends EventEmitter {
         });
       });
 
+      // Add recently requested symbols from the quote cache (covers resolved option/future symbols)
+      const now = Date.now();
+      this.symbolQuoteCache.forEach((entry, key) => {
+        if (!entry?.quote || !entry.fetchedAt) return;
+        if (now - entry.fetchedAt > this.QUOTE_TTL_MS) return; // ignore stale cache
+        const [exchange, symbol] = key.split('|');
+        if (exchange && symbol) {
+          symbolList.push({ exchange, symbol });
+        }
+      });
+
       return symbolList;
     } catch (error) {
       log.warn('Failed to build global symbol list', { error: error.message });
