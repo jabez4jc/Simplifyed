@@ -1064,6 +1064,9 @@ class QuickOrderHandler {
     const changeClass = typeof changePercent === 'number'
       ? (changePercent > 0 ? 'text-profit' : (changePercent < 0 ? 'text-loss' : 'text-neutral-500'))
       : 'text-neutral-500';
+    const refreshedLabel = preview.quote?.fetchedAt
+      ? `Refreshed ${Utils.formatDateTime(new Date(preview.quote.fetchedAt).toISOString(), true)}`
+      : '';
 
     container.innerHTML = `
       <div class="flex flex-wrap items-center justify-between gap-4">
@@ -1076,6 +1079,7 @@ class QuickOrderHandler {
           <p class="text-xs uppercase tracking-wide text-neutral-500">LTP</p>
           <p class="text-2xl font-semibold ${changeClass}">${ltp}</p>
           <p class="text-xs ${changeClass}">${changeText}</p>
+          ${refreshedLabel ? `<p class="text-[11px] text-neutral-500 mt-1">${Utils.escapeHTML(refreshedLabel)}</p>` : ''}
         </div>
       </div>
     `;

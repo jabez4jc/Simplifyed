@@ -372,6 +372,18 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   /**
+   * Force clear error counters/backoff state for an instance
+   * Used after credentials are fixed so polling can resume immediately.
+   * @param {number|string} instanceId - Instance ID
+   */
+  forceClearBackoff(instanceId) {
+    if (this.errorCounters.has(instanceId)) {
+      this.errorCounters.delete(instanceId);
+      log.info('Instance backoff cleared manually', { instanceId });
+    }
+  }
+
+  /**
    * Initialize rate limit settings from database (called once at startup)
    * Uses promise-based locking to prevent race conditions from concurrent calls
    * @returns {Promise<void>}

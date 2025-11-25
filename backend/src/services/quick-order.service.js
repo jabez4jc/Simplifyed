@@ -3371,7 +3371,10 @@ class QuickOrderService {
 
       const cachedQuote = this._findQuoteInSnapshot(snapshot, request.exchange, request.symbol);
       if (cachedQuote) {
-        results.set(key, cachedQuote);
+        const withTimestamp = snapshot?.fetchedAt
+          ? { ...cachedQuote, fetchedAt: snapshot.fetchedAt }
+          : cachedQuote;
+        results.set(key, withTimestamp);
       } else {
         missing.push({
           exchange: request.exchange,
@@ -3383,15 +3386,21 @@ class QuickOrderService {
     if (missing.length > 0) {
       const liveQuotes = await openalgoClient.getQuotes(instance, missing);
       if (Array.isArray(liveQuotes)) {
+        const fetchedAt = Date.now();
+        const merged = Array.isArray(snapshot?.data) ? [...snapshot.data] : [];
         for (const quote of liveQuotes) {
           const key = this._buildQuoteMatchKey(
             quote.exchange || quote.exch,
             quote.symbol || quote.trading_symbol || quote.tradingsymbol
           );
           if (key) {
-            results.set(key, quote);
+            const enriched = { ...quote, fetchedAt };
+            results.set(key, enriched);
+            merged.push(enriched);
           }
         }
+        // Update cache so resolved futures/options become part of global polling
+        marketDataFeedService.setQuoteSnapshot(instance.id, merged, { fetchedAt });
       }
     }
 
