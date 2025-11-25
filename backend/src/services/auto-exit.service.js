@@ -11,6 +11,7 @@ import marketDataFeedService from './market-data-feed.service.js';
 import quickOrderService from './quick-order.service.js';
 import riskControlsService from './risk-controls.service.js';
 import { extractLtp, extractAveragePrice } from '../utils/price-extraction.js';
+import { normalizeTradebookEntry } from '../utils/tradebook-utils.js';
 
 const TRADE_MODE_MAP = {
   direct: 'EQUITY',
@@ -87,12 +88,15 @@ class AutoExitService {
       return;
     }
 
+    const tradebookSnapshot = await marketDataFeedService.getTradebookSnapshot(instance.id);
+    const normalizedTradebook = this._prepareTradebookSnapshot(tradebookSnapshot?.data);
+
     for (const position of positions) {
-      await this._evaluatePosition(instance, position, configLookup);
+      await this._evaluatePosition(instance, position, configLookup, normalizedTradebook);
     }
   }
 
-  async _evaluatePosition(instance, position, configLookup) {
+  async _evaluatePosition(instance, position, configLookup, tradebook = []) {
     const positionQty = this._getPositionQuantity(position);
     const positionSymbol = this._normalizeSymbol(position.symbol || position.tradingsymbol || position.trading_symbol);
     const positionExchange = this._normalizeExchange(position.exchange || position.exch || position.brexchange);
@@ -120,12 +124,22 @@ class AutoExitService {
 
     // Use shared utility for price extraction
     const currentPrice = extractLtp(position);
-    const entryPrice = extractAveragePrice(position);
+    const side = positionQty > 0 ? 'LONG' : 'SHORT';
+    let entryPrice = extractAveragePrice(position);
+    if (!entryPrice) {
+      entryPrice = this._resolveEntryPriceFromTrades(
+        tradebook,
+        positionSymbol,
+        positionExchange,
+        side,
+        Math.abs(positionQty)
+      );
+    }
+
     if (!currentPrice || !entryPrice) {
       return;
     }
 
-    const side = positionQty > 0 ? 'LONG' : 'SHORT';
     const evaluation = riskControlsService.evaluateExit({
       key,
       side,
@@ -175,6 +189,93 @@ class AutoExitService {
         error: error.message,
       });
     }
+  }
+
+  _prepareTradebookSnapshot(trades = []) {
+    if (!Array.isArray(trades) || trades.length === 0) {
+      return [];
+    }
+
+    return trades
+      .map(normalizeTradebookEntry)
+      .filter(trade =>
+        trade.symbol &&
+        trade.exchange &&
+        trade.quantity > 0 &&
+        (trade.action === 'BUY' || trade.action === 'SELL')
+      );
+  }
+
+  _resolveEntryPriceFromTrades(trades, symbol, exchange, side, positionQuantity) {
+    if (!Array.isArray(trades) || trades.length === 0) {
+      return null;
+    }
+    const normalizedSymbol = this._normalizeSymbol(symbol);
+    const normalizedExchange = this._normalizeExchange(exchange);
+    const targetQuantity = Math.abs(positionQuantity);
+    if (!normalizedSymbol || !normalizedExchange || targetQuantity <= 0) {
+      return null;
+    }
+
+    const relevantTrades = trades.filter(trade =>
+      this._normalizeSymbol(trade.symbol) === normalizedSymbol &&
+      this._normalizeExchange(trade.exchange) === normalizedExchange
+    );
+    if (!relevantTrades.length) {
+      return null;
+    }
+
+    const sortedTrades = [...relevantTrades].sort(
+      (a, b) => (a.timestamp_epoch ?? 0) - (b.timestamp_epoch ?? 0)
+    );
+    const openAction = side === 'LONG' ? 'BUY' : 'SELL';
+    const closeAction = side === 'LONG' ? 'SELL' : 'BUY';
+
+    const openTrades = sortedTrades
+      .filter(entry => entry.action === openAction)
+      .map(entry => ({ ...entry, remaining: entry.quantity }));
+
+    const closeTrades = sortedTrades.filter(entry => entry.action === closeAction);
+
+    let closeIndex = 0;
+    for (const closeTrade of closeTrades) {
+      let remainingClose = closeTrade.quantity;
+      while (remainingClose > 0 && closeIndex < openTrades.length) {
+        const openEntry = openTrades[closeIndex];
+        if (openEntry.remaining <= 0) {
+          closeIndex += 1;
+          continue;
+        }
+        const deduction = Math.min(openEntry.remaining, remainingClose);
+        openEntry.remaining -= deduction;
+        remainingClose -= deduction;
+        if (openEntry.remaining <= 0) {
+          closeIndex += 1;
+        }
+      }
+      if (remainingClose > 0) {
+        break;
+      }
+    }
+
+    let totalQuantity = 0;
+    let totalCost = 0;
+    for (const openEntry of openTrades) {
+      const remaining = openEntry.remaining ?? 0;
+      if (remaining <= 0) continue;
+      const price = openEntry.average_price;
+      if (!price || price <= 0) {
+        return null;
+      }
+      totalQuantity += remaining;
+      totalCost += remaining * price;
+    }
+
+    if (totalQuantity <= 0) {
+      return null;
+    }
+
+    return totalCost / totalQuantity;
   }
 
   _findConfig(symbol, exchange, lookup) {

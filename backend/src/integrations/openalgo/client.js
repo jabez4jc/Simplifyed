@@ -1441,6 +1441,69 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   /**
+   * Fetch quotes for multiple symbols in a single request
+   * @param {Object} instance - Instance configuration
+   * @param {Array<Object>} symbols - Array of {exchange, symbol}
+   * @param {Object} options - Options
+   * @param {boolean} options.returnErrors - Return failed symbols
+   * @returns {Promise<Array|Object>} - Quotes array or { quotes, failed }
+   */
+  async getMultiQuotes(instance, symbols = [], options = {}) {
+    const { returnErrors = false } = options;
+    const payloadSymbols = Array.isArray(symbols)
+      ? symbols
+        .map((entry) => ({
+          symbol: entry?.symbol,
+          exchange: entry?.exchange,
+        }))
+        .filter((entry) => entry.symbol && entry.exchange)
+      : [];
+
+    if (payloadSymbols.length === 0) {
+      return returnErrors ? { quotes: [], failed: [] } : [];
+    }
+
+    const response = await this.request(
+      instance,
+      'multiquotes',
+      { symbols: payloadSymbols },
+      'POST',
+      { skipRateLimit: true }
+    );
+
+    const now = Date.now();
+    const results = Array.isArray(response.results) ? response.results : [];
+    const quotes = [];
+    const failed = [];
+
+    for (const entry of results) {
+      const symbol = entry?.symbol;
+      const exchange = entry?.exchange;
+      const data = entry?.data;
+      const hasData = data && typeof data === 'object' && Object.keys(data).length > 0;
+      if (symbol && exchange && hasData) {
+        quotes.push({
+          symbol,
+          exchange,
+          ...data,
+          fetchedAt: now,
+        });
+      } else {
+        failed.push({
+          symbol,
+          exchange,
+          error: entry?.error || 'No quote data',
+        });
+      }
+    }
+
+    if (returnErrors) {
+      return { quotes, failed };
+    }
+    return quotes;
+  }
+
+  /**
    * Get quotes with automatic fallback to alternate instances on failure
    * @param {Array<Object>} instances - Pool of instances to try
    * @param {Array<Object>} symbols - Array of {exchange, symbol}

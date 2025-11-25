@@ -36,6 +36,7 @@ export const ENDPOINTS = {
 
   // Market Data (3 endpoints)
   QUOTES: 'quotes',
+  MULTI_QUOTES: 'multiquotes',
   DEPTH: 'depth',
   SEARCHSCRIP: 'searchscrip',
 
@@ -218,6 +219,7 @@ export const RATE_LIMITS = {
   placesmartorder: 10,
   cancelorder: 10,
   quotes: 20,
+  multiquotes: 10,
 };
 
 export default {

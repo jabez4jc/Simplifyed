@@ -17,15 +17,21 @@ import watchlistService from './watchlist.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import config from '../core/config.js';
 import { log } from '../core/logger.js';
+import { extractLtp } from '../utils/price-extraction.js';
 
 const DEFAULT_QUOTE_INTERVAL = 5000;               // 5 seconds for quote refresh
-const DEFAULT_POSITION_INTERVAL_IDLE = 30000;      // 30 seconds when no open positions
-const DEFAULT_POSITION_INTERVAL_ACTIVE = 5000;     // 5 seconds when positions open (for SL/target tracking)
-const DEFAULT_FUNDS_INTERVAL = 30 * 60 * 1000;     // 30 minutes for funds refresh
+const DEFAULT_POSITION_INTERVAL_IDLE = 15000;      // 15 seconds when no open positions
+const DEFAULT_POSITION_INTERVAL_ACTIVE = 10000;    // 10 seconds when positions open (for SL/target tracking)
+const DEFAULT_FUNDS_INTERVAL = 5 * 60 * 1000;      // 5 minutes for funds refresh
 
 // TTL configurations
 const TTL_DISPLAY = 5000;      // 5s TTL for watchlist display (relaxed)
-const TTL_ORDER_CRITICAL = 2000; // 2s TTL for order-critical operations (aggressive)
+const TTL_ORDER_CRITICAL = 3000; // 3s TTL for order-critical operations (aligned with default)
+
+const MULTI_QUOTE_COOLDOWN_ACTIVE_MS = 3000;
+const MULTI_QUOTE_COOLDOWN_IDLE_MS = 10000;
+const MULTI_QUOTE_SYMBOL_LIMIT = 50;
+const FEED_STAGGER_MS = 2000;
 
 class MarketDataFeedService extends EventEmitter {
   constructor() {
@@ -49,10 +55,10 @@ class MarketDataFeedService extends EventEmitter {
     // Order-critical TTL (always aggressive, 2s)
     this.QUOTE_TTL_ORDER_MS = TTL_ORDER_CRITICAL;
 
-    this.POSITION_TTL_MS = config.marketDataFeed.positionTtlMs;
-    this.FUNDS_TTL_MS = config.marketDataFeed.fundsTtlMs;
-    this.ORDERBOOK_TTL_MS = config.marketDataFeed.orderbookTtlMs;
-    this.TRADEBOOK_TTL_MS = config.marketDataFeed.tradebookTtlMs;
+    this.POSITION_TTL_MS = config.marketDataFeed.positionTtlMs || DEFAULT_POSITION_INTERVAL_IDLE;
+    this.FUNDS_TTL_MS = config.marketDataFeed.fundsTtlMs || DEFAULT_FUNDS_INTERVAL;
+    this.ORDERBOOK_TTL_MS = config.marketDataFeed.orderbookTtlMs || DEFAULT_POSITION_INTERVAL_IDLE;
+    this.TRADEBOOK_TTL_MS = config.marketDataFeed.tradebookTtlMs || DEFAULT_POSITION_INTERVAL_IDLE;
     this.orderbookCache = new Map();
     this.orderbookRefreshTimestamps = new Map();
     this.tradebookCache = new Map();
@@ -61,6 +67,8 @@ class MarketDataFeedService extends EventEmitter {
     // Unified symbol quote cache (consolidated from separate SYMBOL_QUOTE_TTL_MS)
     // TTL is now configurable per-call via ttlMs parameter
     this.symbolQuoteCache = new Map(); // key: EXCHANGE|SYMBOL -> { quote, fetchedAt }
+    this.multiQuoteTimestamps = new Map();
+    this._sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
     // Track whether there are open positions for dynamic refresh interval
     this.hasOpenPositions = false;
@@ -74,15 +82,18 @@ class MarketDataFeedService extends EventEmitter {
     const quoteInterval = config.quoteInterval ?? DEFAULT_QUOTE_INTERVAL;
     const fundsInterval = config.fundsInterval ?? DEFAULT_FUNDS_INTERVAL;
 
-    await Promise.allSettled([
-      this.refreshQuotes({ force: true }),
-      this.refreshPositions({ force: true }),
-      this.refreshFunds({ force: true }),
-    ]);
+    // Stagger initial kicks to avoid bursting the same instance with multiple endpoints
+    await this.refreshQuotes({ force: true });
+    await this._sleep(FEED_STAGGER_MS);
+    await this.refreshPositions({ force: true });
+    await this._sleep(FEED_STAGGER_MS);
+    await this.refreshFunds({ force: true });
 
+    // Quotes interval
     this.intervals.push(setInterval(() => this.refreshQuotes(), quoteInterval));
     // Position refresh uses dynamic interval based on open positions
-    this._startDynamicPositionRefresh();
+    this._startDynamicPositionRefresh(FEED_STAGGER_MS);
+    // Funds interval (already slow)
     this.intervals.push(setInterval(() => this.refreshFunds(), fundsInterval));
 
     log.info('MarketDataFeedService started', {
@@ -101,6 +112,7 @@ class MarketDataFeedService extends EventEmitter {
       clearInterval(this.positionIntervalHandle);
       this.positionIntervalHandle = null;
     }
+    this.multiQuoteTimestamps.clear();
     this.isRunning = false;
   }
 
@@ -109,10 +121,11 @@ class MarketDataFeedService extends EventEmitter {
    */
   async refreshQuotes({ force = false } = {}) {
     const now = Date.now();
-    if (!force && now - this.lastQuoteRefreshAt < this.QUOTE_TTL_MS) {
+    const targetInterval = this.hasOpenPositions ? 3000 : 10000;
+    if (!force && now - this.lastQuoteRefreshAt < targetInterval) {
       log.debug('Skipping quote refresh - TTL not expired', {
         lastRefreshMs: now - this.lastQuoteRefreshAt,
-        ttl: this.QUOTE_TTL_MS,
+        ttl: targetInterval,
       });
       return;
     }
@@ -120,71 +133,106 @@ class MarketDataFeedService extends EventEmitter {
 
     try {
       const marketDataInstances = await marketDataInstanceService.getMarketDataPool();
-      const symbolList = await this._buildGlobalSymbolList();
+      const symbolList = this._dedupeSymbols(await this._buildGlobalSymbolList());
 
       if (symbolList.length === 0 || marketDataInstances.length === 0) {
         log.debug('No tracked symbols or no market data instances. Skipping quote refresh.');
         return;
       }
 
-      const poolSize = Math.max(1, marketDataInstances.length);
-      const chunkSize = Math.max(3, Math.min(5, Math.ceil(symbolList.length / poolSize)));
-      const chunks = this._chunkSymbols(symbolList, chunkSize);
-      const assignments = new Map(); // inst.id -> symbols[]
-      chunks.forEach((chunk, idx) => {
-        const inst = marketDataInstances[idx % marketDataInstances.length];
-        if (!assignments.has(inst.id)) assignments.set(inst.id, []);
-        assignments.get(inst.id).push(...chunk);
-      });
+      const supportPool = marketDataInstances.filter(inst => inst.supports_multiquotes);
+      const regularPool = marketDataInstances.filter(inst => !inst.supports_multiquotes);
 
-      await Promise.all(Array.from(assignments.entries()).map(async ([instId, symbols]) => {
-        const inst = marketDataInstances.find(i => i.id === instId);
-        if (!inst) return;
-        const circuitKey = this._getCircuitKey(inst.id, 'quotes');
-        if (this._shouldSkipPolling(circuitKey)) {
-          return;
+      let pendingSymbols = [...symbolList];
+      let collectedQuotes = [];
+
+      if (supportPool.length > 0) {
+        const multiResult = await this._fetchViaMultiQuotes(pendingSymbols, supportPool);
+        collectedQuotes = collectedQuotes.concat(multiResult.quotes);
+        pendingSymbols = multiResult.pendingSymbols;
+        if (multiResult.sourceInstanceId && multiResult.quotes.length > 0) {
+          this.setQuoteSnapshot(multiResult.sourceInstanceId, multiResult.quotes);
         }
+      }
 
-        // CRITICAL FIX: Add retry logic before circuit breaker opens
-        const maxRetries = 2; // 2 retries = 3 total attempts
-        let lastError = null;
+      // Fallback to individual quote calls only if no usable multi-quotes were returned or there are still pending symbols
+      if (pendingSymbols.length > 0) {
+        const poolForFallback = supportPool.length > 0 ? supportPool.concat(regularPool) : marketDataInstances;
+        const assignments = new Map();
+        const poolSize = Math.max(1, poolForFallback.length);
+        const chunkSize = Math.max(3, Math.min(5, Math.ceil(pendingSymbols.length / poolSize)));
+        const chunks = this._chunkSymbols(pendingSymbols, chunkSize);
+        chunks.forEach((chunk, idx) => {
+          const inst = poolForFallback[idx % poolForFallback.length];
+          if (!assignments.has(inst.id)) assignments.set(inst.id, []);
+          assignments.get(inst.id).push(...chunk);
+        });
 
-        for (let attempt = 0; attempt <= maxRetries; attempt++) {
-          try {
-            const snapshot = await openalgoClient.getQuotes(inst, symbols);
-            this.setQuoteSnapshot(inst.id, snapshot);
-            log.debug('Quotes refreshed', {
-              instance: inst.name,
-              count: snapshot.length,
-              symbols: symbols.length,
-              attempt: attempt + 1
-            });
-            this._resetFailureState(circuitKey);
-            return; // Success - exit retry loop
-          } catch (error) {
-            lastError = error;
-            if (attempt < maxRetries) {
-              const delay = Math.min(1000 * Math.pow(2, attempt), 5000); // Exponential backoff, max 5s
-              log.debug('Quote refresh failed, retrying', {
+        // Sequential per-instance execution with jitter to smooth RPS
+        const entries = Array.from(assignments.entries());
+        for (const [instId, symbols] of entries) {
+          const inst = poolForFallback.find(i => i.id === instId);
+          if (!inst) continue;
+          const circuitKey = this._getCircuitKey(inst.id, 'quotes');
+          if (this._shouldSkipPolling(circuitKey)) {
+            continue;
+          }
+
+          const maxRetries = 2;
+          let lastError = null;
+
+          for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+              const snapshot = await openalgoClient.getQuotes(inst, symbols);
+              this.setQuoteSnapshot(inst.id, snapshot);
+              collectedQuotes = collectedQuotes.concat(snapshot || []);
+              log.debug('Quotes refreshed (fallback)', {
                 instance: inst.name,
+                count: Array.isArray(snapshot) ? snapshot.length : 0,
+                symbols: symbols.length,
                 attempt: attempt + 1,
-                maxRetries: maxRetries + 1,
-                retryInMs: delay,
-                error: error.message
               });
-              await new Promise(resolve => setTimeout(resolve, delay));
+              this._resetFailureState(circuitKey);
+              break;
+            } catch (error) {
+              lastError = error;
+              if (attempt < maxRetries) {
+                const delay = Math.min(1000 * Math.pow(2, attempt), 5000);
+                log.debug('Quote refresh failed, retrying', {
+                  instance: inst.name,
+                  attempt: attempt + 1,
+                  maxRetries: maxRetries + 1,
+                  retryInMs: delay,
+                  error: error.message,
+                });
+                await new Promise(resolve => setTimeout(resolve, delay));
+              }
             }
           }
-        }
 
-        // All retries failed
-        log.warn('Failed to refresh quotes after retries', {
-          instance: inst.name,
-          attempts: maxRetries + 1,
-          error: lastError?.message,
+          if (lastError) {
+            log.warn('Failed to refresh quotes after retries', {
+              instance: inst.name,
+              attempts: maxRetries + 1,
+              error: lastError?.message,
+            });
+            this._recordFailure(circuitKey, lastError);
+          }
+
+          // Per-instance jitter to smooth outbound RPS
+          await this._sleep(Math.floor(Math.random() * FEED_STAGGER_MS) + FEED_STAGGER_MS);
+        }
+      }
+
+      // Update symbol-level cache if we have any quotes collected in this refresh cycle
+      if (collectedQuotes.length > 0) {
+        const ts = Date.now();
+        collectedQuotes.forEach((q) => {
+          if (!q?.symbol) return;
+          const key = this._symbolKey(q.exchange, q.symbol);
+          this.symbolQuoteCache.set(key, { quote: q, fetchedAt: ts });
         });
-        this._recordFailure(circuitKey, lastError);
-      }));
+      }
     } catch (error) {
       log.warn('Failed to refresh quotes', { error: error.message });
     }
@@ -285,35 +333,47 @@ class MarketDataFeedService extends EventEmitter {
       return cached; // Return what we have from cache
     }
 
+    const supportPool = pool.filter(inst => inst.supports_multiquotes);
+    const regularPool = pool.filter(inst => !inst.supports_multiquotes);
+
     let fetchedQuotes = [];
+    let pendingSymbols = [...missing];
 
-    if (useFallback && pool.length > 1) {
-      // Use new fallback method for multi-instance pools
-      fetchedQuotes = await openalgoClient.getQuotesWithFallback(pool, missing, { maxRetries: 2 });
-    } else {
-      // Single instance or fallback disabled: use parallel batch processing
-      const batchSize = Math.max(3, Math.min(5, Math.ceil(missing.length / Math.max(1, pool.length))));
-      const chunks = this._chunkSymbols(missing, batchSize);
+    if (supportPool.length > 0) {
+      const multiResult = await this._fetchViaMultiQuotes(pendingSymbols, supportPool);
+      fetchedQuotes = fetchedQuotes.concat(multiResult.quotes);
+      pendingSymbols = multiResult.pendingSymbols;
+      if (multiResult.sourceInstanceId && multiResult.quotes.length > 0) {
+        this.setQuoteSnapshot(multiResult.sourceInstanceId, multiResult.quotes, { fetchedAt: Date.now() });
+      }
+    }
 
-      // PARALLEL batch processing (not sequential!)
-      const batchPromises = chunks.map(async (chunk, idx) => {
-        const inst = pool[idx % pool.length];
-        try {
-          const quotes = await openalgoClient.getQuotes(inst, chunk);
-          return { success: true, quotes: Array.isArray(quotes) ? quotes : [], inst };
-        } catch (error) {
-          log.warn('Batch quote fetch failed', { instance: inst.name, error: error.message });
-          return { success: false, quotes: [], inst };
-        }
-      });
+    if (pendingSymbols.length > 0) {
+      if (useFallback && pool.length > 1) {
+        fetchedQuotes = fetchedQuotes.concat(
+          await openalgoClient.getQuotesWithFallback(pool, pendingSymbols, { maxRetries: 2 })
+        );
+      } else {
+        const batchSize = Math.max(3, Math.min(5, Math.ceil(pendingSymbols.length / Math.max(1, pool.length))));
+        const chunks = this._chunkSymbols(pendingSymbols, batchSize);
 
-      const batchResults = await Promise.all(batchPromises);
+        const batchPromises = chunks.map(async (chunk, idx) => {
+          const inst = pool[idx % pool.length];
+          try {
+            const quotes = await openalgoClient.getQuotes(inst, chunk);
+            return { success: true, quotes: Array.isArray(quotes) ? quotes : [], inst };
+          } catch (error) {
+            log.warn('Batch quote fetch failed', { instance: inst.name, error: error.message });
+            return { success: false, quotes: [], inst };
+          }
+        });
 
-      // Collect all successful quotes
-      for (const result of batchResults) {
-        if (result.success && result.quotes.length > 0) {
-          this.setQuoteSnapshot(result.inst.id, result.quotes, { fetchedAt: Date.now() });
-          fetchedQuotes = fetchedQuotes.concat(result.quotes);
+        const batchResults = await Promise.all(batchPromises);
+        for (const result of batchResults) {
+          if (result.success && result.quotes.length > 0) {
+            this.setQuoteSnapshot(result.inst.id, result.quotes, { fetchedAt: Date.now() });
+            fetchedQuotes = fetchedQuotes.concat(result.quotes);
+          }
         }
       }
     }
@@ -348,7 +408,11 @@ class MarketDataFeedService extends EventEmitter {
   async refreshPositions({ force = false } = {}) {
     try {
       const instances = await instanceService.getAllInstances({ is_active: true });
-      await Promise.all(instances.map(inst => this.refreshPositionsForInstance(inst.id, { force })));
+      for (const inst of instances) {
+        await this.refreshPositionsForInstance(inst.id, { force });
+        // Per-instance jitter to smooth RPS
+        await this._sleep(Math.floor(Math.random() * FEED_STAGGER_MS) + FEED_STAGGER_MS);
+      }
     } catch (error) {
       log.warn('refreshPositions failed to load instances', { error: error.message });
     }
@@ -371,8 +435,9 @@ class MarketDataFeedService extends EventEmitter {
       }
       const now = Date.now();
       const last = this.positionRefreshTimestamps.get(instanceId) || 0;
-      if (!force && now - last < this.POSITION_TTL_MS) {
-        log.debug('Skipping position refresh (TTL)', { instanceId, elapsedMs: now - last });
+      const ttlMs = this._getStatefulTtlMs('positions');
+      if (!force && now - last < ttlMs) {
+        log.debug('Skipping position refresh (TTL)', { instanceId, elapsedMs: now - last, ttlMs });
         return;
       }
       this.positionRefreshTimestamps.set(instanceId, now);
@@ -522,7 +587,10 @@ class MarketDataFeedService extends EventEmitter {
 
     try {
       const instances = await instanceService.getAllInstances({ is_active: true });
-      await Promise.all(instances.map(inst => this.refreshFundsForInstance(inst.id, { force })));
+      for (const inst of instances) {
+        await this.refreshFundsForInstance(inst.id, { force });
+        await this._sleep(Math.floor(Math.random() * FEED_STAGGER_MS) + FEED_STAGGER_MS);
+      }
     } catch (error) {
       log.warn('refreshFunds failed to load instances', { error: error.message });
     }
@@ -603,6 +671,18 @@ class MarketDataFeedService extends EventEmitter {
         symbol: symbol.symbol,
       }));
 
+      // Add open position symbols so live P&L views also get covered
+      this.positionCache.forEach((snapshot) => {
+        const positions = snapshot?.data || [];
+        positions.forEach((p) => {
+          const symbol = (p.symbol || p.tradingsymbol || p.trading_symbol || '').trim();
+          const exchange = (p.exchange || p.exch || p.brexchange || '').trim();
+          if (symbol && exchange) {
+            symbolList.push({ exchange, symbol });
+          }
+        });
+      });
+
       return symbolList;
     } catch (error) {
       log.warn('Failed to build global symbol list', { error: error.message });
@@ -614,8 +694,9 @@ class MarketDataFeedService extends EventEmitter {
     const now = Date.now();
     const last = this.orderbookRefreshTimestamps.get(instanceId);
     const cache = this.orderbookCache.get(instanceId);
+    const ttlMs = this._getStatefulTtlMs('orderbook');
 
-    if (!force && cache && last && now - last < this.ORDERBOOK_TTL_MS) {
+    if (!force && cache && last && now - last < ttlMs) {
       return cache;
     }
 
@@ -640,8 +721,9 @@ class MarketDataFeedService extends EventEmitter {
     const now = Date.now();
     const last = this.tradebookRefreshTimestamps.get(instanceId);
     const cache = this.tradebookCache.get(instanceId);
+    const ttlMs = this._getStatefulTtlMs('tradebook');
 
-    if (!force && cache && last && now - last < this.TRADEBOOK_TTL_MS) {
+    if (!force && cache && last && now - last < ttlMs) {
       return cache;
     }
 
@@ -675,6 +757,113 @@ class MarketDataFeedService extends EventEmitter {
     return chunks;
   }
 
+  async _fetchViaMultiQuotes(symbols = [], instances = []) {
+    if (!Array.isArray(symbols) || symbols.length === 0 || !Array.isArray(instances) || instances.length === 0) {
+      return { quotes: [], pendingSymbols: symbols || [], sourceInstanceId: null };
+    }
+
+    let pendingSymbols = [...symbols];
+    const collected = [];
+    let sourceInstanceId = null;
+    const now = Date.now();
+
+    for (const inst of instances) {
+      const circuitKey = this._getCircuitKey(inst.id, 'quotes');
+      if (this._shouldSkipPolling(circuitKey)) {
+        continue;
+      }
+
+      const cooldown = this.hasOpenPositions ? MULTI_QUOTE_COOLDOWN_ACTIVE_MS : MULTI_QUOTE_COOLDOWN_IDLE_MS;
+      const lastMultiAt = this.multiQuoteTimestamps.get(inst.id) || 0;
+      if (now - lastMultiAt < cooldown) {
+        log.debug('Skipping MultiQuotes due to cooldown', {
+          instance_id: inst.id,
+          elapsedMs: now - lastMultiAt,
+          cooldownMs: cooldown,
+        });
+        continue;
+      }
+
+      try {
+        const { quotes, failed } = await openalgoClient.getMultiQuotes(inst, pendingSymbols, { returnErrors: true });
+        const validQuotes = [];
+        const invalidSymbols = new Set(failed.map(f => `${(f.exchange || '').toUpperCase()}|${(f.symbol || '').toUpperCase()}`));
+
+        quotes.forEach((q) => {
+          const ltp = extractLtp(q);
+          const key = `${(q.exchange || '').toUpperCase()}|${(q.symbol || '').toUpperCase()}`;
+          if (ltp && ltp > 0) {
+            validQuotes.push(q);
+            collected.push(q);
+            invalidSymbols.delete(key);
+          } else {
+            invalidSymbols.add(key);
+          }
+        });
+
+        const resolvedKeys = new Set(validQuotes.map(q => `${(q.exchange || '').toUpperCase()}|${(q.symbol || '').toUpperCase()}`));
+        pendingSymbols = pendingSymbols.filter((s) => {
+          const key = `${(s.exchange || '').toUpperCase()}|${(s.symbol || '').toUpperCase()}`;
+          return invalidSymbols.has(key) || !resolvedKeys.has(key);
+        });
+
+        if (validQuotes.length > 0 && sourceInstanceId === null) {
+          sourceInstanceId = inst.id;
+        }
+
+        this._resetFailureState(circuitKey);
+        this.multiQuoteTimestamps.set(inst.id, Date.now());
+
+        if (pendingSymbols.length === 0) {
+          break;
+        }
+      } catch (error) {
+        log.warn('MultiQuotes fetch failed on instance', {
+          instance_id: inst.id,
+          instance_name: inst.name,
+          error: error.message,
+        });
+        this._recordFailure(circuitKey, error);
+      }
+    }
+
+    return { quotes: collected, pendingSymbols, sourceInstanceId };
+  }
+
+  async _fetchQuotesForInstance(instance, symbols = []) {
+    if (!Array.isArray(symbols) || symbols.length === 0) {
+      return [];
+    }
+
+    const now = Date.now();
+    const supportsMulti = Boolean(instance.supports_multiquotes);
+
+    if (supportsMulti && symbols.length <= MULTI_QUOTE_SYMBOL_LIMIT) {
+      const cooldown = this.hasOpenPositions ? MULTI_QUOTE_COOLDOWN_ACTIVE_MS : MULTI_QUOTE_COOLDOWN_IDLE_MS;
+      const lastMultiAt = this.multiQuoteTimestamps.get(instance.id) || 0;
+      if (now - lastMultiAt >= cooldown) {
+        try {
+          const multiQuotes = await openalgoClient.getMultiQuotes(instance, symbols);
+          this.multiQuoteTimestamps.set(instance.id, now);
+          return multiQuotes;
+        } catch (error) {
+          log.warn('MultiQuotes fetch failed, falling back to single-symbol quotes', {
+            instance_id: instance.id,
+            error: error.message,
+          });
+        }
+      } else {
+        log.debug('Skipping MultiQuotes fetch due to cooldown', {
+          instance_id: instance.id,
+          elapsedMs: now - lastMultiAt,
+          cooldownMs: cooldown,
+        });
+      }
+    }
+
+    return openalgoClient.getQuotes(instance, symbols);
+  }
+
   _symbolKey(exchange = '', symbol = '') {
     return `${(exchange || '').toUpperCase()}|${(symbol || '').toUpperCase()}`;
   }
@@ -690,6 +879,17 @@ class MarketDataFeedService extends EventEmitter {
       }
     });
     return result;
+  }
+
+  _getStatefulTtlMs(feed) {
+    const activeTtl = 10000; // 10s when open positions exist
+    const idleTtl = 15000;   // 15s when no open positions
+
+    if (feed === 'positions' || feed === 'orderbook' || feed === 'tradebook') {
+      return this.hasOpenPositions ? activeTtl : idleTtl;
+    }
+
+    return this.QUOTE_TTL_MS;
   }
 
   _shouldSkipPolling(key) {
@@ -918,13 +1118,13 @@ class MarketDataFeedService extends EventEmitter {
    * - 5 seconds when positions are open (for SL/target tracking)
    * @private
    */
-  _startDynamicPositionRefresh() {
+  _startDynamicPositionRefresh(initialDelayMs = 0) {
     // Initial interval based on current state
     const initialInterval = this.hasOpenPositions
       ? DEFAULT_POSITION_INTERVAL_ACTIVE
       : DEFAULT_POSITION_INTERVAL_IDLE;
 
-    this._schedulePositionRefresh(initialInterval);
+    this._schedulePositionRefresh(initialInterval + initialDelayMs);
   }
 
   /**

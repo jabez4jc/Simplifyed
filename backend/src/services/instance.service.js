@@ -134,8 +134,8 @@ class InstanceService {
         `INSERT INTO instances (
           name, host_url, api_key, broker, strategy_tag,
           is_primary_admin, is_secondary_admin,
-          market_data_role
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          market_data_role, supports_multiquotes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           normalized.name,
           normalized.host_url,
@@ -145,6 +145,7 @@ class InstanceService {
           normalized.is_primary_admin ? 1 : 0,
           normalized.is_secondary_admin ? 1 : 0,
           normalized.market_data_role || 'none',
+          normalized.supports_multiquotes ?? 0,
         ]
       );
 
@@ -928,6 +929,11 @@ class InstanceService {
     // Market data enabled (new flag)
     if (data.market_data_enabled !== undefined) {
       normalized.market_data_enabled = parseBooleanSafe(data.market_data_enabled, false) ? 1 : 0;
+    }
+
+    // MultiQuotes support flag
+    if (data.supports_multiquotes !== undefined) {
+      normalized.supports_multiquotes = parseBooleanSafe(data.supports_multiquotes, false) ? 1 : 0;
     }
 
     // Admin flags

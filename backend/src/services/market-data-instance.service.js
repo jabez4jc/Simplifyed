@@ -93,7 +93,7 @@ class MarketDataInstanceService {
   async getMarketDataInstances() {
     try {
       const instances = await db.all(
-        `SELECT id, name, host_url, api_key, broker, market_data_role, market_data_enabled, health_status, is_active, last_health_check
+        `SELECT id, name, host_url, api_key, broker, market_data_role, market_data_enabled, supports_multiquotes, health_status, is_active, last_health_check
          FROM instances
          WHERE is_active = 1 AND (market_data_enabled = 1 OR market_data_role IN ('primary','secondary'))
          ORDER BY created_at DESC`

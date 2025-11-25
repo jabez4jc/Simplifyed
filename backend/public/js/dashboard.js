@@ -2274,6 +2274,17 @@ class DashboardApp {
             </div>
 
             <div class="form-group">
+              <label class="form-label">MultiQuotes (optional)</label>
+              <label class="inline-flex items-center gap-2">
+                <input type="checkbox" name="supports_multiquotes" class="form-checkbox">
+                <span>Instance supports <a href="https://docs.openalgo.in/api-documentation/v1/data-api/multiquotes" target="_blank" rel="noopener">OpenAlgo MultiQuotes</a></span>
+              </label>
+              <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
+                When enabled, watchlist polling uses batched requests (max 1 every 5 seconds) instead of one call per symbol.
+              </small>
+            </div>
+
+            <div class="form-group">
               <label class="form-label">Strategy Tag</label>
               <input type="text" name="strategy_tag" class="form-input" value="default">
             </div>
@@ -2325,6 +2336,7 @@ class DashboardApp {
     const data = Object.fromEntries(formData.entries());
 
     data.market_data_enabled = form.querySelector('input[name="market_data_enabled"]').checked;
+    data.supports_multiquotes = form.querySelector('input[name="supports_multiquotes"]').checked;
 
     try {
       await api.createInstance(data);
@@ -3764,6 +3776,18 @@ class DashboardApp {
               </div>
 
               <div class="form-group">
+                <label class="form-label">MultiQuotes (optional)</label>
+                <label class="inline-flex items-center gap-2">
+                  <input type="checkbox" name="supports_multiquotes" class="form-checkbox"
+                         ${instance.supports_multiquotes ? 'checked' : ''}>
+                  <span>Instance supports <a href="https://docs.openalgo.in/api-documentation/v1/data-api/multiquotes" target="_blank" rel="noopener">OpenAlgo MultiQuotes</a></span>
+                </label>
+                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
+                  When enabled, watchlist polling uses batched requests (max 1 every 5 seconds) instead of one call per symbol.
+                </small>
+              </div>
+
+              <div class="form-group">
                 <label class="form-label">Strategy Tag</label>
                 <input type="text" name="strategy_tag" class="form-input"
                        value="${Utils.escapeHTML(instance.strategy_tag || 'default')}">
@@ -3842,6 +3866,7 @@ class DashboardApp {
     delete data.broker;
 
     data.market_data_enabled = form.querySelector('input[name="market_data_enabled"]').checked;
+    data.supports_multiquotes = form.querySelector('input[name="supports_multiquotes"]').checked;
 
     try {
       await api.updateInstance(instanceId, data);
