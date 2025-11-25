@@ -622,8 +622,15 @@ class DashboardApp {
       return '<p class="text-center text-neutral-600">No instances found</p>';
     }
 
+    // Columns (15): [Name, Broker, Status, Health, Mode, Session Limits, Cutoff Reason, Limits, Live P&L, Analyzer P&L, Balance, Total P&L, Realized, Unrealized, Actions]
+    const baseColWidths = ['14%','10%','8%','8%','8%','12%','9%','8%','8%','8%','8%','8%','8%','8%','9%'];
+    const colWidths = showBulkActions ? ['40px', ...baseColWidths] : baseColWidths;
+
     return `
-      <table class="table">
+      <table class="table instances-table">
+        <colgroup>
+          ${colWidths.map(w => `<col style="width:${w};">`).join('')}
+        </colgroup>
         <thead>
             <tr>
               ${showBulkActions ? '<th><input type="checkbox" id="select-all-instances" onchange="app.toggleSelectAllInstances(this.checked)"></th>' : ''}
