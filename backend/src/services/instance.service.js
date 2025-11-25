@@ -453,6 +453,15 @@ class InstanceService {
         let lastLiveTotalPnl = instance.last_live_total_pnl;
         let lastLiveTotalPnlAt = instance.last_live_total_pnl_at;
         let cutoffReason = null;
+        const sessionLabel = currentSession?.label || 'Session';
+        const sessionKey = `${todayIst}|${sessionLabel}`;
+
+        // Reset per-day max-loss hit counter
+        let maxLossHits = parseIntSafe(instance.session_max_loss_hits, 0);
+        const hitsDate = instance.session_max_loss_hits_date;
+        if (hitsDate !== todayIst) {
+          maxLossHits = 0;
+        }
 
         if (!instance.is_analyzer_mode) {
           lastLiveTotalPnl = totalPnl;
@@ -460,9 +469,6 @@ class InstanceService {
         }
 
         if (!instance.is_analyzer_mode && currentSession) {
-          const sessionLabel = currentSession.label || 'Session';
-          const sessionKey = `${todayIst}|${sessionLabel}`;
-
           if (sessionBaselineAt !== sessionKey || sessionBaseline === null || sessionBaseline === undefined) {
             sessionBaseline = totalPnl;
             sessionBaselineAt = sessionKey;
@@ -477,7 +483,29 @@ class InstanceService {
           if (target !== null && sessionPnl >= target) {
             cutoffReason = 'SESSION_TARGET_PROFIT_REACHED';
           } else if (maxLoss !== null && sessionPnl <= -Math.abs(maxLoss)) {
-            cutoffReason = 'SESSION_MAX_LOSS_BREACHED';
+            maxLossHits += 1;
+            const limitReached = maxLossHits >= 3;
+            cutoffReason = limitReached
+              ? 'SESSION_MAX_LOSS_LIMIT_REACHED'
+              : 'SESSION_MAX_LOSS_BREACHED';
+          }
+
+          // Auto-revert to live at start of a new session if prior cutoff was max-loss (not limit reached)
+          if (
+            instance.is_analyzer_mode &&
+            instance.session_cutoff_reason &&
+            instance.session_cutoff_reason.startsWith('SESSION_MAX_LOSS') &&
+            cutoffReason === null &&
+            hitsDate !== todayIst // new day/session window
+          ) {
+            try {
+              await this.toggleAnalyzerMode(id, false);
+              cutoffReason = null;
+              maxLossHits = 0;
+              log.info('Auto-switching back to live for new session after prior max-loss cutoff', { id });
+            } catch (toggleErr) {
+              log.warn('Failed to auto-switch to live for new session', { id, error: toggleErr.message });
+            }
           }
 
           if (cutoffReason) {
@@ -486,6 +514,7 @@ class InstanceService {
               session: sessionLabel,
               session_pnl: sessionPnl,
               reason: cutoffReason,
+              max_loss_hits: maxLossHits,
             });
             // fire-and-forget safe toggle; errors logged but do not throw to keep polling running
             try {
@@ -516,6 +545,8 @@ class InstanceService {
               WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP
               ELSE session_cutoff_at
             END,
+            session_max_loss_hits = ?,
+            session_max_loss_hits_date = ?,
             last_updated = CURRENT_TIMESTAMP
           WHERE id = ?`,
           [
@@ -530,6 +561,8 @@ class InstanceService {
             lastLiveTotalPnlAt,
             cutoffReason,
             cutoffReason,
+            maxLossHits,
+            todayIst,
             id,
           ]
         );

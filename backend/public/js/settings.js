@@ -11,6 +11,7 @@ class SettingsHandler {
     this.activeCategory = 'server';
     this.isSaving = false;
     this.searchQuery = '';
+    this.allowedCategories = null; // show all categories by default
 
     // Category metadata with icons and descriptions
     this.categoryMeta = {
@@ -495,17 +496,11 @@ class SettingsHandler {
     }
 
     const rows = sessions.map((s, idx) => `
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-3 items-center trading-session-row" data-index="${idx}">
-        <div>
-          <label class="text-sm text-neutral-600">Label</label>
-          <input type="text" class="form-input trading-session-input" data-key="${key}" data-index="${idx}" data-field="label" value="${Utils.escapeHTML(s.label || '')}">
-        </div>
-        <div>
-          <label class="text-sm text-neutral-600">Start (HH:MM)</label>
+      <div class="trading-session-row flex flex-wrap items-center gap-3" data-index="${idx}">
+        <div class="w-24 text-sm font-semibold text-neutral-600">Session ${idx + 1}</div>
+        <div class="flex items-center gap-2 flex-1 min-w-[220px]">
           <input type="time" class="form-input trading-session-input" data-key="${key}" data-index="${idx}" data-field="start" value="${Utils.escapeHTML(s.start || '')}">
-        </div>
-        <div>
-          <label class="text-sm text-neutral-600">End (HH:MM)</label>
+          <span class="text-neutral-500 text-sm">to</span>
           <input type="time" class="form-input trading-session-input" data-key="${key}" data-index="${idx}" data-field="end" value="${Utils.escapeHTML(s.end || '')}">
         </div>
       </div>

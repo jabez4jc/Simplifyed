@@ -238,13 +238,15 @@ body {
   }
 
   .drawer .drawer-side {
-    position: relative;
+    position: sticky;
+    top: 0;
     width: auto;
     display: block;
-    overflow: visible;
+    overflow: hidden;
     pointer-events: auto;
     visibility: visible;
     opacity: 1;
+    height: 100vh;
   }
 
   .drawer .drawer-side>.drawer-overlay {
@@ -253,6 +255,18 @@ body {
 
   .drawer .drawer-side>:not(.drawer-overlay) {
     translate: 0 !important;
+  }
+
+  /* Allow sidebar content to scroll independently while shell stays fixed */
+  .drawer .drawer-side .sidebar-shell {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .drawer .drawer-side .sidebar-shell .menu {
+    flex: 1;
+    overflow-y: auto;
   }
 
   body.sidebar-collapsed .sidebar-shell,

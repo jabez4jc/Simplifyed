@@ -30,6 +30,7 @@ class DashboardApp {
     this.watchlistPositionsExpanded = new Set();
     this.latestWatchlistPositionsData = null;
     this.currentOrderFilter = '';
+    this.instanceSearchQuery = '';
     this.autoExitModes = [
       { key: 'direct', label: 'Direct Trading' },
       { key: 'futures', label: 'Futures Trading' },
@@ -555,6 +556,17 @@ class DashboardApp {
           }),
     }));
 
+    const searchValue = (this.instanceSearchQuery || '').toLowerCase();
+    const filteredInstances = this.instances.filter(instance => {
+      const haystack = [
+        instance.name,
+        instance.broker,
+        instance.host_url,
+        instance.market_data_role,
+      ].join(' ').toLowerCase();
+      return haystack.includes(searchValue);
+    });
+
     contentArea.innerHTML = `
       <div class="card">
         <div class="card-header">
@@ -562,6 +574,16 @@ class DashboardApp {
           <button class="btn btn-primary" onclick="app.showAddInstanceModal()">
             + Add Instance
           </button>
+        </div>
+        <div class="p-4 flex items-center gap-3">
+          <input
+            type="text"
+            class="form-input w-full max-w-md"
+            placeholder="Search instances by name, broker, URL, or role..."
+            value="${Utils.escapeHTML(this.instanceSearchQuery || '')}"
+            oninput="app.handleInstanceSearch(this.value)"
+          />
+          <button class="btn btn-outline btn-sm" onclick="app.renderInstancesView()">Reset</button>
         </div>
 
         <!-- Bulk Actions Bar -->
@@ -586,7 +608,7 @@ class DashboardApp {
         </div>
 
         <div class="table-container">
-          ${this.renderInstancesTable(this.instances, true)}
+          ${this.renderInstancesTable(filteredInstances, true)}
         </div>
       </div>
     `;
@@ -610,6 +632,8 @@ class DashboardApp {
               <th>Status</th>
               <th>Health</th>
               <th>Mode</th>
+              <th>Session Limits</th>
+              <th>Cutoff Reason</th>
               <th>Limits</th>
               <th class="text-right">Live P&L</th>
               <th class="text-right">Analyzer P&L</th>
@@ -636,6 +660,15 @@ class DashboardApp {
                 ${instance.is_analyzer_mode
                   ? '<span class="badge badge-warning">Analyzer</span>'
                   : '<span class="badge badge-success">Live</span>'}
+                ${instance.session_cutoff_reason
+                  ? `<div class="text-[11px] text-neutral-500 mt-1">${Utils.escapeHTML(instance.session_cutoff_reason.replace(/_/g, ' '))}</div>`
+                  : ''}
+              </td>
+              <td>
+                <div class="text-sm">
+                  <div><span class="text-neutral-500">Target:</span> ${instance.session_target_profit != null ? Utils.formatCurrency(instance.session_target_profit) : '—'}</div>
+                  <div><span class="text-neutral-500">Max Loss:</span> ${instance.session_max_loss != null ? Utils.formatCurrency(instance.session_max_loss) : '—'}</div>
+                </div>
               </td>
               <td>${this.renderLimitBadge(instance.limit_metrics)}</td>
               <td class="text-right ${Utils.getPnLColorClass(instance.last_live_total_pnl)}">
@@ -1506,6 +1539,9 @@ class DashboardApp {
               <button class="btn btn-outline btn-sm" onclick="app.loadOrders()">
                 Refresh
               </button>
+              <button class="btn btn-error btn-sm" onclick="app.cancelAllOpenOrdersGlobal()">
+                Cancel All Open
+              </button>
             </div>
           </div>
           <div class="p-4" id="orders-panel">
@@ -2050,6 +2086,7 @@ class DashboardApp {
       // Fetch ALL positions from all active instances (including closed)
       const response = await api.getAllPositions(false); // onlyOpen = false
       const data = response.data;
+      this.latestAllPositionsData = data;
 
       if (data.instances.length === 0) {
         contentArea.innerHTML = `
@@ -2096,20 +2133,30 @@ class DashboardApp {
     const container = document.getElementById('positions-summary');
     if (!container) return;
     container.innerHTML = `
-      <div class="grid grid-cols-3 gap-4">
-        <div class="text-center">
-          <div class="text-sm text-neutral-600 mb-1">Open Positions</div>
-          <div class="text-2xl font-semibold">${data.overall_open_positions}</div>
-        </div>
-        <div class="text-center">
-          <div class="text-sm text-neutral-600 mb-1">Closed Positions</div>
-          <div class="text-2xl font-semibold">${data.overall_closed_positions}</div>
-        </div>
-        <div class="text-center">
-          <div class="text-sm text-neutral-600 mb-1">Overall P&L</div>
-          <div class="text-2xl font-semibold ${Utils.getPnLColorClass(data.overall_total_pnl)}">
-            ${Utils.formatCurrency(data.overall_total_pnl)}
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div class="grid grid-cols-3 gap-4 flex-1 min-w-[280px]">
+          <div class="text-center">
+            <div class="text-sm text-neutral-600 mb-1">Open Positions</div>
+            <div class="text-2xl font-semibold">${data.overall_open_positions}</div>
           </div>
+          <div class="text-center">
+            <div class="text-sm text-neutral-600 mb-1">Closed Positions</div>
+            <div class="text-2xl font-semibold">${data.overall_closed_positions}</div>
+          </div>
+          <div class="text-center">
+            <div class="text-sm text-neutral-600 mb-1">Overall P&L</div>
+            <div class="text-2xl font-semibold ${Utils.getPnLColorClass(data.overall_total_pnl)}">
+              ${Utils.formatCurrency(data.overall_total_pnl)}
+            </div>
+          </div>
+        </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <button class="btn btn-outline btn-sm" onclick="app.renderPositionsView()">
+            Refresh
+          </button>
+          <button class="btn btn-error btn-sm" onclick="app.closeAllPositionsGlobal()">
+            Close All Positions
+          </button>
         </div>
       </div>
     `;
@@ -3288,6 +3335,45 @@ class DashboardApp {
     }
   }
 
+  async cancelAllOpenOrdersGlobal() {
+    const payload = this.orderbookPayload;
+    const allInstances = [
+      ...(payload?.liveInstances || []),
+      ...(payload?.analyzerInstances || []),
+    ];
+    const instancesWithOpen = allInstances
+      .filter(inst => (inst.orders || []).some(order => {
+        const status = (order.status || '').toLowerCase();
+        return status === 'pending' || status === 'open';
+      }));
+
+    if (instancesWithOpen.length === 0) {
+      Utils.showToast('No open/pending orders to cancel.', 'info');
+      return;
+    }
+
+    const confirmed = await Utils.confirm(
+      `Cancel open/pending orders across ${instancesWithOpen.length} instance(s)?`,
+      'Confirm Global Cancel All'
+    );
+    if (!confirmed) return;
+
+    try {
+      const results = await Promise.allSettled(
+        instancesWithOpen.map(inst => api.cancelAllOrders(inst.instance_id))
+      );
+      const failures = results.filter(r => r.status === 'rejected');
+      if (failures.length > 0) {
+        Utils.showToast(`Some instances failed to cancel orders: ${failures.length}`, 'warning');
+      } else {
+        Utils.showToast('Cancel-all sent for all instances', 'success');
+      }
+      await this.loadOrders(this.currentOrderFilter);
+    } catch (error) {
+      Utils.showToast('Failed to cancel orders: ' + error.message, 'error');
+    }
+  }
+
   /**
    * Close all positions
    */
@@ -3313,6 +3399,11 @@ class DashboardApp {
    */
   async refreshCurrentView() {
     await this.loadView(this.currentView);
+  }
+
+  handleInstanceSearch(value) {
+    this.instanceSearchQuery = value || '';
+    this.renderInstancesView();
   }
 
   /**
@@ -3448,6 +3539,47 @@ class DashboardApp {
       }
     } catch (error) {
       Utils.showToast('Failed to close all positions: ' + error.message, 'error');
+    }
+  }
+
+  async closeAllPositionsGlobal() {
+    const data = this.latestAllPositionsData;
+    if (!data || !Array.isArray(data.instances)) {
+      Utils.showToast('Positions not loaded yet', 'warning');
+      return;
+    }
+
+    const instances = data.instances.filter(inst => {
+      const openCount = typeof inst.open_positions_count === 'number'
+        ? inst.open_positions_count
+        : (inst.positions || []).length;
+      return openCount > 0;
+    });
+
+    if (instances.length === 0) {
+      Utils.showToast('No open positions to close', 'info');
+      return;
+    }
+
+    const confirmed = await Utils.confirm(
+      `Close all open positions across ${instances.length} instance(s)?`,
+      'Confirm Global Close All'
+    );
+    if (!confirmed) return;
+
+    try {
+      const responses = await Promise.allSettled(
+        instances.map(inst => api.closePositions(inst.instance_id))
+      );
+      const failures = responses.filter(r => r.status === 'rejected');
+      if (failures.length > 0) {
+        Utils.showToast(`Some instances failed to close positions: ${failures.length}`, 'warning');
+      } else {
+        Utils.showToast('Close-all sent for all instances', 'success');
+      }
+      await this.renderPositionsView();
+    } catch (error) {
+      Utils.showToast(error.message, 'error');
     }
   }
 
