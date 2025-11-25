@@ -110,14 +110,19 @@ class DashboardApp {
   togglePause() {
     this.isPaused = !this.isPaused;
     this.updatePauseButtonUI();
-    if (!this.isPaused) {
-      Utils.showToast('Resumed data fetching', 'success');
-      this.refreshCurrentView(true);
-    } else {
+    if (this.isPaused) {
       Utils.showToast('Paused all background data fetching', 'info');
       this.stopAllWatchlistPolling();
       this.stopTradesPolling();
       this.stopPositionsPolling();
+      if (this.pollingInterval) {
+        clearInterval(this.pollingInterval);
+        this.pollingInterval = null;
+      }
+    } else {
+      Utils.showToast('Resumed data fetching', 'success');
+      this.refreshCurrentView(true);
+      this.startAutoRefresh();
     }
   }
 
@@ -289,7 +294,8 @@ class DashboardApp {
   /**
    * Load view
    */
-  async loadView(viewName) {
+  async loadView(viewName, { force = false } = {}) {
+    if (this.isPaused && !force) return;
     // Clean up watchlist pollers when leaving watchlists view
     if (this.currentView === 'watchlists' && viewName !== 'watchlists') {
       this.stopAllWatchlistPolling();
@@ -693,17 +699,6 @@ class DashboardApp {
               </td>
               <td class="text-right ${Utils.getPnLColorClass(instance.unrealized_pnl)}">
                 ${Utils.formatCurrency(instance.unrealized_pnl || 0)}
-              </td>
-              <td>
-                <div class="text-sm">
-                  <div><span class="text-neutral-500">Target:</span> ${instance.session_target_profit != null ? Utils.formatCurrency(instance.session_target_profit) : '—'}</div>
-                  <div><span class="text-neutral-500">Max Loss:</span> ${instance.session_max_loss != null ? Utils.formatCurrency(instance.session_max_loss) : '—'}</div>
-                </div>
-              </td>
-              <td>
-                ${instance.session_cutoff_reason
-                  ? `<div class="text-[11px] text-neutral-500 mt-1">${Utils.escapeHTML(instance.session_cutoff_reason.replace(/_/g, ' '))}</div>`
-                  : '<span class="text-neutral-400">—</span>'}
               </td>
               <td>
                 <div class="text-sm">
@@ -3418,8 +3413,9 @@ class DashboardApp {
   /**
    * Refresh current view
    */
-  async refreshCurrentView() {
-    await this.loadView(this.currentView);
+  async refreshCurrentView(force = false) {
+    if (this.isPaused && !force) return;
+    await this.loadView(this.currentView, { force });
   }
 
   handleInstanceSearch(value) {
@@ -3436,6 +3432,8 @@ class DashboardApp {
     if (this.pollingInterval) {
       clearInterval(this.pollingInterval);
     }
+
+    if (this.isPaused) return;
 
     // Refresh every 15 seconds, but skip watchlists view
     // to avoid conflicts with independent watchlist polling
