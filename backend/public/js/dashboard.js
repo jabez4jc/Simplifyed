@@ -119,8 +119,13 @@ class DashboardApp {
         clearInterval(this.pollingInterval);
         this.pollingInterval = null;
       }
+      // Stop backend polling
+      api.stopPolling().catch(() => {});
+      api.stopMarketDataPolling().catch(() => {});
     } else {
       Utils.showToast('Resumed data fetching', 'success');
+      // Resume backend polling
+      api.startPolling().catch(() => {});
       this.refreshCurrentView(true);
       this.startAutoRefresh();
     }

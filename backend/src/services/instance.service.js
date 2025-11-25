@@ -18,6 +18,7 @@ import {
   sanitizeStrategyTag,
   parseFloatSafe,
   parseBooleanSafe,
+  parseIntSafe,
 } from '../utils/sanitizers.js';
 import settingsService from './settings.service.js';
 
