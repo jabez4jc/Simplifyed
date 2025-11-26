@@ -115,10 +115,26 @@ check_network() {
     fi
 
     # Check DNS resolution
-    if host google.com &> /dev/null; then
-        check_pass "DNS resolution working"
+    if command -v dig &> /dev/null; then
+        if dig +short google.com &> /dev/null; then
+            check_pass "DNS resolution working"
+        else
+            check_fail "DNS resolution not working"
+        fi
+    elif command -v host &> /dev/null; then
+        if host google.com &> /dev/null; then
+            check_pass "DNS resolution working"
+        else
+            check_fail "DNS resolution not working"
+        fi
+    elif command -v nslookup &> /dev/null; then
+        if nslookup google.com &> /dev/null; then
+            check_pass "DNS resolution working"
+        else
+            check_fail "DNS resolution not working"
+        fi
     else
-        check_fail "DNS resolution not working"
+        check_warn "No DNS tools available (dig, host, or nslookup)"
     fi
 
     # Check if domain is provided
@@ -129,7 +145,18 @@ check_network() {
         echo ""
         # Check if domain resolves
         server_ip=$(curl -s ifconfig.me)
-        domain_ip=$(dig +short "$domain" | tail -n1)
+
+        # Try dig first, then host, then nslookup
+        if command -v dig &> /dev/null; then
+            domain_ip=$(dig +short "$domain" | tail -n1)
+        elif command -v host &> /dev/null; then
+            domain_ip=$(host "$domain" | grep "has address" | head -n1 | awk '{print $4}')
+        elif command -v nslookup &> /dev/null; then
+            domain_ip=$(nslookup "$domain" | grep "Address:" | tail -n1 | awk '{print $2}')
+        else
+            check_warn "No DNS tools available to verify domain"
+            domain_ip=""
+        fi
 
         if [ -n "$domain_ip" ]; then
             if [ "$server_ip" == "$domain_ip" ]; then

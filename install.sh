@@ -152,6 +152,8 @@ install_system_packages() {
         python3-certbot-nginx \
         ufw \
         bc \
+        rsync \
+        dnsutils \
         software-properties-common
 
     print_success "System packages installed"
@@ -252,6 +254,13 @@ configure_environment() {
     read -p "Telegram Bot Token: " TELEGRAM_BOT_TOKEN
     read -p "Telegram Bot Username: " TELEGRAM_BOT_USERNAME
 
+    # Determine TEST_MODE based on Google OAuth configuration
+    if [ -z "$GOOGLE_CLIENT_ID" ]; then
+        TEST_MODE="true"
+    else
+        TEST_MODE="false"
+    fi
+
     # Create .env file
     cat > "$INSTALL_DIR/backend/.env" <<EOF
 # Server Configuration
@@ -271,7 +280,7 @@ GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
 GOOGLE_CALLBACK_URL=https://$DOMAIN/auth/google/callback
 
 # Test Mode (only if no Google OAuth)
-TEST_MODE=${GOOGLE_CLIENT_ID:+false}
+TEST_MODE=$TEST_MODE
 TEST_USER_EMAIL=admin@${DOMAIN}
 
 # Polling Configuration
@@ -470,8 +479,8 @@ EOF
 
     ln -sf /etc/nginx/sites-available/simplifyed /etc/nginx/sites-enabled/
 
-    # Test Nginx configuration
-    nginx -t
+    # Note: Skipping nginx -t here because SSL certificates don't exist yet
+    # Nginx will be tested and restarted after SSL certificate installation
 
     print_success "Nginx configured"
 }
@@ -516,17 +525,25 @@ configure_firewall() {
 
     print_info "Setting up UFW firewall rules..."
 
-    # Reset UFW to defaults
-    ufw --force reset
+    # Check if UFW is already active
+    if ufw status | grep -q "Status: active"; then
+        print_warning "UFW firewall is already active with existing rules"
+        print_info "Adding required rules without resetting existing configuration..."
+    else
+        print_info "Configuring UFW with default policies..."
+        # Only reset if UFW is not active (fresh installation)
+        ufw --force reset
+        # Default policies
+        ufw default deny incoming
+        ufw default allow outgoing
+    fi
 
-    # Default policies
-    ufw default deny incoming
-    ufw default allow outgoing
-
-    # Allow SSH
+    # Allow SSH (if not already allowed)
+    print_info "Allowing SSH access..."
     ufw allow ssh
 
     # Allow HTTP and HTTPS
+    print_info "Allowing HTTP and HTTPS traffic..."
     ufw allow 80/tcp
     ufw allow 443/tcp
 
