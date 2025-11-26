@@ -181,17 +181,43 @@ check_network() {
 check_ports() {
     print_header "Port Availability Checks"
 
-    # Check if required ports are available
-    ports_to_check=(80 443 3000)
+    # Check port 3000 (application port) - must be free
+    if netstat -tuln 2>/dev/null | grep -q ":3000 " || ss -tuln 2>/dev/null | grep -q ":3000 "; then
+        check_fail "Port 3000 is already in use"
+        echo "   The application needs port 3000. You can change it during installation."
+        lsof -i :3000 2>/dev/null || ss -tlnp 2>/dev/null | grep ":3000"
+    else
+        check_pass "Port 3000 is available for application"
+    fi
 
-    for port in "${ports_to_check[@]}"; do
-        if netstat -tuln 2>/dev/null | grep -q ":$port " || ss -tuln 2>/dev/null | grep -q ":$port "; then
-            check_warn "Port $port is already in use"
-            lsof -i :$port 2>/dev/null || ss -tlnp 2>/dev/null | grep ":$port"
+    # Check ports 80 and 443 (handled by Nginx)
+    nginx_running=false
+    if netstat -tuln 2>/dev/null | grep -q ":80 " || ss -tuln 2>/dev/null | grep -q ":80 "; then
+        # Check if it's Nginx
+        if pgrep nginx >/dev/null 2>&1; then
+            nginx_running=true
+            existing_sites=$(ls /etc/nginx/sites-enabled/ 2>/dev/null | grep -v default | wc -l)
+            check_pass "Port 80 in use by Nginx (managing $existing_sites site(s))"
+            echo "   ✓ Installation will add Simplifyed as an additional Nginx site"
         else
-            check_pass "Port $port is available"
+            check_warn "Port 80 is in use by a non-Nginx service"
+            lsof -i :80 2>/dev/null || ss -tlnp 2>/dev/null | grep ":80"
         fi
-    done
+    else
+        check_pass "Port 80 is available (Nginx will be installed)"
+    fi
+
+    if netstat -tuln 2>/dev/null | grep -q ":443 " || ss -tuln 2>/dev/null | grep -q ":443 "; then
+        if pgrep nginx >/dev/null 2>&1; then
+            check_pass "Port 443 in use by Nginx (existing SSL sites)"
+            echo "   ✓ Installation will obtain SSL certificate without interrupting other sites"
+        else
+            check_warn "Port 443 is in use by a non-Nginx service"
+            lsof -i :443 2>/dev/null || ss -tlnp 2>/dev/null | grep ":443"
+        fi
+    else
+        check_pass "Port 443 is available (SSL will be configured)"
+    fi
 }
 
 ################################################################################
@@ -241,9 +267,17 @@ check_existing() {
 
     # Check if Nginx is installed
     if command -v nginx &> /dev/null; then
-        check_warn "Nginx is already installed ($(nginx -v 2>&1 | cut -d'/' -f2))"
+        existing_sites=$(ls /etc/nginx/sites-enabled/ 2>/dev/null | grep -v default | wc -l)
+        if [ $existing_sites -gt 0 ]; then
+            check_pass "Nginx is already installed with $existing_sites existing site(s)"
+            echo "   ✓ Installation will add Simplifyed as an additional site"
+            echo "   ✓ Your existing sites will not be affected"
+        else
+            check_warn "Nginx is already installed ($(nginx -v 2>&1 | cut -d'/' -f2))"
+            echo "   Installation will configure it for Simplifyed"
+        fi
     else
-        check_pass "No existing Nginx installation"
+        check_pass "No existing Nginx installation (will be installed)"
     fi
 
     # Check if Simplifyed is already installed

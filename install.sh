@@ -407,8 +407,21 @@ EOF
 configure_nginx() {
     print_header "Configuring Nginx"
 
-    # Remove default site
-    rm -f /etc/nginx/sites-enabled/default
+    # Check if Nginx is managing other sites
+    existing_sites=$(ls /etc/nginx/sites-enabled/ 2>/dev/null | grep -v default | wc -l)
+    if [ $existing_sites -gt 0 ]; then
+        print_info "Detected $existing_sites existing Nginx site(s)"
+        print_info "Adding Simplifyed site to existing Nginx configuration"
+        # Only remove default if there are other sites (it's not being used)
+        if [ -f /etc/nginx/sites-enabled/default ]; then
+            print_info "Removing default Nginx site (not needed with custom sites)"
+            rm -f /etc/nginx/sites-enabled/default
+        fi
+    else
+        print_info "Configuring Nginx for first site"
+        # Remove default site only if this is the first custom site
+        rm -f /etc/nginx/sites-enabled/default
+    fi
 
     # Create Nginx configuration
     cat > /etc/nginx/sites-available/simplifyed <<EOF
@@ -492,21 +505,44 @@ EOF
 install_ssl_certificate() {
     print_header "Installing Let's Encrypt SSL Certificate"
 
-    # Stop Nginx temporarily for standalone mode
-    systemctl stop nginx
+    # Check if Nginx is already running with other sites
+    if systemctl is-active --quiet nginx; then
+        print_info "Nginx is already running - using certbot nginx plugin"
+        print_info "This will not interrupt your existing sites"
 
-    print_info "Obtaining SSL certificate for $DOMAIN..."
-    certbot certonly --standalone \
-        --non-interactive \
-        --agree-tos \
-        --email "$EMAIL" \
-        -d "$DOMAIN"
+        print_info "Obtaining SSL certificate for $DOMAIN..."
+        certbot --nginx \
+            --non-interactive \
+            --agree-tos \
+            --email "$EMAIL" \
+            -d "$DOMAIN" \
+            --redirect
 
-    if [ $? -eq 0 ]; then
-        print_success "SSL certificate obtained successfully"
+        if [ $? -eq 0 ]; then
+            print_success "SSL certificate obtained successfully"
+        else
+            print_error "Failed to obtain SSL certificate"
+            print_warning "You can try running 'certbot --nginx -d $DOMAIN' manually later"
+        fi
     else
-        print_error "Failed to obtain SSL certificate"
-        print_warning "You can try running 'certbot --nginx -d $DOMAIN' manually later"
+        print_info "Fresh Nginx installation detected - using standalone mode"
+
+        # Stop Nginx temporarily for standalone mode
+        systemctl stop nginx
+
+        print_info "Obtaining SSL certificate for $DOMAIN..."
+        certbot certonly --standalone \
+            --non-interactive \
+            --agree-tos \
+            --email "$EMAIL" \
+            -d "$DOMAIN"
+
+        if [ $? -eq 0 ]; then
+            print_success "SSL certificate obtained successfully"
+        else
+            print_error "Failed to obtain SSL certificate"
+            print_warning "You can try running 'certbot --nginx -d $DOMAIN' manually later"
+        fi
     fi
 
     # Set up auto-renewal
@@ -561,8 +597,16 @@ post_installation() {
     print_header "Completing Installation"
 
     # Start services
-    print_info "Starting Nginx..."
-    systemctl restart nginx
+    print_info "Reloading Nginx configuration..."
+    # Use reload instead of restart for graceful config reload
+    # This ensures zero downtime for existing sites
+    if nginx -t 2>/dev/null; then
+        systemctl reload nginx
+        print_success "Nginx configuration reloaded successfully"
+    else
+        print_warning "Nginx configuration test failed, attempting restart..."
+        systemctl restart nginx
+    fi
 
     print_info "Starting Simplifyed application..."
     systemctl start simplifyed
@@ -580,6 +624,11 @@ post_installation() {
 
     if systemctl is-active --quiet nginx; then
         print_success "Nginx is running"
+        # Check if Simplifyed site is accessible
+        existing_sites=$(ls /etc/nginx/sites-enabled/ 2>/dev/null | grep -v default | wc -l)
+        if [ $existing_sites -gt 1 ]; then
+            print_info "Multiple Nginx sites detected - all should be operational"
+        fi
     else
         print_error "Nginx failed to start"
         print_info "Check logs with: systemctl status nginx"
