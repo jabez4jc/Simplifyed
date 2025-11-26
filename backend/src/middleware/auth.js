@@ -106,10 +106,22 @@ async function attachRoleAndPermissions(userId) {
 async function ensureLocalUserFromToken(payload) {
   const email = (payload.email || '').toLowerCase();
   const externalId = payload.sub || email;
-  if (!externalId) return null;
+
+  log.debug('Looking up user from token', {
+    tokenEmail: email,
+    sub: payload.sub,
+    lookupEmail: email || externalId
+  });
+
+  if (!externalId) {
+    log.warn('No email or sub in token payload');
+    return null;
+  }
 
   let user = await db.get('SELECT * FROM users WHERE email = ?', [email || externalId]);
+
   if (!user) {
+    log.info('User not found, creating new user', { email: email || externalId });
     const countRow = await db.get('SELECT COUNT(*) as count FROM users');
     const isFirstUser = (countRow?.count || 0) === 0;
     const result = await db.run(
@@ -128,7 +140,10 @@ async function ensureLocalUserFromToken(payload) {
       }
     }
     user = await db.get('SELECT * FROM users WHERE id = ?', [userId]);
+  } else {
+    log.debug('User found in database', { userId: user.id, email: user.email });
   }
+
   return attachRoleAndPermissions(user.id);
 }
 
@@ -160,25 +175,37 @@ export async function optionalAuth(req, res, next) {
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
     if (token && config.auth.supabaseUrl) {
       try {
+        log.debug('Attempting to verify Supabase token');
+
         // Decode token to check algorithm
         const decoded = jwt.decode(token, { complete: true });
         if (!decoded || !decoded.header) {
           throw new Error('Invalid token format');
         }
 
+        log.debug('Token decoded', {
+          algorithm: decoded.header.alg,
+          kid: decoded.header.kid,
+          email: decoded.payload?.email
+        });
+
         let payload;
 
         // Handle ES256 (asymmetric) tokens - modern Supabase default
         if (decoded.header.alg === 'ES256') {
+          log.debug('Using ES256 verification via JWKS');
           const signingKey = await getSigningKey(decoded.header);
           if (!signingKey) {
             throw new Error('Unable to get signing key');
           }
           payload = jwt.verify(token, signingKey, { algorithms: ['ES256'] });
+          log.debug('ES256 token verified successfully');
         }
         // Handle HS256 (symmetric) tokens - legacy Supabase or service_role keys
         else if (decoded.header.alg === 'HS256' && config.auth.supabaseJwtSecret) {
+          log.debug('Using HS256 verification with JWT secret');
           payload = jwt.verify(token, config.auth.supabaseJwtSecret, { algorithms: ['HS256'] });
+          log.debug('HS256 token verified successfully');
         }
         else {
           throw new Error('Unsupported token algorithm: ' + decoded.header.alg);
@@ -186,14 +213,17 @@ export async function optionalAuth(req, res, next) {
 
         const user = await ensureLocalUserFromToken(payload);
         if (user) {
+          log.info('User authenticated successfully', { userId: user.id, email: user.email, role: user.role });
           req.user = user;
           req.isAuthenticated = () => true;
           if (req.app?.locals?.startServices) {
             await req.app.locals.startServices();
           }
+        } else {
+          log.warn('Token verified but user not found/created');
         }
       } catch (err) {
-        log.debug('Token verification failed', { error: err.message });
+        log.warn('Token verification failed', { error: err.message, stack: err.stack });
         // invalid token, ignore and continue without auth
       }
     }
