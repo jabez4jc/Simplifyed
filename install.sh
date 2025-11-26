@@ -24,6 +24,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Global variables
+INSTANCE_NAME=""  # Will be set during user input (e.g., "prod", "staging", "dev")
 INSTALL_DIR="/opt/simplifyed"
 APP_USER="simplifyed"
 NODE_VERSION="18"
@@ -99,6 +100,34 @@ generate_random_string() {
 collect_user_input() {
     print_header "Configuration Setup"
 
+    # Instance identifier (for multi-instance support)
+    echo ""
+    print_info "Instance Identifier (optional - for multiple installations)"
+    echo "  Examples: 'prod', 'staging', 'dev', or leave empty for single instance"
+    echo "  This creates unique names for directory, user, and service"
+    read -p "Enter instance identifier (or press Enter to skip): " INSTANCE_NAME
+
+    # Set defaults based on instance name
+    if [[ -n "$INSTANCE_NAME" ]]; then
+        # Validate instance name (alphanumeric and hyphens only)
+        if [[ ! "$INSTANCE_NAME" =~ ^[a-zA-Z0-9-]+$ ]]; then
+            print_error "Instance name must contain only letters, numbers, and hyphens"
+            exit 1
+        fi
+
+        INSTALL_DIR="/opt/simplifyed-${INSTANCE_NAME}"
+        APP_USER="simplifyed-${INSTANCE_NAME}"
+        print_info "Using instance-specific defaults:"
+        echo "  - Installation directory: $INSTALL_DIR"
+        echo "  - System user: $APP_USER"
+        echo "  - Service name: simplifyed-${INSTANCE_NAME}"
+    else
+        INSTALL_DIR="/opt/simplifyed"
+        APP_USER="simplifyed"
+        print_info "Using single-instance defaults"
+    fi
+    echo ""
+
     # Domain name
     while [[ -z "$DOMAIN" ]]; do
         read -p "Enter your domain name (e.g., admin.example.com): " DOMAIN
@@ -116,18 +145,38 @@ collect_user_input() {
     done
 
     # Application port
+    if [[ -n "$INSTANCE_NAME" ]]; then
+        echo ""
+        print_info "Suggested ports: prod=3000, staging=3001, dev=3002"
+    fi
     read -p "Enter application port (default: 3000): " PORT_INPUT
     if [[ -n "$PORT_INPUT" ]]; then
         PORT=$PORT_INPUT
     fi
 
-    # Installation directory
-    read -p "Enter installation directory (default: /opt/simplifyed): " INSTALL_DIR_INPUT
+    # Allow override of installation directory
+    read -p "Installation directory (default: $INSTALL_DIR): " INSTALL_DIR_INPUT
     if [[ -n "$INSTALL_DIR_INPUT" ]]; then
         INSTALL_DIR=$INSTALL_DIR_INPUT
     fi
 
     print_success "Configuration collected successfully"
+    echo ""
+    print_info "Installation Summary:"
+    if [[ -n "$INSTANCE_NAME" ]]; then
+        echo "  Instance: $INSTANCE_NAME"
+    fi
+    echo "  Domain: $DOMAIN"
+    echo "  Port: $PORT"
+    echo "  Install Dir: $INSTALL_DIR"
+    echo "  User: $APP_USER"
+    if [[ -n "$INSTANCE_NAME" ]]; then
+        echo "  Service: simplifyed-${INSTANCE_NAME}"
+    else
+        echo "  Service: simplifyed"
+    fi
+    echo ""
+    read -p "Press Enter to continue or Ctrl+C to cancel..."
 }
 
 ################################################################################
@@ -365,9 +414,18 @@ setup_database() {
 create_systemd_service() {
     print_header "Creating Systemd Service"
 
-    cat > /etc/systemd/system/simplifyed.service <<EOF
+    # Determine service name based on instance
+    if [[ -n "$INSTANCE_NAME" ]]; then
+        SERVICE_NAME="simplifyed-${INSTANCE_NAME}"
+        SERVICE_DESC="Simplifyed Admin - Trading Dashboard ($INSTANCE_NAME)"
+    else
+        SERVICE_NAME="simplifyed"
+        SERVICE_DESC="Simplifyed Admin - Trading Dashboard"
+    fi
+
+    cat > /etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
-Description=Simplifyed Admin - Trading Dashboard
+Description=$SERVICE_DESC
 Documentation=https://github.com/yourusername/simplifyed
 After=network.target
 
@@ -381,7 +439,7 @@ Restart=always
 RestartSec=10
 StandardOutput=syslog
 StandardError=syslog
-SyslogIdentifier=simplifyed
+SyslogIdentifier=$SERVICE_NAME
 
 # Security settings
 NoNewPrivileges=true
@@ -395,9 +453,9 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable simplifyed.service
+    systemctl enable ${SERVICE_NAME}.service
 
-    print_success "Systemd service created and enabled"
+    print_success "Systemd service '${SERVICE_NAME}' created and enabled"
 }
 
 ################################################################################
@@ -423,8 +481,15 @@ configure_nginx() {
         rm -f /etc/nginx/sites-enabled/default
     fi
 
+    # Determine Nginx site name based on instance
+    if [[ -n "$INSTANCE_NAME" ]]; then
+        NGINX_SITE="simplifyed-${INSTANCE_NAME}"
+    else
+        NGINX_SITE="simplifyed"
+    fi
+
     # Create Nginx configuration
-    cat > /etc/nginx/sites-available/simplifyed <<EOF
+    cat > /etc/nginx/sites-available/${NGINX_SITE} <<EOF
 # HTTP server - redirect to HTTPS
 server {
     listen 80;
@@ -490,7 +555,7 @@ server {
 }
 EOF
 
-    ln -sf /etc/nginx/sites-available/simplifyed /etc/nginx/sites-enabled/
+    ln -sf /etc/nginx/sites-available/${NGINX_SITE} /etc/nginx/sites-enabled/
 
     # Note: Skipping nginx -t here because SSL certificates don't exist yet
     # Nginx will be tested and restarted after SSL certificate installation
@@ -596,6 +661,13 @@ configure_firewall() {
 post_installation() {
     print_header "Completing Installation"
 
+    # Determine service name based on instance
+    if [[ -n "$INSTANCE_NAME" ]]; then
+        SERVICE_NAME="simplifyed-${INSTANCE_NAME}"
+    else
+        SERVICE_NAME="simplifyed"
+    fi
+
     # Start services
     print_info "Reloading Nginx configuration..."
     # Use reload instead of restart for graceful config reload
@@ -609,17 +681,17 @@ post_installation() {
     fi
 
     print_info "Starting Simplifyed application..."
-    systemctl start simplifyed
+    systemctl start ${SERVICE_NAME}
 
     # Wait a moment for the service to start
     sleep 3
 
     # Check service status
-    if systemctl is-active --quiet simplifyed; then
-        print_success "Simplifyed service is running"
+    if systemctl is-active --quiet ${SERVICE_NAME}; then
+        print_success "Simplifyed service '${SERVICE_NAME}' is running"
     else
-        print_error "Simplifyed service failed to start"
-        print_info "Check logs with: journalctl -u simplifyed -n 50"
+        print_error "Simplifyed service '${SERVICE_NAME}' failed to start"
+        print_info "Check logs with: journalctl -u ${SERVICE_NAME} -n 50"
     fi
 
     if systemctl is-active --quiet nginx; then
@@ -642,6 +714,13 @@ post_installation() {
 display_summary() {
     print_header "Installation Complete!"
 
+    # Determine service name
+    if [[ -n "$INSTANCE_NAME" ]]; then
+        SERVICE_NAME="simplifyed-${INSTANCE_NAME}"
+    else
+        SERVICE_NAME="simplifyed"
+    fi
+
     echo ""
     echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║                                                            ║${NC}"
@@ -649,20 +728,25 @@ display_summary() {
     echo -e "${GREEN}║                                                            ║${NC}"
     echo -e "${GREEN}╠════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║                                                            ║${NC}"
+    if [[ -n "$INSTANCE_NAME" ]]; then
+        echo -e "${GREEN}║  Instance:         $INSTANCE_NAME${NC}"
+    fi
     echo -e "${GREEN}║  Application URL:  https://$DOMAIN${NC}"
+    echo -e "${GREEN}║  Application Port: $PORT${NC}"
     echo -e "${GREEN}║  Installation Dir: $INSTALL_DIR${NC}"
     echo -e "${GREEN}║  Application User: $APP_USER${NC}"
+    echo -e "${GREEN}║  Service Name:     $SERVICE_NAME${NC}"
     echo -e "${GREEN}║  Database Path:    $INSTALL_DIR/backend/database/simplifyed.db${NC}"
     echo -e "${GREEN}║  Logs Path:        $INSTALL_DIR/backend/logs/${NC}"
     echo -e "${GREEN}║                                                            ║${NC}"
     echo -e "${GREEN}╠════════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║  Useful Commands:                                          ║${NC}"
     echo -e "${GREEN}║                                                            ║${NC}"
-    echo -e "${GREEN}║  Start service:    systemctl start simplifyed              ║${NC}"
-    echo -e "${GREEN}║  Stop service:     systemctl stop simplifyed               ║${NC}"
-    echo -e "${GREEN}║  Restart service:  systemctl restart simplifyed            ║${NC}"
-    echo -e "${GREEN}║  Service status:   systemctl status simplifyed             ║${NC}"
-    echo -e "${GREEN}║  View logs:        journalctl -u simplifyed -f             ║${NC}"
+    echo -e "${GREEN}║  Start service:    systemctl start ${SERVICE_NAME}${NC}"
+    echo -e "${GREEN}║  Stop service:     systemctl stop ${SERVICE_NAME}${NC}"
+    echo -e "${GREEN}║  Restart service:  systemctl restart ${SERVICE_NAME}${NC}"
+    echo -e "${GREEN}║  Service status:   systemctl status ${SERVICE_NAME}${NC}"
+    echo -e "${GREEN}║  View logs:        journalctl -u ${SERVICE_NAME} -f${NC}"
     echo -e "${GREEN}║                                                            ║${NC}"
     echo -e "${GREEN}║  Nginx reload:     systemctl reload nginx                  ║${NC}"
     echo -e "${GREEN}║  Nginx status:     systemctl status nginx                  ║${NC}"
@@ -677,7 +761,7 @@ display_summary() {
         echo -e "${GREEN}║                                                            ║${NC}"
         echo -e "${GREEN}║  2. Configure Google OAuth in the .env file:               ║${NC}"
         echo -e "${GREEN}║     $INSTALL_DIR/backend/.env${NC}"
-        echo -e "${GREEN}║     Then restart: systemctl restart simplifyed             ║${NC}"
+        echo -e "${GREEN}║     Then restart: systemctl restart ${SERVICE_NAME}${NC}"
     else
         echo -e "${GREEN}║  1. Visit https://$DOMAIN to access the dashboard${NC}"
         echo -e "${GREEN}║     You can log in using your Google account               ║${NC}"
@@ -695,6 +779,13 @@ display_summary() {
 
     print_info "SSL certificate will auto-renew. Check status with: certbot certificates"
     print_info "Environment variables are stored in: $INSTALL_DIR/backend/.env"
+
+    if [[ -n "$INSTANCE_NAME" ]]; then
+        echo ""
+        print_info "Multi-Instance Setup: To install additional instances (staging, dev, etc.):"
+        print_info "  Run this script again with different instance identifiers and domains"
+        print_info "  Each instance will have its own directory, user, service, and database"
+    fi
 
     echo ""
 }
