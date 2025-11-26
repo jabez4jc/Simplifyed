@@ -3,206 +3,851 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Simplifyed Admin - Login</title>
-  <link rel="stylesheet" href="/css/styles.css">
+  <title>Simplifyed - Sign In</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --primary: #6366f1;
+      --primary-dark: #4f46e5;
+      --primary-light: #818cf8;
+      --success: #10b981;
+      --error: #ef4444;
+      --warning: #f59e0b;
+      --neutral-50: #f9fafb;
+      --neutral-100: #f3f4f6;
+      --neutral-200: #e5e7eb;
+      --neutral-300: #d1d5db;
+      --neutral-400: #9ca3af;
+      --neutral-500: #6b7280;
+      --neutral-600: #4b5563;
+      --neutral-700: #374151;
+      --neutral-800: #1f2937;
+      --neutral-900: #111827;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', 'Roboto', 'Helvetica Neue', Arial, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+      line-height: 1.6;
+    }
+
+    .auth-container {
+      background: white;
+      border-radius: 1rem;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+      width: 100%;
+      max-width: 440px;
+      overflow: hidden;
+    }
+
+    .auth-header {
+      background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+      color: white;
+      padding: 2rem;
+      text-align: center;
+    }
+
+    .auth-header h1 {
+      font-size: 1.875rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+    }
+
+    .auth-header p {
+      opacity: 0.9;
+      font-size: 0.875rem;
+    }
+
+    .auth-body {
+      padding: 2rem;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+      margin-bottom: 1.5rem;
+      width: 100%;
+      justify-content: space-between;
+    }
+
+    .status-badge.loading {
+      background: var(--neutral-100);
+      color: var(--neutral-600);
+    }
+
+    .status-badge.success {
+      background: rgba(16, 185, 129, 0.1);
+      color: var(--success);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .status-badge.error {
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--error);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    .status-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+
+    .status-badge.loading .status-indicator {
+      background: var(--neutral-400);
+    }
+
+    .status-badge.success .status-indicator {
+      background: var(--success);
+    }
+
+    .status-badge.error .status-indicator {
+      background: var(--error);
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        opacity: 1;
+      }
+      50% {
+        opacity: 0.5;
+      }
+    }
+
+    .tabs {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+      border-bottom: 2px solid var(--neutral-200);
+    }
+
+    .tab {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      border: none;
+      background: none;
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--neutral-600);
+      position: relative;
+      transition: all 0.2s;
+    }
+
+    .tab:hover {
+      color: var(--primary);
+    }
+
+    .tab.active {
+      color: var(--primary);
+    }
+
+    .tab.active::after {
+      content: '';
+      position: absolute;
+      bottom: -2px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: var(--primary);
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+      animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .form-group {
+      margin-bottom: 1rem;
+    }
+
+    .form-label {
+      display: block;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--neutral-700);
+      margin-bottom: 0.5rem;
+    }
+
+    .form-input {
+      width: 100%;
+      padding: 0.75rem 1rem;
+      border: 1px solid var(--neutral-300);
+      border-radius: 0.5rem;
+      font-size: 1rem;
+      transition: all 0.2s;
+      outline: none;
+    }
+
+    .form-input:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+    }
+
+    .form-input::placeholder {
+      color: var(--neutral-400);
+    }
+
+    .btn {
+      width: 100%;
+      padding: 0.875rem 1.5rem;
+      border: none;
+      border-radius: 0.5rem;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+      color: white;
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 15px -3px rgba(99, 102, 241, 0.3);
+    }
+
+    .btn-primary:active:not(:disabled) {
+      transform: translateY(0);
+    }
+
+    .btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .message {
+      padding: 0.75rem 1rem;
+      border-radius: 0.5rem;
+      font-size: 0.875rem;
+      margin-top: 1rem;
+      animation: slideIn 0.3s ease;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .message.success {
+      background: rgba(16, 185, 129, 0.1);
+      color: var(--success);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .message.error {
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--error);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    .message.info {
+      background: rgba(59, 130, 246, 0.1);
+      color: #3b82f6;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+
+    .help-text {
+      font-size: 0.75rem;
+      color: var(--neutral-500);
+      margin-top: 0.5rem;
+    }
+
+    .link {
+      color: var(--primary);
+      text-decoration: none;
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+
+    .link:hover {
+      text-decoration: underline;
+    }
+
+    .divider {
+      display: flex;
+      align-items: center;
+      text-align: center;
+      margin: 1.5rem 0;
+    }
+
+    .divider::before,
+    .divider::after {
+      content: '';
+      flex: 1;
+      border-bottom: 1px solid var(--neutral-200);
+    }
+
+    .divider span {
+      padding: 0 1rem;
+      font-size: 0.875rem;
+      color: var(--neutral-500);
+    }
+
+    .password-requirements {
+      margin-top: 0.5rem;
+      padding: 0.75rem;
+      background: var(--neutral-50);
+      border-radius: 0.375rem;
+      font-size: 0.75rem;
+    }
+
+    .password-requirements ul {
+      list-style: none;
+      margin-top: 0.5rem;
+    }
+
+    .password-requirements li {
+      color: var(--neutral-600);
+      padding: 0.25rem 0;
+    }
+
+    .password-requirements li::before {
+      content: '•';
+      margin-right: 0.5rem;
+      color: var(--neutral-400);
+    }
+
+    @media (max-width: 480px) {
+      .auth-container {
+        border-radius: 0;
+      }
+
+      .auth-body {
+        padding: 1.5rem;
+      }
+    }
+  </style>
 </head>
 <body>
-  <div class="landing-container">
-    <div class="landing-card max-w-lg">
-      <div class="text-center mb-4">
-        <h1 class="text-2xl font-bold">📊 Simplifyed Admin</h1>
-        <p class="text-neutral-600">Trading Management Dashboard V2.0</p>
+  <div class="auth-container">
+    <div class="auth-header">
+      <h1>📊 Simplifyed</h1>
+      <p>Trading Management Dashboard</p>
+    </div>
+
+    <div class="auth-body">
+      <div class="status-badge loading" id="status-badge">
+        <span id="status-text">Connecting to authentication service...</span>
+        <span class="status-indicator"></span>
       </div>
 
-      <div class="card p-4 shadow-sm border border-base-200">
-        <div class="flex items-center justify-between mb-3">
-          <div class="flex gap-2 items-center text-sm">
-            <span class="badge" id="config-status">Loading...</span>
-            <span class="text-neutral-600">Supabase</span>
+      <div class="tabs">
+        <button class="tab active" data-tab="login" onclick="switchTab('login')">Sign In</button>
+        <button class="tab" data-tab="signup" onclick="switchTab('signup')">Sign Up</button>
+        <button class="tab" data-tab="reset" onclick="switchTab('reset')">Reset</button>
+      </div>
+
+      <!-- Login Panel -->
+      <div id="login-panel" class="tab-panel active">
+        <form onsubmit="handleLogin(event)">
+          <div class="form-group">
+            <label class="form-label" for="login-email">Email</label>
+            <input
+              id="login-email"
+              class="form-input"
+              type="email"
+              placeholder="you@example.com"
+              autocomplete="email"
+              required
+            >
           </div>
-          <button class="btn btn-link btn-xs" onclick="checkExistingSession()">Refresh session</button>
-        </div>
-
-        <div class="tabs tabs-boxed mb-4" id="auth-tabs">
-          <a class="tab tab-active" data-tab="login" onclick="switchTab('login')">Login</a>
-          <a class="tab" data-tab="signup" onclick="switchTab('signup')">Sign up</a>
-          <a class="tab" data-tab="reset" onclick="switchTab('reset')">Reset password</a>
-        </div>
-
-        <div id="login-panel">
-          <input id="login-email" class="input input-bordered w-full mb-2" placeholder="Email" type="email" autocomplete="email">
-          <input id="login-password" class="input input-bordered w-full mb-3" placeholder="Password" type="password" autocomplete="current-password">
-          <button id="login-btn" class="btn btn-primary w-full" onclick="login()">Login</button>
-        </div>
-
-        <div id="signup-panel" class="hidden">
-          <input id="signup-email" class="input input-bordered w-full mb-2" placeholder="Email" type="email" autocomplete="email">
-          <input id="signup-password" class="input input-bordered w-full mb-3" placeholder="Password" type="password" autocomplete="new-password">
-          <button id="signup-btn" class="btn btn-secondary w-full" onclick="signup()">Create account</button>
-          <p class="text-xs text-neutral-600 mt-2">You may need to confirm via email before logging in.</p>
-        </div>
-
-        <div id="reset-panel" class="hidden">
-          <input id="reset-email" class="input input-bordered w-full mb-3" placeholder="Email" type="email" autocomplete="email">
-          <button id="reset-btn" class="btn btn-accent w-full" onclick="sendReset()">Send reset link</button>
-        </div>
-
-        <p id="auth-message" class="text-sm text-neutral-600 text-center min-h-[24px] mt-3"></p>
+          <div class="form-group">
+            <label class="form-label" for="login-password">Password</label>
+            <input
+              id="login-password"
+              class="form-input"
+              type="password"
+              placeholder="Enter your password"
+              autocomplete="current-password"
+              required
+            >
+          </div>
+          <button type="submit" class="btn btn-primary" id="login-btn">
+            <span>Sign In</span>
+          </button>
+        </form>
       </div>
+
+      <!-- Signup Panel -->
+      <div id="signup-panel" class="tab-panel">
+        <form onsubmit="handleSignup(event)">
+          <div class="form-group">
+            <label class="form-label" for="signup-email">Email</label>
+            <input
+              id="signup-email"
+              class="form-input"
+              type="email"
+              placeholder="you@example.com"
+              autocomplete="email"
+              required
+            >
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="signup-password">Password</label>
+            <input
+              id="signup-password"
+              class="form-input"
+              type="password"
+              placeholder="Create a strong password"
+              autocomplete="new-password"
+              required
+              minlength="6"
+            >
+            <div class="password-requirements">
+              <strong>Password requirements:</strong>
+              <ul>
+                <li>At least 6 characters long</li>
+                <li>Mix of letters and numbers recommended</li>
+              </ul>
+            </div>
+          </div>
+          <button type="submit" class="btn btn-primary" id="signup-btn">
+            <span>Create Account</span>
+          </button>
+          <p class="help-text">
+            By signing up, you agree to receive a confirmation email. You may need to verify your email before logging in.
+          </p>
+        </form>
+      </div>
+
+      <!-- Reset Password Panel -->
+      <div id="reset-panel" class="tab-panel">
+        <form onsubmit="handleReset(event)">
+          <div class="form-group">
+            <label class="form-label" for="reset-email">Email</label>
+            <input
+              id="reset-email"
+              class="form-input"
+              type="email"
+              placeholder="you@example.com"
+              autocomplete="email"
+              required
+            >
+            <p class="help-text">
+              We'll send you an email with instructions to reset your password.
+            </p>
+          </div>
+          <button type="submit" class="btn btn-primary" id="reset-btn">
+            <span>Send Reset Link</span>
+          </button>
+        </form>
+      </div>
+
+      <!-- Message Area -->
+      <div id="message-area"></div>
     </div>
   </div>
+
+  <!-- Supabase JS SDK -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.2/dist/umd/supabase.min.js"></script>
+
   <script>
     let supabaseClient = null;
-    const msg = document.getElementById('auth-message');
-    const statusBadge = document.getElementById('config-status');
+    let isLoading = false;
 
-    function setStatus(text, tone = 'info') {
-      statusBadge.textContent = text;
-      statusBadge.className = 'badge ' + (tone === 'error' ? 'badge-error' : tone === 'success' ? 'badge-success' : 'badge-info');
+    // UI Helpers
+    function setStatus(text, type = 'loading') {
+      const badge = document.getElementById('status-badge');
+      const statusText = document.getElementById('status-text');
+
+      badge.className = `status-badge ${type}`;
+      statusText.textContent = text;
+    }
+
+    function showMessage(text, type = 'info') {
+      const messageArea = document.getElementById('message-area');
+      messageArea.innerHTML = `<div class="message ${type}">${text}</div>`;
+      setTimeout(() => {
+        messageArea.innerHTML = '';
+      }, 8000);
+    }
+
+    function setButtonLoading(buttonId, loading) {
+      const button = document.getElementById(buttonId);
+      const span = button.querySelector('span');
+
+      if (loading) {
+        button.disabled = true;
+        button.innerHTML = '<div class="spinner"></div><span>Processing...</span>';
+      } else {
+        button.disabled = false;
+        button.innerHTML = `<span>${span.textContent}</span>`;
+      }
     }
 
     function switchTab(tab) {
-      ['login', 'signup', 'reset'].forEach((t) => {
-        document.getElementById(`${t}-panel`).classList.toggle('hidden', t !== tab);
-        document.querySelector(`[data-tab="${t}"]`).classList.toggle('tab-active', t === tab);
+      // Update tab buttons
+      document.querySelectorAll('.tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.tab === tab);
       });
-      msg.textContent = '';
+
+      // Update panels
+      document.querySelectorAll('.tab-panel').forEach(p => {
+        p.classList.toggle('active', p.id === `${tab}-panel`);
+      });
+
+      // Clear messages
+      document.getElementById('message-area').innerHTML = '';
     }
 
-    async function loadSupabase() {
+    // Supabase Initialization
+    async function initSupabase() {
       try {
-        const res = await fetch('/api/v1/public-config');
-        const cfg = await res.json();
-        if (!cfg?.data?.supabaseUrl || !cfg?.data?.supabaseAnonKey) {
-          setStatus('Config missing', 'error');
-          throw new Error('Supabase config missing');
+        setStatus('Loading configuration...', 'loading');
+
+        const response = await fetch('/api/v1/public-config');
+        const config = await response.json();
+
+        if (!config?.data?.supabaseUrl || !config?.data?.supabaseAnonKey) {
+          throw new Error('Supabase configuration is missing. Please contact your administrator.');
         }
+
         if (!window.supabase) {
-          setStatus('SDK missing', 'error');
-          throw new Error('Supabase JS not loaded');
+          throw new Error('Supabase SDK failed to load. Please check your internet connection.');
         }
-        supabaseClient = window.supabase.createClient(cfg.data.supabaseUrl, cfg.data.supabaseAnonKey);
-        setStatus('Ready', 'success');
-      } catch (e) {
-        msg.textContent = e.message;
-        throw e;
+
+        supabaseClient = window.supabase.createClient(
+          config.data.supabaseUrl,
+          config.data.supabaseAnonKey,
+          {
+            auth: {
+              autoRefreshToken: true,
+              persistSession: true,
+              detectSessionInUrl: true
+            }
+          }
+        );
+
+        setStatus('Connected', 'success');
+
+        // Check for existing session
+        await handleAuthRedirect();
+        await checkExistingSession();
+
+      } catch (error) {
+        console.error('Supabase initialization error:', error);
+        setStatus('Connection failed', 'error');
+        showMessage(error.message, 'error');
       }
     }
 
-    function parseHashParams() {
-      const hash = window.location.hash.substring(1);
-      const params = new URLSearchParams(hash);
-      const access_token = params.get('access_token');
-      const refresh_token = params.get('refresh_token');
-      return { access_token, refresh_token };
-    }
-
-    async function handleRedirectSession() {
-      if (!supabaseClient) return;
-      const { access_token, refresh_token } = parseHashParams();
-      const url = new URL(window.location.href);
-      const code = url.searchParams.get('code');
+    // Handle OAuth/Email confirmation redirects
+    async function handleAuthRedirect() {
+      if (!supabaseClient) return false;
 
       try {
-        if (access_token && refresh_token) {
-          const { data, error } = await supabaseClient.auth.setSession({ access_token, refresh_token });
+        // Check URL for authentication tokens or codes
+        const hashParams = new URLSearchParams(window.location.hash.substring(1));
+        const searchParams = new URLSearchParams(window.location.search);
+
+        const accessToken = hashParams.get('access_token');
+        const refreshToken = hashParams.get('refresh_token');
+        const code = searchParams.get('code');
+        const error = hashParams.get('error');
+        const errorDescription = hashParams.get('error_description');
+
+        // Handle errors from Supabase
+        if (error) {
+          showMessage(errorDescription || error, 'error');
+          // Clean URL
+          window.history.replaceState({}, document.title, window.location.pathname);
+          return false;
+        }
+
+        // Handle token-based session (magic link, email confirmation)
+        if (accessToken && refreshToken) {
+          setStatus('Verifying your email...', 'loading');
+
+          const { data, error } = await supabaseClient.auth.setSession({
+            access_token: accessToken,
+            refresh_token: refreshToken
+          });
+
           if (error) throw error;
+
           if (data?.session?.access_token) {
             localStorage.setItem('auth_token', data.session.access_token);
-            window.location.hash = '';
-            window.location.href = '/dashboard.html';
+            showMessage('Email verified successfully! Redirecting...', 'success');
+
+            // Clean URL
+            window.history.replaceState({}, document.title, window.location.pathname);
+
+            setTimeout(() => {
+              window.location.href = '/dashboard.html';
+            }, 1000);
             return true;
           }
-        } else if (code) {
+        }
+
+        // Handle PKCE flow (code exchange)
+        if (code) {
+          setStatus('Completing authentication...', 'loading');
+
           const { data, error } = await supabaseClient.auth.exchangeCodeForSession(code);
+
           if (error) throw error;
+
           if (data?.session?.access_token) {
             localStorage.setItem('auth_token', data.session.access_token);
-            window.location.href = '/dashboard.html';
+            showMessage('Authentication successful! Redirecting...', 'success');
+
+            // Clean URL
+            window.history.replaceState({}, document.title, window.location.pathname);
+
+            setTimeout(() => {
+              window.location.href = '/dashboard.html';
+            }, 1000);
             return true;
           }
         }
-      } catch (err) {
-        msg.textContent = err.message;
-      }
-      return false;
-    }
 
-    async function signup() {
-      const email = document.getElementById('signup-email').value.trim();
-      const password = document.getElementById('signup-password').value.trim();
-      msg.textContent = '';
-      try {
-        if (!supabaseClient) await loadSupabase();
-        const { data, error } = await supabaseClient.auth.signUp({
-          email,
-          password,
-          options: { emailRedirectTo: window.location.origin + '/login.html' },
-        });
-        if (error) throw error;
-        if (data?.session?.access_token) {
-          localStorage.setItem('auth_token', data.session.access_token);
-          msg.textContent = 'Signup successful. Redirecting...';
-          window.location.href = '/dashboard.html';
-        } else {
-          msg.textContent = 'Signup successful. Check your email to confirm, then log in.';
-        }
-      } catch (err) {
-        msg.textContent = err.message;
+        return false;
+      } catch (error) {
+        console.error('Auth redirect error:', error);
+        showMessage(error.message, 'error');
+        return false;
       }
     }
 
-    async function login() {
-      const email = document.getElementById('login-email').value.trim();
-      const password = document.getElementById('login-password').value.trim();
-      msg.textContent = '';
-      try {
-        if (!supabaseClient) await loadSupabase();
-        const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        if (!data?.session?.access_token) throw new Error('Login succeeded but no session returned');
-        localStorage.setItem('auth_token', data.session.access_token);
-        msg.textContent = 'Login successful. Redirecting...';
-        window.location.href = '/dashboard.html';
-      } catch (err) {
-        msg.textContent = err.message;
-      }
-    }
-
-    async function sendReset() {
-      const email = document.getElementById('reset-email').value.trim();
-      msg.textContent = '';
-      try {
-        if (!supabaseClient) await loadSupabase();
-        const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
-          redirectTo: window.location.origin + '/login.html',
-        });
-        if (error) throw error;
-        msg.textContent = 'Reset link sent. Check your email.';
-      } catch (err) {
-        msg.textContent = err.message;
-      }
-    }
-
+    // Check if user is already logged in
     async function checkExistingSession() {
       const token = localStorage.getItem('auth_token');
       if (!token) return;
-      const res = await fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } });
-      if (res.ok) {
-        window.location.href = '/dashboard.html';
+
+      try {
+        const response = await fetch('/api/user', {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (response.ok) {
+          showMessage('You are already logged in. Redirecting...', 'success');
+          setTimeout(() => {
+            window.location.href = '/dashboard.html';
+          }, 1000);
+        } else {
+          // Token is invalid, clear it
+          localStorage.removeItem('auth_token');
+        }
+      } catch (error) {
+        console.error('Session check error:', error);
       }
     }
 
-    // Init after DOM and Supabase script are ready
+    // Handle Login
+    async function handleLogin(event) {
+      event.preventDefault();
+      if (isLoading) return;
+
+      const email = document.getElementById('login-email').value.trim();
+      const password = document.getElementById('login-password').value;
+
+      if (!email || !password) {
+        showMessage('Please enter both email and password', 'error');
+        return;
+      }
+
+      isLoading = true;
+      setButtonLoading('login-btn', true);
+
+      try {
+        if (!supabaseClient) await initSupabase();
+
+        const { data, error } = await supabaseClient.auth.signInWithPassword({
+          email,
+          password
+        });
+
+        if (error) throw error;
+
+        if (!data?.session?.access_token) {
+          throw new Error('Login succeeded but no session was created');
+        }
+
+        localStorage.setItem('auth_token', data.session.access_token);
+        showMessage('Login successful! Redirecting...', 'success');
+
+        setTimeout(() => {
+          window.location.href = '/dashboard.html';
+        }, 1000);
+
+      } catch (error) {
+        console.error('Login error:', error);
+        showMessage(error.message, 'error');
+        setButtonLoading('login-btn', false);
+        isLoading = false;
+      }
+    }
+
+    // Handle Signup
+    async function handleSignup(event) {
+      event.preventDefault();
+      if (isLoading) return;
+
+      const email = document.getElementById('signup-email').value.trim();
+      const password = document.getElementById('signup-password').value;
+
+      if (!email || !password) {
+        showMessage('Please enter both email and password', 'error');
+        return;
+      }
+
+      if (password.length < 6) {
+        showMessage('Password must be at least 6 characters long', 'error');
+        return;
+      }
+
+      isLoading = true;
+      setButtonLoading('signup-btn', true);
+
+      try {
+        if (!supabaseClient) await initSupabase();
+
+        const { data, error } = await supabaseClient.auth.signUp({
+          email,
+          password,
+          options: {
+            emailRedirectTo: `${window.location.origin}/login.html`
+          }
+        });
+
+        if (error) throw error;
+
+        // Check if email confirmation is required
+        if (data?.user && !data?.session) {
+          showMessage(
+            'Account created! Please check your email to confirm your account before logging in.',
+            'success'
+          );
+
+          // Switch to login tab after 3 seconds
+          setTimeout(() => {
+            switchTab('login');
+            document.getElementById('login-email').value = email;
+          }, 3000);
+        } else if (data?.session?.access_token) {
+          // Email confirmation disabled, user is logged in immediately
+          localStorage.setItem('auth_token', data.session.access_token);
+          showMessage('Account created successfully! Redirecting...', 'success');
+
+          setTimeout(() => {
+            window.location.href = '/dashboard.html';
+          }, 1000);
+        }
+
+      } catch (error) {
+        console.error('Signup error:', error);
+        showMessage(error.message, 'error');
+      } finally {
+        setButtonLoading('signup-btn', false);
+        isLoading = false;
+      }
+    }
+
+    // Handle Password Reset
+    async function handleReset(event) {
+      event.preventDefault();
+      if (isLoading) return;
+
+      const email = document.getElementById('reset-email').value.trim();
+
+      if (!email) {
+        showMessage('Please enter your email address', 'error');
+        return;
+      }
+
+      isLoading = true;
+      setButtonLoading('reset-btn', true);
+
+      try {
+        if (!supabaseClient) await initSupabase();
+
+        const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
+          redirectTo: `${window.location.origin}/login.html`
+        });
+
+        if (error) throw error;
+
+        showMessage(
+          'Password reset email sent! Please check your inbox and follow the instructions.',
+          'success'
+        );
+
+        // Clear form
+        document.getElementById('reset-email').value = '';
+
+      } catch (error) {
+        console.error('Reset error:', error);
+        showMessage(error.message, 'error');
+      } finally {
+        setButtonLoading('reset-btn', false);
+        isLoading = false;
+      }
+    }
+
+    // Initialize on page load
     document.addEventListener('DOMContentLoaded', () => {
-      switchTab('login');
-      loadSupabase()
-        .then(handleRedirectSession)
-        .then((handled) => {
-          if (!handled) return checkExistingSession();
-        })
-        .catch(() => {});
+      initSupabase();
     });
   </script>
 </body>
