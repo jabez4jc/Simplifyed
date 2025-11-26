@@ -371,8 +371,8 @@ install_dependencies() {
 
     cd "$INSTALL_DIR/backend"
 
-    print_info "Installing production dependencies..."
-    sudo -u $APP_USER npm install --production --quiet
+    print_info "Installing all dependencies (including build tools)..."
+    sudo -u $APP_USER npm install --quiet
 
     print_success "Dependencies installed"
 }
@@ -388,6 +388,9 @@ build_application() {
 
     print_info "Building CSS..."
     sudo -u $APP_USER npm run build:css
+
+    print_info "Removing development dependencies..."
+    sudo -u $APP_USER npm prune --production --quiet
 
     print_success "Application built successfully"
 }
