@@ -3,10 +3,40 @@ import connectSqlite3 from 'connect-sqlite3';
 import fs from 'fs';
 import path from 'path';
 import jwt from 'jsonwebtoken';
+import jwksClient from 'jwks-rsa';
 import db from '../core/database.js';
 import { config } from '../core/config.js';
 import { log } from '../core/logger.js';
 import { UnauthorizedError, ForbiddenError } from '../core/errors.js';
+
+// JWKS client for Supabase ES256 JWT verification
+let jwksClientInstance = null;
+
+function getJwksClient() {
+  if (!jwksClientInstance && config.auth.supabaseUrl) {
+    jwksClientInstance = jwksClient({
+      jwksUri: `${config.auth.supabaseUrl}/auth/v1/.well-known/jwks.json`,
+      cache: true,
+      cacheMaxAge: 600000, // 10 minutes
+      rateLimit: true,
+      jwksRequestsPerMinute: 10,
+    });
+  }
+  return jwksClientInstance;
+}
+
+async function getSigningKey(header) {
+  const client = getJwksClient();
+  if (!client) return null;
+
+  try {
+    const key = await client.getSigningKey(header.kid);
+    return key.getPublicKey();
+  } catch (error) {
+    log.warn('Failed to get signing key from JWKS', { error: error.message });
+    return null;
+  }
+}
 
 // Session configuration with persistent SQLite store
 export function configureSession() {
@@ -128,10 +158,32 @@ export async function optionalAuth(req, res, next) {
     // Bearer token from Supabase
     const authHeader = req.headers.authorization || '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-    if (token && config.auth.supabaseJwtSecret) {
+    if (token && config.auth.supabaseUrl) {
       try {
-        // Validate Supabase JWT with signing secret; skip aud/iss enforcement for compatibility
-        const payload = jwt.verify(token, config.auth.supabaseJwtSecret);
+        // Decode token to check algorithm
+        const decoded = jwt.decode(token, { complete: true });
+        if (!decoded || !decoded.header) {
+          throw new Error('Invalid token format');
+        }
+
+        let payload;
+
+        // Handle ES256 (asymmetric) tokens - modern Supabase default
+        if (decoded.header.alg === 'ES256') {
+          const signingKey = await getSigningKey(decoded.header);
+          if (!signingKey) {
+            throw new Error('Unable to get signing key');
+          }
+          payload = jwt.verify(token, signingKey, { algorithms: ['ES256'] });
+        }
+        // Handle HS256 (symmetric) tokens - legacy Supabase or service_role keys
+        else if (decoded.header.alg === 'HS256' && config.auth.supabaseJwtSecret) {
+          payload = jwt.verify(token, config.auth.supabaseJwtSecret, { algorithms: ['HS256'] });
+        }
+        else {
+          throw new Error('Unsupported token algorithm: ' + decoded.header.alg);
+        }
+
         const user = await ensureLocalUserFromToken(payload);
         if (user) {
           req.user = user;
@@ -141,7 +193,8 @@ export async function optionalAuth(req, res, next) {
           }
         }
       } catch (err) {
-        // invalid token, ignore
+        log.debug('Token verification failed', { error: err.message });
+        // invalid token, ignore and continue without auth
       }
     }
     next();
