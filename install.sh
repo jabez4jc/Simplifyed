@@ -491,9 +491,9 @@ configure_nginx() {
         NGINX_SITE="simplifyed"
     fi
 
-    # Create Nginx configuration
+    # Create initial HTTP-only Nginx configuration (SSL will be added by certbot)
     cat > /etc/nginx/sites-available/${NGINX_SITE} <<EOF
-# HTTP server - redirect to HTTPS
+# HTTP server - will be modified by certbot to add HTTPS
 server {
     listen 80;
     listen [::]:80;
@@ -504,43 +504,7 @@ server {
         root /var/www/html;
     }
 
-    # Redirect all other traffic to HTTPS
-    location / {
-        return 301 https://\$server_name\$request_uri;
-    }
-}
-
-# HTTPS server
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name $DOMAIN;
-
-    # SSL certificates (will be configured by Certbot)
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-
-    # SSL configuration
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-SHA256:ECDHE-RSA-AES256-SHA384;
-    ssl_prefer_server_ciphers on;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-
-    # Security headers
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    add_header X-Frame-Options DENY;
-    add_header X-Content-Type-Options nosniff;
-    add_header X-XSS-Protection "1; mode=block";
-
-    # Logging
-    access_log /var/log/nginx/simplifyed-access.log;
-    error_log /var/log/nginx/simplifyed-error.log;
-
-    # Client max body size
-    client_max_body_size 10M;
-
-    # Proxy settings
+    # Proxy to application
     location / {
         proxy_pass http://localhost:$PORT;
         proxy_http_version 1.1;
@@ -560,10 +524,14 @@ EOF
 
     ln -sf /etc/nginx/sites-available/${NGINX_SITE} /etc/nginx/sites-enabled/
 
-    # Note: Skipping nginx -t here because SSL certificates don't exist yet
-    # Nginx will be tested and restarted after SSL certificate installation
-
-    print_success "Nginx configured"
+    # Test and reload Nginx with HTTP-only config
+    if nginx -t 2>/dev/null; then
+        systemctl reload nginx
+        print_success "Nginx HTTP configuration enabled"
+    else
+        print_warning "Nginx configuration test failed"
+        nginx -t
+    fi
 }
 
 ################################################################################
@@ -573,44 +541,28 @@ EOF
 install_ssl_certificate() {
     print_header "Installing Let's Encrypt SSL Certificate"
 
-    # Check if Nginx is already running with other sites
-    if systemctl is-active --quiet nginx; then
-        print_info "Nginx is already running - using certbot nginx plugin"
-        print_info "This will not interrupt your existing sites"
+    # At this point, Nginx is running with HTTP-only config
+    # We'll use certbot --nginx which will modify the config to add HTTPS
 
-        print_info "Obtaining SSL certificate for $DOMAIN..."
-        certbot --nginx \
-            --non-interactive \
-            --agree-tos \
-            --email "$EMAIL" \
-            -d "$DOMAIN" \
-            --redirect
+    print_info "Obtaining SSL certificate and configuring HTTPS for $DOMAIN..."
+    print_info "Certbot will automatically update the Nginx configuration"
 
-        if [ $? -eq 0 ]; then
-            print_success "SSL certificate obtained successfully"
-        else
-            print_error "Failed to obtain SSL certificate"
-            print_warning "You can try running 'certbot --nginx -d $DOMAIN' manually later"
-        fi
+    # Use certbot --nginx to get certificate and configure HTTPS
+    # This modifies the HTTP-only config to add HTTPS server block
+    certbot --nginx \
+        --non-interactive \
+        --agree-tos \
+        --email "$EMAIL" \
+        -d "$DOMAIN" \
+        --redirect
+
+    if [ $? -eq 0 ]; then
+        print_success "SSL certificate obtained and HTTPS configured successfully"
     else
-        print_info "Fresh Nginx installation detected - using standalone mode"
-
-        # Stop Nginx temporarily for standalone mode
-        systemctl stop nginx
-
-        print_info "Obtaining SSL certificate for $DOMAIN..."
-        certbot certonly --standalone \
-            --non-interactive \
-            --agree-tos \
-            --email "$EMAIL" \
-            -d "$DOMAIN"
-
-        if [ $? -eq 0 ]; then
-            print_success "SSL certificate obtained successfully"
-        else
-            print_error "Failed to obtain SSL certificate"
-            print_warning "You can try running 'certbot --nginx -d $DOMAIN' manually later"
-        fi
+        print_error "Failed to obtain SSL certificate"
+        print_warning "Certbot encountered an error. You can try manually with:"
+        print_warning "  certbot --nginx -d $DOMAIN"
+        print_warning "The site is still accessible via HTTP at: http://$DOMAIN"
     fi
 
     # Set up auto-renewal
