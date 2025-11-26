@@ -8,6 +8,14 @@ class APIClient {
     this.baseURL = baseURL;
   }
 
+  _getToken() {
+    try {
+      return localStorage.getItem('auth_token');
+    } catch (e) {
+      return null;
+    }
+  }
+
   /**
    * Generic request handler
    */
@@ -24,6 +32,11 @@ class APIClient {
       },
       credentials: 'include', // Include cookies for session
     };
+
+    const token = this._getToken();
+    if (token) {
+      config.headers['Authorization'] = `Bearer ${token}`;
+    }
 
     if (options.body) {
       config.body = JSON.stringify(options.body);
@@ -42,7 +55,7 @@ class APIClient {
       if (!response.ok) {
         // If not authenticated, redirect to Google OAuth flow
         if (response.status === 401) {
-          window.location.href = '/auth/google';
+          window.location.href = '/login.html';
           return;
         }
         throw new APIError(

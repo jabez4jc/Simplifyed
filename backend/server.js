@@ -7,7 +7,6 @@ import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import compression from 'compression';
-import passport from 'passport';
 import { config } from './src/core/config.js';
 import { log } from './src/core/logger.js';
 import db from './src/core/database.js';
@@ -19,9 +18,10 @@ import autoExitService from './src/services/auto-exit.service.js';
 import telegramService from './src/services/telegram.service.js';
 import openalgoClient from './src/integrations/openalgo/client.js';
 import settingsService from './src/services/settings.service.js';
+import authLocalService from './src/services/auth-local.service.js';
 
 // Middleware
-import { configureSession, configurePassport, requireAuth, optionalAuth } from './src/middleware/auth.js';
+import { configureSession, requireAuth, optionalAuth, getUserWithRole } from './src/middleware/auth.js';
 import { errorHandler, notFoundHandler } from './src/middleware/error-handler.js';
 import { requestLogger, bodyParserErrorHandler } from './src/middleware/request-logger.js';
 import { checkInstrumentsRefresh } from './src/middleware/instruments-refresh.middleware.js';
@@ -30,7 +30,6 @@ import { checkInstrumentsRefresh } from './src/middleware/instruments-refresh.mi
 import apiV1Routes from './src/routes/v1/index.js';
 
 let servicesStarted = false;
-const startPaused = process.env.START_PAUSED === 'true'; // default to false unless explicitly set
 
 async function startBackgroundServices() {
   if (servicesStarted) return;
@@ -64,6 +63,7 @@ function stopBackgroundServices() {
 
 // Create Express app
 const app = express();
+app.locals.startServices = startBackgroundServices;
 
 /**
  * Middleware Setup
@@ -96,10 +96,6 @@ app.use(requestLogger);
 // Session
 app.use(configureSession());
 
-// Passport authentication
-app.use(configurePassport());
-app.use(passport.session());
-
 // Optional auth (sets req.user in test mode)
 app.use(optionalAuth);
 
@@ -113,26 +109,41 @@ app.use(checkInstrumentsRefresh);
 // API v1
 app.use('/api/v1', apiV1Routes);
 
-// Google OAuth routes
-app.get('/auth/google', passport.authenticate('google', {
-  scope: ['profile', 'email'],
-}));
-
-app.get('/auth/google/callback',
-  passport.authenticate('google', { failureRedirect: '/login' }),
-  (req, res) => {
-    res.redirect('/dashboard.html');
+// Auth routes (local)
+app.post('/auth/signup', async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+    const user = await authLocalService.createUser({ email, password });
+    req.session.userId = user.id;
+    req.user = user;
+    await startBackgroundServices();
+    res.json({ status: 'success', data: user });
+  } catch (error) {
+    next(error);
   }
-);
+});
 
-// Logout
-app.post('/auth/logout', (req, res) => {
-  req.logout((err) => {
-    if (err) {
-      log.error('Logout error', err);
-    }
-    res.json({ status: 'success', message: 'Logged out successfully' });
-  });
+app.post('/auth/login', async (req, res, next) => {
+  try {
+    const { email, password } = req.body;
+    const user = await authLocalService.authenticate({ email, password });
+    req.session.userId = user.id;
+    req.user = user;
+    await startBackgroundServices();
+    res.json({ status: 'success', data: user });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/auth/logout', (req, res, next) => {
+  try {
+    req.session.destroy(() => {
+      res.json({ status: 'success', message: 'Logged out successfully' });
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 // Current user
@@ -203,13 +214,7 @@ async function startServer() {
       }
     }
 
-    // Start shared market data feed service (quotes/positions/funds cache)
-    // Start background services unless paused
-    if (startPaused) {
-      log.warn('Server starting in PAUSED mode: background polling is not running until resumed');
-    } else {
-      await startBackgroundServices();
-    }
+    // Do not start background services until user logs in (lazy start)
 
     // Start HTTP server
     app.listen(config.port, () => {
@@ -251,11 +256,7 @@ async function startServer() {
       console.log('╚════════════════════════════════════════════════════════════╝');
       console.log('');
 
-      if (!config.auth.googleClientId) {
-        console.log('⚠️  Running in TEST MODE (no Google OAuth configured)');
-        console.log('   All requests will use test user: test@example.com');
-        console.log('');
-      }
+      // Removed legacy Google OAuth test mode banner
     });
   } catch (error) {
     log.error('Failed to start server', error);

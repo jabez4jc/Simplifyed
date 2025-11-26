@@ -176,16 +176,15 @@ class Config {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     };
 
-    this.google = {
-      clientId: getEnv('GOOGLE_CLIENT_ID'),
-      clientSecret: getEnv('GOOGLE_CLIENT_SECRET'),
-      callbackUrl: getEnv('GOOGLE_CALLBACK_URL', 'http://localhost:3000/auth/google/callback'),
-    };
-
     this.auth = {
-      googleClientId: getEnv('GOOGLE_CLIENT_ID'),
-      googleClientSecret: getEnv('GOOGLE_CLIENT_SECRET'),
+      googleClientId: null,
+      googleClientSecret: null,
       enableTestMode: getEnvBool('ENABLE_TEST_MODE', false),
+      supabaseUrl: getEnv('SUPABASE_URL', ''),
+      supabaseAnonKey: getEnv('SUPABASE_ANON_KEY', ''),
+      supabaseJwtSecret: getEnv('SUPABASE_JWT_SECRET', ''),
+      supabaseAudience: getEnv('SUPABASE_JWT_AUD', ''),
+      supabaseIssuer: getEnv('SUPABASE_JWT_ISS', ''),
     };
 
     this.cors = {

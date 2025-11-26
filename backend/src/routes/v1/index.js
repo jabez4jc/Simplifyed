@@ -19,6 +19,7 @@ import optionChainRoutes from './option-chain.js';
 import tradeRoutes from './trades.js';
 import rbacRoutes from './rbac.js';
 import { getAppReadyStatus } from '../../middleware/instruments-refresh.middleware.js';
+import { config } from '../../core/config.js';
 
 const router = express.Router();
 
@@ -38,6 +39,17 @@ router.use('/settings', settingsRoutes);
 router.use('/option-chain', optionChainRoutes);
 router.use('/trades', tradeRoutes);
 router.use('/rbac', rbacRoutes);
+
+// Public config for frontend (Supabase)
+router.get('/public-config', (req, res) => {
+  res.json({
+    status: 'success',
+    data: {
+      supabaseUrl: config.auth.supabaseUrl || '',
+      supabaseAnonKey: config.auth.supabaseAnonKey || '',
+    },
+  });
+});
 
 // Health check endpoint
 router.get('/health', (req, res) => {

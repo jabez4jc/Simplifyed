@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Simplifyed Admin - Login</title>
+  <link rel="stylesheet" href="/css/styles.css">
+</head>
+<body>
+  <div class="landing-container">
+    <div class="landing-card max-w-lg">
+      <div class="text-center mb-4">
+        <h1 class="text-2xl font-bold">📊 Simplifyed Admin</h1>
+        <p class="text-neutral-600">Trading Management Dashboard V2.0</p>
+      </div>
+
+      <div class="card p-4 shadow-sm border border-base-200">
+        <div class="flex items-center justify-between mb-3">
+          <div class="flex gap-2 items-center text-sm">
+            <span class="badge" id="config-status">Loading...</span>
+            <span class="text-neutral-600">Supabase</span>
+          </div>
+          <button class="btn btn-link btn-xs" onclick="checkExistingSession()">Refresh session</button>
+        </div>
+
+        <div class="tabs tabs-boxed mb-4" id="auth-tabs">
+          <a class="tab tab-active" data-tab="login" onclick="switchTab('login')">Login</a>
+          <a class="tab" data-tab="signup" onclick="switchTab('signup')">Sign up</a>
+          <a class="tab" data-tab="reset" onclick="switchTab('reset')">Reset password</a>
+        </div>
+
+        <div id="login-panel">
+          <input id="login-email" class="input input-bordered w-full mb-2" placeholder="Email" type="email" autocomplete="email">
+          <input id="login-password" class="input input-bordered w-full mb-3" placeholder="Password" type="password" autocomplete="current-password">
+          <button id="login-btn" class="btn btn-primary w-full" onclick="login()">Login</button>
+        </div>
+
+        <div id="signup-panel" class="hidden">
+          <input id="signup-email" class="input input-bordered w-full mb-2" placeholder="Email" type="email" autocomplete="email">
+          <input id="signup-password" class="input input-bordered w-full mb-3" placeholder="Password" type="password" autocomplete="new-password">
+          <button id="signup-btn" class="btn btn-secondary w-full" onclick="signup()">Create account</button>
+          <p class="text-xs text-neutral-600 mt-2">You may need to confirm via email before logging in.</p>
+        </div>
+
+        <div id="reset-panel" class="hidden">
+          <input id="reset-email" class="input input-bordered w-full mb-3" placeholder="Email" type="email" autocomplete="email">
+          <button id="reset-btn" class="btn btn-accent w-full" onclick="sendReset()">Send reset link</button>
+        </div>
+
+        <p id="auth-message" class="text-sm text-neutral-600 text-center min-h-[24px] mt-3"></p>
+      </div>
+    </div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.2/dist/umd/supabase.min.js"></script>
+  <script>
+    let supabaseClient = null;
+    const msg = document.getElementById('auth-message');
+    const statusBadge = document.getElementById('config-status');
+
+    function setStatus(text, tone = 'info') {
+      statusBadge.textContent = text;
+      statusBadge.className = 'badge ' + (tone === 'error' ? 'badge-error' : tone === 'success' ? 'badge-success' : 'badge-info');
+    }
+
+    function switchTab(tab) {
+      ['login', 'signup', 'reset'].forEach((t) => {
+        document.getElementById(`${t}-panel`).classList.toggle('hidden', t !== tab);
+        document.querySelector(`[data-tab="${t}"]`).classList.toggle('tab-active', t === tab);
+      });
+      msg.textContent = '';
+    }
+
+    async function loadSupabase() {
+      try {
+        const res = await fetch('/api/v1/public-config');
+        const cfg = await res.json();
+        if (!cfg?.data?.supabaseUrl || !cfg?.data?.supabaseAnonKey) {
+          setStatus('Config missing', 'error');
+          throw new Error('Supabase config missing');
+        }
+        if (!window.supabase) {
+          setStatus('SDK missing', 'error');
+          throw new Error('Supabase JS not loaded');
+        }
+        supabaseClient = window.supabase.createClient(cfg.data.supabaseUrl, cfg.data.supabaseAnonKey);
+        setStatus('Ready', 'success');
+      } catch (e) {
+        msg.textContent = e.message;
+        throw e;
+      }
+    }
+
+    function parseHashParams() {
+      const hash = window.location.hash.substring(1);
+      const params = new URLSearchParams(hash);
+      const access_token = params.get('access_token');
+      const refresh_token = params.get('refresh_token');
+      return { access_token, refresh_token };
+    }
+
+    async function handleRedirectSession() {
+      if (!supabaseClient) return;
+      const { access_token, refresh_token } = parseHashParams();
+      const url = new URL(window.location.href);
+      const code = url.searchParams.get('code');
+
+      try {
+        if (access_token && refresh_token) {
+          const { data, error } = await supabaseClient.auth.setSession({ access_token, refresh_token });
+          if (error) throw error;
+          if (data?.session?.access_token) {
+            localStorage.setItem('auth_token', data.session.access_token);
+            window.location.hash = '';
+            window.location.href = '/dashboard.html';
+            return true;
+          }
+        } else if (code) {
+          const { data, error } = await supabaseClient.auth.exchangeCodeForSession(code);
+          if (error) throw error;
+          if (data?.session?.access_token) {
+            localStorage.setItem('auth_token', data.session.access_token);
+            window.location.href = '/dashboard.html';
+            return true;
+          }
+        }
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+      return false;
+    }
+
+    async function signup() {
+      const email = document.getElementById('signup-email').value.trim();
+      const password = document.getElementById('signup-password').value.trim();
+      msg.textContent = '';
+      try {
+        if (!supabaseClient) await loadSupabase();
+        const { data, error } = await supabaseClient.auth.signUp({
+          email,
+          password,
+          options: { emailRedirectTo: window.location.origin + '/login.html' },
+        });
+        if (error) throw error;
+        if (data?.session?.access_token) {
+          localStorage.setItem('auth_token', data.session.access_token);
+          msg.textContent = 'Signup successful. Redirecting...';
+          window.location.href = '/dashboard.html';
+        } else {
+          msg.textContent = 'Signup successful. Check your email to confirm, then log in.';
+        }
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    }
+
+    async function login() {
+      const email = document.getElementById('login-email').value.trim();
+      const password = document.getElementById('login-password').value.trim();
+      msg.textContent = '';
+      try {
+        if (!supabaseClient) await loadSupabase();
+        const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        if (!data?.session?.access_token) throw new Error('Login succeeded but no session returned');
+        localStorage.setItem('auth_token', data.session.access_token);
+        msg.textContent = 'Login successful. Redirecting...';
+        window.location.href = '/dashboard.html';
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    }
+
+    async function sendReset() {
+      const email = document.getElementById('reset-email').value.trim();
+      msg.textContent = '';
+      try {
+        if (!supabaseClient) await loadSupabase();
+        const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
+          redirectTo: window.location.origin + '/login.html',
+        });
+        if (error) throw error;
+        msg.textContent = 'Reset link sent. Check your email.';
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    }
+
+    async function checkExistingSession() {
+      const token = localStorage.getItem('auth_token');
+      if (!token) return;
+      const res = await fetch('/api/user', { headers: { Authorization: 'Bearer ' + token } });
+      if (res.ok) {
+        window.location.href = '/dashboard.html';
+      }
+    }
+
+    // Init after DOM and Supabase script are ready
+    document.addEventListener('DOMContentLoaded', () => {
+      switchTab('login');
+      loadSupabase()
+        .then(handleRedirectSession)
+        .then((handled) => {
+          if (!handled) return checkExistingSession();
+        })
+        .catch(() => {});
+    });
+  </script>
+</body>
+</html>
