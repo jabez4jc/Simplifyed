@@ -497,11 +497,16 @@
   </div>
 
   <!-- Supabase JS SDK -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.2/dist/umd/supabase.min.js"></script>
+  <script
+    src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.2/dist/umd/supabase.min.js"
+    integrity="sha384-fHA3aDUXCIxySoZcUhq38IKiSI0PxdCsiwF9+rmAnKi2yOVX7xtMuxl60vCNJxKC"
+    crossorigin="anonymous">
+  </script>
 
   <script>
     let supabaseClient = null;
-    let isLoading = false;
+    // Track ongoing operations with AbortControllers to prevent race conditions
+    const activeOperations = new Map();
 
     // UI Helpers
     function setStatus(text, type = 'loading') {
@@ -520,16 +525,21 @@
       }, 8000);
     }
 
-    function setButtonLoading(buttonId, loading) {
+    function setButtonLoading(buttonId, loading, originalText = '') {
       const button = document.getElementById(buttonId);
-      const span = button.querySelector('span');
 
       if (loading) {
+        // Store original text as data attribute for reliable restoration
+        if (!button.dataset.originalText) {
+          button.dataset.originalText = originalText || button.textContent.trim();
+        }
         button.disabled = true;
         button.innerHTML = '<div class="spinner"></div><span>Processing...</span>';
       } else {
         button.disabled = false;
-        button.innerHTML = `<span>${span.textContent}</span>`;
+        const restoredText = button.dataset.originalText || originalText || 'Submit';
+        button.innerHTML = `<span>${restoredText}</span>`;
+        delete button.dataset.originalText;
       }
     }
 
@@ -556,7 +566,12 @@
         const response = await fetch('/api/v1/public-config');
         const config = await response.json();
 
-        if (!config?.data?.supabaseUrl || !config?.data?.supabaseAnonKey) {
+        // Improved validation: explicitly check config and config.data exist
+        if (!config || !config.data) {
+          throw new Error('Invalid server configuration response. Please contact your administrator.');
+        }
+
+        if (!config.data.supabaseUrl || !config.data.supabaseAnonKey) {
           throw new Error('Supabase configuration is missing. Please contact your administrator.');
         }
 
@@ -630,9 +645,10 @@
             // Clean URL
             window.history.replaceState({}, document.title, window.location.pathname);
 
+            // Increased delay for accessibility (screen readers, slow connections)
             setTimeout(() => {
               window.location.href = '/dashboard.html';
-            }, 1000);
+            }, 2000);
             return true;
           }
         }
@@ -652,9 +668,10 @@
             // Clean URL
             window.history.replaceState({}, document.title, window.location.pathname);
 
+            // Increased delay for accessibility (screen readers, slow connections)
             setTimeout(() => {
               window.location.href = '/dashboard.html';
-            }, 1000);
+            }, 2000);
             return true;
           }
         }
@@ -682,9 +699,10 @@
 
         if (response.ok) {
           showMessage('You are already logged in. Redirecting...', 'success');
+          // Increased delay for accessibility (screen readers, slow connections)
           setTimeout(() => {
             window.location.href = '/dashboard.html';
-          }, 1000);
+          }, 2000);
         } else {
           // Token is invalid, clear it
           localStorage.removeItem('auth_token');
@@ -697,18 +715,26 @@
     // Handle Login
     async function handleLogin(event) {
       event.preventDefault();
-      if (isLoading) return;
+
+      const operationKey = 'login';
+      // Cancel any existing login operation
+      if (activeOperations.has(operationKey)) {
+        activeOperations.get(operationKey).abort();
+      }
+
+      const abortController = new AbortController();
+      activeOperations.set(operationKey, abortController);
 
       const email = document.getElementById('login-email').value.trim();
       const password = document.getElementById('login-password').value;
 
       if (!email || !password) {
         showMessage('Please enter both email and password', 'error');
+        activeOperations.delete(operationKey);
         return;
       }
 
-      isLoading = true;
-      setButtonLoading('login-btn', true);
+      setButtonLoading('login-btn', true, 'Sign In');
 
       try {
         if (!supabaseClient) await initSupabase();
@@ -717,6 +743,8 @@
           email,
           password
         });
+
+        if (abortController.signal.aborted) return;
 
         if (error) throw error;
 
@@ -727,38 +755,50 @@
         localStorage.setItem('auth_token', data.session.access_token);
         showMessage('Login successful! Redirecting...', 'success');
 
+        // Increased delay for accessibility (screen readers, slow connections)
         setTimeout(() => {
           window.location.href = '/dashboard.html';
-        }, 1000);
+        }, 2000);
 
       } catch (error) {
+        if (abortController.signal.aborted) return;
         console.error('Login error:', error);
         showMessage(error.message, 'error');
-        setButtonLoading('login-btn', false);
-        isLoading = false;
+        setButtonLoading('login-btn', false, 'Sign In');
+      } finally {
+        activeOperations.delete(operationKey);
       }
     }
 
     // Handle Signup
     async function handleSignup(event) {
       event.preventDefault();
-      if (isLoading) return;
+
+      const operationKey = 'signup';
+      // Cancel any existing signup operation
+      if (activeOperations.has(operationKey)) {
+        activeOperations.get(operationKey).abort();
+      }
+
+      const abortController = new AbortController();
+      activeOperations.set(operationKey, abortController);
 
       const email = document.getElementById('signup-email').value.trim();
       const password = document.getElementById('signup-password').value;
 
       if (!email || !password) {
         showMessage('Please enter both email and password', 'error');
+        activeOperations.delete(operationKey);
         return;
       }
 
       if (password.length < 6) {
         showMessage('Password must be at least 6 characters long', 'error');
+        activeOperations.delete(operationKey);
         return;
       }
 
-      isLoading = true;
-      setButtonLoading('signup-btn', true);
+      setButtonLoading('signup-btn', true, 'Create Account');
 
       try {
         if (!supabaseClient) await initSupabase();
@@ -770,6 +810,8 @@
             emailRedirectTo: `${window.location.origin}/login.html`
           }
         });
+
+        if (abortController.signal.aborted) return;
 
         if (error) throw error;
 
@@ -790,34 +832,46 @@
           localStorage.setItem('auth_token', data.session.access_token);
           showMessage('Account created successfully! Redirecting...', 'success');
 
+          // Increased delay for accessibility (screen readers, slow connections)
           setTimeout(() => {
             window.location.href = '/dashboard.html';
-          }, 1000);
+          }, 2000);
         }
 
       } catch (error) {
+        if (abortController.signal.aborted) return;
         console.error('Signup error:', error);
         showMessage(error.message, 'error');
       } finally {
-        setButtonLoading('signup-btn', false);
-        isLoading = false;
+        if (!abortController.signal.aborted) {
+          setButtonLoading('signup-btn', false, 'Create Account');
+        }
+        activeOperations.delete(operationKey);
       }
     }
 
     // Handle Password Reset
     async function handleReset(event) {
       event.preventDefault();
-      if (isLoading) return;
+
+      const operationKey = 'reset';
+      // Cancel any existing reset operation
+      if (activeOperations.has(operationKey)) {
+        activeOperations.get(operationKey).abort();
+      }
+
+      const abortController = new AbortController();
+      activeOperations.set(operationKey, abortController);
 
       const email = document.getElementById('reset-email').value.trim();
 
       if (!email) {
         showMessage('Please enter your email address', 'error');
+        activeOperations.delete(operationKey);
         return;
       }
 
-      isLoading = true;
-      setButtonLoading('reset-btn', true);
+      setButtonLoading('reset-btn', true, 'Send Reset Link');
 
       try {
         if (!supabaseClient) await initSupabase();
@@ -825,6 +879,8 @@
         const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
           redirectTo: `${window.location.origin}/login.html`
         });
+
+        if (abortController.signal.aborted) return;
 
         if (error) throw error;
 
@@ -837,11 +893,14 @@
         document.getElementById('reset-email').value = '';
 
       } catch (error) {
+        if (abortController.signal.aborted) return;
         console.error('Reset error:', error);
         showMessage(error.message, 'error');
       } finally {
-        setButtonLoading('reset-btn', false);
-        isLoading = false;
+        if (!abortController.signal.aborted) {
+          setButtonLoading('reset-btn', false, 'Send Reset Link');
+        }
+        activeOperations.delete(operationKey);
       }
     }
 

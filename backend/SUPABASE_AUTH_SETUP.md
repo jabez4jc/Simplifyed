@@ -4,13 +4,13 @@ This guide will help you configure Supabase authentication for the Simplifyed Tr
 
 ## Prerequisites
 
-- A Supabase account (sign up at https://supabase.com if you don't have one)
+- A Supabase account (sign up at <https://supabase.com> if you don't have one)
 - Node.js 18+ installed
 - Access to your server's `.env` file
 
 ## Step 1: Create a Supabase Project
 
-1. Go to https://app.supabase.com
+1. Go to <https://app.supabase.com>
 2. Click "New Project"
 3. Enter project details:
    - **Name**: Simplifyed (or your preferred name)
@@ -80,12 +80,16 @@ This guide will help you configure Supabase authentication for the Simplifyed Tr
 
 ### Configure Redirect URLs
 
+⚠️ **CRITICAL SECURITY REQUIREMENT**: Redirect URLs must match EXACTLY (including protocol, domain, and path).
+
 1. Go to **Authentication** → **URL Configuration**
 2. Add your site URL to **Site URL**: `https://yourdomain.com` (or `http://localhost:3000` for development)
 3. Add redirect URLs to **Redirect URLs**:
    - `http://localhost:3000/login.html` (for local development)
    - `https://yourdomain.com/login.html` (for production)
    - Add both if you're using both environments
+
+**Security Note**: If the redirect URL in the email doesn't exactly match one of the configured URLs, authentication will fail. This prevents open redirect vulnerabilities.
 
 ## Step 4: Update Your .env File
 
@@ -118,6 +122,7 @@ By default, Supabase requires users to confirm their email before they can log i
 ## Step 6: Test Your Setup
 
 1. Start your server:
+
    ```bash
    cd /home/user/Simplifyed/backend
    npm start
@@ -248,6 +253,35 @@ Subsequent users will be created without a role. You can assign roles through th
 6. **Enable Row Level Security (RLS)**
    - If you plan to use Supabase database features
    - Prevents unauthorized data access
+
+### localStorage Security Considerations
+
+⚠️ **Important**: Authentication tokens are stored in browser localStorage, which is vulnerable to XSS (Cross-Site Scripting) attacks.
+
+**Risk**: If an attacker can inject malicious JavaScript into your site, they can steal tokens and impersonate users.
+
+**Mitigations**:
+
+1. **Implement Content Security Policy (CSP)**
+   - Add CSP headers to prevent unauthorized script execution
+   - Example: `Content-Security-Policy: script-src 'self' https://cdn.jsdelivr.net`
+
+2. **Input Validation**
+   - Always sanitize user inputs
+   - Never use `innerHTML` with user-provided content
+   - Use `textContent` or DOM methods instead
+
+3. **Regular Security Audits**
+   - Review dependencies for known vulnerabilities
+   - Keep packages up to date
+   - Monitor for suspicious activity
+
+4. **Consider HttpOnly Cookies (Advanced)**
+   - For production deployments, consider migrating to HttpOnly cookies
+   - Requires backend changes to manage session cookies
+   - Provides better XSS protection
+
+**Note**: The current implementation prioritizes ease of deployment. For high-security requirements, implement HttpOnly cookie-based authentication.
 
 ## Next Steps
 
