@@ -53,6 +53,11 @@ function isTodayRefreshDone() {
  */
 export async function checkInstrumentsRefresh(req, res, next) {
   try {
+    // Skip middleware for non-API/static requests so the UI can load
+    if (!req.path.startsWith('/api')) {
+      return next();
+    }
+
     // Allow health check and ready status endpoints without blocking
     if (req.path === '/api/v1/health' || req.path === '/api/v1/ready') {
       return next();
@@ -63,16 +68,21 @@ export async function checkInstrumentsRefresh(req, res, next) {
       return next();
     }
 
-    // Skip instruments refresh in test mode (test instances don't have valid instruments)
-    // This must come BEFORE authentication check since req.user exists in test mode
-    // Test mode is enabled when Google OAuth is not configured
-    if (!config.auth.googleClientId) {
+    // Skip instruments refresh in test mode or when Google OAuth is absent
+    const testModeEnabled = config.auth.enableTestMode === true ||
+                            process.env.ENABLE_TEST_MODE === 'true' ||
+                            config.testMode?.enabled === true ||
+                            config.env === 'development';
+    if (testModeEnabled || !config.auth.googleClientId) {
       if (!appReady) {
-        log.info('Test mode: Skipping instruments refresh, marking app as ready', {
+        log.info('Test mode/dev: Skipping instruments refresh, marking app as ready', {
           user: req.user?.email,
           path: req.path
         });
         appReady = true;
+        refreshInProgress = false;
+        refreshError = null;
+        lastRefreshDate = new Date();
       }
       return next();
     }
@@ -181,4 +191,3 @@ export async function checkInstrumentsRefresh(req, res, next) {
     next();
   }
 }
-

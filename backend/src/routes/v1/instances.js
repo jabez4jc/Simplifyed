@@ -13,10 +13,28 @@ import {
   NotFoundError,
   ConflictError,
   ValidationError,
+  ForbiddenError,
 } from '../../core/errors.js';
 import { parseBooleanSafe } from '../../utils/sanitizers.js';
+import { requireAuth, requirePermission } from '../../middleware/auth.js';
+import db from '../../core/database.js';
 
 const router = express.Router();
+
+// All instance routes require authentication
+router.use(requireAuth);
+
+function hasPermission(req, key) {
+  return Array.isArray(req.user?.permissions) && req.user.permissions.includes(key);
+}
+
+function logAudit(req, action, metadata = {}) {
+  if (!req.user) return;
+  db.run(
+    `INSERT INTO audit_logs (user_id, action, metadata) VALUES (?, ?, ?)`,
+    [req.user.id, action, JSON.stringify(metadata)]
+  ).catch(() => {});
+}
 
 /**
  * GET /api/v1/instances
@@ -128,9 +146,10 @@ router.get('/:id', async (req, res, next) => {
  * POST /api/v1/instances
  * Create new instance
  */
-router.post('/', async (req, res, next) => {
+router.post('/', requirePermission('instances.add'), async (req, res, next) => {
   try {
     const instance = await instanceService.createInstance(req.body);
+    logAudit(req, 'instances.create', { id: instance?.id, name: instance?.name });
 
     res.status(201).json({
       status: 'success',
@@ -149,7 +168,20 @@ router.post('/', async (req, res, next) => {
 router.put('/:id', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
+    // Determine if this is only a mode toggle (allowed for monitors)
+    const keys = Object.keys(req.body || {});
+    const modeOnly = keys.length === 1 && keys[0] === 'is_analyzer_mode';
+
+    if (modeOnly && !hasPermission(req, 'instances.toggle_mode')) {
+      return next(new ForbiddenError('Insufficient permissions'));
+    }
+    if (!modeOnly && !hasPermission(req, 'instances.edit')) {
+      return next(new ForbiddenError('Insufficient permissions'));
+    }
+
     const instance = await instanceService.updateInstance(id, req.body);
+    const action = modeOnly ? 'instances.toggle_mode' : 'instances.update';
+    logAudit(req, action, { id, body: req.body });
 
     res.json({
       status: 'success',
@@ -165,10 +197,11 @@ router.put('/:id', async (req, res, next) => {
  * DELETE /api/v1/instances/:id
  * Delete instance
  */
-router.delete('/:id', async (req, res, next) => {
+router.delete('/:id', requirePermission('instances.delete'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     await instanceService.deleteInstance(id);
+    logAudit(req, 'instances.delete', { id });
 
     res.json({
       status: 'success',
@@ -184,7 +217,7 @@ router.delete('/:id', async (req, res, next) => {
  * Test connection to OpenAlgo instance (ping endpoint)
  * NOTE: Must be before /:id routes
  */
-router.post('/test/connection', async (req, res, next) => {
+router.post('/test/connection', requirePermission('instances.edit'), async (req, res, next) => {
   try {
     const { host_url, api_key } = req.body;
 

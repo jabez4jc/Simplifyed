@@ -11,6 +11,15 @@ import { NotFoundError, ValidationError } from '../core/errors.js';
 import { parseFloatSafe } from '../utils/sanitizers.js';
 
 class OptionsResolutionService {
+  constructor() {
+    // Cache the last locked ATM per underlying/expiry to add hysteresis and avoid flip-flops
+    this.atmLocks = new Map();
+  }
+
+  _buildAtmLockKey(underlying, exchange, expiry) {
+    return `${(underlying || '').toUpperCase()}|${(exchange || '').toUpperCase()}|${expiry || ''}`;
+  }
+
   /**
    * Convert expiry date from YYYY-MM-DD to DD-MMM-YY format (OpenAlgo format)
    * @param {string} expiry - Expiry in YYYY-MM-DD format
@@ -117,13 +126,15 @@ class OptionsResolutionService {
     // Step 1: Get or fetch option chain
     const optionChain = await this._getOptionChain(underlying, exchange, expiry, instance);
 
-    // Step 2: Calculate target strike based on LTP and offset
-    const targetStrike = this._calculateTargetStrike(
+    // Step 2: Calculate target strike based on LTP and offset (with ATM hysteresis)
+    const lockKey = this._buildAtmLockKey(underlying, exchange, expiry);
+    const { targetStrike, atmStrike } = this._calculateTargetStrike(
       ltp,
       strikeOffset,
       optionType,
       optionChain.strikes,
-      optionChain.strikeStep
+      optionChain.strikeStep,
+      lockKey
     );
 
     // Step 3: Find the option symbol for the target strike
@@ -155,6 +166,7 @@ class OptionsResolutionService {
       optionType,
       strikeOffset,
       targetStrike,
+      atmStrike,
       strikeStep: optionChain.strikeStep,
       ...optionSymbol,
     };
@@ -354,9 +366,13 @@ class OptionsResolutionService {
    * Calculate target strike based on LTP and offset
    * @private
    */
-  _calculateTargetStrike(ltp, strikeOffset, optionType, strikes, strikeStep) {
-    // Find ATM strike (closest to LTP)
-    const atmStrike = this._findATMStrike(ltp, strikes);
+  _calculateTargetStrike(ltp, strikeOffset, optionType, strikes, strikeStep, lockKey) {
+    let effectiveStep = Number.isFinite(strikeStep) && strikeStep > 0
+      ? strikeStep
+      : this._recomputeStrikeStep(strikes);
+
+    // Find ATM strike (closest to LTP) with hysteresis to prevent oscillation
+    const atmStrike = this._findATMStrike(ltp, strikes, lockKey, effectiveStep);
 
     // Calculate offset based on strikeOffset parameter
     const offsetMap = {
@@ -370,17 +386,36 @@ class OptionsResolutionService {
     };
 
     const offset = offsetMap[strikeOffset];
-    const targetStrike = atmStrike + (offset * strikeStep);
+    const targetStrike = atmStrike + (offset * effectiveStep);
+
+    // Persist the locked ATM for future resolutions
+    if (lockKey) {
+      this.atmLocks.set(lockKey, { strike: atmStrike, ltp, ts: Date.now() });
+    }
 
     // Find the closest available strike
-    return this._findClosestStrike(targetStrike, strikes);
+    return {
+      targetStrike: this._findClosestStrike(targetStrike, strikes),
+      atmStrike,
+    };
   }
 
   /**
    * Find ATM strike (closest to LTP)
    * @private
    */
-  _findATMStrike(ltp, strikes) {
+  _findATMStrike(ltp, strikes, lockKey, strikeStep) {
+    const lock = lockKey ? this.atmLocks.get(lockKey) : null;
+    const halfStep = Math.max((strikeStep || 0) / 2, 0);
+
+    // If we have a lock and price hasn't moved beyond half a strike, keep the locked ATM
+    if (lock && halfStep > 0) {
+      const drift = Math.abs(ltp - lock.strike);
+      if (drift <= halfStep) {
+        return lock.strike;
+      }
+    }
+
     let closest = strikes[0];
     let minDiff = Math.abs(ltp - closest);
 
@@ -434,6 +469,23 @@ class OptionsResolutionService {
     }
 
     return mostCommon;
+  }
+
+  _recomputeStrikeStep(strikes = []) {
+    if (!Array.isArray(strikes) || strikes.length < 2) {
+      return 50; // sensible default
+    }
+    const diffs = [];
+    for (let i = 1; i < strikes.length; i++) {
+      const diff = strikes[i] - strikes[i - 1];
+      if (Number.isFinite(diff) && diff > 0) {
+        diffs.push(diff);
+      }
+    }
+    if (diffs.length === 0) {
+      return 50;
+    }
+    return this._mostCommon(diffs);
   }
 
   /**

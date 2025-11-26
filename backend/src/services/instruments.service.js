@@ -6,6 +6,7 @@
 
 import openalgoClient from '../integrations/openalgo/client.js';
 import instanceService from './instance.service.js';
+import marketDataInstanceService from './market-data-instance.service.js';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { ValidationError } from '../core/errors.js';
@@ -723,11 +724,14 @@ class InstrumentsService {
 
   _buildExpiryDisplayList(rows = []) {
     const map = new Map();
+    const todayIso = new Date().toISOString().split('T')[0];
 
     for (const row of rows) {
       if (!row || !row.expiry) continue;
       const normalized = this._normalizeExpiryDate(row.expiry);
       if (!normalized) continue;
+      // Skip past expiries to avoid showing or using stale contracts
+      if (normalized < todayIso) continue;
       if (!map.has(normalized)) {
         const display = this._formatExpiryForDisplay(normalized) || row.expiry;
         map.set(normalized, display);
@@ -835,41 +839,26 @@ class InstrumentsService {
       if (!instance) {
         throw new ValidationError(`Instance with ID ${instanceId} not found`);
       }
-      // Validate that it's a primary or secondary admin instance
-      if (!instance.is_primary_admin && !instance.is_secondary_admin) {
-        throw new ValidationError(
-          `Instance ${instanceId} must be a primary or secondary admin instance`
-        );
-      }
       return instance;
     }
 
-    // Get all active instances
-    const instances = await instanceService.getAllInstances({
-      is_active: true
-    });
-
-    // Filter for healthy primary or secondary admin instances
-    const adminInstances = instances.filter(
-      (inst) =>
-        inst.health_status === 'healthy' &&
-        (inst.is_primary_admin || inst.is_secondary_admin)
-    );
-
-    if (adminInstances.length === 0) {
-      throw new ValidationError(
-        'No healthy primary or secondary admin instances available for instruments refresh'
-      );
+    // Prefer configured market data instance pool (supports multiquotes)
+    try {
+      const mdInstance = await marketDataInstanceService.getMarketDataInstance();
+      if (mdInstance) {
+        return mdInstance;
+      }
+    } catch (err) {
+      log.warn('Failed to get market data instance for instruments refresh, falling back', { error: err.message });
     }
 
-    // Prefer primary admin over secondary admin
-    const primaryAdmin = adminInstances.find(inst => inst.is_primary_admin);
-    if (primaryAdmin) {
-      return primaryAdmin;
+    // Fallback: any healthy active instance
+    const instances = await instanceService.getAllInstances({ is_active: true });
+    const healthy = instances.filter(inst => inst.health_status === 'healthy');
+    if (healthy.length === 0) {
+      throw new ValidationError('No healthy instances available for instruments refresh');
     }
-
-    // Fallback to secondary admin
-    return adminInstances[0];
+    return healthy[0];
   }
 
   /**

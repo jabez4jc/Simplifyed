@@ -82,12 +82,10 @@ class MarketDataFeedService extends EventEmitter {
     const quoteInterval = config.quoteInterval ?? DEFAULT_QUOTE_INTERVAL;
     const fundsInterval = config.fundsInterval ?? DEFAULT_FUNDS_INTERVAL;
 
-    // Stagger initial kicks to avoid bursting the same instance with multiple endpoints
-    await this.refreshQuotes({ force: true });
-    await this._sleep(FEED_STAGGER_MS);
-    await this.refreshPositions({ force: true });
-    await this._sleep(FEED_STAGGER_MS);
-    await this.refreshFunds({ force: true });
+    // Fire-and-forget warmup to avoid blocking startup
+    setTimeout(() => this.refreshQuotes({ force: true }).catch(() => {}), 0);
+    setTimeout(() => this.refreshPositions({ force: true }).catch(() => {}), FEED_STAGGER_MS);
+    setTimeout(() => this.refreshFunds({ force: true }).catch(() => {}), FEED_STAGGER_MS * 2);
 
     // Quotes interval
     this.intervals.push(setInterval(() => this.refreshQuotes(), quoteInterval));
@@ -773,7 +771,14 @@ class MarketDataFeedService extends EventEmitter {
       return { quotes: [], pendingSymbols: symbols || [], sourceInstanceId: null };
     }
 
-    let pendingSymbols = [...symbols];
+    // Normalize symbols to strings to satisfy broker APIs that are strict about input types
+    let pendingSymbols = symbols
+      .map((s) => ({
+        exchange: `${s.exchange || ''}`,
+        symbol: `${s.symbol || ''}`,
+      }))
+      .filter((s) => s.exchange && s.symbol);
+
     const collected = [];
     let sourceInstanceId = null;
     const now = Date.now();
@@ -846,15 +851,26 @@ class MarketDataFeedService extends EventEmitter {
       return [];
     }
 
+    const normalizedSymbols = symbols
+      .map((s) => ({
+        exchange: `${s.exchange || ''}`,
+        symbol: `${s.symbol || ''}`,
+      }))
+      .filter((s) => s.exchange && s.symbol);
+
+    if (normalizedSymbols.length === 0) {
+      return [];
+    }
+
     const now = Date.now();
     const supportsMulti = Boolean(instance.supports_multiquotes);
 
-    if (supportsMulti && symbols.length <= MULTI_QUOTE_SYMBOL_LIMIT) {
+    if (supportsMulti && normalizedSymbols.length <= MULTI_QUOTE_SYMBOL_LIMIT) {
       const cooldown = this.hasOpenPositions ? MULTI_QUOTE_COOLDOWN_ACTIVE_MS : MULTI_QUOTE_COOLDOWN_IDLE_MS;
       const lastMultiAt = this.multiQuoteTimestamps.get(instance.id) || 0;
       if (now - lastMultiAt >= cooldown) {
         try {
-          const multiQuotes = await openalgoClient.getMultiQuotes(instance, symbols);
+          const multiQuotes = await openalgoClient.getMultiQuotes(instance, normalizedSymbols);
           this.multiQuoteTimestamps.set(instance.id, now);
           return multiQuotes;
         } catch (error) {
@@ -872,7 +888,7 @@ class MarketDataFeedService extends EventEmitter {
       }
     }
 
-    return openalgoClient.getQuotes(instance, symbols);
+    return openalgoClient.getQuotes(instance, normalizedSymbols);
   }
 
   _symbolKey(exchange = '', symbol = '') {

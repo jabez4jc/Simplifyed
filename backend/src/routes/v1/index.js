@@ -17,6 +17,7 @@ import monitorRoutes from './monitor.js';
 import settingsRoutes from './settings.js';
 import optionChainRoutes from './option-chain.js';
 import tradeRoutes from './trades.js';
+import rbacRoutes from './rbac.js';
 import { getAppReadyStatus } from '../../middleware/instruments-refresh.middleware.js';
 
 const router = express.Router();
@@ -36,6 +37,7 @@ router.use('/monitor', monitorRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/option-chain', optionChainRoutes);
 router.use('/trades', tradeRoutes);
+router.use('/rbac', rbacRoutes);
 
 // Health check endpoint
 router.get('/health', (req, res) => {

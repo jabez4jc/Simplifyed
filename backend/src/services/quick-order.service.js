@@ -2720,13 +2720,24 @@ class QuickOrderService {
     const marketDataInstanceService = (await import('./market-data-instance.service.js')).default;
     const marketDataInstance = await marketDataInstanceService.getMarketDataInstance();
 
-    const effectiveExpiry =
+    let effectiveExpiry =
       normalizedExpiry ||
       await expiryManagementService.getNearestExpiry(
         underlying,
         symbol.exchange,
         marketDataInstance
       );
+
+    // Never use past expiries: if user-supplied expiry is stale, fall back to nearest future
+    const todayIso = new Date().toISOString().split('T')[0];
+    if (effectiveExpiry && effectiveExpiry < todayIso) {
+      effectiveExpiry = await expiryManagementService.getNearestExpiry(
+        underlying,
+        symbol.exchange,
+        marketDataInstance,
+        true
+      );
+    }
 
     if (!effectiveExpiry) {
       throw new ValidationError(
@@ -2762,6 +2773,8 @@ class QuickOrderService {
         optionType: 'PE',
       }),
     ]);
+
+    const atmStrike = ceResolution?.atmStrike ?? peResolution?.atmStrike ?? null;
 
     const quoteRequests = [];
     if (ceResolution?.symbol) {
@@ -2803,6 +2816,7 @@ class QuickOrderService {
       strikeOffset,
       derivativeExchange,
       updatedAt: new Date().toISOString(),
+      atmStrike,
       underlying: {
         symbol: underlying,
         exchange: symbol.exchange,
@@ -2853,11 +2867,17 @@ class QuickOrderService {
     const marketDataInstanceService = (await import('./market-data-instance.service.js')).default;
     const marketDataInstance = await marketDataInstanceService.getMarketDataInstance();
 
+    // Prevent using past expiries; if stale, switch to nearest future
+    const todayIso = new Date().toISOString().split('T')[0];
+    const chosenExpiry = (normalizedExpiry && normalizedExpiry < todayIso)
+      ? await expiryManagementService.getNearestExpiry(underlying, derivativeExchange, marketDataInstance, true)
+      : normalizedExpiry;
+
     const futuresResolution = await derivativeResolutionService.resolveFuturesSymbol(
       marketDataInstance,
       underlying,
       derivativeExchange,
-      normalizedExpiry
+      chosenExpiry
     );
 
     const quotesMap = await this._getQuotesFromCache(marketDataInstance, [
@@ -2874,7 +2894,7 @@ class QuickOrderService {
     return {
       symbolId,
       watchlistId: symbol.watchlist_id,
-      expiry: futuresResolution.expiry || normalizedExpiry,
+      expiry: futuresResolution.expiry || chosenExpiry,
       derivativeExchange,
       futuresSymbol: futuresResolution.symbol,
       tradingSymbol: futuresResolution.trading_symbol || futuresResolution.symbol,

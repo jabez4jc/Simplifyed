@@ -6,8 +6,11 @@
 import express from 'express';
 import settingsService from '../../services/settings.service.js';
 import { log } from '../../core/logger.js';
+import { requireAuth, requirePermission } from '../../middleware/auth.js';
 
 const router = express.Router();
+
+router.use(requireAuth);
 
 /**
  * GET /api/v1/settings
@@ -85,7 +88,7 @@ router.get('/key/:key', async (req, res, next) => {
  * PUT /api/v1/settings/:key
  * Update a single setting
  */
-router.put('/:key', async (req, res, next) => {
+router.put('/:key', requirePermission('settings.manage'), async (req, res, next) => {
   try {
     const { key } = req.params;
     const { value } = req.body;
@@ -124,7 +127,7 @@ router.put('/:key', async (req, res, next) => {
  * PUT /api/v1/settings
  * Update multiple settings
  */
-router.put('/', async (req, res, next) => {
+router.put('/', requirePermission('settings.manage'), async (req, res, next) => {
   try {
     const settings = req.body;
 
@@ -159,7 +162,7 @@ router.put('/', async (req, res, next) => {
  * POST /api/v1/settings/:key/reset
  * Reset a setting to its default value
  */
-router.post('/:key/reset', async (req, res, next) => {
+router.post('/:key/reset', requirePermission('settings.manage'), async (req, res, next) => {
   try {
     const { key } = req.params;
     const setting = await settingsService.resetSetting(key);

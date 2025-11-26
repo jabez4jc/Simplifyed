@@ -11,8 +11,15 @@ import {
   ConflictError,
   ValidationError,
 } from '../../core/errors.js';
+import { requireAuth, requirePermission } from '../../middleware/auth.js';
 
 const router = express.Router();
+
+router.use(requireAuth);
+
+function hasPermission(req, key) {
+  return Array.isArray(req.user?.permissions) && req.user.permissions.includes(key);
+}
 
 /**
  * GET /api/v1/watchlists
@@ -60,7 +67,7 @@ router.get('/:id', async (req, res, next) => {
  * POST /api/v1/watchlists
  * Create new watchlist
  */
-router.post('/', async (req, res, next) => {
+router.post('/', requirePermission('watchlists.manage'), async (req, res, next) => {
   try {
     const watchlist = await watchlistService.createWatchlist(req.body);
 
@@ -81,6 +88,17 @@ router.post('/', async (req, res, next) => {
 router.put('/:id', async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
+    const keys = Object.keys(req.body || {});
+    const statusOnly = keys.length === 1 && keys[0] === 'is_active';
+
+    if (statusOnly) {
+      if (!hasPermission(req, 'watchlists.status')) {
+        throw new ConflictError('Insufficient permissions');
+      }
+    } else if (!hasPermission(req, 'watchlists.manage')) {
+      throw new ConflictError('Insufficient permissions');
+    }
+
     const watchlist = await watchlistService.updateWatchlist(id, req.body);
 
     res.json({
@@ -97,7 +115,7 @@ router.put('/:id', async (req, res, next) => {
  * DELETE /api/v1/watchlists/:id
  * Delete watchlist
  */
-router.delete('/:id', async (req, res, next) => {
+router.delete('/:id', requirePermission('watchlists.manage'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     await watchlistService.deleteWatchlist(id);
@@ -159,7 +177,7 @@ router.get('/:id/symbols', async (req, res, next) => {
  * POST /api/v1/watchlists/:id/symbols
  * Add symbol to watchlist
  */
-router.post('/:id/symbols', async (req, res, next) => {
+router.post('/:id/symbols', requirePermission('watchlists.symbols.manage'), async (req, res, next) => {
   try {
     const watchlistId = parseInt(req.params.id, 10);
     const symbol = await watchlistService.addSymbol(watchlistId, req.body);
@@ -178,7 +196,7 @@ router.post('/:id/symbols', async (req, res, next) => {
  * PUT /api/v1/watchlists/:id/symbols/:symbolId
  * Update symbol in watchlist
  */
-router.put('/:id/symbols/:symbolId', async (req, res, next) => {
+router.put('/:id/symbols/:symbolId', requirePermission('watchlists.symbols.manage'), async (req, res, next) => {
   try {
     const symbolId = parseInt(req.params.symbolId, 10);
     const symbol = await watchlistService.updateSymbol(symbolId, req.body);
@@ -197,7 +215,7 @@ router.put('/:id/symbols/:symbolId', async (req, res, next) => {
  * DELETE /api/v1/watchlists/:id/symbols/:symbolId
  * Remove symbol from watchlist
  */
-router.delete('/:id/symbols/:symbolId', async (req, res, next) => {
+router.delete('/:id/symbols/:symbolId', requirePermission('watchlists.symbols.manage'), async (req, res, next) => {
   try {
     const symbolId = parseInt(req.params.symbolId, 10);
     await watchlistService.removeSymbol(symbolId);
@@ -215,7 +233,7 @@ router.delete('/:id/symbols/:symbolId', async (req, res, next) => {
  * POST /api/v1/watchlists/:id/instances
  * Assign instance to watchlist
  */
-router.post('/:id/instances', async (req, res, next) => {
+router.post('/:id/instances', requirePermission('watchlists.instances.manage'), async (req, res, next) => {
   try {
     const watchlistId = parseInt(req.params.id, 10);
     const { instanceId } = req.body;
@@ -243,7 +261,7 @@ router.post('/:id/instances', async (req, res, next) => {
  * DELETE /api/v1/watchlists/:id/instances/:instanceId
  * Unassign instance from watchlist
  */
-router.delete('/:id/instances/:instanceId', async (req, res, next) => {
+router.delete('/:id/instances/:instanceId', requirePermission('watchlists.instances.manage'), async (req, res, next) => {
   try {
     const watchlistId = parseInt(req.params.id, 10);
     const instanceId = parseInt(req.params.instanceId, 10);

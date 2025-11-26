@@ -12,6 +12,10 @@ class SettingsHandler {
     this.isSaving = false;
     this.searchQuery = '';
     this.allowedCategories = null; // show all categories by default
+    this.currentUser = null;
+    this.roles = [];
+    this.users = [];
+    this.permissions = [];
 
     // Category metadata with icons and descriptions
     this.categoryMeta = {
@@ -82,15 +86,21 @@ class SettingsHandler {
 
     try {
       // Fetch all data
-      const [telegramStatus, categories, allSettings] = await Promise.all([
+      const [user, telegramStatus, categories, allSettings] = await Promise.all([
+        this.fetchCurrentUser(),
         this.fetchTelegramStatus(),
         this.fetchCategories(),
         this.fetchAllSettings()
       ]);
 
+      this.currentUser = user;
       this.telegramStatus = telegramStatus;
       this.categories = categories;
       this.settings = allSettings;
+
+      if (this.isAdmin()) {
+        await this.fetchRbacData();
+      }
 
       contentArea.innerHTML = `
         <div class="space-y-6">
@@ -104,6 +114,17 @@ class SettingsHandler {
                 ${this.renderApplicationSettings()}
               </div>
             </div>
+
+            ${this.isAdmin() ? `
+            <div class="card">
+              <div class="card-header">
+                <h3 class="card-title">🔐 Role &amp; User Access</h3>
+                <p class="text-sm text-neutral-600 mt-1">Manage roles and assign users</p>
+              </div>
+              <div class="p-6">
+                ${this.renderRbacSection()}
+              </div>
+            </div>` : ''}
 
             <!-- Instruments Cache Section -->
             <div class="card">
@@ -140,6 +161,10 @@ class SettingsHandler {
 
         </div>
       `;
+
+      if (this.isAdmin()) {
+        this.initRbacListeners();
+      }
 
       // Initialize category tabs
       this.initCategoryTabs();
@@ -766,6 +791,145 @@ class SettingsHandler {
       console.error('[Settings] Error fetching categories:', error);
       return [];
     }
+  }
+
+  async fetchCurrentUser() {
+    const res = await fetch('/api/user');
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json?.data || null;
+  }
+
+  isAdmin() {
+    return (this.currentUser?.role || '').toUpperCase() === 'ADMIN' || this.currentUser?.is_admin;
+  }
+
+  async fetchRbacData() {
+    try {
+      const [rolesRes, usersRes, permsRes] = await Promise.all([
+        fetch('/api/v1/rbac/roles'),
+        fetch('/api/v1/rbac/users'),
+        fetch('/api/v1/rbac/permissions'),
+      ]);
+      const rolesJson = await rolesRes.json();
+      const usersJson = await usersRes.json();
+      const permsJson = await permsRes.json();
+      this.roles = rolesJson?.data || [];
+      this.users = usersJson?.data || [];
+      this.permissions = permsJson?.data || [];
+    } catch (e) {
+      console.error('Failed to load RBAC data', e);
+    }
+  }
+
+  renderRbacSection() {
+    if (!this.roles || !this.users) {
+      return '<p class="text-sm text-neutral-600">Loading...</p>';
+    }
+    const roleOptions = this.roles.map(r => `<option value="${r.name}">${r.name}</option>`).join('');
+    const userRows = this.users.map(u => {
+      const options = this.roles.map(r => `<option value="${r.name}" ${r.name === u.role ? 'selected' : ''}>${r.name}</option>`).join('');
+      return `
+      <tr>
+        <td class="py-2 px-2">${u.email}</td>
+        <td class="py-2 px-2">${u.role || '—'}</td>
+        <td class="py-2 px-2">
+          <select data-user-id="${u.id}" class="select select-sm rbac-role-select">
+            ${options}
+          </select>
+        </td>
+      </tr>`;
+    }).join('');
+
+    const permissionGrid = this.roles.map(role => {
+      const currentPerms = new Set(role.permissions || []);
+      const checkboxes = this.permissions.map(p => `
+        <label class="flex items-center gap-2 text-xs">
+          <input type="checkbox" class="checkbox checkbox-xs rbac-perm-checkbox"
+            data-role="${role.name}" data-perm="${p.key}"
+            ${currentPerms.has(p.key) ? 'checked' : ''}>
+          <span>${p.key}</span>
+        </label>
+      `).join('');
+      return `
+        <div class="border rounded p-3 space-y-2">
+          <div class="flex items-center justify-between">
+            <div class="font-semibold">${role.name}</div>
+            <button class="btn btn-xs btn-primary rbac-save-perms" data-role="${role.name}">Save</button>
+          </div>
+          <div class="text-xs text-neutral-600">Assign permissions for ${role.name}</div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-64 overflow-auto">
+            ${checkboxes}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="overflow-x-auto">
+        <table class="table table-sm">
+          <thead>
+            <tr>
+              <th>Email</th>
+              <th>Current Role</th>
+              <th>Assign Role</th>
+            </tr>
+          </thead>
+          <tbody>${userRows}</tbody>
+        </table>
+      </div>
+      <div class="mt-4">
+        <h4 class="font-semibold mb-2">Permissions by Role</h4>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          ${permissionGrid}
+        </div>
+      </div>
+    `;
+  }
+
+  initRbacListeners() {
+    document.querySelectorAll('.rbac-role-select').forEach((select) => {
+      select.addEventListener('change', async (e) => {
+        const userId = e.target.getAttribute('data-user-id');
+        const role = e.target.value;
+        try {
+          const res = await fetch(`/api/v1/rbac/users/${userId}/role`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ role }),
+          });
+          if (!res.ok) {
+            throw new Error('Failed to assign role');
+          }
+        } catch (err) {
+          alert('Failed to assign role: ' + err.message);
+          console.error(err);
+        }
+      });
+    });
+
+    document.querySelectorAll('.rbac-save-perms').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const role = btn.getAttribute('data-role');
+        const checks = document.querySelectorAll(`.rbac-perm-checkbox[data-role="${role}"]`);
+        const selected = Array.from(checks)
+          .filter(c => c.checked)
+          .map(c => c.getAttribute('data-perm'));
+        try {
+          const res = await fetch(`/api/v1/rbac/roles/${encodeURIComponent(role)}/permissions`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ permissions: selected }),
+          });
+          if (!res.ok) throw new Error('Failed to update permissions');
+          this.fetchRbacData(); // refresh silently
+          Utils.showToast(`Permissions updated for ${role}`, 'success');
+        } catch (err) {
+          alert('Failed to update permissions: ' + err.message);
+          console.error(err);
+        }
+      });
+    });
   }
 
   /**

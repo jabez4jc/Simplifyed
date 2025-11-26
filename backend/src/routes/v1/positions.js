@@ -12,8 +12,19 @@ import marketDataFeedService from '../../services/market-data-feed.service.js';
 import { log } from '../../core/logger.js';
 import { NotFoundError, ValidationError } from '../../core/errors.js';
 import quickOrderService from '../../services/quick-order.service.js';
+import { requireAuth, requirePermission } from '../../middleware/auth.js';
+import db from '../../core/database.js';
 
 const router = express.Router();
+router.use(requireAuth);
+
+function logAudit(req, action, metadata = {}) {
+  if (!req.user) return;
+  db.run(
+    `INSERT INTO audit_logs (user_id, action, metadata) VALUES (?, ?, ?)`,
+    [req.user.id, action, JSON.stringify(metadata)]
+  ).catch(() => {});
+}
 
 /**
  * GET /api/v1/positions/all
@@ -117,7 +128,7 @@ router.get('/:instanceId/pnl', async (req, res, next) => {
  * POST /api/v1/positions/:instanceId/close
  * Close all positions for an instance
  */
-router.post('/:instanceId/close', async (req, res, next) => {
+router.post('/:instanceId/close', requirePermission('positions.close_all'), async (req, res, next) => {
   try {
     const instanceId = parseInt(req.params.instanceId, 10);
     const instance = await instanceService.getInstanceById(instanceId);
@@ -126,6 +137,10 @@ router.post('/:instanceId/close', async (req, res, next) => {
 
     // Close positions via OpenAlgo
     await openalgoClient.closePosition(instance, strategy);
+
+    if ((req.user?.role || '').toUpperCase() !== 'ADMIN') {
+      logAudit(req, 'positions.close_all', { instanceId });
+    }
 
     res.json({
       status: 'success',
@@ -141,7 +156,7 @@ router.post('/:instanceId/close', async (req, res, next) => {
  * Close a single symbol on an instance
  * Body: { symbol, exchange, tradeMode, product }
  */
-router.post('/:instanceId/close/position', async (req, res, next) => {
+router.post('/:instanceId/close/position', requirePermission('positions.close'), async (req, res, next) => {
   try {
     const instanceId = parseInt(req.params.instanceId, 10);
     const instance = await instanceService.getInstanceById(instanceId);
@@ -161,6 +176,10 @@ router.post('/:instanceId/close/position', async (req, res, next) => {
       tradeMode: normalizedTradeMode,
       product: normalizedProduct,
     });
+
+    if ((req.user?.role || '').toUpperCase() !== 'ADMIN') {
+      logAudit(req, 'positions.close_single', { instanceId, symbol, exchange });
+    }
 
     res.json({
       status: 'success',

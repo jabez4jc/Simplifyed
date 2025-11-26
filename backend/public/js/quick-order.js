@@ -920,6 +920,7 @@ class QuickOrderHandler {
     const underlyingLtp = preview.underlying?.ltp != null
       ? `₹${Utils.formatNumber(preview.underlying.ltp)}`
       : '—';
+    const atmStrike = preview.atmStrike != null ? preview.atmStrike : '—';
     const updatedAt = preview.updatedAt ? new Date(preview.updatedAt) : null;
     const updatedLabel = updatedAt
       ? `Refreshed ${updatedAt.toLocaleTimeString()}`
@@ -929,7 +930,7 @@ class QuickOrderHandler {
       <div class="flex items-center justify-between gap-4 flex-wrap text-xs text-neutral-600">
         <div>
           <p class="font-semibold text-base-content">Option Symbols (${preview.strikeOffset})</p>
-          <p>Exp ${expiryLabel} • ${Utils.escapeHTML(underlyingSymbol)} ${underlyingLtp}</p>
+          <p>Exp ${expiryLabel} • ${Utils.escapeHTML(underlyingSymbol)} ${underlyingLtp} • ATM ${atmStrike}</p>
         </div>
         <span>${updatedLabel}</span>
       </div>

@@ -121,7 +121,7 @@ app.get('/auth/google', passport.authenticate('google', {
 app.get('/auth/google/callback',
   passport.authenticate('google', { failureRedirect: '/login' }),
   (req, res) => {
-    res.redirect('/dashboard');
+    res.redirect('/dashboard.html');
   }
 );
 
@@ -143,6 +143,8 @@ app.get('/api/user', requireAuth, (req, res) => {
       id: req.user.id,
       email: req.user.email,
       is_admin: req.user.is_admin,
+      role: req.user.role,
+      permissions: req.user.permissions || [],
     },
   });
 });
@@ -189,6 +191,14 @@ async function startServer() {
           'INSERT INTO users (id, email, is_admin) VALUES (1, ?, 1)',
           ['test@example.com']
         );
+        // Assign Admin role to test user if roles exist
+        const adminRole = await db.get('SELECT id FROM roles WHERE name = ?', ['Admin']);
+        if (adminRole?.id) {
+          await db.run(
+            `INSERT OR REPLACE INTO user_roles (user_id, role_id, assigned_by) VALUES (?, ?, NULL)`,
+            [1, adminRole.id]
+          );
+        }
         log.info('Test user created');
       }
     }

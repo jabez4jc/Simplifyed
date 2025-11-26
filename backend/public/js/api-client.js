@@ -40,6 +40,11 @@ class APIClient {
       const data = await response.json();
 
       if (!response.ok) {
+        // If not authenticated, redirect to Google OAuth flow
+        if (response.status === 401) {
+          window.location.href = '/auth/google';
+          return;
+        }
         throw new APIError(
           data.message || 'Request failed',
           response.status,

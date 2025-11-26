@@ -167,8 +167,30 @@ class DashboardApp {
       if (avatarElement) {
         avatarElement.textContent = this.currentUser.email.charAt(0).toUpperCase();
       }
+
+      // If no role assigned, show message and halt further loading
+      if (!this.currentUser.role && !this.currentUser.is_admin) {
+        Utils.showToast('No role assigned. An admin will review your access.', 'warning');
+        const contentArea = document.getElementById('content-area');
+        if (contentArea) {
+          contentArea.innerHTML = `
+            <div class="p-6">
+              <div class="alert alert-warning">
+                <div>
+                  <h3 class="font-semibold">Access pending</h3>
+                  <p>Your account has been created but no role is assigned yet. An admin will review your request and grant access.</p>
+                </div>
+              </div>
+            </div>
+          `;
+        }
+        throw new Error('NO_ROLE_ASSIGNED');
+      }
     } catch (error) {
       console.error('Failed to load user:', error);
+      if (error.message === 'NO_ROLE_ASSIGNED') {
+        throw error;
+      }
     }
   }
 

@@ -9,8 +9,10 @@ import instrumentsService, { SUPPORTED_EXCHANGES } from '../../services/instrume
 import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
 import { sanitizeString } from '../../utils/sanitizers.js';
+import { requireAuth, requirePermission } from '../../middleware/auth.js';
 
 const router = express.Router();
+router.use(requireAuth);
 
 // Configure multer for CSV file upload (memory storage)
 const upload = multer({
@@ -210,7 +212,7 @@ router.get('/needs-refresh', async (req, res, next) => {
  * POST /api/v1/instruments/refresh
  * Manually trigger instruments refresh
  */
-router.post('/refresh', async (req, res, next) => {
+router.post('/refresh', requirePermission('settings.instruments.refresh'), async (req, res, next) => {
   try {
     const { exchange, instanceId } = req.body;
 
@@ -276,7 +278,7 @@ router.post('/refresh', async (req, res, next) => {
  * POST /api/v1/instruments/upload
  * Upload CSV file to import instruments
  */
-router.post('/upload', upload.single('file'), async (req, res, next) => {
+router.post('/upload', requirePermission('settings.instruments.refresh'), upload.single('file'), async (req, res, next) => {
   try {
     if (!req.file) {
       throw new ValidationError('No file uploaded');
@@ -338,7 +340,7 @@ router.get('/fetch-status/:instanceId', (req, res) => {
  * POST /api/v1/instruments/fetch-from-instance
  * Fetch instruments from a specific OpenAlgo instance (all exchanges)
  */
-router.post('/fetch-from-instance', async (req, res, next) => {
+router.post('/fetch-from-instance', requirePermission('settings.instruments.refresh'), async (req, res, next) => {
   try {
     const { instanceId } = req.body;
 

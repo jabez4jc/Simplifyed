@@ -7,8 +7,19 @@ import express from 'express';
 import quickOrderService from '../../services/quick-order.service.js';
 import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
+import { requireAuth, requirePermission } from '../../middleware/auth.js';
+import db from '../../core/database.js';
 
 const router = express.Router();
+router.use(requireAuth);
+
+function logAudit(req, action, metadata = {}) {
+  if (!req.user) return;
+  db.run(
+    `INSERT INTO audit_logs (user_id, action, metadata) VALUES (?, ?, ?)`,
+    [req.user.id, action, JSON.stringify(metadata)]
+  ).catch(() => {});
+}
 
 /**
  * POST /api/v1/quickorders
@@ -30,7 +41,7 @@ const router = express.Router();
  *   "stepLots": 1 (optional - for OPTIONS mode)
  * }
  */
-router.post('/', async (req, res, next) => {
+router.post('/', requirePermission('orders.place'), async (req, res, next) => {
   try {
     const {
       symbolId,
@@ -140,6 +151,10 @@ router.post('/', async (req, res, next) => {
     const totalOrders = result.results.length;
     const successfulOrders = result.results.filter(r => r.success).length;
     const failedOrders = totalOrders - successfulOrders;
+
+    if ((req.user?.role || '').toUpperCase() !== 'ADMIN') {
+      logAudit(req, 'quickorder.place', { symbolId: parsedSymbolId, action, tradeMode });
+    }
 
     res.status(201).json({
       status: 'success',

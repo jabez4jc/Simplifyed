@@ -12,8 +12,19 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../core/errors.js';
+import { requireAuth, requirePermission } from '../../middleware/auth.js';
+import db from '../../core/database.js';
 
 const router = express.Router();
+router.use(requireAuth);
+
+function logAudit(req, action, metadata = {}) {
+  if (!req.user) return;
+  db.run(
+    `INSERT INTO audit_logs (user_id, action, metadata) VALUES (?, ?, ?)`,
+    [req.user.id, action, JSON.stringify(metadata)]
+  ).catch(() => {});
+}
 
 /**
  * GET /api/v1/orders
@@ -169,7 +180,7 @@ router.get('/:id', async (req, res, next) => {
  * POST /api/v1/orders
  * Place order (using placesmartorder)
  */
-router.post('/', async (req, res, next) => {
+router.post('/', requirePermission('orders.place'), async (req, res, next) => {
   try {
     const order = await orderService.placeOrder(req.body);
 
@@ -187,7 +198,7 @@ router.post('/', async (req, res, next) => {
  * POST /api/v1/orders/batch
  * Place multiple orders
  */
-router.post('/batch', async (req, res, next) => {
+router.post('/batch', requirePermission('orders.place'), async (req, res, next) => {
   try {
     const { orders } = req.body;
 
@@ -221,10 +232,11 @@ router.post('/batch', async (req, res, next) => {
  * POST /api/v1/orders/:id/cancel
  * Cancel order
  */
-router.post('/:id/cancel', async (req, res, next) => {
+router.post('/:id/cancel', requirePermission('orders.cancel'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const order = await orderService.cancelOrder(id);
+    logAudit(req, 'order.cancel', { orderId: id });
 
     res.json({
       status: 'success',
@@ -240,7 +252,7 @@ router.post('/:id/cancel', async (req, res, next) => {
  * POST /api/v1/orders/cancel-all
  * Cancel all orders for an instance
  */
-router.post('/cancel-all', async (req, res, next) => {
+router.post('/cancel-all', requirePermission('orders.cancel_all'), async (req, res, next) => {
   try {
     const { instanceId, strategy } = req.body;
 
@@ -252,6 +264,10 @@ router.post('/cancel-all', async (req, res, next) => {
       instanceId,
       strategy || null
     );
+
+    if ((req.user?.role || '').toUpperCase() !== 'ADMIN') {
+      logAudit(req, 'order.cancel_all', { instanceId, strategy: strategy || null, cancelled: result.cancelled_count });
+    }
 
     res.json({
       status: 'success',

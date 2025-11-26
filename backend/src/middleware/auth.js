@@ -97,20 +97,37 @@ export function configurePassport() {
             ]);
 
             if (!user) {
+              // Determine if this is the first user
+              const countRow = await db.get('SELECT COUNT(*) as count FROM users');
+              const isFirstUser = (countRow?.count || 0) === 0;
+              const isAdmin = isFirstUser ? 1 : 0;
+
               // Create new user
               const result = await db.run(
                 'INSERT INTO users (email, is_admin) VALUES (?, ?)',
-                [email, 0] // New users are not admin by default
+                [email, isAdmin]
               );
 
               user = await db.get('SELECT * FROM users WHERE id = ?', [
                 result.lastID,
               ]);
 
-              log.info('New user created', { email });
+              // Assign Admin role only for the first user; others require manual admin assignment
+              if (isFirstUser) {
+                const roleRow = await db.get('SELECT id FROM roles WHERE name = ?', ['Admin']);
+                if (roleRow?.id) {
+                  await db.run(
+                    `INSERT OR REPLACE INTO user_roles (user_id, role_id, assigned_by)
+                     VALUES (?, ?, NULL)`,
+                    [user.id, roleRow.id]
+                  );
+                }
+              }
+
+              log.info('New user created', { email, role: isFirstUser ? 'Admin' : 'Unassigned' });
             }
 
-            return done(null, user);
+            return done(null, await attachRoleAndPermissions(user));
           } catch (error) {
             log.error('Authentication error', error);
             return done(error);
@@ -126,7 +143,8 @@ export function configurePassport() {
     passport.deserializeUser(async (id, done) => {
       try {
         const user = await db.get('SELECT * FROM users WHERE id = ?', [id]);
-        done(null, user);
+        const enriched = await attachRoleAndPermissions(user);
+        done(null, enriched);
       } catch (error) {
         done(error);
       }
@@ -151,9 +169,10 @@ export function requireAuth(req, res, next) {
   // CRITICAL: Test mode MUST be explicitly enabled via environment variable
   // This prevents accidental admin access if Google OAuth is misconfigured
   const testModeEnabled = config.auth.enableTestMode === true ||
-                          process.env.ENABLE_TEST_MODE === 'true';
+                          process.env.ENABLE_TEST_MODE === 'true' ||
+                          config.testMode?.enabled === true;
 
-  if (config.env === 'development' && testModeEnabled && !config.auth.googleClientId) {
+  if (testModeEnabled) {
     log.warn('⚠️  TEST MODE ACTIVE - Bypassing authentication (INSECURE)', {
       endpoint: req.path,
       method: req.method
@@ -162,7 +181,10 @@ export function requireAuth(req, res, next) {
       id: 1,
       email: 'test@example.com',
       is_admin: 1,
+      role: 'Admin',
+      permissions: [],
     };
+    req.isAuthenticated = () => true;
     return next();
   }
 
@@ -181,13 +203,24 @@ export function requireAuth(req, res, next) {
 export function requireAdmin(req, res, next) {
   // CRITICAL: Test mode MUST be explicitly enabled
   const testModeEnabled = config.auth.enableTestMode === true ||
-                          process.env.ENABLE_TEST_MODE === 'true';
+                          process.env.ENABLE_TEST_MODE === 'true' ||
+                          config.testMode?.enabled === true;
 
-  if (config.env === 'development' && testModeEnabled && !config.auth.googleClientId) {
+  if (testModeEnabled) {
     log.warn('⚠️  TEST MODE ACTIVE - Bypassing admin check (INSECURE)', {
       endpoint: req.path,
       method: req.method
     });
+    req.isAuthenticated = () => true;
+    if (!req.user) {
+      req.user = {
+        id: 1,
+        email: 'test@example.com',
+        is_admin: 1,
+        role: 'Admin',
+        permissions: [],
+      };
+    }
     return next();
   }
 
@@ -211,17 +244,85 @@ export function requireAdmin(req, res, next) {
 export function optionalAuth(req, res, next) {
   // CRITICAL: Test mode MUST be explicitly enabled
   const testModeEnabled = config.auth.enableTestMode === true ||
-                          process.env.ENABLE_TEST_MODE === 'true';
+                          process.env.ENABLE_TEST_MODE === 'true' ||
+                          config.testMode?.enabled === true;
 
-  if (config.env === 'development' && testModeEnabled && !config.auth.googleClientId) {
+  if (testModeEnabled) {
     req.user = {
       id: 1,
       email: 'test@example.com',
       is_admin: 1,
+      role: 'Admin',
+      permissions: [],
     };
+    req.isAuthenticated = () => true;
   }
 
   next();
+}
+
+/**
+ * Require user to have one of the specified roles
+ */
+export function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.isAuthenticated()) {
+      throw new UnauthorizedError('Authentication required');
+    }
+    if (req.user?.is_admin) {
+      return next();
+    }
+    const userRole = (req.user?.role || '').toUpperCase();
+    const ok = roles.some(r => r.toUpperCase() === userRole);
+    if (!ok) {
+      throw new ForbiddenError('Insufficient role');
+    }
+    next();
+  };
+}
+
+/**
+ * Require user to have a permission
+ */
+export function requirePermission(permissionKey) {
+  return (req, res, next) => {
+    if (!req.isAuthenticated()) {
+      throw new UnauthorizedError('Authentication required');
+    }
+    if (req.user?.is_admin) {
+      return next();
+    }
+    const perms = req.user?.permissions || [];
+    if (!perms.includes(permissionKey)) {
+      throw new ForbiddenError('Insufficient permissions');
+    }
+    next();
+  };
+}
+
+async function attachRoleAndPermissions(user) {
+  if (!user) return null;
+  let roleRow = await db.get(
+    `SELECT r.name as role
+     FROM user_roles ur
+     JOIN roles r ON ur.role_id = r.id
+     WHERE ur.user_id = ?`,
+    [user.id]
+  );
+
+  const permissions = await db.all(
+    `SELECT p.key
+     FROM role_permissions rp
+     JOIN permissions p ON rp.permission_id = p.id
+     WHERE rp.role_id = (SELECT role_id FROM user_roles WHERE user_id = ?)`,
+    [user.id]
+  );
+
+  return {
+    ...user,
+    role: roleRow?.role || null,
+    permissions: roleRow ? (permissions?.map(p => p.key) || []) : [],
+  };
 }
 
 export default {

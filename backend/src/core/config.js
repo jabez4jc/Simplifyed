@@ -185,6 +185,7 @@ class Config {
     this.auth = {
       googleClientId: getEnv('GOOGLE_CLIENT_ID'),
       googleClientSecret: getEnv('GOOGLE_CLIENT_SECRET'),
+      enableTestMode: getEnvBool('ENABLE_TEST_MODE', false),
     };
 
     this.cors = {
