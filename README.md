@@ -35,22 +35,49 @@ Simplifyed Admin is the control plane for running multiple OpenAlgo broker insta
 
 ---
 
-## Getting Started
+## Installation
 
-### 1. Requirements
+### Automated Installation (Recommended)
+
+For production Ubuntu servers with domain and SSL:
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/simplifyed.git
+cd simplifyed
+
+# Run automated installer
+sudo ./install.sh
+```
+
+The automated installer will:
+- Install all dependencies (Node.js, Nginx, SQLite, etc.)
+- Configure Nginx reverse proxy
+- Obtain Let's Encrypt SSL certificate
+- Set up systemd service for auto-start
+- Configure firewall
+- Initialize database and run migrations
+
+**See [QUICKSTART.md](QUICKSTART.md) for a quick installation guide or [INSTALL.md](INSTALL.md) for detailed documentation.**
+
+### Manual Installation (Development)
+
+For local development or manual setup:
+
+#### 1. Requirements
 
 - Node.js 18+
 - npm 9+
 - SQLite 3 (CLI optional but helpful)
 
-### 2. Install dependencies
+#### 2. Install dependencies
 
 ```bash
 cd backend
 npm install
 ```
 
-### 3. Configure environment
+#### 3. Configure environment
 
 Copy `.env.example` (if provided) to `.env` and populate:
 
@@ -64,7 +91,7 @@ GOOGLE_CLIENT_SECRET=...
 TELEGRAM_BOT_TOKEN=...   # optional (alerting)
 ```
 
-### 4. Run migrations
+#### 4. Run migrations
 
 The server expects schema tables such as `application_settings`, `users`, `watchlists`, etc. If you see startup errors like `SQLITE_ERROR: no such table: users`, run:
 
@@ -75,7 +102,7 @@ npm run migrate
 
 Re-run this command after pulling new migrations.
 
-### 5. Build styling (optional for dev)
+#### 5. Build styling (optional for dev)
 
 ```bash
 npm run build:css
@@ -83,7 +110,7 @@ npm run build:css
 
 During active development you can run Tailwind in watch mode via `npm run dev:css` (see `backend/package.json` if needed).
 
-### 6. Start the server
+#### 6. Start the server
 
 ```bash
 npm start            # production style
