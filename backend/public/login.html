@@ -558,6 +558,44 @@
       document.getElementById('message-area').innerHTML = '';
     }
 
+    // Redirect the user based on access (dashboard vs pending)
+    async function redirectBasedOnAccess() {
+      const token = localStorage.getItem('auth_token');
+      if (!token) {
+        window.location.href = '/login.html';
+        return;
+      }
+
+      try {
+        const response = await fetch('/api/user', {
+          method: 'GET',
+          credentials: 'include',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (response.ok) {
+          window.location.href = '/dashboard.html';
+          return;
+        }
+
+        if (response.status === 403) {
+          window.location.href = '/access-pending.html';
+          return;
+        }
+
+        // Invalid/expired token
+        localStorage.removeItem('auth_token');
+        window.location.href = '/login.html';
+      } catch (error) {
+        console.error('Access redirect error:', error);
+        localStorage.removeItem('auth_token');
+        window.location.href = '/login.html';
+      }
+    }
+
     // Supabase Initialization
     async function initSupabase() {
       try {
@@ -645,10 +683,7 @@
             // Clean URL
             window.history.replaceState({}, document.title, window.location.pathname);
 
-            // Increased delay for accessibility (screen readers, slow connections)
-            setTimeout(() => {
-              window.location.href = '/dashboard.html';
-            }, 2000);
+            await redirectBasedOnAccess();
             return true;
           }
         }
@@ -668,10 +703,7 @@
             // Clean URL
             window.history.replaceState({}, document.title, window.location.pathname);
 
-            // Increased delay for accessibility (screen readers, slow connections)
-            setTimeout(() => {
-              window.location.href = '/dashboard.html';
-            }, 2000);
+            await redirectBasedOnAccess();
             return true;
           }
         }
@@ -690,23 +722,7 @@
       if (!token) return;
 
       try {
-        const response = await fetch('/api/user', {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          }
-        });
-
-        if (response.ok) {
-          showMessage('You are already logged in. Redirecting...', 'success');
-          // Increased delay for accessibility (screen readers, slow connections)
-          setTimeout(() => {
-            window.location.href = '/dashboard.html';
-          }, 2000);
-        } else {
-          // Token is invalid, clear it
-          localStorage.removeItem('auth_token');
-        }
+        await redirectBasedOnAccess();
       } catch (error) {
         console.error('Session check error:', error);
       }
@@ -755,10 +771,7 @@
         localStorage.setItem('auth_token', data.session.access_token);
         showMessage('Login successful! Redirecting...', 'success');
 
-        // Increased delay for accessibility (screen readers, slow connections)
-        setTimeout(() => {
-          window.location.href = '/dashboard.html';
-        }, 2000);
+        await redirectBasedOnAccess();
 
       } catch (error) {
         if (abortController.signal.aborted) return;
@@ -832,10 +845,7 @@
           localStorage.setItem('auth_token', data.session.access_token);
           showMessage('Account created successfully! Redirecting...', 'success');
 
-          // Increased delay for accessibility (screen readers, slow connections)
-          setTimeout(() => {
-            window.location.href = '/dashboard.html';
-          }, 2000);
+          await redirectBasedOnAccess();
         }
 
       } catch (error) {

@@ -16,7 +16,7 @@ router.use(requireAuth);
  * GET /api/v1/settings
  * Get all settings grouped by category
  */
-router.get('/', async (req, res, next) => {
+router.get('/', requirePermission('settings.manage'), async (req, res, next) => {
   try {
     const settings = await settingsService.getAllSettings();
     res.json({
@@ -32,7 +32,7 @@ router.get('/', async (req, res, next) => {
  * GET /api/v1/settings/categories
  * Get all setting categories
  */
-router.get('/categories', async (req, res, next) => {
+router.get('/categories', requirePermission('settings.manage'), async (req, res, next) => {
   try {
     const categories = await settingsService.getCategories();
     res.json({
@@ -48,7 +48,7 @@ router.get('/categories', async (req, res, next) => {
  * GET /api/v1/settings/:category
  * Get settings by category
  */
-router.get('/:category', async (req, res, next) => {
+router.get('/:category', requirePermission('settings.manage'), async (req, res, next) => {
   try {
     const { category } = req.params;
     const settings = await settingsService.getSettingsByCategory(category);
@@ -65,7 +65,7 @@ router.get('/:category', async (req, res, next) => {
  * GET /api/v1/settings/key/:key
  * Get a single setting by key
  */
-router.get('/key/:key', async (req, res, next) => {
+router.get('/key/:key', requirePermission('settings.manage'), async (req, res, next) => {
   try {
     const { key } = req.params;
     const setting = await settingsService.getSetting(key);

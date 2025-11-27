@@ -155,6 +155,23 @@ export async function optionalAuth(req, res, next) {
       process.env.ENABLE_TEST_MODE === 'true' ||
       config.testMode?.enabled === true;
 
+    // Session-based auth (local login)
+    if (req.session?.userId) {
+      try {
+        const user = await attachRoleAndPermissions(req.session.userId);
+        if (user) {
+          req.user = user;
+          req.isAuthenticated = () => true;
+          if (req.app?.locals?.startServices) {
+            await req.app.locals.startServices();
+          }
+          return next();
+        }
+      } catch (err) {
+        log.warn('Failed to attach session user', { error: err.message });
+      }
+    }
+
     if (testModeEnabled) {
       req.user = {
         id: 1,
@@ -235,10 +252,18 @@ export async function optionalAuth(req, res, next) {
 }
 
 export function requireAuth(req, res, next) {
-  if (req.user) {
-    return next();
+  if (!req.user) {
+    throw new UnauthorizedError('Authentication required');
   }
-  throw new UnauthorizedError('Authentication required');
+
+  // Block authenticated users without a role until access is granted
+  if (!req.user.is_admin && !req.user.role) {
+    const err = new ForbiddenError('Access pending: role not assigned');
+    err.code = 'ACCESS_PENDING';
+    throw err;
+  }
+
+  return next();
 }
 
 export function requireAdmin(req, res, next) {

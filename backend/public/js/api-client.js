@@ -58,6 +58,11 @@ class APIClient {
           window.location.href = '/login.html';
           return;
         }
+        // If access is pending, send the user to the holding page
+        if (response.status === 403 && data?.code === 'ACCESS_PENDING') {
+          window.location.href = '/access-pending.html';
+          return;
+        }
         throw new APIError(
           data.message || 'Request failed',
           response.status,
@@ -631,6 +636,23 @@ class APIClient {
   }
 
   async logout() {
+    try {
+      // Clear locally stored auth token (Supabase access token)
+      localStorage.removeItem('auth_token');
+
+      // Clear Supabase persisted sessions (keys start with "sb-" or legacy prefix)
+      const keysToRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && (key.startsWith('sb-') || key.startsWith('supabase.auth.'))) {
+          keysToRemove.push(key);
+        }
+      }
+      keysToRemove.forEach((key) => localStorage.removeItem(key));
+    } catch (_) {
+      // ignore localStorage errors (private mode, etc.)
+    }
+
     return fetch('/auth/logout', {
       method: 'POST',
       credentials: 'include',

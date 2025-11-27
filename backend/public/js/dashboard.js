@@ -154,6 +154,10 @@ class DashboardApp {
   async loadCurrentUser() {
     try {
       const response = await api.getCurrentUser();
+      if (!response || !response.data) {
+        // API client may have redirected for pending access
+        throw new Error('ACCESS_PENDING');
+      }
       this.currentUser = response.data;
 
       // Update UI
@@ -190,6 +194,10 @@ class DashboardApp {
       console.error('Failed to load user:', error);
       if (error.message === 'NO_ROLE_ASSIGNED') {
         throw error;
+      }
+      if (error.statusCode === 403 || error.message === 'ACCESS_PENDING') {
+        window.location.href = '/access-pending.html';
+        return;
       }
     }
   }
@@ -3879,7 +3887,7 @@ class DashboardApp {
 
     if (confirmed) {
       await api.logout();
-      window.location.href = '/';
+      window.location.href = '/login.html';
     }
   }
 

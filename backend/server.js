@@ -138,7 +138,15 @@ app.post('/auth/login', async (req, res, next) => {
 
 app.post('/auth/logout', (req, res, next) => {
   try {
+    const sessionId = req.sessionID;
     req.session.destroy(() => {
+      // Explicitly clear the session cookie so the browser stops sending it
+      res.clearCookie('connect.sid', {
+        httpOnly: true,
+        secure: config.env === 'production',
+        sameSite: 'lax',
+      });
+      log.info('Session destroyed on logout', { sessionId });
       res.json({ status: 'success', message: 'Logged out successfully' });
     });
   } catch (error) {

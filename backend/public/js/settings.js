@@ -78,6 +78,45 @@ class SettingsHandler {
     };
   }
 
+  getAuthToken() {
+    try {
+      return localStorage.getItem('auth_token');
+    } catch (e) {
+      return null;
+    }
+  }
+
+  getAuthHeaders() {
+    const token = this.getAuthToken();
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+
+  async authFetch(url, options = {}) {
+    const headers =
+      options.headers instanceof Headers
+        ? Object.fromEntries(options.headers.entries())
+        : { ...(options.headers || {}) };
+
+    Object.assign(headers, this.getAuthHeaders());
+
+    const config = {
+      credentials: 'include',
+      ...options,
+      headers,
+    };
+
+    return fetch(url, config);
+  }
+
+  hasPermission(key) {
+    const perms = this.currentUser?.permissions || [];
+    return perms.includes(key);
+  }
+
+  canViewApplicationSettings() {
+    return this.isAdmin() || this.hasPermission('settings.manage');
+  }
+
   /**
    * Render settings view
    */
@@ -85,15 +124,17 @@ class SettingsHandler {
     const contentArea = document.getElementById('content-area');
 
     try {
-      // Fetch all data
-      const [user, telegramStatus, categories, allSettings] = await Promise.all([
-        this.fetchCurrentUser(),
+      // Always fetch user first so we can decide what to load
+      this.currentUser = await this.fetchCurrentUser();
+      const canViewAppSettings = this.canViewApplicationSettings();
+
+      // Fetch the rest, but only pull settings/categories if allowed
+      const [telegramStatus, categories, allSettings] = await Promise.all([
         this.fetchTelegramStatus(),
-        this.fetchCategories(),
-        this.fetchAllSettings()
+        canViewAppSettings ? this.fetchCategories() : Promise.resolve([]),
+        canViewAppSettings ? this.fetchAllSettings() : Promise.resolve({})
       ]);
 
-      this.currentUser = user;
       this.telegramStatus = telegramStatus;
       this.categories = categories;
       this.settings = allSettings;
@@ -106,14 +147,27 @@ class SettingsHandler {
         <div class="space-y-6">
 
             <!-- Application Settings Section -->
-            <div class="card">
-              <div class="card-header">
-                <h3 class="card-title">⚙️ Application Settings</h3>
+            ${canViewAppSettings ? `
+              <div class="card">
+                <div class="card-header">
+                  <h3 class="card-title">⚙️ Application Settings</h3>
+                </div>
+                <div class="p-6">
+                  ${this.renderApplicationSettings()}
+                </div>
               </div>
-              <div class="p-6">
-                ${this.renderApplicationSettings()}
+            ` : `
+              <div class="card">
+                <div class="card-header">
+                  <h3 class="card-title">⚙️ Application Settings</h3>
+                </div>
+                <div class="p-6">
+                  <p class="text-neutral-600 text-sm">
+                    You don't have permission to view application settings. Contact an admin if you need access.
+                  </p>
+                </div>
               </div>
-            </div>
+            `}
 
             ${this.isAdmin() ? `
             <div class="card">
@@ -657,6 +711,11 @@ class SettingsHandler {
    * Save settings
    */
   async saveSettings() {
+    if (!this.canViewApplicationSettings()) {
+      Utils.showToast('You do not have permission to modify application settings', 'error');
+      return;
+    }
+
     if (this.isSaving) return;
 
     this.isSaving = true;
@@ -680,7 +739,7 @@ class SettingsHandler {
       }
 
       // Send update request
-      const response = await fetch('/api/v1/settings', {
+      const response = await this.authFetch('/api/v1/settings', {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -721,6 +780,11 @@ class SettingsHandler {
    * Reset settings to defaults
    */
   async resetSettings() {
+    if (!this.canViewApplicationSettings()) {
+      Utils.showToast('You do not have permission to modify application settings', 'error');
+      return;
+    }
+
     if (!confirm('Are you sure you want to reset all settings to their default values? This action cannot be undone.')) {
       return;
     }
@@ -729,7 +793,7 @@ class SettingsHandler {
       const resetKeys = Object.keys(this.settings[this.activeCategory] || {});
 
       for (const key of resetKeys) {
-        await fetch(`/api/v1/settings/${key}/reset`, { method: 'POST' });
+        await this.authFetch(`/api/v1/settings/${key}/reset`, { method: 'POST' });
       }
 
       Utils.showToast('Settings reset to defaults', 'success');
@@ -755,6 +819,10 @@ class SettingsHandler {
    * Refresh settings data
    */
   async refreshSettings() {
+    if (!this.canViewApplicationSettings()) {
+      return;
+    }
+
     this.categories = await this.fetchCategories();
     this.settings = await this.fetchAllSettings();
 
@@ -768,7 +836,7 @@ class SettingsHandler {
    */
   async fetchAllSettings() {
     try {
-      const response = await fetch('/api/v1/settings');
+      const response = await this.authFetch('/api/v1/settings');
       if (!response.ok) throw new Error('Failed to fetch settings');
       const data = await response.json();
       return data.data;
@@ -783,7 +851,7 @@ class SettingsHandler {
    */
   async fetchCategories() {
     try {
-      const response = await fetch('/api/v1/settings/categories');
+      const response = await this.authFetch('/api/v1/settings/categories');
       if (!response.ok) throw new Error('Failed to fetch categories');
       const data = await response.json();
       return data.data;
@@ -794,7 +862,7 @@ class SettingsHandler {
   }
 
   async fetchCurrentUser() {
-    const res = await fetch('/api/user');
+    const res = await this.authFetch('/api/user');
     if (!res.ok) return null;
     const json = await res.json();
     return json?.data || null;
@@ -807,9 +875,9 @@ class SettingsHandler {
   async fetchRbacData() {
     try {
       const [rolesRes, usersRes, permsRes] = await Promise.all([
-        fetch('/api/v1/rbac/roles'),
-        fetch('/api/v1/rbac/users'),
-        fetch('/api/v1/rbac/permissions'),
+        this.authFetch('/api/v1/rbac/roles'),
+        this.authFetch('/api/v1/rbac/users'),
+        this.authFetch('/api/v1/rbac/permissions'),
       ]);
       const rolesJson = await rolesRes.json();
       const usersJson = await usersRes.json();
@@ -893,7 +961,7 @@ class SettingsHandler {
         const userId = e.target.getAttribute('data-user-id');
         const role = e.target.value;
         try {
-          const res = await fetch(`/api/v1/rbac/users/${userId}/role`, {
+          const res = await this.authFetch(`/api/v1/rbac/users/${userId}/role`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ role }),
@@ -916,7 +984,7 @@ class SettingsHandler {
           .filter(c => c.checked)
           .map(c => c.getAttribute('data-perm'));
         try {
-          const res = await fetch(`/api/v1/rbac/roles/${encodeURIComponent(role)}/permissions`, {
+          const res = await this.authFetch(`/api/v1/rbac/roles/${encodeURIComponent(role)}/permissions`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ permissions: selected }),
@@ -1098,7 +1166,7 @@ class SettingsHandler {
    */
   async renderMonitorStatusSection() {
     try {
-      const response = await fetch('/api/v1/monitor/status');
+      const response = await this.authFetch('/api/v1/monitor/status');
       const data = await response.json();
       const status = data.data;
 
@@ -1143,7 +1211,7 @@ class SettingsHandler {
    */
   async fetchTelegramStatus() {
     try {
-      const response = await fetch('/api/v1/telegram/status');
+      const response = await this.authFetch('/api/v1/telegram/status');
       if (!response.ok) throw new Error('Failed to fetch Telegram status');
       const data = await response.json();
       return data.data;
@@ -1159,7 +1227,7 @@ class SettingsHandler {
   async linkTelegram() {
     try {
       // Generate linking code
-      const response = await fetch('/api/v1/telegram/link', { method: 'POST' });
+      const response = await this.authFetch('/api/v1/telegram/link', { method: 'POST' });
       if (!response.ok) throw new Error('Failed to generate linking code');
 
       const data = await response.json();
@@ -1229,7 +1297,7 @@ class SettingsHandler {
     }
 
     try {
-      const response = await fetch('/api/v1/telegram/unlink', { method: 'DELETE' });
+      const response = await this.authFetch('/api/v1/telegram/unlink', { method: 'DELETE' });
       if (!response.ok) throw new Error('Failed to unlink');
 
       Utils.showToast('Telegram unlinked successfully', 'success');
@@ -1265,7 +1333,7 @@ class SettingsHandler {
    */
   async renderInstrumentsCacheSection() {
     try {
-      const response = await fetch('/api/v1/instruments/stats');
+      const response = await this.authFetch('/api/v1/instruments/stats');
       const data = await response.json();
       const stats = data.data;
 
@@ -1444,7 +1512,7 @@ class SettingsHandler {
       formData.append('file', file);
 
       // Upload file
-      const response = await fetch('/api/v1/instruments/upload', {
+      const response = await this.authFetch('/api/v1/instruments/upload', {
         method: 'POST',
         body: formData
       });
@@ -1486,7 +1554,7 @@ class SettingsHandler {
    */
   async loadInstances() {
     try {
-      const response = await fetch('/api/v1/instances');
+      const response = await this.authFetch('/api/v1/instances');
       const data = await response.json();
 
       if (!response.ok) {
@@ -1557,7 +1625,7 @@ class SettingsHandler {
       fetchBtn.textContent = '⏳ Fetching...';
 
       // Call the API
-      const response = await fetch('/api/v1/instruments/fetch-from-instance', {
+      const response = await this.authFetch('/api/v1/instruments/fetch-from-instance', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -1595,7 +1663,7 @@ class SettingsHandler {
 
     const poll = async () => {
       try {
-        const response = await fetch(`/api/v1/instruments/fetch-status/${instanceId}`);
+        const response = await this.authFetch(`/api/v1/instruments/fetch-status/${instanceId}`);
 
         if (response.ok) {
           const data = await response.json();

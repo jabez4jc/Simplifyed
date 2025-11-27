@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Access Pending | Simplifyed</title>
+  <link rel="stylesheet" href="/css/styles.css">
+  <style>
+    body {
+      background: radial-gradient(circle at 20% 20%, #f3f4f6, #e5e7eb 45%, #f9fafb);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      color: #111827;
+    }
+    .pending-card {
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 16px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.06);
+      padding: 32px;
+      max-width: 560px;
+      width: 100%;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: #fff7ed;
+      color: #9a3412;
+      border: 1px solid #fed7aa;
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-weight: 600;
+      font-size: 13px;
+      letter-spacing: 0.01em;
+    }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 12px 16px;
+      border-radius: 12px;
+      border: 1px solid #e5e7eb;
+      background: #111827;
+      color: #f9fafb;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+    }
+    .button:hover {
+      background: #0f172a;
+      transform: translateY(-1px);
+      box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+    }
+    .secondary {
+      background: #f9fafb;
+      color: #111827;
+    }
+    .secondary:hover {
+      background: #fff;
+    }
+    .checklist {
+      margin-top: 20px;
+      padding: 12px 14px;
+      background: #f9fafb;
+      border: 1px dashed #e5e7eb;
+      border-radius: 12px;
+      color: #374151;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="pending-card">
+    <div class="badge">🔒 Access Pending</div>
+    <h1 style="margin: 16px 0 8px; font-size: 26px; font-weight: 800;">Hang tight — your access is being reviewed</h1>
+    <p style="margin-bottom: 20px; color: #4b5563; line-height: 1.6;">
+      You’ve successfully signed in, but an administrator needs to assign you a role before you can use the dashboard.
+      This is usually quick. We’ll keep checking for you.
+    </p>
+
+    <div class="checklist">
+      <div>• Keep this page open — we’ll auto-check every 10 seconds.</div>
+      <div>• If you believe you should already have access, contact your admin.</div>
+    </div>
+
+    <div style="display: flex; gap: 12px; margin-top: 20px;">
+      <button class="button" id="retry-btn">🔄 Check Again</button>
+      <button class="button secondary" id="logout-btn">🚪 Logout</button>
+    </div>
+
+    <p id="status-text" style="margin-top: 14px; color: #6b7280; font-size: 14px;">
+      Checking access status...
+    </p>
+  </div>
+
+  <script>
+    function getToken() {
+      try {
+        return localStorage.getItem('auth_token');
+      } catch (_) {
+        return null;
+      }
+    }
+
+    async function logout() {
+      try {
+        await fetch('/auth/logout', { method: 'POST', credentials: 'include' });
+      } catch (_) {}
+      try {
+        localStorage.removeItem('auth_token');
+      } catch (_) {}
+      window.location.href = '/login.html';
+    }
+
+    async function checkAccess() {
+      const token = getToken();
+      const statusEl = document.getElementById('status-text');
+
+      if (!token) {
+        statusEl.textContent = 'No active session found. Redirecting to login...';
+        setTimeout(() => (window.location.href = '/login.html'), 1000);
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/user', {
+          method: 'GET',
+          credentials: 'include',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        if (res.ok) {
+          statusEl.textContent = 'Access granted! Redirecting...';
+          setTimeout(() => (window.location.href = '/dashboard.html'), 500);
+          return;
+        }
+
+        if (res.status === 401) {
+          statusEl.textContent = 'Session expired. Redirecting to login...';
+          setTimeout(() => logout(), 500);
+          return;
+        }
+
+        if (res.status === 403) {
+          statusEl.textContent = 'Still waiting for role assignment...';
+          return;
+        }
+
+        statusEl.textContent = 'Unable to verify access right now. Please try again.';
+      } catch (error) {
+        statusEl.textContent = 'Network issue while checking access. Retrying...';
+      }
+    }
+
+    document.getElementById('retry-btn').addEventListener('click', checkAccess);
+    document.getElementById('logout-btn').addEventListener('click', logout);
+
+    checkAccess();
+    setInterval(checkAccess, 10000);
+  </script>
+</body>
+</html>

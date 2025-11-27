@@ -292,23 +292,33 @@ configure_environment() {
     # Generate session secret
     SESSION_SECRET=$(generate_random_string)
 
-    # Collect Google OAuth credentials (optional)
-    print_info "Google OAuth Configuration (optional - press Enter to skip)"
-    read -p "Google Client ID: " GOOGLE_CLIENT_ID
-    read -p "Google Client Secret: " GOOGLE_CLIENT_SECRET
+    # Collect Supabase credentials (required)
+    echo ""
+    print_info "Supabase Auth Configuration (required)"
+    while [[ -z "$SUPABASE_URL" ]]; do
+        read -p "Supabase Project URL (e.g., https://xyz.supabase.co): " SUPABASE_URL
+        if [[ -z "$SUPABASE_URL" ]]; then
+            print_error "Supabase URL cannot be empty"
+        fi
+    done
+    while [[ -z "$SUPABASE_ANON_KEY" ]]; do
+        read -p "Supabase anon key: " SUPABASE_ANON_KEY
+        if [[ -z "$SUPABASE_ANON_KEY" ]]; then
+            print_error "Supabase anon key cannot be empty"
+        fi
+    done
+    while [[ -z "$SUPABASE_JWT_SECRET" ]]; do
+        read -p "Supabase JWT secret: " SUPABASE_JWT_SECRET
+        if [[ -z "$SUPABASE_JWT_SECRET" ]]; then
+            print_error "Supabase JWT secret cannot be empty"
+        fi
+    done
 
     # Collect Telegram credentials (optional)
     echo ""
     print_info "Telegram Bot Configuration (optional - press Enter to skip)"
     read -p "Telegram Bot Token: " TELEGRAM_BOT_TOKEN
     read -p "Telegram Bot Username: " TELEGRAM_BOT_USERNAME
-
-    # Determine TEST_MODE based on Google OAuth configuration
-    if [ -z "$GOOGLE_CLIENT_ID" ]; then
-        TEST_MODE="true"
-    else
-        TEST_MODE="false"
-    fi
 
     # Create .env file
     cat > "$INSTALL_DIR/backend/.env" <<EOF
@@ -323,13 +333,15 @@ DATABASE_PATH=./database/simplifyed.db
 # Session
 SESSION_SECRET=$SESSION_SECRET
 
-# Google OAuth 2.0
-GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
-GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
-GOOGLE_CALLBACK_URL=https://$DOMAIN/auth/google/callback
+# Supabase Auth (managed identity)
+SUPABASE_URL=$SUPABASE_URL
+SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
+SUPABASE_JWT_SECRET=$SUPABASE_JWT_SECRET
+SUPABASE_JWT_AUD=authenticated
+SUPABASE_JWT_ISS=$SUPABASE_URL
 
-# Test Mode (only if no Google OAuth)
-TEST_MODE=$TEST_MODE
+# Test Mode (disabled in production)
+TEST_MODE=false
 TEST_USER_EMAIL=admin@${DOMAIN}
 
 # Polling Configuration
@@ -710,22 +722,14 @@ display_summary() {
     echo -e "${GREEN}║  Next Steps:                                               ║${NC}"
     echo -e "${GREEN}║                                                            ║${NC}"
 
-    if [[ -z "$GOOGLE_CLIENT_ID" ]]; then
-        echo -e "${GREEN}║  1. Visit https://$DOMAIN to access the dashboard${NC}"
-        echo -e "${GREEN}║     (Running in TEST MODE - no authentication)             ║${NC}"
-        echo -e "${GREEN}║                                                            ║${NC}"
-        echo -e "${GREEN}║  2. Configure Google OAuth in the .env file:               ║${NC}"
-        echo -e "${GREEN}║     $INSTALL_DIR/backend/.env${NC}"
-        echo -e "${GREEN}║     Then restart: systemctl restart ${SERVICE_NAME}${NC}"
-    else
-        echo -e "${GREEN}║  1. Visit https://$DOMAIN to access the dashboard${NC}"
-        echo -e "${GREEN}║     You can log in using your Google account               ║${NC}"
-    fi
+    echo -e "${GREEN}║  1. Visit https://$DOMAIN to access the dashboard${NC}"
+    echo -e "${GREEN}║     Auth is handled via Supabase with the credentials you  ║${NC}"
+    echo -e "${GREEN}║     provided during install (edit in $INSTALL_DIR/backend/.env).${NC}"
 
     echo -e "${GREEN}║                                                            ║${NC}"
-    echo -e "${GREEN}║  3. Configure OpenAlgo instances in the dashboard          ║${NC}"
+    echo -e "${GREEN}║  2. Configure OpenAlgo instances in the dashboard          ║${NC}"
     echo -e "${GREEN}║                                                            ║${NC}"
-    echo -e "${GREEN}║  4. Import instruments (optional):                         ║${NC}"
+    echo -e "${GREEN}║  3. Import instruments (optional):                         ║${NC}"
     echo -e "${GREEN}║     cd $INSTALL_DIR${NC}"
     echo -e "${GREEN}║     ./import-instruments.sh --exchange NFO --instance-id 1 ║${NC}"
     echo -e "${GREEN}║                                                            ║${NC}"
