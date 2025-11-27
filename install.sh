@@ -275,8 +275,10 @@ install_application() {
     # Create necessary directories
     mkdir -p "$INSTALL_DIR/backend/database"
     mkdir -p "$INSTALL_DIR/backend/logs"
+    mkdir -p "$INSTALL_DIR/backend/data"
 
-    # Set ownership
+    # Set ownership (ensure SQLite, logs, and session dirs are writable)
+    chown -R $APP_USER:$APP_USER "$INSTALL_DIR/backend/database" "$INSTALL_DIR/backend/logs" "$INSTALL_DIR/backend/data"
     chown -R $APP_USER:$APP_USER "$INSTALL_DIR"
 
     print_success "Application files copied"
@@ -467,7 +469,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=$INSTALL_DIR/backend/database $INSTALL_DIR/backend/logs
+ReadWritePaths=$INSTALL_DIR/backend/database $INSTALL_DIR/backend/logs $INSTALL_DIR/backend/data
 
 [Install]
 WantedBy=multi-user.target
