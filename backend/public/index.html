@@ -5,17 +5,267 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Simplifyed Admin V2</title>
   <link rel="stylesheet" href="/css/styles.css">
+  <style>
+    /* Landing styles are fully scoped to avoid affecting the dashboard */
+    .lp-body {
+      margin: 0;
+      font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      background: radial-gradient(circle at 18% 20%, rgba(99,102,241,0.12), transparent 32%),
+                  radial-gradient(circle at 82% 12%, rgba(16,185,129,0.14), transparent 30%),
+                  #0f172a;
+      color: #0b1021;
+      min-height: 100vh;
+    }
+    .lp-shell {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 72px 20px 48px;
+    }
+    .lp-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+      align-items: stretch;
+    }
+    .lp-card {
+      background: rgba(255, 255, 255, 0.94);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: 16px;
+      box-shadow: 0 22px 50px rgba(0, 0, 0, 0.18);
+      padding: 26px;
+    }
+    .lp-hero-title {
+      font-size: 38px;
+      margin: 8px 0 10px;
+      color: #0b1021;
+      letter-spacing: -0.02em;
+    }
+    .lp-kicker {
+      display: inline-flex;
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: rgba(99, 102, 241, 0.14);
+      color: #4338ca;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      font-size: 12px;
+    }
+    .lp-subtitle {
+      color: #4b5563;
+      font-size: 16px;
+      line-height: 1.6;
+      margin-bottom: 14px;
+    }
+    .lp-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .lp-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 12px 16px;
+      border-radius: 12px;
+      text-decoration: none;
+      font-weight: 700;
+      font-size: 14px;
+      transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+    }
+    .lp-btn-primary {
+      background: linear-gradient(120deg, #2563eb, #4f46e5);
+      color: white;
+      box-shadow: 0 12px 30px rgba(79,70,229,0.35);
+    }
+    .lp-btn-primary:hover { transform: translateY(-1px); }
+    .lp-btn-secondary {
+      background: white;
+      border: 1px solid #d1d5db;
+      color: #111827;
+    }
+    .lp-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    .lp-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: #eef2ff;
+      color: #4338ca;
+      font-weight: 600;
+      font-size: 13px;
+      border: 1px solid rgba(79,70,229,0.15);
+    }
+    .lp-pill.subtle {
+      background: #f8fafc;
+      color: #1f2937;
+      border-color: #e5e7eb;
+    }
+    .lp-stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 12px;
+      margin: 12px 0;
+    }
+    .lp-stat-label { color: #6b7280; font-weight: 600; font-size: 13px; }
+    .lp-stat-value { font-size: 28px; font-weight: 800; color: #0b1021; margin: 4px 0; }
+    .lp-stat-hint { color: #6b7280; font-size: 13px; }
+    .lp-badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .lp-badge {
+      background: #ecfeff;
+      color: #0f766e;
+      padding: 8px 12px;
+      border-radius: 10px;
+      font-weight: 700;
+      font-size: 12px;
+      border: 1px solid #ccfbf1;
+    }
+    .lp-section {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 10px 20px 52px;
+    }
+    .lp-feature h3 { margin: 0 0 6px; font-size: 20px; }
+    .lp-feature p { margin: 0 0 10px; color: #4b5563; line-height: 1.6; }
+    .lp-list { list-style: none; padding: 0; margin: 0; }
+    .lp-list li {
+      padding-left: 18px;
+      position: relative;
+      margin-bottom: 7px;
+      color: #374151;
+    }
+    .lp-list li::before { content: '•'; position: absolute; left: 0; color: #22c55e; }
+    .lp-footer {
+      border-top: 1px solid rgba(255,255,255,0.08);
+      background: linear-gradient(180deg, rgba(15,23,42,0.9), #0b1021);
+      color: #e5e7eb;
+      padding: 22px 20px;
+    }
+    .lp-footer-content {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .lp-footer-brand { font-weight: 800; font-size: 18px; }
+    .lp-footer-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  </style>
 </head>
-<body>
-  <div class="landing-container">
-    <div class="landing-card">
-      <h1>📊 Simplifyed Admin</h1>
-      <p>Trading Management Dashboard V2.0</p>
+<body class="lp-body">
+  <div class="lp-shell">
+    <div class="lp-grid">
+      <div class="lp-card">
+        <div class="lp-kicker">Trading Command Center</div>
+        <h1 class="lp-hero-title">Simplifyed Admin V2</h1>
+        <p class="lp-subtitle">
+          Run every OpenAlgo instance from one secure dashboard. Execute orders, monitor positions, keep instruments fresh, and protect rate limits—without hopping tabs.
+        </p>
+        <div class="lp-actions">
+          <a href="/login.html" class="lp-btn lp-btn-primary">Enter Dashboard</a>
+          <a href="#capabilities" class="lp-btn lp-btn-secondary">See what’s inside</a>
+        </div>
+        <div class="lp-pills">
+          <div class="lp-pill">Unified watchlists</div>
+          <div class="lp-pill">Options & Futures</div>
+          <div class="lp-pill">Supabase-secured auth</div>
+          <div class="lp-pill">Live market feed</div>
+        </div>
+      </div>
 
-      <a href="/login.html" class="btn btn-primary">
-        Enter Dashboard
-      </a>
+      <div class="lp-card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <span class="lp-pill subtle">Live Snapshot</span>
+          <span class="lp-pill subtle" style="background:#0ea5e9;color:#fff;border:none;">V2.0</span>
+        </div>
+        <div class="lp-stats">
+          <div>
+            <div class="lp-stat-label">Instances Managed</div>
+            <div class="lp-stat-value">12</div>
+            <div class="lp-stat-hint">Live + Analyzer modes</div>
+          </div>
+          <div>
+            <div class="lp-stat-label">Symbols Cached</div>
+            <div class="lp-stat-value">50k+</div>
+            <div class="lp-stat-hint">Fast search & option chains</div>
+          </div>
+          <div>
+            <div class="lp-stat-label">Orders / day</div>
+            <div class="lp-stat-value">4,800</div>
+            <div class="lp-stat-hint">Rate-limit aware</div>
+          </div>
+        </div>
+        <div class="lp-badges">
+          <div class="lp-badge">Secure sessions</div>
+          <div class="lp-badge">Role-based access</div>
+        </div>
+      </div>
     </div>
   </div>
+
+  <section class="lp-section" id="capabilities">
+    <div class="lp-grid">
+      <div class="lp-card lp-feature">
+        <h3>Operational Clarity</h3>
+        <p>Stacked watchlists with quick-order flows across equity, futures, and buyer/writer options. Toggle analyzer vs live modes without losing context.</p>
+        <ul class="lp-list">
+          <li>Multi-instance health and polling controls</li>
+          <li>Order management with bulk cancel/close</li>
+          <li>Positions and P&L visibility at a glance</li>
+        </ul>
+      </div>
+      <div class="lp-card lp-feature">
+        <h3>Data That Keeps Up</h3>
+        <p>Shared market-data feed, cached instruments, and on-demand option chains so teams never wait on the broker. Built-in rate-limit guardrails.</p>
+        <ul class="lp-list">
+          <li>Daily instrument refresh & CSV import</li>
+          <li>Option chain builder with expiry calendar</li>
+          <li>Market feed pausing/resuming per role</li>
+        </ul>
+      </div>
+      <div class="lp-card lp-feature">
+        <h3>Secure by Default</h3>
+        <p>Supabase-backed authentication, session hardening, and granular RBAC. Admins control who sees settings, instruments, and order actions.</p>
+        <ul class="lp-list">
+          <li>Role-based permissions for traders/monitors</li>
+          <li>Session + bearer token protection</li>
+          <li>Audit-ready settings management</li>
+        </ul>
+      </div>
+      <div class="lp-card lp-feature">
+        <h3>Automations That Stick</h3>
+        <p>Auto-exit and polling services start when users log in. Telegram alerts keep teams in the loop; background tasks are supervised by systemd.</p>
+        <ul class="lp-list">
+          <li>Auto-exit and health monitors</li>
+          <li>Telegram notifications & linking flow</li>
+          <li>Systemd + Nginx install script for Ubuntu</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer class="lp-footer">
+    <div class="lp-footer-content">
+      <div>
+        <div class="lp-footer-brand">Simplifyed Admin</div>
+        <p style="margin:4px 0 0;color:#cbd5e1;">Unified control for OpenAlgo trading infrastructure.</p>
+      </div>
+      <div class="lp-footer-actions">
+        <a href="/login.html" class="lp-btn lp-btn-primary">Launch Dashboard</a>
+        <a href="/QUICKSTART.md" class="lp-btn lp-btn-secondary">Quickstart Guide</a>
+      </div>
+    </div>
+  </footer>
 </body>
 </html>

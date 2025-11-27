@@ -28,7 +28,7 @@ Should return your server's IP address.
 
 ```bash
 # Clone or upload the repository
-git clone https://github.com/yourusername/simplifyed.git
+git clone https://github.com/jabez4jc/simplifyed.git
 cd simplifyed
 
 # Make the installer executable

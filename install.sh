@@ -27,7 +27,7 @@ NC='\033[0m' # No Color
 INSTANCE_NAME=""  # Will be set during user input (e.g., "prod", "staging", "dev")
 INSTALL_DIR="/opt/simplifyed"
 APP_USER="simplifyed"
-NODE_VERSION="18"
+NODE_VERSION="20"
 DOMAIN=""
 EMAIL=""
 PORT=3000
@@ -438,18 +438,24 @@ create_systemd_service() {
         SERVICE_DESC="Simplifyed Admin - Trading Dashboard"
     fi
 
+    NODE_BIN="$(command -v node || which node || echo /usr/bin/env node)"
+
     cat > /etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
 Description=$SERVICE_DESC
 Documentation=https://github.com/yourusername/simplifyed
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=$APP_USER
 WorkingDirectory=$INSTALL_DIR/backend
 Environment=NODE_ENV=production
-ExecStart=/usr/bin/node server.js
+Environment=PORT=$PORT
+Environment=BASE_URL=https://$DOMAIN
+EnvironmentFile=$INSTALL_DIR/backend/.env
+ExecStart=$NODE_BIN server.js
 Restart=always
 RestartSec=10
 StandardOutput=syslog

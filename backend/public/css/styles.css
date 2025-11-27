@@ -1077,10 +1077,135 @@ body {
 /* ========== Landing Page ========== */
 .landing-container {
   display: flex;
+<<<<<<< ours
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.hero-highlights {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.landing-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.landing-pill.subtle {
+  background: #f8fafc;
+  color: #1f2937;
+  border: 1px solid #e5e7eb;
+}
+
+.stats-card .stat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.stat-tag {
+  background: #0ea5e9;
+  color: white;
+  padding: 6px 10px;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+
+.stat-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.metric-label {
+  color: #6b7280;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.metric-value {
+  font-size: 28px;
+  font-weight: 800;
+  color: #0b1021;
+  margin: 4px 0;
+}
+
+.metric-hint {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.stat-footer {
+  margin-top: 14px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.landing-badge {
+  background: #ecfeff;
+  color: #0f766e;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 12px;
+  border: 1px solid #ccfbf1;
+}
+
+.landing-section {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 12px 24px 60px;
+}
+
+.feature-card h3 {
+  margin: 0 0 8px;
+  font-size: 20px;
+}
+
+.feature-card p {
+  margin: 0 0 12px;
+  color: #4b5563;
+  line-height: 1.6;
+}
+
+.feature-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.feature-list li {
+  padding-left: 18px;
+  position: relative;
+  margin-bottom: 8px;
+  color: #374151;
+}
+
+.feature-list li::before {
+  content: '•';
+  position: absolute;
+  left: 0;
+  color: #22c55e;
+=======
   align-items: center;
   justify-content: center;
   min-height: 100vh;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+>>>>>>> theirs
 }
 
 .landing-card {
