@@ -7,8 +7,11 @@ echo "Starting instruments import from CSV..."
 echo "============================================================"
 echo ""
 
-CSV_FILE="/Users/jnt/GitHub/Simplifyed/oasymbols.csv"
-DB_FILE="/Users/jnt/GitHub/Simplifyed/backend/database/simplifyed.db"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Allow overrides via env vars; otherwise use paths relative to repo root
+CSV_FILE="${CSV_FILE_OVERRIDE:-${SCRIPT_DIR}/oasymbols.csv}"
+DB_FILE="${DB_FILE_OVERRIDE:-${SCRIPT_DIR}/backend/database/simplifyed.db}"
 
 # Check if files exist
 if [ ! -f "$CSV_FILE" ]; then
@@ -30,9 +33,15 @@ echo ""
 # Start timer
 START_TIME=$(date +%s)
 
+# Busy timeout (ms) can be overridden; helps avoid lock errors if the app is still running
+SQLITE_TIMEOUT_MS="${SQLITE_TIMEOUT_MS:-5000}"
+
 # Create import SQL script
-cat > /tmp/import_instruments.sql << 'EOF'
+cat > /tmp/import_instruments.sql << EOF
 -- Import instruments from CSV
+
+PRAGMA busy_timeout = $SQLITE_TIMEOUT_MS;
+BEGIN EXCLUSIVE;
 
 -- Clear existing instruments
 DELETE FROM instruments;
@@ -44,7 +53,7 @@ PRAGMA cache_size = 10000;
 
 -- Import data from CSV using SQLite's CSV mode
 .mode csv
-.import /Users/jnt/GitHub/Simplifyed/oasymbols.csv instruments_temp
+.import '$CSV_FILE' instruments_temp
 
 -- Insert data from temp table to instruments table with proper column mapping
 INSERT INTO instruments (symbol, brsymbol, name, exchange, brexchange, token, expiry, strike, lotsize, instrumenttype, tick_size, created_at, updated_at)
@@ -79,13 +88,14 @@ INSERT INTO instruments_refresh_log (exchange, status, instrument_count, refresh
 VALUES ('CSV_UPLOAD', 'completed', (SELECT COUNT(*) FROM instruments), datetime('now'), datetime('now'));
 
 SELECT 'Refresh log updated';
+COMMIT;
 EOF
 
 echo "🗄️  Importing to database: $DB_FILE"
 echo ""
 
 # Run the import using sqlite3
-sqlite3 "$DB_FILE" < /tmp/import_instruments.sql
+sqlite3 -cmd ".timeout $SQLITE_TIMEOUT_MS" "$DB_FILE" < /tmp/import_instruments.sql
 
 # Check if import was successful
 if [ $? -eq 0 ]; then
