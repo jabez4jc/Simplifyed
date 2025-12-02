@@ -22,6 +22,9 @@ class QuickOrderHandler {
     this.optionPreviewRequestIds = new Map(); // symbolId -> latest request token
     this.futuresPreviewTimers = new Map();
     this.futuresPreviewRequestIds = new Map();
+    this.optionChainForwardSource = 'carry';
+    this.optionChainPrevValues = new Map(); // key: `${underlying}|${expiry}` -> Map of last values
+    this.optionChainActiveKey = null;
   }
 
   /**
@@ -89,6 +92,7 @@ class QuickOrderHandler {
       const exchange = symbolRow.dataset.exchange;
       const rawUnderlying = symbolRow.dataset.underlying || symbol;
       const underlyingSymbol = this.extractUnderlying(rawUnderlying) || rawUnderlying;
+    const isMcx = (exchange || '').toUpperCase() === 'MCX';
 
     let capabilities = { equity: true, futures: true, options: true, symbolType: 'UNKNOWN' };
     try {
@@ -114,7 +118,6 @@ class QuickOrderHandler {
       // Save defaults to Maps if not already set
       if (!this.selectedTradeModes.has(symbolId)) {
         this.selectedTradeModes.set(symbolId, tradeMode);
-        console.log('[QuickOrder] Initialized tradeMode to default:', tradeMode);
       }
       if (!this.selectedOptionsLegs.has(symbolId)) {
         this.selectedOptionsLegs.set(symbolId, optionsLeg);
@@ -150,9 +153,7 @@ class QuickOrderHandler {
         // Use NFO exchange for derivatives (futures/options)
         // INDEX and EQUITY symbols need to use NFO/BFO for their derivatives
         const derivativeExchange = this.getDerivativeExchange(exchange, symbolType);
-        console.log(`[QuickOrder] Fetching expiries for symbol: ${symbol}, exchange: ${exchange} -> ${derivativeExchange}, mode: ${tradeMode}`);
         expiries = await this.fetchAvailableExpiries(expiryUnderlying, derivativeExchange, tradeMode, exchange);
-        console.log(`[QuickOrder] Received ${expiries.length} expiries:`, expiries.slice(0, 5));
         this.availableExpiries.set(symbolId, expiries);
       }
 
@@ -162,9 +163,7 @@ class QuickOrderHandler {
         // Use first expiry, ensure it's normalized to YYYY-MM-DD
         selectedExpiry = this.normalizeExpiryDate(expiries[0]);
         this.selectedExpiries.set(symbolId, selectedExpiry);
-        console.log(`[QuickOrder] Initial expiry set: raw="${expiries[0]}" normalized="${selectedExpiry}"`);
       }
-      console.log(`[QuickOrder] Selected expiry (YYYY-MM-DD format):`, selectedExpiry);
 
       const selectedProduct = this.selectedProducts.get(symbolId) || 'MIS';
 
@@ -187,6 +186,7 @@ class QuickOrderHandler {
         operatingMode: this.operatingModes.get(symbolId),
         strikePolicy: this.strikePolicies.get(symbolId),
         writerGuard: this.writerGuards.get(symbolId),
+        isMcx,
       });
 
       if (tradeMode === 'OPTIONS' && capabilities.options) {
@@ -223,7 +223,7 @@ class QuickOrderHandler {
   /**
    * Render trading controls UI
    */
-  renderTradingControls({ watchlistId, symbolId, symbol, exchange, symbolType, tradeMode, capabilities = {}, availableModes = [], optionsLeg, quantity, expiries, selectedExpiry, selectedProduct, operatingMode, strikePolicy, writerGuard }) {
+  renderTradingControls({ watchlistId, symbolId, symbol, exchange, symbolType, tradeMode, capabilities = {}, availableModes = [], optionsLeg, quantity, expiries, selectedExpiry, selectedProduct, operatingMode, strikePolicy, writerGuard, isMcx = false }) {
     const showOptionsLeg = tradeMode === 'OPTIONS' && capabilities.options;
     const showExpirySelector =
       (tradeMode === 'FUTURES' && capabilities.futures) ||
@@ -231,15 +231,7 @@ class QuickOrderHandler {
     const showOperatingMode = tradeMode === 'OPTIONS' && capabilities.options;
     const showStrikePolicy = tradeMode === 'OPTIONS' && capabilities.options;
 
-    console.log(`[QuickOrder] Rendering controls:`, {
-      tradeMode,
-      expiryCount: expiries?.length || 0,
-      showExpirySelector,
-      selectedExpiry,
-      operatingMode,
-      strikePolicy,
-      quantity
-    });
+    // debug removed
 
     const renderField = (label, help, controlHtml) => `
       <div class="form-field-row">
@@ -272,7 +264,7 @@ class QuickOrderHandler {
             class="btn-trade-mode ${mode === tradeMode ? 'active' : ''} ${!this.isModeAvailable(mode, symbolType, capabilities) ? 'disabled' : ''}"
             data-mode="${mode}"
             data-symbol-id="${symbolId}"
-            onclick="console.log('[QuickOrder] Button clicked:', ${symbolId}, '${mode}'); quickOrder.selectTradeMode(${symbolId}, '${mode}'); return false;"
+            onclick="quickOrder.selectTradeMode(${symbolId}, '${mode}')"
             ${!this.isModeAvailable(mode, symbolType, capabilities) ? 'disabled' : ''}
             title="${this.getTradeModeTooltip(mode, symbolType, capabilities)}">
             ${this.getTradeModeLabel(mode)}
@@ -304,7 +296,8 @@ class QuickOrderHandler {
       ? renderField(
           'Options Leg',
           'Shift the strike relative to ATM before firing CE/PE actions.',
-          `<select
+          `<div class="options-leg-row">
+            <select
             class="select-options-leg"
             data-symbol-id="${symbolId}"
             onchange="quickOrder.selectOptionsLeg(${symbolId}, this.value)">
@@ -315,7 +308,14 @@ class QuickOrderHandler {
             <option value="OTM1" ${optionsLeg === 'OTM1' ? 'selected' : ''}>OTM 1</option>
             <option value="OTM2" ${optionsLeg === 'OTM2' ? 'selected' : ''}>OTM 2</option>
             <option value="OTM3" ${optionsLeg === 'OTM3' ? 'selected' : ''}>OTM 3</option>
-          </select>`
+            </select>
+            <button class="btn btn-secondary btn-sm ${isMcx ? 'disabled' : ''}"
+              ${isMcx ? 'disabled' : ''}
+              title="${isMcx ? 'Option chain not available for MCX via OpenAlgo' : 'View live option chain'}"
+              onclick="${isMcx ? 'return false;' : `quickOrder.showOptionChainModal(${symbolId})`}">
+              View Chain
+            </button>
+          </div>`
         )
       : '';
 
@@ -685,7 +685,7 @@ class QuickOrderHandler {
    * Select trade mode
    */
   selectTradeMode(symbolId, mode) {
-    console.log('[QuickOrder] selectTradeMode called:', { symbolId, mode });
+    // debug: removed noisy log
 
     const symbolRow = document.querySelector(`tr[data-symbol-id="${symbolId}"]`);
     if (symbolRow) {
@@ -717,12 +717,306 @@ class QuickOrderHandler {
   }
 
   /**
+   * Fetch and display option chain in a modal
+   */
+  async showOptionChainModal(symbolId) {
+    try {
+      const symbolRow = document.querySelector(`tr[data-symbol-id="${symbolId}"]`);
+      if (!symbolRow) {
+        throw new Error('Symbol row not found');
+      }
+
+      const underlying = symbolRow.dataset.underlying || symbolRow.dataset.symbol || '';
+      const exchange = (symbolRow.dataset.exchange || 'NFO').toUpperCase();
+      const expiry = this.selectedExpiries.get(symbolId);
+
+      if (exchange === 'MCX') {
+        Utils.showToast('Option chain is not available for MCX via broker. Button disabled.', 'warning');
+        return;
+      }
+
+      if (!underlying || !expiry) {
+        Utils.showToast('Select a symbol and expiry first', 'warning');
+        return;
+      }
+
+      const params = {
+        underlying,
+        expiry,
+        include_quotes: 'true',
+        strike_window: 8,
+        forward_source: this.optionChainForwardSource || 'carry'
+      };
+
+      this.optionChainParams = params;
+      this.optionChainActiveKey = `${underlying}|${expiry}`;
+      this.optionChainPrevValues.delete(this.optionChainActiveKey);
+
+      await this._loadAndRenderOptionChain(params);
+
+      if (this.optionChainInterval) {
+        clearInterval(this.optionChainInterval);
+      }
+      this.optionChainInterval = setInterval(() => {
+        const nextParams = this.optionChainParams || params;
+        this._loadAndRenderOptionChain(nextParams, true).catch(() => {});
+      }, 5000);
+    } catch (error) {
+      console.error('[QuickOrder] Option chain modal error:', error);
+      Utils.showToast(error.message, 'error');
+    }
+  }
+
+  async _loadAndRenderOptionChain(params, isRefresh = false) {
+    const qs = new URLSearchParams(params);
+    const res = await fetch(`/api/v1/option-chain?${qs.toString()}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.message || 'Failed to load option chain');
+    }
+    const json = await res.json();
+    const data = json.data || {};
+    const chain = data.rows || [];
+    const atmStrike = data.atm_strike || data.meta?.atm_strike || null;
+    const meta = data.meta || {};
+
+    // Keep latest forward source in sync with backend response
+    if (meta.forward_used) {
+      this.optionChainForwardSource = meta.forward_used;
+    }
+
+    // If modal was closed but refresh interval is still running, stop it
+    if (isRefresh && !document.querySelector('.option-chain-overlay')) {
+      if (this.optionChainInterval) {
+        clearInterval(this.optionChainInterval);
+        this.optionChainInterval = null;
+      }
+      return;
+    }
+    if (!chain.length) {
+      if (!isRefresh) Utils.showToast('Option chain empty for this expiry', 'warning');
+      return;
+    }
+    if (!this.optionChainActiveKey && meta.underlying && meta.expiry) {
+      this.optionChainActiveKey = `${meta.underlying}|${meta.expiry}`;
+    }
+    this._renderOptionChainModal(chain, atmStrike, meta, params, isRefresh);
+  }
+
+  _renderOptionChainModal(chain, atmStrike, meta = {}, params = {}, isRefresh = false) {
+    // Sort strikes ascending (lowest at top)
+    const sorted = [...chain].sort((a, b) => a.strike - b.strike);
+    const fmt = (v) => (v === 0 || v ? v : '—');
+
+    const totalCallOi = sorted.reduce((sum, r) => sum + (Number(r.ce?.oi || 0)), 0);
+    const totalPutOi = sorted.reduce((sum, r) => sum + (Number(r.pe?.oi || 0)), 0);
+    const headerInfo = {
+      underlying: chain?.[0]?.ce?.symbol?.split(/\d{2}[A-Z]{3}\d{2}/)[0] || '—',
+      expiry: chain?.[0]?.ce?.symbol?.match(/\d{2}[A-Z]{3}\d{2}/)?.[0] || '—',
+      callOi: totalCallOi,
+      putOi: totalPutOi,
+    };
+
+    let modal = document.querySelector('.option-chain-overlay');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.className = 'modal-overlay option-chain-overlay';
+      modal.innerHTML = `
+        <div class="modal-content wide option-chain-modal">
+          <div class="modal-header sticky-header">
+            <h3>Option Chain</h3>
+            <div class="oc-meta">
+              <span><strong>Underlying:</strong> <span id="oc-underlying">—</span></span>
+              <span><strong>Expiry:</strong> <span id="oc-expiry">—</span></span>
+              <span><strong>Spot:</strong> <span id="oc-spot">—</span></span>
+              <span><strong>Call OI:</strong> <span id="oc-call-oi">—</span></span>
+              <span><strong>Put OI:</strong> <span id="oc-put-oi">—</span></span>
+              <span><strong>Forward:</strong>
+                <select id="oc-forward-source">
+                  <option value="carry">Carry (F_carry)</option>
+                  <option value="synth_exact">Synthetic (exact)</option>
+                  <option value="synth_simple">Synthetic (simple)</option>
+                </select>
+              </span>
+              <span id="oc-forward-values" class="oc-forward-values"></span>
+            </div>
+            <button class="btn btn-secondary btn-sm" onclick="quickOrder._closeOptionChainModal()">Close</button>
+          </div>
+          <div class="modal-body option-chain-body">
+            <div class="option-chain-scroll">
+              <table class="table option-chain-table option-chain-wide">
+                <thead class="sticky-thead">
+                  <tr>
+                    <th colspan="11">Calls</th>
+                    <th rowspan="2">Strike</th>
+                    <th colspan="11">Puts</th>
+                  </tr>
+                  <tr>
+                    <th>Lot</th><th>Vega</th><th>Θ</th><th>Γ</th><th>IV</th><th>Δ</th><th>OI</th><th>Vol</th><th>Bid</th><th>Ask</th><th>LTP</th>
+                    <th>LTP</th><th>Ask</th><th>Bid</th><th>Vol</th><th>OI</th><th>Δ</th><th>IV</th><th>Γ</th><th>Θ</th><th>Vega</th><th>Lot</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) this._closeOptionChainModal();
+      });
+
+      // forward selector change
+      modal.querySelector('#oc-forward-source').addEventListener('change', (e) => {
+        this.optionChainForwardSource = e.target.value;
+        const baseParams = this.optionChainParams || params;
+        const newParams = { ...baseParams, forward_source: this.optionChainForwardSource };
+        this.optionChainParams = newParams;
+        this.optionChainPrevValues.delete(this.optionChainActiveKey || '');
+        this._loadAndRenderOptionChain(newParams).catch(() => {});
+      });
+    }
+
+    const tbody = modal.querySelector('tbody');
+    const prevKey = this.optionChainActiveKey || `${meta.underlying || ''}|${meta.expiry || ''}`;
+    const prevMap = this.optionChainPrevValues.get(prevKey) || new Map();
+    const nextMap = new Map();
+
+    const diffClass = (key, current) => {
+      const prev = prevMap.has(key) ? prevMap.get(key) : null;
+      if (prev === null || prev === undefined || current === null || current === undefined) return '';
+      if (Number(current) > Number(prev)) return 'val-up';
+      if (Number(current) < Number(prev)) return 'val-down';
+      return '';
+    };
+
+    const recordValue = (key, value) => {
+      if (value === undefined) return;
+      nextMap.set(key, value);
+    };
+
+    tbody.innerHTML = sorted
+      .map((row) => {
+        const isAtm = atmStrike && Number(row.strike) === Number(atmStrike);
+        const ce = row.ce || {};
+        const pe = row.pe || {};
+        const keyPrefix = `${meta.underlying || 'und'}|${meta.expiry || 'exp'}|${row.strike}`;
+        const spot = meta.spot || meta.forward_value || atmStrike || row.strike;
+        const callState = Number(row.strike) < Number(spot || 0) ? 'itm' : isAtm ? 'atm' : 'otm';
+        const putState = Number(row.strike) > Number(spot || 0) ? 'itm' : isAtm ? 'atm' : 'otm';
+        const callCls = `oc-${callState}`;
+        const putCls = `oc-${putState}`;
+        const strikeCls = isAtm ? 'oc-atm' : '';
+        const cells = {
+          ce: {
+            delta: ce.greeks?.delta,
+            gamma: ce.greeks?.gamma,
+            theta: ce.greeks?.theta,
+            vega: ce.greeks?.vega,
+            iv: ce.iv,
+            oi: ce.oi,
+            vol: ce.volume,
+            bid: ce.bid,
+            ask: ce.ask,
+            ltp: ce.ltp,
+          },
+          pe: {
+            delta: pe.greeks?.delta,
+            gamma: pe.greeks?.gamma,
+            theta: pe.greeks?.theta,
+            vega: pe.greeks?.vega,
+            iv: pe.iv,
+            oi: pe.oi,
+            vol: pe.volume,
+            bid: pe.bid,
+            ask: pe.ask,
+            ltp: pe.ltp,
+          },
+        };
+
+        Object.entries(cells.ce).forEach(([field, value]) => recordValue(`${keyPrefix}|CE|${field}`, value));
+        Object.entries(cells.pe).forEach(([field, value]) => recordValue(`${keyPrefix}|PE|${field}`, value));
+
+        return `
+          <tr class="${isAtm ? 'is-atm' : ''}">
+            <td class="oc-num ${callCls}">${fmt(ce.lotsize || ce.lot_size)}</td>
+            <td class="oc-num ${callCls} ${diffClass(`${keyPrefix}|CE|vega`, ce.greeks?.vega)}">${fmt(ce.greeks?.vega)}</td>
+            <td class="oc-num ${callCls} ${diffClass(`${keyPrefix}|CE|theta`, ce.greeks?.theta)}">${fmt(ce.greeks?.theta)}</td>
+            <td class="oc-num ${callCls} ${diffClass(`${keyPrefix}|CE|gamma`, ce.greeks?.gamma)}">${fmt(ce.greeks?.gamma)}</td>
+            <td class="oc-num ${callCls} ${diffClass(`${keyPrefix}|CE|iv`, ce.iv)}">${fmt(ce.iv)}</td>
+            <td class="oc-num ${callCls} ${diffClass(`${keyPrefix}|CE|delta`, ce.greeks?.delta)}">${fmt(ce.greeks?.delta)}</td>
+            <td class="oc-num ${callCls} ${diffClass(`${keyPrefix}|CE|oi`, ce.oi)}">${fmt(ce.oi)}</td>
+            <td class="oc-num ${callCls} ${diffClass(`${keyPrefix}|CE|vol`, ce.volume)}">${fmt(ce.volume)}</td>
+            <td class="oc-num ${callCls} ${diffClass(`${keyPrefix}|CE|bid`, ce.bid)}">${fmt(ce.bid)}</td>
+            <td class="oc-num ${callCls} ${diffClass(`${keyPrefix}|CE|ask`, ce.ask)}">${fmt(ce.ask)}</td>
+            <td class="oc-num ${callCls} ${diffClass(`${keyPrefix}|CE|ltp`, ce.ltp)}">${fmt(ce.ltp)}</td>
+            <td class="oc-strike ${strikeCls}">${row.strike}</td>
+            <td class="oc-num ${putCls} ${diffClass(`${keyPrefix}|PE|ltp`, pe.ltp)}">${fmt(pe.ltp)}</td>
+            <td class="oc-num ${putCls} ${diffClass(`${keyPrefix}|PE|ask`, pe.ask)}">${fmt(pe.ask)}</td>
+            <td class="oc-num ${putCls} ${diffClass(`${keyPrefix}|PE|bid`, pe.bid)}">${fmt(pe.bid)}</td>
+            <td class="oc-num ${putCls} ${diffClass(`${keyPrefix}|PE|vol`, pe.volume)}">${fmt(pe.volume)}</td>
+            <td class="oc-num ${putCls} ${diffClass(`${keyPrefix}|PE|oi`, pe.oi)}">${fmt(pe.oi)}</td>
+            <td class="oc-num ${putCls} ${diffClass(`${keyPrefix}|PE|delta`, pe.greeks?.delta)}">${fmt(pe.greeks?.delta)}</td>
+            <td class="oc-num ${putCls} ${diffClass(`${keyPrefix}|PE|iv`, pe.iv)}">${fmt(pe.iv)}</td>
+            <td class="oc-num ${putCls} ${diffClass(`${keyPrefix}|PE|gamma`, pe.greeks?.gamma)}">${fmt(pe.greeks?.gamma)}</td>
+            <td class="oc-num ${putCls} ${diffClass(`${keyPrefix}|PE|theta`, pe.greeks?.theta)}">${fmt(pe.greeks?.theta)}</td>
+            <td class="oc-num ${putCls} ${diffClass(`${keyPrefix}|PE|vega`, pe.greeks?.vega)}">${fmt(pe.greeks?.vega)}</td>
+            <td class="oc-num ${putCls}">${fmt(pe.lotsize || pe.lot_size)}</td>
+          </tr>
+        `;
+      })
+      .join('');
+
+    // persist last values for diffing
+    if (this.optionChainActiveKey) {
+      this.optionChainPrevValues.set(this.optionChainActiveKey, nextMap);
+    }
+
+    const atmRow = modal.querySelector('.option-chain-table .is-atm');
+    if (atmRow) {
+      atmRow.scrollIntoView({ block: 'center' });
+    }
+
+    // Update header meta
+    document.getElementById('oc-underlying').textContent = meta.underlying || headerInfo.underlying;
+    document.getElementById('oc-expiry').textContent = meta.expiry || headerInfo.expiry;
+    document.getElementById('oc-spot').textContent = meta.spot ? Number(meta.spot).toFixed(2) : '—';
+    document.getElementById('oc-call-oi').textContent = (meta.call_oi_total || headerInfo.callOi || 0).toLocaleString();
+    document.getElementById('oc-put-oi').textContent = (meta.put_oi_total || headerInfo.putOi || 0).toLocaleString();
+    const forwardSelect = document.getElementById('oc-forward-source');
+    if (forwardSelect && meta.forward_used) {
+      forwardSelect.value = meta.forward_used;
+    }
+    const forwardValues = document.getElementById('oc-forward-values');
+    if (forwardValues) {
+      const fmtNum = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '—');
+      forwardValues.innerHTML = `
+        F<sub>carry</sub>: ${fmtNum(meta.F_carry)} |
+        F<sub>synth exact</sub>: ${fmtNum(meta.F_synth_exact)} |
+        F<sub>synth simple</sub>: ${fmtNum(meta.F_synth_simple)}
+      `;
+    }
+  }
+
+  _closeOptionChainModal() {
+    const modal = document.querySelector('.option-chain-overlay');
+    if (modal) modal.remove();
+    if (this.optionChainInterval) {
+      clearInterval(this.optionChainInterval);
+      this.optionChainInterval = null;
+    }
+    this.optionChainActiveKey = null;
+    this.optionChainParams = null;
+  }
+
+  /**
    * Select operating mode (BUYER or WRITER)
    */
   selectOperatingMode(symbolId, mode) {
-    console.log('[QuickOrder] selectOperatingMode called:', { symbolId, mode });
+    // debug: removed noisy log
     this.operatingModes.set(symbolId, mode);
-    console.log('[QuickOrder] Operating mode updated:', this.operatingModes.get(symbolId));
+    // debug: removed noisy log
     this.reloadExpansionContent(symbolId);
   }
 
@@ -730,12 +1024,12 @@ class QuickOrderHandler {
    * Select strike policy (FLOAT_OFS or ANCHOR_OFS)
    */
   selectStrikePolicy(symbolId, policy) {
-    console.log('[QuickOrder] selectStrikePolicy called:', { symbolId, policy });
+    // debug: removed noisy log
     this.strikePolicies.set(symbolId, policy);
 
     // Clear anchored strikes if switching from ANCHOR_OFS to FLOAT_OFS
     if (policy === 'FLOAT_OFS') {
-      console.log('[QuickOrder] Clearing anchored strikes for FLOAT_OFS mode');
+      // debug: removed noisy log
       // TODO: Clear anchored strikes from database if needed
     }
 
@@ -743,7 +1037,7 @@ class QuickOrderHandler {
   }
 
   selectProduct(symbolId, product) {
-    console.log('[QuickOrder] selectProduct called:', { symbolId, product });
+    // debug: removed noisy log
     const tradeMode = this.selectedTradeModes.get(symbolId) || 'EQUITY';
     if ((tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') && product !== 'NRML') {
       this.selectedProducts.set(symbolId, 'NRML');
@@ -757,7 +1051,7 @@ class QuickOrderHandler {
    */
   updateStepLots(symbolId, value) {
     const validatedValue = Math.max(1, parseInt(value) || 1);
-    console.log('[QuickOrder] updateStepLots called:', { symbolId, value: validatedValue });
+    // debug: removed noisy log
     this.stepLots.set(symbolId, validatedValue);
     this.reloadExpansionContent(symbolId);
   }
@@ -768,7 +1062,7 @@ class QuickOrderHandler {
   selectExpiry(symbolId, expiry) {
     // Ensure expiry is always stored in YYYY-MM-DD format (API format)
     const normalizedExpiry = this.normalizeExpiryDate(expiry);
-    console.log(`[QuickOrder] selectExpiry: raw="${expiry}" normalized="${normalizedExpiry}"`);
+    // debug: removed noisy log
     this.selectedExpiries.set(symbolId, normalizedExpiry);
     this.triggerOptionPreviewRefresh(symbolId);
     this.triggerFuturesPreviewRefresh(symbolId);
@@ -1098,7 +1392,7 @@ class QuickOrderHandler {
     const shouldUseSymbolMatch = ['NSE_INDEX', 'BSE_INDEX'].includes((baseExchange || '').toUpperCase());
     const primaryMatchField = shouldUseSymbolMatch ? 'symbol' : 'name';
     const instrumentTypes = this.getInstrumentTypesForMode(tradeMode);
-    console.log(`[QuickOrder] fetchAvailableExpiries: underlying=${normalizedUnderlying}, exchange=${exchange}, derivative=${derivativeExchange}, instruments=${instrumentTypes.join('/') || 'any'}`);
+    // debug: removed noisy log
 
     const fetchWithField = async (field, options = {}) => {
       const response = await api.getExpiry(normalizedUnderlying, {
@@ -1125,11 +1419,11 @@ class QuickOrderHandler {
       }
 
       if (cachedExpiries.length > 0) {
-        console.log(`[QuickOrder] Expiries resolved via instruments cache (${cachedExpiries.length} items)`);
+        // debug: removed noisy log
         return cachedExpiries;
       }
 
-      console.log('[QuickOrder] No cached expiries available, falling back to broker instance fetch');
+      // debug: removed noisy log
 
       // Fallback: find an active instance to refresh expiries from broker
       let instancesResponse = await api.getInstances({ is_active: 1 });
@@ -1147,7 +1441,7 @@ class QuickOrderHandler {
       }
 
       const fallbackInstance = activeInstances[0];
-      console.log(`[QuickOrder] Using instance ${fallbackInstance.name} (ID: ${fallbackInstance.id}) for expiry refresh`);
+      // debug: removed noisy log
       let refreshedExpiries = await fetchWithField(primaryMatchField, { instanceId: fallbackInstance.id });
       if (refreshedExpiries.length === 0) {
         const fallbackField = primaryMatchField === 'symbol' ? 'name' : 'symbol';
@@ -1155,7 +1449,7 @@ class QuickOrderHandler {
           refreshedExpiries = await fetchWithField(fallbackField, { instanceId: fallbackInstance.id });
         }
       }
-      console.log(`[QuickOrder] Refreshed ${refreshedExpiries.length} expiries from broker`);
+      // debug: removed noisy log
       return refreshedExpiries;
     } catch (error) {
       console.error('[QuickOrder] Failed to fetch expiries:', error);
@@ -1289,19 +1583,7 @@ class QuickOrderHandler {
     const stepLots = this.stepLots.get(symbolId) || quantity;
     const selectedProduct = this.selectedProducts.get(symbolId) || 'MIS';
 
-      console.log('[QuickOrder] placeOrder - Settings retrieved:', {
-        symbolId,
-        action,
-        tradeModeFromMap: this.selectedTradeModes.get(symbolId),
-        finalTradeMode: tradeMode,
-        optionsLeg,
-        quantity,
-        selectedExpiry,
-        operatingMode,
-        strikePolicy,
-        stepLots,
-        mapContents: Array.from(this.selectedTradeModes.entries()),
-      });
+      // debug removed
 
       if (!quantity || quantity <= 0) {
         Utils.showToast('Quantity must be greater than 0', 'error');
@@ -1318,7 +1600,7 @@ class QuickOrderHandler {
 
       if ((tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') && selectedExpiry) {
         orderData.expiry = this.normalizeExpiryDate(selectedExpiry);
-        console.log(`[QuickOrder] Expiry for order: raw="${selectedExpiry}" normalized="${orderData.expiry}"`);
+        // debug: removed noisy log
       }
 
       const optionActions = [
@@ -1334,28 +1616,41 @@ class QuickOrderHandler {
         orderData.operatingMode = operatingMode;
         orderData.strikePolicy = strikePolicy;
         orderData.stepLots = stepLots;
-        console.log('[QuickOrder] Added Buyer/Writer settings:', {
-          operatingMode,
-          strikePolicy,
-          stepLots,
-        });
+        // debug removed
       }
 
-      console.log('[QuickOrder] Final order data being sent to backend:', {
-        payload: orderData,
-        symbol,
-        exchange,
-      });
+      // debug removed
 
       const actionButtons = document.querySelectorAll(`#expansion-content-${symbolId} .btn-quick-action`);
       actionButtons.forEach(btn => {
         btn.disabled = true;
-        btn.classList.add('loading');
+        btn.classList.remove('loading'); // avoid global .loading conflicts
+        btn.classList.add('is-loading');
       });
 
-      const response = await api.placeQuickOrder(orderData);
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const maxRetries = 3;
+      let response = null;
+      let lastError = null;
 
-      if (response.data.summary) {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          response = await api.placeQuickOrder(orderData);
+          lastError = null;
+          break;
+        } catch (err) {
+          lastError = err;
+          const status = err?.status ?? 0;
+          const transient = status === 0 || status >= 500;
+          if (attempt < maxRetries && transient) {
+            await sleep(3000);
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      if (response && response.data && response.data.summary) {
         const { successful, failed, total } = response.data.summary;
         if (successful > 0) {
           Utils.showToast(
@@ -1365,11 +1660,11 @@ class QuickOrderHandler {
         } else {
           Utils.showToast('All orders failed', 'error');
         }
-      } else {
+      } else if (response) {
         Utils.showToast('Order placed successfully', 'success');
       }
 
-      console.log('Quick order results:', response.data);
+      // debug removed
 
       if (response.data.results) {
         response.data.results.forEach((result, index) => {
@@ -1380,10 +1675,7 @@ class QuickOrderHandler {
               fullResult: result,
             });
           } else {
-            console.log(`[QuickOrder] Order ${index + 1} SUCCESS:`, {
-              ...result,
-              backend_resolved_symbol: result.symbol || result.resolved_symbol,
-            });
+            // debug removed
           }
         });
       }
@@ -1395,6 +1687,7 @@ class QuickOrderHandler {
       actionButtons.forEach(btn => {
         btn.disabled = false;
         btn.classList.remove('loading');
+        btn.classList.remove('is-loading');
       });
       this.refreshPositionsAfterOrder();
     }
@@ -1431,5 +1724,5 @@ if (window.quickOrder) {
   console.warn('[QuickOrder] Existing handler detected, reusing global instance');
 } else {
   window.quickOrder = new QuickOrderHandler();
-  console.log('[QuickOrder] Handler initialized', window.quickOrder);
+  // debug: removed noisy log
 }

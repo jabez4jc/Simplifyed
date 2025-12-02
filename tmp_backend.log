@@ -1,0 +1,35 @@
+
+> simplifyed-admin-v2@2.0.0 dev
+> node --watch server.js
+
+02:09:13 [[32minfo[39m] No proxy configured for OpenAlgo requests (HTTP/2 multiplexing enabled)
+02:09:13 [[33mwarn[39m] Telegram bot token not configured. Alerts will not be sent.
+02:09:13 [[32minfo[39m] Session store configured with SQLite persistence
+02:09:13 [[32minfo[39m] Database connected
+02:09:13 [[32minfo[39m] Database connected
+02:09:13 [[33mwarn[39m] Failed to load configuration from database, using environment variables
+02:09:13 [[32minfo[39m] Configuration loaded from database
+02:09:13 [[32minfo[39m] Rate limit settings initialized
+02:09:13 [[32minfo[39m] OpenAlgo rate limits initialized
+node:events:485
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::3000
+    at Server.setupListenHandle [as _listen2] (node:net:1940:16)
+    at listenInCluster (node:net:1997:12)
+    at Server.listen (node:net:2102:7)
+    at app.listen (/Users/jnt/GitHub/Simplifyed/backend/node_modules/express/lib/application.js:635:24)
+    at startServer (file:///Users/jnt/GitHub/Simplifyed/backend/server.js:241:9)
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1976:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -48,
+  syscall: 'listen',
+  address: '::',
+  port: 3000
+}
+
+Node.js v24.2.0
+Failed running 'server.js'. Waiting for file changes before restarting...

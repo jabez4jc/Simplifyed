@@ -16,6 +16,7 @@ class SettingsHandler {
     this.roles = [];
     this.users = [];
     this.permissions = [];
+    this.instanceHealthTests = null;
 
     // Category metadata with icons and descriptions
     this.categoryMeta = {
@@ -138,6 +139,15 @@ class SettingsHandler {
       this.telegramStatus = telegramStatus;
       this.categories = categories;
       this.settings = allSettings;
+      // Load instance health test config
+      if (this.isAdmin()) {
+        try {
+          const cfgRes = await api.getInstanceHealthTests();
+          this.instanceHealthTests = cfgRes.data || null;
+        } catch (err) {
+          console.warn('Failed to load instance health tests config', err);
+        }
+      }
 
       if (this.isAdmin()) {
         await this.fetchRbacData();
@@ -193,6 +203,32 @@ class SettingsHandler {
               </div>
             </div>
 
+            ${this.isAdmin() ? `
+            <div class="card">
+              <div class="card-header">
+                <h3 class="card-title">🗂️ Instances Import / Export</h3>
+                <p class="text-sm text-neutral-600 mt-1">
+                  Admin-only: export all instances to CSV or import/update from CSV (upsert by host_url).
+                </p>
+              </div>
+              <div class="p-6 space-y-3">
+                ${this.renderInstanceCsvSection()}
+              </div>
+            </div>` : ''}
+
+            ${this.isAdmin() ? `
+            <div class="card">
+              <div class="card-header">
+                <h3 class="card-title">🗂️ Watchlists Import / Export</h3>
+                <p class="text-sm text-neutral-600 mt-1">
+                  Admin-only: export all watchlists, symbols, and instance mappings, or import/update from CSV.
+                </p>
+              </div>
+              <div class="p-6 space-y-3">
+                ${this.renderWatchlistCsvSection()}
+              </div>
+            </div>` : ''}
+
             <!-- Telegram Notifications Section -->
             <div class="card">
               <div class="card-header">
@@ -212,6 +248,19 @@ class SettingsHandler {
                 ${await this.renderMonitorStatusSection()}
               </div>
             </div>
+
+            ${this.isAdmin() ? `
+            <div class="card">
+              <div class="card-header">
+                <h3 class="card-title">🩺 Instance Health Tests</h3>
+                <p class="text-sm text-neutral-600 mt-1">
+                  Configure test symbols for quotes, multiquotes, and option chains. Cron runs every 3h from 08:00 IST.
+                </p>
+              </div>
+              <div class="p-6 space-y-4">
+                ${this.renderInstanceHealthTests()}
+              </div>
+            </div>` : ''}
 
         </div>
       `;
@@ -337,6 +386,58 @@ class SettingsHandler {
         </div>
       </div>
     `;
+  }
+
+  renderInstanceHealthTests() {
+    const cfg = this.instanceHealthTests || {};
+    const quotes = cfg.quotes || [];
+    const multiquotes = cfg.multiquotes || [];
+    const optionchain = cfg.optionchain || [];
+
+    const toTextarea = (arr) => JSON.stringify(arr, null, 2);
+
+    return `
+      <div class="grid gap-4 md:grid-cols-2">
+        <div>
+          <h4 class="font-semibold mb-2">Quotes Tests</h4>
+          <p class="text-xs text-neutral-500 mb-2">Array of { symbol, exchange }</p>
+          <textarea id="health-quotes" class="textarea textarea-bordered w-full h-32 font-mono text-xs">${toTextarea(quotes)}</textarea>
+        </div>
+        <div>
+          <h4 class="font-semibold mb-2">MultiQuotes Tests</h4>
+          <p class="text-xs text-neutral-500 mb-2">Array of { symbol, exchange }</p>
+          <textarea id="health-multiquotes" class="textarea textarea-bordered w-full h-32 font-mono text-xs">${toTextarea(multiquotes)}</textarea>
+        </div>
+      </div>
+      <div class="mt-4">
+        <h4 class="font-semibold mb-2">Option Chain Tests</h4>
+        <p class="text-xs text-neutral-500 mb-2">Array of { underlying, exchange, expiry_date, strike_count }</p>
+        <textarea id="health-optionchain" class="textarea textarea-bordered w-full h-32 font-mono text-xs">${toTextarea(optionchain)}</textarea>
+      </div>
+      <div class="mt-4 flex gap-3">
+        <button class="btn btn-primary" onclick="settings.saveInstanceHealthTests()">Save Tests</button>
+        <button class="btn" onclick="settings.renderSettingsView()">Cancel</button>
+      </div>
+    `;
+  }
+
+  async saveInstanceHealthTests() {
+    try {
+      const quotesVal = document.getElementById('health-quotes').value;
+      const multiVal = document.getElementById('health-multiquotes').value;
+      const ocVal = document.getElementById('health-optionchain').value;
+      const payload = {
+        quotes: JSON.parse(quotesVal || '[]'),
+        multiquotes: JSON.parse(multiVal || '[]'),
+        optionchain: JSON.parse(ocVal || '[]'),
+      };
+      await api.updateInstanceHealthTests(payload);
+      Utils.showToast('Instance health tests updated', 'success');
+      await this.renderSettingsView();
+    } catch (err) {
+      console.error(err);
+      Utils.showToast(`Failed to save tests: ${err.message}`, 'error');
+    }
   }
 
   /**
@@ -671,7 +772,7 @@ class SettingsHandler {
 
     this.settings[category][key].pendingValue = value;
 
-    console.log(`[Settings] Setting changed: ${key} = ${value}`);
+    // console.log(`[Settings] Setting changed: ${key} = ${value}`);
   }
 
   handleTradingSessionChange(input) {
@@ -704,7 +805,7 @@ class SettingsHandler {
       this.settings[category][key] = { dataType: 'json', isSensitive: false };
     }
     this.settings[category][key].pendingValue = JSON.stringify(sessions);
-    console.log('[Settings] trading_sessions updated', sessions);
+    // console.log('[Settings] trading_sessions updated', sessions);
   }
 
   /**
@@ -1745,6 +1846,154 @@ class SettingsHandler {
 
     // Start polling
     poll();
+  }
+
+  renderInstanceCsvSection() {
+    return `
+      <div class="flex flex-col gap-3">
+        <div class="flex gap-2 items-center flex-wrap">
+          <button class="btn btn-primary btn-sm" onclick="settings.exportInstancesCsv()" id="btn-export-instances">
+            Export Instances CSV
+          </button>
+          <span class="text-xs text-neutral-500">Exports all instance fields (excluding timestamps) to CSV.</span>
+        </div>
+        <div class="flex gap-2 items-center flex-wrap">
+          <input type="file" accept=".csv,text/csv" id="instances-csv-file" class="input input-sm" />
+          <button class="btn btn-secondary btn-sm" onclick="settings.importInstancesCsv()" id="btn-import-instances">
+            Import Instances CSV
+          </button>
+          <span class="text-xs text-neutral-500">Upserts by host_url. Blank cells are ignored.</span>
+        </div>
+      </div>
+    `;
+  }
+
+  async exportInstancesCsv() {
+    const btn = document.getElementById('btn-export-instances');
+    if (btn) btn.classList.add('is-loading');
+    try {
+      const res = await this.authFetch('/api/v1/instances/export/csv', { method: 'GET' });
+      if (!res.ok) throw new Error('Export failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'instances-export.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      Utils.showToast('Instances exported', 'success');
+    } catch (err) {
+      Utils.showToast(err.message || 'Export failed', 'error');
+    } finally {
+      if (btn) btn.classList.remove('is-loading');
+    }
+  }
+
+  async importInstancesCsv() {
+    const input = document.getElementById('instances-csv-file');
+    const btn = document.getElementById('btn-import-instances');
+    if (!input || !input.files || !input.files.length) {
+      Utils.showToast('Select a CSV file first', 'warning');
+      return;
+    }
+    const file = input.files[0];
+    const formData = new FormData();
+    formData.append('file', file);
+
+    if (btn) btn.classList.add('is-loading');
+    try {
+      const res = await this.authFetch('/api/v1/instances/import/csv', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.message || 'Import failed');
+      }
+      Utils.showToast(data.message || 'Import completed', 'success');
+      await this.renderSettingsView();
+    } catch (err) {
+      Utils.showToast(err.message || 'Import failed', 'error');
+    } finally {
+      if (btn) btn.classList.remove('is-loading');
+      if (input) input.value = '';
+    }
+  }
+
+  renderWatchlistCsvSection() {
+    return `
+      <div class="flex flex-col gap-3">
+        <div class="flex gap-2 items-center flex-wrap">
+          <button class="btn btn-primary btn-sm" onclick="settings.exportWatchlistsCsv()" id="btn-export-watchlists">
+            Export Watchlists CSV
+          </button>
+          <span class="text-xs text-neutral-500">Exports watchlists, symbols, and instance mappings as a text bundle.</span>
+        </div>
+        <div class="flex gap-2 items-center flex-wrap">
+          <input type="file" accept=".txt,.csv,text/plain" id="watchlists-csv-file" class="input input-sm" />
+          <button class="btn btn-secondary btn-sm" onclick="settings.importWatchlistsCsv()" id="btn-import-watchlists">
+            Import Watchlists CSV
+          </button>
+          <span class="text-xs text-neutral-500">Upserts by watchlist name; symbols by (watchlist_id, symbol, exchange); mappings by (watchlist_id, instance_id).</span>
+        </div>
+      </div>
+    `;
+  }
+
+  async exportWatchlistsCsv() {
+    const btn = document.getElementById('btn-export-watchlists');
+    if (btn) btn.classList.add('is-loading');
+    try {
+      const res = await this.authFetch('/api/v1/watchlists/export/csv', { method: 'GET' });
+      if (!res.ok) throw new Error('Export failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'watchlists-export.txt';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      Utils.showToast('Watchlists exported', 'success');
+    } catch (err) {
+      Utils.showToast(err.message || 'Export failed', 'error');
+    } finally {
+      if (btn) btn.classList.remove('is-loading');
+    }
+  }
+
+  async importWatchlistsCsv() {
+    const input = document.getElementById('watchlists-csv-file');
+    const btn = document.getElementById('btn-import-watchlists');
+    if (!input || !input.files || !input.files.length) {
+      Utils.showToast('Select a CSV/text file first', 'warning');
+      return;
+    }
+    const file = input.files[0];
+    const formData = new FormData();
+    formData.append('file', file);
+
+    if (btn) btn.classList.add('is-loading');
+    try {
+      const res = await this.authFetch('/api/v1/watchlists/import/csv', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.message || 'Import failed');
+      }
+      Utils.showToast(data.message || 'Import completed', 'success');
+      await this.renderSettingsView();
+    } catch (err) {
+      Utils.showToast(err.message || 'Import failed', 'error');
+    } finally {
+      if (btn) btn.classList.remove('is-loading');
+      if (input) input.value = '';
+    }
   }
 }
 

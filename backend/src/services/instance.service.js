@@ -41,6 +41,19 @@ async function _staggeredInstanceRequest(instanceId, fn) {
 }
 
 class InstanceService {
+  constructor() {
+    this.healthCache = new Map();
+    this.instanceColumns = null;
+  }
+
+  async _hasColumn(columnName) {
+    if (!this.instanceColumns) {
+      const rows = await db.all("PRAGMA table_info('instances')");
+      this.instanceColumns = new Set(rows.map((r) => r.name));
+    }
+    return this.instanceColumns.has(columnName);
+  }
+
   /**
    * Get all instances
    * @param {Object} filters - Optional filters (is_active, is_analyzer_mode)
@@ -106,6 +119,7 @@ class InstanceService {
     try {
       // Validate and sanitize input
       const normalized = this._normalizeInstanceData(data);
+      const hasOptionChain = await this._hasColumn('supports_option_chain');
 
       // Check for duplicate host_url
       const existing = await db.get(
@@ -131,23 +145,38 @@ class InstanceService {
       normalized.broker = connectionTest.broker;
 
       // Create instance
+      const columns = [
+        'name',
+        'host_url',
+        'api_key',
+        'broker',
+        'strategy_tag',
+        'is_primary_admin',
+        'is_secondary_admin',
+        'market_data_role',
+        'supports_multiquotes',
+      ];
+      const values = [
+        normalized.name,
+        normalized.host_url,
+        normalized.api_key,
+        normalized.broker,
+        normalized.strategy_tag,
+        normalized.is_primary_admin ? 1 : 0,
+        normalized.is_secondary_admin ? 1 : 0,
+        normalized.market_data_role || 'none',
+        normalized.supports_multiquotes ?? 0,
+      ];
+
+      if (hasOptionChain) {
+        columns.push('supports_option_chain');
+        values.push(normalized.supports_option_chain ?? 0);
+      }
+
+      const placeholders = columns.map(() => '?').join(', ');
       const result = await db.run(
-        `INSERT INTO instances (
-          name, host_url, api_key, broker, strategy_tag,
-          is_primary_admin, is_secondary_admin,
-          market_data_role, supports_multiquotes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          normalized.name,
-          normalized.host_url,
-          normalized.api_key,
-          normalized.broker,
-          normalized.strategy_tag,
-          normalized.is_primary_admin ? 1 : 0,
-          normalized.is_secondary_admin ? 1 : 0,
-          normalized.market_data_role || 'none',
-          normalized.supports_multiquotes ?? 0,
-        ]
+        `INSERT INTO instances (${columns.join(', ')}) VALUES (${placeholders})`,
+        values
       );
 
       const instance = await this.getInstanceById(result.lastID);
@@ -174,6 +203,7 @@ class InstanceService {
     try {
       // Load existing instance (throws if not found)
       const existing = await this.getInstanceById(id);
+      const hasOptionChain = await this._hasColumn('supports_option_chain');
 
       // Normalize updates
       const normalized = this._normalizeInstanceData(updates, true);
@@ -209,6 +239,9 @@ class InstanceService {
       const values = [];
 
       for (const [key, value] of Object.entries(normalized)) {
+        if (key === 'supports_option_chain' && !hasOptionChain) {
+          continue;
+        }
         fields.push(`${key} = ?`);
         values.push(value);
       }
@@ -968,6 +1001,11 @@ class InstanceService {
     // MultiQuotes support flag
     if (data.supports_multiquotes !== undefined) {
       normalized.supports_multiquotes = parseBooleanSafe(data.supports_multiquotes, false) ? 1 : 0;
+    }
+
+    // Option chain API support flag
+    if (data.supports_option_chain !== undefined) {
+      normalized.supports_option_chain = parseBooleanSafe(data.supports_option_chain, false) ? 1 : 0;
     }
 
     // Admin flags

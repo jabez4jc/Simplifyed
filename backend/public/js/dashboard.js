@@ -22,7 +22,7 @@ class DashboardApp {
     this.watchlistQuoteSnapshots = new Map();
     this.isSidebarCollapsed = false;
     this.quickOrder = window.quickOrder || null;
-    this.validViews = ['dashboard', 'instances', 'watchlists', 'orders', 'trades', 'positions', 'settings'];
+    this.validViews = ['dashboard', 'instances', 'watchlists', 'orders', 'trades', 'positions', 'settings', 'notifications'];
     this.suppressHashChange = false;
     this._throttledWatchlistRefresh = Utils.throttle((opts = {}) => {
       this.refreshWatchlistPositions(opts);
@@ -45,6 +45,75 @@ class DashboardApp {
     // Track expanded instances in positions view; default is collapsed
     this.positionsExpanded = new Set();
     this.isPaused = false; // default running; user can pause manually
+  }
+
+  async renderNotificationsView() {
+    const contentArea = document.getElementById('content-area');
+    try {
+      const res = await api.getNotifications();
+      const rows = res.data || [];
+      const fmtDate = (ts) => new Date(ts).toLocaleString();
+      const items = rows.length
+        ? rows
+            .map(
+              (n) => `
+          <div class="flex items-start gap-3 p-3 rounded-lg ${n.read ? 'bg-base-200' : 'bg-base-100'} border border-base-200">
+            <div class="text-sm font-semibold">${n.title}</div>
+            <div class="ml-auto text-xs text-neutral-500">${fmtDate(n.created_at)}</div>
+            <div class="text-xs text-neutral-600 w-full">${n.body || ''}</div>
+            ${n.read ? '' : `<button class="btn btn-xs btn-outline" onclick="app.markNotificationRead(${n.id})">Mark read</button>`}
+          </div>`
+            )
+            .join('')
+        : '<p class="text-sm text-neutral-600">No notifications.</p>';
+
+      contentArea.innerHTML = `
+        <div class="p-4 space-y-3">
+          <div class="flex items-center justify-between">
+            <h3 class="text-lg font-semibold">Notifications</h3>
+            <p class="text-sm text-neutral-500">Endpoint health and system alerts</p>
+          </div>
+          <div class="space-y-2">${items}</div>
+          <div class="flex gap-2">
+            <button class="btn btn-primary btn-sm" onclick="app.markAllNotificationsRead()">Mark all read</button>
+            <button class="btn btn-secondary btn-sm" onclick="app.renderNotificationsView()">Refresh</button>
+            <button class="btn btn-outline btn-sm" onclick="app.triggerHealthCheck()">Run health check now</button>
+          </div>
+        </div>
+      `;
+    } catch (err) {
+      contentArea.innerHTML = `<p class="text-error text-sm">Failed to load notifications: ${err.message}</p>`;
+    }
+  }
+
+  async markNotificationRead(id) {
+    try {
+      await api.markNotificationRead(id);
+      await this.renderNotificationsView();
+    } catch (err) {
+      Utils.showToast('Failed to mark notification read', 'error');
+    }
+  }
+
+  async markAllNotificationsRead() {
+    try {
+      const res = await api.getNotifications();
+      const rows = res.data || [];
+      await Promise.all(rows.filter((n) => !n.read).map((n) => api.markNotificationRead(n.id)));
+      await this.renderNotificationsView();
+    } catch (err) {
+      Utils.showToast('Failed to mark all read', 'error');
+    }
+  }
+
+  async triggerHealthCheck() {
+    try {
+      await api.request('/health-check/run', { method: 'POST' });
+      Utils.showToast('Health check triggered', 'success');
+      await this.renderNotificationsView();
+    } catch (err) {
+      Utils.showToast('Failed to trigger health check', 'error');
+    }
   }
 
   /**
@@ -72,7 +141,7 @@ class DashboardApp {
       // Individual polling mechanisms (quotes, positions) handle their own updates
       // this.startAutoRefresh();
 
-      console.log('✅ Dashboard initialized');
+      // debug removed
     } catch (error) {
       console.error('Failed to initialize dashboard:', error);
       Utils.showToast('Failed to initialize dashboard', 'error');
@@ -358,6 +427,7 @@ class DashboardApp {
       trades: 'Trades',
       positions: 'Positions',
       settings: 'Settings',
+      notifications: 'Notifications',
     };
 
     document.getElementById('view-title').textContent =
@@ -390,6 +460,9 @@ class DashboardApp {
           break;
         case 'settings':
           await settings.renderSettingsView();
+          break;
+        case 'notifications':
+          await this.renderNotificationsView();
           break;
         default:
           contentArea.innerHTML = '<p>View not found</p>';
@@ -1159,7 +1232,7 @@ class DashboardApp {
       if (button) {
         const wlId = parseInt(button.dataset.watchlistId);
         const symId = parseInt(button.dataset.symbolId);
-        console.log('[Watchlist] Expansion toggle clicked', { watchlistId: wlId, symbolId: symId });
+      // debug removed
         this.handleSymbolToggle(wlId, symId);
       }
     };
@@ -1280,7 +1353,7 @@ class DashboardApp {
       // Check if watchlist table exists in DOM (view might be re-rendering)
       const table = document.getElementById(`watchlist-table-${watchlistId}`);
       if (!table) {
-        console.log(`Watchlist table ${watchlistId} not found in DOM, skipping quote update`);
+      // debug removed
         return;
       }
 
@@ -2383,6 +2456,17 @@ class DashboardApp {
             </div>
 
             <div class="form-group">
+              <label class="form-label">Option Chain API (optional)</label>
+              <label class="inline-flex items-center gap-2">
+                <input type="checkbox" name="supports_option_chain" class="form-checkbox">
+                <span>Instance supports OpenAlgo Option Chain endpoint (limited strikes with LTP)</span>
+              </label>
+              <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
+                When enabled, options resolution fetches up to 15 strikes with live quotes directly from the broker.
+              </small>
+            </div>
+
+            <div class="form-group">
               <label class="form-label">Strategy Tag</label>
               <input type="text" name="strategy_tag" class="form-input" value="default">
             </div>
@@ -2435,6 +2519,7 @@ class DashboardApp {
 
     data.market_data_enabled = form.querySelector('input[name="market_data_enabled"]').checked;
     data.supports_multiquotes = form.querySelector('input[name="supports_multiquotes"]').checked;
+    data.supports_option_chain = form.querySelector('input[name="supports_option_chain"]').checked;
 
     try {
       await api.createInstance(data);
@@ -3974,6 +4059,18 @@ class DashboardApp {
               </div>
 
               <div class="form-group">
+                <label class="form-label">Option Chain API (optional)</label>
+                <label class="inline-flex items-center gap-2">
+                  <input type="checkbox" name="supports_option_chain" class="form-checkbox"
+                         ${instance.supports_option_chain ? 'checked' : ''}>
+                  <span>Instance supports OpenAlgo Option Chain endpoint (limited strikes with LTP)</span>
+                </label>
+                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
+                  When enabled, options resolution fetches up to 15 strikes with live quotes directly from the broker.
+                </small>
+              </div>
+
+              <div class="form-group">
                 <label class="form-label">Strategy Tag</label>
                 <input type="text" name="strategy_tag" class="form-input"
                        value="${Utils.escapeHTML(instance.strategy_tag || 'default')}">
@@ -4053,6 +4150,7 @@ class DashboardApp {
 
     data.market_data_enabled = form.querySelector('input[name="market_data_enabled"]').checked;
     data.supports_multiquotes = form.querySelector('input[name="supports_multiquotes"]').checked;
+    data.supports_option_chain = form.querySelector('input[name="supports_option_chain"]').checked;
 
     try {
       await api.updateInstance(instanceId, data);

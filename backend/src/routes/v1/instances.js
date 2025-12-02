@@ -18,8 +18,11 @@ import {
 import { parseBooleanSafe } from '../../utils/sanitizers.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';
 import db from '../../core/database.js';
+import multer from 'multer';
+import { Parser } from '../../utils/csv.js';
 
 const router = express.Router();
+const upload = multer({ storage: multer.memoryStorage() });
 
 // All instance routes require authentication
 router.use(requireAuth);
@@ -460,6 +463,106 @@ router.post('/:id/analyzer/toggle', async (req, res, next) => {
       status: 'success',
       message: `Analyzer mode ${mode ? 'enabled' : 'disabled'} successfully`,
       data: instance,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Admin-only middleware
+function requireAdmin(req, _res, next) {
+  if (!req.user?.is_admin) {
+    return next(new ForbiddenError('Admin access required'));
+  }
+  return next();
+}
+
+/**
+ * GET /api/v1/instances/export/csv
+ * Admin-only: Export all instances and settings as CSV
+ */
+router.get('/export/csv', requireAdmin, async (req, res, next) => {
+  try {
+    const columns = await db.all("PRAGMA table_info('instances')");
+    const colNames = columns.map((c) => c.name);
+    const rows = await db.all(`SELECT ${colNames.join(', ')} FROM instances ORDER BY id ASC`);
+
+    const parser = new Parser();
+    const csv = parser.stringify([colNames, ...rows.map((r) => colNames.map((c) => r[c]))]);
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="instances-export.csv"');
+    res.send(csv);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/instances/import/csv
+ * Admin-only: Import instances from CSV (upsert by host_url)
+ */
+router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res, next) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      throw new ValidationError('CSV file is required');
+    }
+
+    const csvText = req.file.buffer.toString('utf-8');
+    const parser = new Parser();
+    const records = parser.parse(csvText);
+    if (!records.headers || !records.rows.length) {
+      throw new ValidationError('CSV is empty or invalid');
+    }
+
+    const columns = await db.all("PRAGMA table_info('instances')");
+    const allowed = new Set(columns.map((c) => c.name));
+    const importable = records.headers.filter((h) => allowed.has(h) && h !== 'id' && h !== 'created_at' && h !== 'last_updated');
+
+    let inserted = 0;
+    let updated = 0;
+
+    for (const row of records.rows) {
+      const payload = {};
+      importable.forEach((col, idx) => {
+        const val = row[idx];
+        if (val === undefined || val === null || val === '') return;
+        const lowered = String(val).toLowerCase();
+        if (lowered === 'true' || lowered === 'false') {
+          payload[col] = lowered === 'true' ? 1 : 0;
+        } else if (!Number.isNaN(Number(val)) && val !== '') {
+          payload[col] = Number(val);
+        } else {
+          payload[col] = val;
+        }
+      });
+
+      if (!payload.host_url) continue;
+
+      const existing = await db.get('SELECT id FROM instances WHERE host_url = ?', [payload.host_url]);
+      if (existing) {
+        const fields = Object.keys(payload);
+        const setSql = fields.map((f) => `${f} = ?`).join(', ');
+        const params = fields.map((f) => payload[f]);
+        params.push(existing.id);
+        await db.run(`UPDATE instances SET ${setSql}, last_updated = CURRENT_TIMESTAMP WHERE id = ?`, params);
+        updated += 1;
+      } else {
+        const fields = Object.keys(payload);
+        const placeholders = fields.map(() => '?').join(', ');
+        const params = fields.map((f) => payload[f]);
+        await db.run(
+          `INSERT INTO instances (${fields.join(', ')}) VALUES (${placeholders})`,
+          params
+        );
+        inserted += 1;
+      }
+    }
+
+    res.json({
+      status: 'success',
+      message: `Import completed. Inserted ${inserted}, updated ${updated}.`,
+      data: { inserted, updated },
     });
   } catch (error) {
     next(error);

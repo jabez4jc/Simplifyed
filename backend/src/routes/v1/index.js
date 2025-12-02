@@ -18,6 +18,8 @@ import settingsRoutes from './settings.js';
 import optionChainRoutes from './option-chain.js';
 import tradeRoutes from './trades.js';
 import rbacRoutes from './rbac.js';
+import notificationRoutes from './notifications.js';
+import healthCheckRoutes from './health-check.js';
 import { getAppReadyStatus } from '../../middleware/instruments-refresh.middleware.js';
 import { config } from '../../core/config.js';
 
@@ -39,6 +41,8 @@ router.use('/settings', settingsRoutes);
 router.use('/option-chain', optionChainRoutes);
 router.use('/trades', tradeRoutes);
 router.use('/rbac', rbacRoutes);
+router.use('/notifications', notificationRoutes);
+router.use('/health-check', healthCheckRoutes);
 
 // Public config for frontend (Supabase)
 router.get('/public-config', (req, res) => {

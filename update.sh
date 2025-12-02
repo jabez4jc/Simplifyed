@@ -1,0 +1,131 @@
+#!/bin/bash
+
+# Simplifyed Admin - Update Script
+# Usage:
+#   sudo ./update.sh --instance dev
+#   sudo ./update.sh --dir /opt/simplifyed
+#
+# Notes:
+# - Expects an existing installation cloned via install.sh
+# - Leaves .env and database intact; only pulls code and rebuilds
+
+set -euo pipefail
+
+INSTANCE=""
+INSTALL_DIR=""
+APP_USER=""
+SERVICE_NAME=""
+INSTALL_ROOT="/opt"
+
+usage() {
+  echo "Usage: sudo $0 [--instance <name> | --dir <path>]"
+  echo "  --instance   Instance identifier used during install (e.g., prod, dev, staging)"
+  echo "  --dir        Absolute install directory (e.g., /opt/simplifyed-dev)"
+  echo "If neither is provided and /opt/simplifyed* dirs exist, you'll be prompted to choose."
+  exit 1
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --instance)
+      INSTANCE="$2"
+      shift 2
+      ;;
+    --dir)
+      INSTALL_DIR="$2"
+      shift 2
+      ;;
+    *)
+      usage
+      ;;
+  esac
+done
+
+# Auto-detect instances if none provided
+if [[ -z "$INSTALL_DIR" && -z "$INSTANCE" ]]; then
+  mapfile -t candidates < <(ls -d ${INSTALL_ROOT}/simplifyed* 2>/dev/null | sort)
+  if [[ ${#candidates[@]} -eq 0 ]]; then
+    echo "❌ No installations found under ${INSTALL_ROOT}/simplifyed*"
+    usage
+  fi
+  echo "Select an installation to update:"
+  select choice in "${candidates[@]}"; do
+    if [[ -n "$choice" ]]; then
+      INSTALL_DIR="$choice"
+      break
+    else
+      echo "Invalid selection."
+    fi
+  done
+fi
+
+if [[ -n "$INSTANCE" ]]; then
+  INSTALL_DIR="/opt/simplifyed-${INSTANCE}"
+  APP_USER="simplifyed-${INSTANCE}"
+  SERVICE_NAME="simplifyed-${INSTANCE}"
+else
+  # Derive from dir
+  APP_USER="$(basename "$INSTALL_DIR" | sed 's/^/simplifyed-/')"
+  SERVICE_NAME="$APP_USER"
+fi
+
+if [[ ! -d "$INSTALL_DIR/.git" ]]; then
+  echo "❌ Install dir does not look like a git repo: $INSTALL_DIR"
+  exit 1
+fi
+
+cd "$INSTALL_DIR"
+
+echo "============================================================"
+echo " Updating Simplifyed Admin"
+echo "------------------------------------------------------------"
+echo "  Install dir : $INSTALL_DIR"
+echo "  Service     : $SERVICE_NAME"
+echo "  App user    : $APP_USER"
+echo "============================================================"
+
+echo "➜ Stopping service..."
+systemctl stop "$SERVICE_NAME"
+
+echo "➜ Fetching latest code..."
+sudo -u "$APP_USER" git fetch --all
+sudo -u "$APP_USER" git pull --ff-only
+
+# Check .env vs .env.example for new keys
+ENV_FILE="$INSTALL_DIR/backend/.env"
+ENV_EXAMPLE="$INSTALL_DIR/backend/.env.example"
+if [[ -f "$ENV_FILE" && -f "$ENV_EXAMPLE" ]]; then
+  echo "➜ Checking .env for new keys..."
+  missing_keys=$(comm -13 <(grep -o '^[A-Za-z0-9_]\+=' "$ENV_FILE" | sed 's/=.*//' | sort -u) \
+                        <(grep -o '^[A-Za-z0-9_]\+=' "$ENV_EXAMPLE" | sed 's/=.*//' | sort -u))
+  if [[ -n "$missing_keys" ]]; then
+    echo "⚠️  The following keys are in .env.example but missing from your .env:"
+    echo "$missing_keys"
+    echo "    Please open $ENV_FILE and add any required values before restarting if needed."
+  else
+    echo "✓ .env is up to date with .env.example keys."
+  fi
+else
+  echo "ℹ Skipping .env check (missing .env or .env.example)."
+fi
+
+echo "➜ Installing dependencies..."
+cd "$INSTALL_DIR/backend"
+sudo -u "$APP_USER" npm install --quiet
+
+echo "➜ Building CSS..."
+sudo -u "$APP_USER" npm run build:css --silent
+
+echo "➜ Running migrations..."
+sudo -u "$APP_USER" npm run migrate --silent
+
+echo "➜ Starting service..."
+systemctl start "$SERVICE_NAME"
+
+echo "➜ Service status:"
+systemctl status "$SERVICE_NAME" --no-pager | sed -n '1,5p'
+
+echo "➜ Recent logs:"
+journalctl -u "$SERVICE_NAME" -n 20 --no-pager
+
+echo "✅ Update complete."

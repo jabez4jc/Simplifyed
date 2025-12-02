@@ -9,6 +9,9 @@ import db from '../core/database.js';
 import instrumentsService from './instruments.service.js';
 import { NotFoundError, ValidationError } from '../core/errors.js';
 import { parseFloatSafe } from '../utils/sanitizers.js';
+import openalgoClient from '../integrations/openalgo/client.js';
+
+const STRIKES_PER_SIDE = 7; // 7 above + 7 below + ATM = 15 max
 
 class OptionsResolutionService {
   constructor() {
@@ -178,6 +181,30 @@ class OptionsResolutionService {
    * @private
    */
   async _getOptionChain(underlying, exchange, expiry, instance) {
+    // Prefer broker option-chain API when supported by instance (limited strikes with LTP)
+    if (instance?.supports_option_chain) {
+      try {
+        const brokerChain = await openalgoClient.getOptionChain(
+          instance,
+          underlying,
+          expiry,
+          exchange,
+          { strikeCount: STRIKES_PER_SIDE, skipBackoff: true }
+        );
+        const normalized = this._buildOptionChainFromBroker(brokerChain, exchange);
+        if (normalized) {
+          return normalized;
+        }
+      } catch (error) {
+        log.warn('Broker option chain fetch failed, falling back to cache', {
+          underlying,
+          expiry,
+          exchange,
+          error: error.message,
+        });
+      }
+    }
+
     const isoExpiry = this._normalizeExpiryToISO(expiry);
     const openalgoExpiry = this._convertToOpenAlgoExpiryFormat(expiry);
 
@@ -284,6 +311,64 @@ class OptionsResolutionService {
       });
       return null;
     }
+  }
+
+  _buildOptionChainFromBroker(chainData, exchange) {
+    if (!chainData || !Array.isArray(chainData.chain) || chainData.chain.length === 0) {
+      return null;
+    }
+
+    // Limit to max 15 strikes (7 above + 7 below + ATM)
+    const trimmed = chainData.chain.slice(0, 15);
+    const strikes = trimmed
+      .map(item => parseFloatSafe(item.strike, 0))
+      .filter(s => s > 0)
+      .sort((a, b) => a - b);
+
+    if (strikes.length === 0) return null;
+
+    let strikeStep = 0;
+    if (strikes.length >= 2) {
+      const diffs = [];
+      for (let i = 1; i < strikes.length; i++) {
+        diffs.push(strikes[i] - strikes[i - 1]);
+      }
+      strikeStep = this._mostCommon(diffs);
+    }
+
+    const optionsByStrike = {};
+    for (const item of trimmed) {
+      const strike = parseFloatSafe(item.strike, 0);
+      if (!strike || !strikes.includes(strike)) continue;
+      optionsByStrike[strike] = optionsByStrike[strike] || { CE: null, PE: null };
+      if (item.ce) {
+        optionsByStrike[strike].CE = this._normalizeBrokerOption(item.ce, strike, exchange, 'CE');
+      }
+      if (item.pe) {
+        optionsByStrike[strike].PE = this._normalizeBrokerOption(item.pe, strike, exchange, 'PE');
+      }
+    }
+
+    log.info('Option chain fetched via broker API', {
+      strikes: strikes.length,
+      exchange,
+    });
+
+    return { strikes, strikeStep, optionsByStrike };
+  }
+
+  _normalizeBrokerOption(option, strike, exchange, optionType) {
+    if (!option) return null;
+    const symbol = option.symbol || option.tradingsymbol || '';
+    return {
+      symbol,
+      trading_symbol: symbol,
+      strike,
+      option_type: optionType,
+      lot_size: option.lotsize || option.lot_size || option.lotSize || 1,
+      tick_size: option.tick_size || option.tickSize || 0.05,
+      exchange,
+    };
   }
 
   _normalizeInstrumentOption(option) {

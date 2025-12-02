@@ -109,6 +109,23 @@ class APIClient {
       body: data,
     });
   }
+  async getNotifications() {
+    return this.request('/notifications');
+  }
+  async markNotificationRead(id) {
+    return this.request(`/notifications/${id}/read`, { method: 'POST' });
+  }
+
+  async getInstanceHealthTests() {
+    return this.request('/settings/instance-health-tests/config');
+  }
+
+  async updateInstanceHealthTests(body) {
+    return this.request('/settings/instance-health-tests/config', {
+      method: 'PUT',
+      body,
+    });
+  }
 
   async deleteInstance(id) {
     return this.request(`/instances/${id}`, {

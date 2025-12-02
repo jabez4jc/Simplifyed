@@ -664,6 +664,26 @@ body {
   cursor: not-allowed;
 }
 
+.btn.is-loading {
+  position: relative;
+  opacity: 1;
+  padding-right: calc(var(--space-4) + 18px);
+}
+
+.btn.is-loading::after {
+  content: '';
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  transform: translateY(-50%);
+  border-radius: 9999px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  opacity: 0.8;
+  animation: spin-inline 0.8s linear infinite;
+}
 .btn-primary {
   background-color: var(--color-info);
   color: white;
@@ -914,8 +934,8 @@ body {
 .modal-content {
   background-color: white;
   border-radius: var(--radius-lg);
-  max-width: 600px;
-  width: 90%;
+  max-width: 1300px;
+  width: 97%;
   max-height: 90vh;
   overflow-y: auto;
   box-shadow: var(--shadow-lg);
@@ -1509,6 +1529,128 @@ body {
   color: white;
 }
 
+.options-leg-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.option-chain-body {
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.option-chain-overlay .modal-content {
+  max-width: 1800px;
+  width: 90%;
+}
+
+.option-chain-overlay .modal-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--color-neutral-50);
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.option-chain-overlay .oc-meta {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  font-size: var(--font-size-sm);
+  color: var(--color-neutral-600);
+}
+
+.option-chain-overlay .oc-forward-values {
+  font-size: var(--font-size-sm);
+  color: var(--color-neutral-700);
+}
+
+.option-chain-scroll {
+  overflow: auto;
+}
+
+.option-chain-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.option-chain-table.option-chain-wide {
+  min-width: 900px;
+}
+
+.option-chain-table thead.sticky-thead {
+  position: sticky;
+  top: 48px;
+  z-index: 2;
+}
+
+.option-chain-table th,
+.option-chain-table td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-neutral-200);
+  vertical-align: top;
+}
+
+.option-chain-table .val-up {
+  color: var(--color-profit);
+  font-weight: 600;
+}
+
+.option-chain-table .val-down {
+  color: var(--color-loss);
+  font-weight: 600;
+}
+
+.option-chain-table .oc-itm {
+  background-color: rgba(16, 185, 129, 0.08);
+}
+
+.option-chain-table .oc-atm {
+  background-color: rgba(59, 130, 246, 0.12);
+}
+
+.option-chain-table .oc-otm {
+  background-color: rgba(107, 114, 128, 0.06);
+}
+
+.option-chain-table th {
+  text-align: center;
+  background: var(--color-neutral-50);
+}
+
+.option-chain-table .oc-strike {
+  text-align: center;
+  font-weight: 700;
+}
+
+.option-chain-table .oc-symbol {
+  font-weight: 700;
+}
+
+.option-chain-table .oc-ltp {
+  color: var(--color-neutral-600);
+  font-size: var(--font-size-sm);
+}
+
+.option-chain-table .oc-meta {
+  color: var(--color-neutral-600);
+  font-size: var(--font-size-sm);
+}
+.option-chain-table .oc-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.option-chain-table .is-atm {
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.option-chain-table .oc-miss {
+  color: var(--color-neutral-400);
+}
 /* Quantity input */
 .input-quantity {
   padding: var(--space-2) var(--space-3);
@@ -1582,30 +1724,30 @@ body {
   cursor: not-allowed;
 }
 
-/* Loading state */
-.btn-quick-action.loading::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.3),
-    transparent
-  );
-  animation: loading 1s infinite;
+.btn-quick-action.is-loading {
+  opacity: 1;
+  padding-right: calc(var(--space-4) + 18px);
 }
 
-@keyframes loading {
-  0% {
-    transform: translateX(-100%);
-  }
-  100% {
-    transform: translateX(100%);
-  }
+/* Tailwind-like inline spinner */
+.btn-quick-action.is-loading::before {
+  content: '';
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  transform: translateY(-50%);
+  border-radius: 9999px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  opacity: 0.7;
+  animation: spin-inline 0.8s linear infinite;
+}
+
+@keyframes spin-inline {
+  from { transform: translateY(-50%) rotate(0deg); }
+  to { transform: translateY(-50%) rotate(360deg); }
 }
 
 /* BUY buttons (green) */

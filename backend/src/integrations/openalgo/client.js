@@ -10,6 +10,7 @@ import { OpenAlgoError } from '../../core/errors.js';
 import config from '../../core/config.js';
 import { maskApiKey } from '../../utils/sanitizers.js';
 import settingsService from '../../services/settings.service.js';
+import { isBlackout } from '../../services/instance-health.service.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -645,6 +646,11 @@ class OpenAlgoClient extends EventEmitter {
    * @returns {Promise<Object>} - API response
    */
   async request(instance, endpoint, data = {}, method = 'POST', options = {}) {
+    if (isBlackout()) {
+      const err = new Error('Market closed (OpenAlgo calls paused 01:00-08:00 IST)');
+      err.code = 'MARKET_CLOSED';
+      throw err;
+    }
     const { host_url, api_key } = instance;
     const { isCritical = false, skipRateLimit = false } = options;
 
@@ -689,7 +695,11 @@ class OpenAlgoClient extends EventEmitter {
       payload: maskedPayload,
       isCritical,
       maxRetries,
-      baseRetryDelay
+      baseRetryDelay,
+      instanceId: instance.id,
+      instanceName: instance.name,
+      exchange: data.exchange,
+      symbol: data.symbol || data.underlying,
     });
 
     // Retry with exponential backoff
@@ -707,7 +717,15 @@ class OpenAlgoClient extends EventEmitter {
           : await this._executeWithConcurrency(instance, endpoint, method, url, payload, isOrderPlacement);
         const duration = Date.now() - startTime;
 
-        log.openalgo(method, endpoint, duration, true);
+        log.debug('OpenAlgo API Response', {
+          endpoint,
+          method,
+          url,
+          duration_ms: duration,
+          instanceId: instance.id,
+          instanceName: instance.name,
+          success: true,
+        });
 
         return response;
       } catch (error) {
@@ -719,21 +737,15 @@ class OpenAlgoClient extends EventEmitter {
         if (error.statusCode >= 400 && error.statusCode < 500) {
           const isInvalidApiKey = error.message && error.message.toLowerCase().includes('invalid apikey');
 
-          if (isInvalidApiKey) {
-            log.warn('OpenAlgo API Key Invalid - Instance may be down', {
-              endpoint,
-              statusCode: error.statusCode,
-              isCritical,
-              error: error.message
-            });
-          } else {
-            log.warn('OpenAlgo API Client Error (4xx) - not retrying', {
-              endpoint,
-              statusCode: error.statusCode,
-              isCritical,
-              error: error.message
-            });
-          }
+          const logFn = isInvalidApiKey ? log.warn.bind(log) : log.warn.bind(log);
+          logFn('OpenAlgo API Client Error (4xx)', {
+            endpoint,
+            statusCode: error.statusCode,
+            isCritical,
+            error: error.message,
+            instanceId: instance.id,
+            instanceName: instance.name,
+          });
           throw error;
         }
 
@@ -2194,15 +2206,23 @@ class OpenAlgoClient extends EventEmitter {
    * @param {string} exchange - Exchange code
    * @param {Object} options - Options
    * @param {boolean} options.skipBackoff - Skip backoff check for critical operations
+   * @param {number} options.strikeCount - Number of strikes above/below ATM (optional)
    * @returns {Promise<Object>} - Option chain data
    */
   async getOptionChain(instance, symbol, expiry, exchange = 'NFO', options = {}) {
-    const { skipBackoff = false } = options;
-    const response = await this.request(instance, 'optionchain', {
-      symbol,
-      expiry,
+    const { skipBackoff = false, strikeCount = null } = options;
+    const payload = {
+      underlying: symbol,
       exchange,
-    }, 'POST', { skipRateLimit: skipBackoff });
+    };
+    if (expiry) {
+      payload.expiry_date = expiry;
+    }
+    if (strikeCount) {
+      payload.strike_count = strikeCount;
+    }
+
+    const response = await this.request(instance, 'optionchain', payload, 'POST', { skipRateLimit: skipBackoff });
     return response.data || response;
   }
 

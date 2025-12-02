@@ -11,6 +11,14 @@ import { NotFoundError } from '../core/errors.js';
 class MarketDataInstanceService {
   constructor() {
     this.poolIndex = 0;
+    this.hasOptionChainColumn = null;
+  }
+  async _hasOptionChainColumn() {
+    if (this.hasOptionChainColumn === null) {
+      const rows = await db.all("PRAGMA table_info('instances')");
+      this.hasOptionChainColumn = rows.some((r) => r.name === 'supports_option_chain');
+    }
+    return this.hasOptionChainColumn;
   }
   /**
    * Get the instance to use for market data API calls with round-robin selection
@@ -92,8 +100,34 @@ class MarketDataInstanceService {
    */
   async getMarketDataInstances() {
     try {
+      const hasOptionChain = await this._hasOptionChainColumn();
+      const columns = [
+        'id',
+        'name',
+        'host_url',
+        'api_key',
+        'broker',
+        'market_data_role',
+        'market_data_enabled',
+        'supports_multiquotes',
+        'quotes_ok',
+        'multiquotes_ok',
+        'multiquotes_checked_at',
+        'multiquotes_failure_reason',
+        'optionchain_ok',
+        'optionchain_checked_at',
+        'optionchain_failure_reason',
+        'disable_quotes',
+        'disable_multiquotes',
+        'disable_optionchain',
+      ];
+      if (hasOptionChain) {
+        columns.push('supports_option_chain');
+      }
+      columns.push('health_status', 'is_active', 'last_health_check');
+
       const instances = await db.all(
-        `SELECT id, name, host_url, api_key, broker, market_data_role, market_data_enabled, supports_multiquotes, health_status, is_active, last_health_check
+        `SELECT ${columns.join(', ')}
          FROM instances
          WHERE is_active = 1 AND (market_data_enabled = 1 OR market_data_role IN ('primary','secondary'))
          ORDER BY created_at DESC`
@@ -113,6 +147,25 @@ class MarketDataInstanceService {
     const all = await this.getMarketDataInstances();
     // Only filter by health - eligibility already enforced by SQL query
     return all.filter(inst => this._isHealthy(inst));
+  }
+
+  /**
+   * Get instances filtered by endpoint capability and overrides
+   * @param {string} endpoint - quotes | multiquotes | optionchain
+   */
+  async getPoolForEndpoint(endpoint) {
+    const pool = await this.getMarketDataPool();
+    const flagOk = `${endpoint}_ok`;
+    const flagDisable = `disable_${endpoint}`;
+    const supportsFlag = endpoint === 'optionchain' ? 'supports_option_chain' : endpoint === 'multiquotes' ? 'supports_multiquotes' : null;
+    return pool.filter((inst) => {
+      if (inst[flagDisable]) return false;
+      if (supportsFlag && inst[supportsFlag] === 0) return false;
+      // Only exclude explicit failures that have been checked
+      const checkedAtField = `${endpoint}_checked_at`;
+      if (inst[flagOk] === 0 && inst[checkedAtField]) return false;
+      return true;
+    });
   }
 
   /**

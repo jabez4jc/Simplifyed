@@ -103,7 +103,7 @@ router.get('/expiries', async (req, res) => {
  */
 router.get('/', async (req, res) => {
   try {
-    const { underlying, expiry, type, include_quotes, strike_window } = req.query;
+    const { underlying, expiry, type, include_quotes, strike_window, forward_source } = req.query;
 
     if (!underlying) {
       return res.status(400).json({
@@ -141,7 +141,8 @@ router.get('/', async (req, res) => {
       expiry,
       type,
       includeQuotes,
-      window
+      window,
+      forward_source
     );
 
     log.info('Option chain retrieved', {

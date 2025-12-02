@@ -2074,7 +2074,7 @@ class QuickOrderService {
       // LTP is critical - use all available instances for reliability
       let instancePool = [instance];
       try {
-        const marketDataPool = await marketDataInstanceService.getMarketDataPool();
+        const marketDataPool = await marketDataInstanceService.getPoolForEndpoint('quotes');
         if (marketDataPool.length > 0) {
           // Put the requested instance first, then add others
           instancePool = [instance, ...marketDataPool.filter(i => i.id !== instance.id)];

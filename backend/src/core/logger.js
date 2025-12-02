@@ -7,7 +7,6 @@ import winston from 'winston';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
-import cron from 'node-cron';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -62,15 +61,27 @@ const logger = winston.createLogger({
   ],
 });
 
-// Daily truncate at 07:00 to keep 24h of logs and start fresh
-cron.schedule('0 7 * * *', () => {
-  try {
-    writeFileSync(join(logsDir, 'combined.log'), '');
-    writeFileSync(join(logsDir, 'error.log'), '');
-  } catch {
-    // ignore cleanup errors
+// Daily truncate at 07:00 (timer is unref'd so it doesn't hold the event loop)
+function scheduleDailyTruncate() {
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(7, 0, 0, 0);
+  if (next <= now) {
+    next.setDate(next.getDate() + 1);
   }
-});
+  const delay = next.getTime() - now.getTime();
+  const timer = setTimeout(() => {
+    try {
+      writeFileSync(join(logsDir, 'combined.log'), '');
+      writeFileSync(join(logsDir, 'error.log'), '');
+    } catch {
+      // ignore cleanup errors
+    }
+    scheduleDailyTruncate();
+  }, delay);
+  if (timer.unref) timer.unref();
+}
+scheduleDailyTruncate();
 
 const compactMeta = (meta = {}) => {
   // Only keep a few keys to avoid noisy logs

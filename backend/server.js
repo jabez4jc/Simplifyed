@@ -18,6 +18,7 @@ import autoExitService from './src/services/auto-exit.service.js';
 import telegramService from './src/services/telegram.service.js';
 import openalgoClient from './src/integrations/openalgo/client.js';
 import settingsService from './src/services/settings.service.js';
+import instanceHealthService, { isBlackout } from './src/services/instance-health.service.js';
 import authLocalService from './src/services/auth-local.service.js';
 
 // Middleware
@@ -171,6 +172,18 @@ app.get('/api/user', requireAuth, (req, res) => {
 // Static files (frontend)
 app.use(express.static('public'));
 
+// Blackout guard for API requests (01:00-08:00 IST)
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api') && isBlackout()) {
+    return res.status(503).json({
+      status: 'error',
+      code: 'MARKET_CLOSED',
+      message: 'Market is closed (01:00-08:00 IST). Broker instances are paused.',
+    });
+  }
+  next();
+});
+
 // 404 handler
 app.use(notFoundHandler);
 
@@ -263,6 +276,9 @@ async function startServer() {
       console.log('║                                                            ║');
       console.log('╚════════════════════════════════════════════════════════════╝');
       console.log('');
+
+      // Start instance health cron (every 3h from 08:00 IST)
+      instanceHealthService.start();
 
       // Removed legacy Google OAuth test mode banner
     });

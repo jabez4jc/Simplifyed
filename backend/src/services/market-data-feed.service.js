@@ -130,7 +130,7 @@ class MarketDataFeedService extends EventEmitter {
     this.lastQuoteRefreshAt = now;
 
     try {
-      const marketDataInstances = await marketDataInstanceService.getMarketDataPool();
+      const marketDataInstances = await marketDataInstanceService.getPoolForEndpoint('multiquotes');
       const symbolList = this._dedupeSymbols(await this._buildGlobalSymbolList());
 
       if (symbolList.length === 0 || marketDataInstances.length === 0) {
@@ -138,7 +138,7 @@ class MarketDataFeedService extends EventEmitter {
         return;
       }
 
-      const supportPool = marketDataInstances.filter(inst => inst.supports_multiquotes);
+      const supportPool = marketDataInstances.filter(inst => inst.supports_multiquotes && !inst.disable_multiquotes && inst.multiquotes_ok);
       const regularPool = marketDataInstances.filter(inst => !inst.supports_multiquotes);
 
       let pendingSymbols = [...symbolList];

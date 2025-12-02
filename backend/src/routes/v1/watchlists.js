@@ -10,15 +10,27 @@ import {
   NotFoundError,
   ConflictError,
   ValidationError,
+  ForbiddenError,
 } from '../../core/errors.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';
+import multer from 'multer';
+import { Parser } from '../../utils/csv.js';
+import db from '../../core/database.js';
 
 const router = express.Router();
+const upload = multer({ storage: multer.memoryStorage() });
 
 router.use(requireAuth);
 
 function hasPermission(req, key) {
   return Array.isArray(req.user?.permissions) && req.user.permissions.includes(key);
+}
+
+function requireAdmin(req, _res, next) {
+  if (!req.user?.is_admin) {
+    return next(new ForbiddenError('Admin access required'));
+  }
+  return next();
 }
 
 /**
@@ -271,6 +283,138 @@ router.delete('/:id/instances/:instanceId', requirePermission('watchlists.instan
     res.json({
       status: 'success',
       message: 'Instance unassigned successfully',
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Admin: export watchlists + symbols + instance mappings to CSV text bundle
+ */
+router.get('/export/csv', requireAdmin, async (_req, res, next) => {
+  try {
+    const parser = new Parser();
+
+    const wlCols = (await db.all("PRAGMA table_info('watchlists')")).map((c) => c.name);
+    const watchlists = await db.all(`SELECT ${wlCols.join(', ')} FROM watchlists ORDER BY id ASC`);
+    const wlCsv = parser.stringify([wlCols, ...watchlists.map((r) => wlCols.map((c) => r[c]))]);
+
+    const symCols = (await db.all("PRAGMA table_info('watchlist_symbols')")).map((c) => c.name);
+    const symbols = await db.all(`SELECT ${symCols.join(', ')} FROM watchlist_symbols ORDER BY id ASC`);
+    const symCsv = parser.stringify([symCols, ...symbols.map((r) => symCols.map((c) => r[c]))]);
+
+    const mapCols = (await db.all("PRAGMA table_info('watchlist_instances')")).map((c) => c.name);
+    const mappings = await db.all(`SELECT ${mapCols.join(', ')} FROM watchlist_instances ORDER BY id ASC`);
+    const mapCsv = parser.stringify([mapCols, ...mappings.map((r) => mapCols.map((c) => r[c]))]);
+
+    const payload = [
+      '# WATCHLISTS',
+      wlCsv,
+      '# WATCHLIST_SYMBOLS',
+      symCsv,
+      '# WATCHLIST_INSTANCES',
+      mapCsv,
+    ].join('\n');
+
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Content-Disposition', 'attachment; filename="watchlists-export.txt"');
+    res.send(payload);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Admin: import watchlists + symbols + mappings from CSV text bundle
+ */
+router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res, next) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      throw new ValidationError('CSV text file is required');
+    }
+    const text = req.file.buffer.toString('utf-8');
+    const sections = text.split(/^# /m).map((s) => s.trim()).filter(Boolean);
+    const parser = new Parser();
+
+    let inserted = { watchlists: 0, symbols: 0, mappings: 0 };
+    let updated = { watchlists: 0, symbols: 0, mappings: 0 };
+
+    const wlCols = (await db.all("PRAGMA table_info('watchlists')")).map((c) => c.name);
+    const symCols = (await db.all("PRAGMA table_info('watchlist_symbols')")).map((c) => c.name);
+    const mapCols = (await db.all("PRAGMA table_info('watchlist_instances')")).map((c) => c.name);
+
+    const upsertTable = async (table, cols, keySelector, rows) => {
+      for (const row of rows) {
+        const payload = {};
+        cols.forEach((col, idx) => {
+          const val = row[idx];
+          if (val === undefined || val === null || val === '') return;
+          const lowered = String(val).toLowerCase();
+          if (lowered === 'true' || lowered === 'false') payload[col] = lowered === 'true' ? 1 : 0;
+          else if (!Number.isNaN(Number(val)) && val !== '') payload[col] = Number(val);
+          else payload[col] = val;
+        });
+        const key = keySelector(payload);
+        if (!key) continue;
+
+        const whereClause = Object.keys(key).map((k) => `${k} = ?`).join(' AND ');
+        const whereParams = Object.values(key);
+        const existing = await db.get(`SELECT id FROM ${table} WHERE ${whereClause} LIMIT 1`, whereParams);
+        if (existing) {
+          const fields = Object.keys(payload).filter((c) => c !== 'id');
+          if (!fields.length) continue;
+          const setSql = fields.map((f) => `${f} = ?`).join(', ');
+          const params = fields.map((f) => payload[f]);
+          params.push(existing.id);
+          await db.run(`UPDATE ${table} SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, params);
+          updated[table === 'watchlists' ? 'watchlists' : table === 'watchlist_symbols' ? 'symbols' : 'mappings'] += 1;
+        } else {
+          const fields = Object.keys(payload).filter((c) => c !== 'id');
+          const placeholders = fields.map(() => '?').join(', ');
+          const params = fields.map((f) => payload[f]);
+          await db.run(`INSERT INTO ${table} (${fields.join(', ')}) VALUES (${placeholders})`, params);
+          inserted[table === 'watchlists' ? 'watchlists' : table === 'watchlist_symbols' ? 'symbols' : 'mappings'] += 1;
+        }
+      }
+    };
+
+    for (const section of sections) {
+      if (section.startsWith('WATCHLISTS')) {
+        const csv = section.replace(/^WATCHLISTS\s*/,'');
+        const parsed = parser.parse(csv.trim());
+        if (parsed.headers?.length) {
+          await upsertTable('watchlists', parsed.headers.filter((h) => wlCols.includes(h)), (p) => ({ name: p.name }), parsed.rows);
+        }
+      } else if (section.startsWith('WATCHLIST_SYMBOLS')) {
+        const csv = section.replace(/^WATCHLIST_SYMBOLS\s*/,'');
+        const parsed = parser.parse(csv.trim());
+        if (parsed.headers?.length) {
+          await upsertTable(
+            'watchlist_symbols',
+            parsed.headers.filter((h) => symCols.includes(h)),
+            (p) => ({ watchlist_id: p.watchlist_id, symbol: p.symbol, exchange: p.exchange }),
+            parsed.rows
+          );
+        }
+      } else if (section.startsWith('WATCHLIST_INSTANCES')) {
+        const csv = section.replace(/^WATCHLIST_INSTANCES\s*/,'');
+        const parsed = parser.parse(csv.trim());
+        if (parsed.headers?.length) {
+          await upsertTable(
+            'watchlist_instances',
+            parsed.headers.filter((h) => mapCols.includes(h)),
+            (p) => ({ watchlist_id: p.watchlist_id, instance_id: p.instance_id }),
+            parsed.rows
+          );
+        }
+      }
+    }
+
+    res.json({
+      status: 'success',
+      message: 'Watchlists import completed',
+      data: { inserted, updated },
     });
   } catch (error) {
     next(error);

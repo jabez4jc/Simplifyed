@@ -6,6 +6,7 @@
 import express from 'express';
 import settingsService from '../../services/settings.service.js';
 import { log } from '../../core/logger.js';
+import instanceHealthService from '../../services/instance-health.service.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';
 
 const router = express.Router();
@@ -119,6 +120,30 @@ router.put('/:key', requirePermission('settings.manage'), async (req, res, next)
         message: error.message
       });
     }
+    next(error);
+  }
+});
+
+// Instance health test config
+router.get('/instance-health-tests/config', requirePermission('settings.manage'), async (req, res, next) => {
+  try {
+    const cfg = await settingsService.getSetting('instance_health_tests');
+    const raw = cfg?.value ?? cfg?.rawValue;
+    res.json({
+      status: 'success',
+      data: raw ? JSON.parse(raw) : null,
+      default: null,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put('/instance-health-tests/config', requirePermission('settings.manage'), async (req, res, next) => {
+  try {
+    await instanceHealthService.updateTestConfig(req.body);
+    res.json({ status: 'success', message: 'Instance health test config updated' });
+  } catch (error) {
     next(error);
   }
 });
