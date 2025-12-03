@@ -40,16 +40,17 @@ SQLITE_TIMEOUT_MS="${SQLITE_TIMEOUT_MS:-5000}"
 cat > /tmp/import_instruments.sql << EOF
 -- Import instruments from CSV
 
+-- Apply performance pragmas *before* the transaction (SQLite forbids changing
+-- safety level inside a transaction)
 PRAGMA busy_timeout = $SQLITE_TIMEOUT_MS;
+PRAGMA journal_mode = MEMORY;
+PRAGMA synchronous = OFF;
+PRAGMA cache_size = 10000;
+
 BEGIN EXCLUSIVE;
 
 -- Clear existing instruments
 DELETE FROM instruments;
-
--- Set PRAGMA for faster import
-PRAGMA synchronous = OFF;
-PRAGMA journal_mode = MEMORY;
-PRAGMA cache_size = 10000;
 
 -- Import data from CSV using SQLite's CSV mode
 .mode csv
@@ -77,6 +78,8 @@ WHERE symbol IS NOT NULL AND symbol != '';
 -- Drop temp table
 DROP TABLE instruments_temp;
 
+COMMIT;
+
 -- Re-enable normal settings
 PRAGMA synchronous = NORMAL;
 
@@ -88,7 +91,6 @@ INSERT INTO instruments_refresh_log (exchange, status, instrument_count, refresh
 VALUES ('CSV_UPLOAD', 'completed', (SELECT COUNT(*) FROM instruments), datetime('now'), datetime('now'));
 
 SELECT 'Refresh log updated';
-COMMIT;
 EOF
 
 echo "🗄️  Importing to database: $DB_FILE"
