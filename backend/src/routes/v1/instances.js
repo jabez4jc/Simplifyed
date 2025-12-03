@@ -518,6 +518,7 @@ router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res,
     const columns = await db.all("PRAGMA table_info('instances')");
     const allowed = new Set(columns.map((c) => c.name));
     const importable = records.headers.filter((h) => allowed.has(h) && h !== 'id' && h !== 'created_at' && h !== 'last_updated');
+    const headerIndex = new Map(records.headers.map((h, i) => [h, i]));
 
     let inserted = 0;
     let updated = 0;
@@ -526,7 +527,8 @@ router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res,
 
     for (const row of records.rows) {
       const payload = {};
-      importable.forEach((col, idx) => {
+      importable.forEach((col) => {
+        const idx = headerIndex.get(col);
         const val = row[idx];
         if (val === undefined || val === null || val === '') return;
         const lowered = String(val).toLowerCase();
