@@ -111,16 +111,19 @@ fi
 
 echo "➜ Installing dependencies..."
 cd "$INSTALL_DIR/backend"
-sudo -u "$APP_USER" npm install --quiet
+sudo -u "$APP_USER" npm ci --quiet
 
 echo "➜ Building CSS..."
 sudo -u "$APP_USER" npm run build:css --silent
 
+echo "➜ Pruning dev dependencies..."
+sudo -u "$APP_USER" npm prune --production --quiet
+
 echo "➜ Running migrations..."
 sudo -u "$APP_USER" npm run migrate --silent
 
-echo "➜ Starting service..."
-systemctl start "$SERVICE_NAME"
+echo "➜ Restarting service..."
+systemctl restart "$SERVICE_NAME"
 
 echo "➜ Service status:"
 systemctl status "$SERVICE_NAME" --no-pager | sed -n '1,5p'

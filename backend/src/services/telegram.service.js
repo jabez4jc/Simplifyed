@@ -95,16 +95,29 @@ class TelegramService {
   async sendMessage(chatId, text) {
     ensureConfigured();
     if (!chatId) return;
-    const res = await fetch(`${API_URL}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'Markdown' }),
-    });
-    const body = await res.json();
-    if (!body.ok) {
-      throw new Error(body.description || 'Telegram API error');
+    // Attempt with Markdown, fallback to plain text if Telegram rejects formatting
+    const attemptSend = async (payload) => {
+      const res = await fetch(`${API_URL}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const body = await res.json();
+      if (!body.ok) {
+        const err = new Error(body.description || 'Telegram API error');
+        err.code = body.error_code;
+        throw err;
+      }
+      return body.result;
+    };
+
+    try {
+      return await attemptSend({ chat_id: chatId, text, parse_mode: 'Markdown' });
+    } catch (err) {
+      // Retry without parse_mode for formatting errors
+      log.warn('telegram_send_retry_plain', { chat_id: chatId, reason: err.message });
+      return await attemptSend({ chat_id: chatId, text });
     }
-    return body.result;
   }
 
   formatOrderMessage(order, context = {}) {
@@ -112,6 +125,8 @@ class TelegramService {
     const type = context.type || 'ORDER';
     const side = (order.side || '').toUpperCase();
     lines.push(`*${type}*`);
+    if (context.trigger_type) lines.push(`Trigger: ${context.trigger_type}`);
+    if (context.button_label) lines.push(`Button: ${context.button_label}`);
     lines.push(`Symbol: ${order.symbol} (${order.exchange || ''})`);
     if (order.product_type) lines.push(`Product: ${order.product_type}`);
     if (order.order_type) lines.push(`Type: ${order.order_type}`);
@@ -136,7 +151,7 @@ class TelegramService {
         await this.sendMessage(DEFAULT_CHAT_ID, msg);
         targets.push(DEFAULT_CHAT_ID);
       } catch (err) {
-        log.error('Telegram send failed (global)', { error: err.message });
+        log.error('Telegram send failed (global)', { chat_id: DEFAULT_CHAT_ID, reason: err.message });
       }
     }
 
@@ -148,9 +163,70 @@ class TelegramService {
         await this.sendMessage(sub.chat_id, msg);
         targets.push(sub.chat_id);
       } catch (err) {
-        log.error('Telegram send failed (subscriber)', { chat_id: sub.chat_id, error: err.message });
+        log.error('Telegram send failed (subscriber)', { chat_id: sub.chat_id, reason: err.message });
       }
     }
+    return targets;
+  }
+
+  /**
+   * Send a single summary notification for a batch/broadcast of orders.
+   * Includes instance list, trigger type (manual/automated), and button label.
+   */
+  async sendOrderSummary(summary, context = {}) {
+    ensureConfigured();
+    await ensureSchema();
+
+    const instances = summary.instances || [];
+    const successInstances = summary.success_instances || [];
+    const failureInstances = summary.failure_instances || [];
+    const successCount = summary.success_count ?? successInstances.length ?? 0;
+    const failureCount = summary.failure_count ?? failureInstances.length ?? 0;
+
+    const lines = [];
+    lines.push(`*${summary.title || 'ORDER SUMMARY'}*`);
+    if (summary.trigger_type) lines.push(`Trigger: ${summary.trigger_type}`);
+    if (summary.button_label) lines.push(`Button: ${summary.button_label}`);
+    if (summary.trade_mode) lines.push(`Mode: ${summary.trade_mode}`);
+    if (summary.side) lines.push(`Side: ${summary.side}`);
+    lines.push(`Symbol: ${summary.symbol} (${summary.exchange || ''})`);
+    if (summary.product) lines.push(`Product: ${summary.product}`);
+    if (summary.order_type) lines.push(`Type: ${summary.order_type}`);
+    if (summary.quantity) lines.push(`Qty: ${summary.quantity}`);
+    if (summary.trigger_price) lines.push(`Trigger: ${summary.trigger_price}`);
+    if (summary.price) lines.push(`Price: ${summary.price}`);
+    lines.push(`Instances (${instances.length}): ${instances.length ? instances.join(', ') : 'None'}`);
+
+    const successList = successInstances.length ? ` (${successInstances.join(', ')})` : '';
+    const failureList = failureInstances.length ? ` (${failureInstances.join(', ')})` : '';
+    lines.push(`Results: ${successCount} success${successList}${failureCount ? `, ${failureCount} failed${failureList}` : ''}`);
+
+    const msg = lines.join('\n');
+
+    const targets = [];
+
+    // Global chat
+    if (DEFAULT_CHAT_ID) {
+      try {
+        await this.sendMessage(DEFAULT_CHAT_ID, msg);
+        targets.push(DEFAULT_CHAT_ID);
+      } catch (err) {
+        log.error('Telegram send failed (summary global)', { chat_id: DEFAULT_CHAT_ID, reason: err.message });
+      }
+    }
+
+    // Subscribers
+    const subs = await db.all('SELECT chat_id FROM telegram_subscribers WHERE is_active = 1 AND chat_id IS NOT NULL');
+    log.info('telegram_dispatch_summary', { count: subs.length + (DEFAULT_CHAT_ID ? 1 : 0), chat_id: DEFAULT_CHAT_ID || 'subs' });
+    for (const sub of subs) {
+      try {
+        await this.sendMessage(sub.chat_id, msg);
+        targets.push(sub.chat_id);
+      } catch (err) {
+        log.error('Telegram send failed (summary subscriber)', { chat_id: sub.chat_id, reason: err.message });
+      }
+    }
+
     return targets;
   }
 }

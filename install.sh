@@ -367,7 +367,11 @@ RATE_LIMIT_MAX_REQUESTS=100
 
 # Telegram Bot Configuration
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
-TELEGRAM_BOT_USERNAME=${TELEGRAM_BOT_USERNAME:-simplifyed_trading_bot}
+TELEGRAM_BOT_USERNAME=${TELEGRAM_BOT_USERNAME:-simplifyed_bot}
+TELEGRAM_DEFAULT_CHAT_ID=
+
+# Log Notifications
+LOG_NOTIFICATIONS=true
 EOF
 
     chown $APP_USER:$APP_USER "$INSTALL_DIR/backend/.env"
@@ -385,8 +389,8 @@ install_dependencies() {
 
     cd "$INSTALL_DIR/backend"
 
-    print_info "Installing all dependencies (including build tools)..."
-    sudo -u $APP_USER npm install --quiet
+    print_info "Installing all dependencies (including build tools) with npm ci..."
+    sudo -u $APP_USER npm ci --quiet
 
     print_success "Dependencies installed"
 }

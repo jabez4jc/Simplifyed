@@ -16,6 +16,7 @@ import orderPlacementService from './order-placement.service.js';
 import orderPayloadFactory from './order-payload.factory.js';
 import orderRepository from './order-repository.js';
 import orderService from './order.service.js';
+import telegramService from './telegram.service.js';
 import { ValidationError, NotFoundError } from '../core/errors.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
 import instrumentsService from './instruments.service.js';
@@ -133,6 +134,41 @@ class QuickOrderService {
       successful: results.filter(r => r.success).length,
       failed: results.filter(r => !r.success).length,
     });
+
+    // Send a single Telegram summary for the broadcast
+    const successCount = results.filter(r => r.success).length;
+    const failureCount = results.filter(r => !r.success).length;
+    const instanceNames = instances.map(i => i.name).filter(Boolean);
+    const triggerType = params.triggerType || 'Manual';
+    const buttonLabel = params.button_label || action;
+    const sideForSummary = this._deriveSideForSummary(action);
+    const successInstances = results.filter(r => r.success).map(r => r.instance_name).filter(Boolean);
+    const failureInstances = results.filter(r => !r.success).map(r => r.instance_name).filter(Boolean);
+    const { summarySymbol, summaryExchange } = this._pickSummaryInstrument(
+      results,
+      symbol.symbol,
+      symbol.exchange
+    );
+    const summaryPayload = {
+      title: 'ORDER SUMMARY',
+      trigger_type: triggerType,
+      button_label: buttonLabel,
+      trade_mode: tradeMode,
+      side: sideForSummary,
+      symbol: summarySymbol,
+      exchange: summaryExchange,
+      product: resolvedProduct,
+      order_type: orderType,
+      quantity,
+      instances: instanceNames,
+      success_count: successCount,
+      failure_count: failureCount,
+      success_instances: successInstances,
+      failure_instances: failureInstances,
+    };
+    telegramService
+      .sendOrderSummary(summaryPayload)
+      .catch(err => log.warn('telegram_summary_notify_failed', { error: err.message }));
 
     return {
       success: results.every(r => r.success),
@@ -817,6 +853,7 @@ class QuickOrderService {
       watchlist_id: symbol.watchlist_id,
       symbol_id: symbol.id,
       instance_id: instance.id,
+      instance_name: instance.name,
       underlying: symbol.underlying_symbol || symbol.symbol,
       symbol: finalSymbol,
       exchange: finalExchange,
@@ -1087,6 +1124,7 @@ class QuickOrderService {
           watchlist_id: symbol.watchlist_id,
           symbol_id: symbol.id,
           instance_id: instance.id,
+          instance_name: instance.name,
           underlying,
           symbol: order.symbol,
           exchange: derivativeExchange,
@@ -1110,9 +1148,12 @@ class QuickOrderService {
           order_id: orderResult.orderid,
           status: orderResult.status,
           symbol: order.symbol,
+          resolved_symbol: optionSymbol.symbol,
+          exchange: derivativeExchange,
           strike: order.strike,
           quantity: order.quantity,
           action: order.action,
+          instance_name: instance.name,
         };
       });
 
@@ -1322,6 +1363,7 @@ class QuickOrderService {
       watchlist_id: symbol.watchlist_id,
       symbol_id: symbol.id,
       instance_id: instance.id,
+      instance_name: instance.name,
       underlying,
       symbol: optionSymbol.symbol,
       exchange: derivativeExchange,
@@ -1384,6 +1426,8 @@ class QuickOrderService {
       order_id: orderResult.orderid,
       status: orderResult.status,
       symbol: optionSymbol.symbol,
+      resolved_symbol: optionSymbol.symbol,
+      exchange: derivativeExchange,
       strike,
       option_type: optionType,
       quantity,
@@ -1393,6 +1437,7 @@ class QuickOrderService {
       current_position: currentPosition,
       target_position: targetPosition,
       final_position: finalPosition,
+      instance_name: instance.name,
     };
   }
 
@@ -1604,6 +1649,7 @@ class QuickOrderService {
           watchlist_id: symbol.watchlist_id,
           symbol_id: symbol.id,
           instance_id: instance.id,
+          instance_name: instance.name,
           underlying,
           symbol: position.symbol,
           exchange: position.exchange,
@@ -2140,10 +2186,76 @@ class QuickOrderService {
         order_id: orderData.order_id,
         symbol: orderData.symbol,
       });
+
     } catch (error) {
       log.error('Failed to record quick order', error);
       // Non-fatal - order was still placed
     }
+  }
+
+  /**
+   * Map action/button to a human-friendly BUY/SELL side for summaries.
+   */
+  _deriveSideForSummary(action = '') {
+    const act = (action || '').toUpperCase();
+    const buyActions = new Set([
+      'BUY',
+      'COVER', // close short -> buy
+      'BUY_CE',
+      'BUY_PE',
+      'INCREASE_CE',
+      'INCREASE_PE',
+    ]);
+    const sellActions = new Set([
+      'SELL',
+      'SHORT',
+      'EXIT', // flatten -> sell from perspective of summary
+      'EXIT_ALL',
+      'CLOSE_ALL_CE',
+      'CLOSE_ALL_PE',
+      'REDUCE_CE',
+      'REDUCE_PE',
+      'SELL_CE',
+      'SELL_PE',
+    ]);
+
+    if (buyActions.has(act)) return 'BUY';
+    if (sellActions.has(act)) return 'SELL';
+    return act || 'UNKNOWN';
+  }
+
+  /**
+   * Pick the best symbol/exchange to display in the summary.
+   * Priority:
+   * 1) first success with resolved_symbol
+   * 2) first success with symbol
+   * 3) any result with resolved_symbol
+   * 4) any result with symbol
+   * 5) fallback to watchlist symbol/exchange
+   */
+  _pickSummaryInstrument(results, fallbackSymbol, fallbackExchange) {
+    const pick = (arr, key) => {
+      const hit = arr.find(r => r && r[key]);
+      return hit ? hit[key] : null;
+    };
+
+    const successes = results.filter(r => r && r.success);
+    const any = results || [];
+
+    const symResolvedSuccess = pick(successes, 'resolved_symbol');
+    const symSuccess = pick(successes, 'symbol');
+    const symResolvedAny = pick(any, 'resolved_symbol');
+    const symAny = pick(any, 'symbol');
+
+    const exchResolvedSuccess = pick(successes, 'exchange');
+    const exchSuccess = pick(successes, 'exchange');
+    const exchResolvedAny = pick(any, 'exchange');
+    const exchAny = pick(any, 'exchange');
+
+    return {
+      summarySymbol: symResolvedSuccess || symSuccess || symResolvedAny || symAny || fallbackSymbol,
+      summaryExchange: exchResolvedSuccess || exchSuccess || exchResolvedAny || exchAny || fallbackExchange,
+    };
   }
 
   /**

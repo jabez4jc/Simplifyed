@@ -14,6 +14,7 @@ import { NotFoundError, ValidationError } from '../../core/errors.js';
 import quickOrderService from '../../services/quick-order.service.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';
 import db from '../../core/database.js';
+import telegramService from '../../services/telegram.service.js';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -142,6 +143,23 @@ router.post('/:instanceId/close', requirePermission('positions.close_all'), asyn
       logAudit(req, 'positions.close_all', { instanceId });
     }
 
+    // Telegram summary for close-all on a single instance
+    telegramService.sendOrderSummary({
+      title: 'ORDER SUMMARY',
+      trigger_type: 'Manual',
+      button_label: 'CLOSE_ALL',
+      trade_mode: 'DIRECT',
+      side: 'SELL',
+      symbol: 'ALL',
+      exchange: '-',
+      product: instance.default_product || 'MIS',
+      order_type: 'MARKET',
+      quantity: null,
+      instances: [instance.name].filter(Boolean),
+      success_count: 1,
+      failure_count: 0,
+    }).catch(err => log.warn('telegram_summary_notify_failed', { error: err.message }));
+
     res.json({
       status: 'success',
       message: 'Close position request sent',
@@ -180,6 +198,29 @@ router.post('/:instanceId/close/position', requirePermission('positions.close'),
     if ((req.user?.role || '').toUpperCase() !== 'ADMIN') {
       logAudit(req, 'positions.close_single', { instanceId, symbol, exchange });
     }
+
+    // Telegram summary for single-position close
+    const successDetails = Array.isArray(result?.details) ? result.details.filter(d => d.success) : [];
+    const totalQty = successDetails.reduce((sum, d) => sum + (d.quantity || d.closed_quantity || 0), 0);
+    const firstSuccess = successDetails[0] || {};
+    const summarySymbol = firstSuccess.symbol || symbol;
+    const summaryExchange = firstSuccess.exchange || exchange;
+
+    telegramService.sendOrderSummary({
+      title: 'ORDER SUMMARY',
+      trigger_type: 'Manual',
+      button_label: 'CLOSE_POSITION',
+      trade_mode: normalizedTradeMode,
+      side: 'SELL',
+      symbol: summarySymbol,
+      exchange: summaryExchange,
+      product: normalizedProduct,
+      order_type: 'MARKET',
+      quantity: totalQty || null,
+      instances: [instance.name].filter(Boolean),
+      success_count: successDetails.length,
+      failure_count: (result?.details?.length || 0) - successDetails.length,
+    }).catch(err => log.warn('telegram_summary_notify_failed', { error: err.message }));
 
     res.json({
       status: 'success',
