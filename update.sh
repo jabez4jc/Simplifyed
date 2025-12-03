@@ -16,11 +16,13 @@ INSTALL_DIR=""
 APP_USER=""
 SERVICE_NAME=""
 INSTALL_ROOT="/opt"
+SOURCE_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 usage() {
-  echo "Usage: sudo $0 [--instance <name> | --dir <path>]"
+  echo "Usage: sudo $0 [--instance <name> | --dir <path>] [--source <path>]"
   echo "  --instance   Instance identifier used during install (e.g., prod, dev, staging)"
   echo "  --dir        Absolute install directory (e.g., /opt/simplifyed-dev)"
+  echo "  --source     Path to the updated code (defaults to the directory containing this script)"
   echo "If neither is provided and /opt/simplifyed* dirs exist, you'll be prompted to choose."
   exit 1
 }
@@ -33,6 +35,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --dir)
       INSTALL_DIR="$2"
+      shift 2
+      ;;
+    --source)
+      SOURCE_DIR="$2"
       shift 2
       ;;
     *)
@@ -64,13 +70,29 @@ if [[ -n "$INSTANCE" ]]; then
   APP_USER="simplifyed-${INSTANCE}"
   SERVICE_NAME="simplifyed-${INSTANCE}"
 else
-  # Derive from dir
-  APP_USER="$(basename "$INSTALL_DIR" | sed 's/^/simplifyed-/')"
-  SERVICE_NAME="$APP_USER"
+  base="$(basename "$INSTALL_DIR")"
+  if [[ "$base" == "simplifyed" ]]; then
+    APP_USER="simplifyed"
+    SERVICE_NAME="simplifyed"
+  elif [[ "$base" == simplifyed-* ]]; then
+    APP_USER="$base"
+    SERVICE_NAME="$base"
+  else
+    APP_USER="$base"
+    SERVICE_NAME="$base"
+  fi
 fi
 
-if [[ ! -d "$INSTALL_DIR/.git" ]]; then
-  echo "❌ Install dir does not look like a git repo: $INSTALL_DIR"
+# Validate source dir looks like app root
+if [[ ! -f "$SOURCE_DIR/backend/package.json" ]]; then
+  echo "❌ Source directory does not look like Simplifyed repo: $SOURCE_DIR"
+  echo "    Expected: $SOURCE_DIR/backend/package.json"
+  exit 1
+fi
+
+# Ensure install dir exists
+if [[ ! -d "$INSTALL_DIR" ]]; then
+  echo "❌ Install dir not found: $INSTALL_DIR"
   exit 1
 fi
 
@@ -80,6 +102,7 @@ echo "============================================================"
 echo " Updating Simplifyed Admin"
 echo "------------------------------------------------------------"
 echo "  Install dir : $INSTALL_DIR"
+echo "  Source dir  : $SOURCE_DIR"
 echo "  Service     : $SERVICE_NAME"
 echo "  App user    : $APP_USER"
 echo "============================================================"
@@ -87,9 +110,15 @@ echo "============================================================"
 echo "➜ Stopping service..."
 systemctl stop "$SERVICE_NAME"
 
-echo "➜ Fetching latest code..."
-sudo -u "$APP_USER" git fetch --all
-sudo -u "$APP_USER" git pull --ff-only
+echo "➜ Syncing updated code from source..."
+rsync -av \
+  --exclude='.git' \
+  --exclude='node_modules' \
+  --exclude='backend/node_modules' \
+  --exclude='backend/database' \
+  --exclude='backend/logs' \
+  --exclude='*.log' \
+  "$SOURCE_DIR/" "$INSTALL_DIR/"
 
 # Check .env vs .env.example for new keys
 ENV_FILE="$INSTALL_DIR/backend/.env"
