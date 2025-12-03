@@ -521,6 +521,8 @@ router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res,
 
     let inserted = 0;
     let updated = 0;
+    let skippedMissing = 0;
+    let rowErrors = 0;
 
     for (const row of records.rows) {
       const payload = {};
@@ -537,32 +539,44 @@ router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res,
         }
       });
 
-      if (!payload.host_url) continue;
+      // Guard required fields to avoid NOT NULL/UNIQUE violations
+      if (!payload.host_url || !payload.api_key) {
+        skippedMissing += 1;
+        continue;
+      }
+      if (!payload.name) {
+        payload.name = payload.host_url;
+      }
 
-      const existing = await db.get('SELECT id FROM instances WHERE host_url = ?', [payload.host_url]);
-      if (existing) {
-        const fields = Object.keys(payload);
-        const setSql = fields.map((f) => `${f} = ?`).join(', ');
-        const params = fields.map((f) => payload[f]);
-        params.push(existing.id);
-        await db.run(`UPDATE instances SET ${setSql}, last_updated = CURRENT_TIMESTAMP WHERE id = ?`, params);
-        updated += 1;
-      } else {
-        const fields = Object.keys(payload);
-        const placeholders = fields.map(() => '?').join(', ');
-        const params = fields.map((f) => payload[f]);
-        await db.run(
-          `INSERT INTO instances (${fields.join(', ')}) VALUES (${placeholders})`,
-          params
-        );
-        inserted += 1;
+      try {
+        const existing = await db.get('SELECT id FROM instances WHERE host_url = ?', [payload.host_url]);
+        if (existing) {
+          const fields = Object.keys(payload);
+          const setSql = fields.map((f) => `${f} = ?`).join(', ');
+          const params = fields.map((f) => payload[f]);
+          params.push(existing.id);
+          await db.run(`UPDATE instances SET ${setSql}, last_updated = CURRENT_TIMESTAMP WHERE id = ?`, params);
+          updated += 1;
+        } else {
+          const fields = Object.keys(payload);
+          const placeholders = fields.map(() => '?').join(', ');
+          const params = fields.map((f) => payload[f]);
+          await db.run(
+            `INSERT INTO instances (${fields.join(', ')}) VALUES (${placeholders})`,
+            params
+          );
+          inserted += 1;
+        }
+      } catch (err) {
+        rowErrors += 1;
+        log.error('Instance import row failed', { err: err.message, host_url: payload.host_url });
       }
     }
 
     res.json({
       status: 'success',
-      message: `Import completed. Inserted ${inserted}, updated ${updated}.`,
-      data: { inserted, updated },
+      message: `Import completed. Inserted ${inserted}, updated ${updated}, skipped ${skippedMissing}, errors ${rowErrors}.`,
+      data: { inserted, updated, skippedMissing, rowErrors },
     });
   } catch (error) {
     next(error);
