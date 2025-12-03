@@ -941,7 +941,7 @@ class DashboardApp {
               </svg>
               Open Positions
             </div>
-            <div id="positions-summary-compact" class="positions-summary-compact">
+            <div id="positions-summary-inline" class="positions-summary-compact">
               <span class="text-neutral-500 text-xs">Loading…</span>
             </div>
             <div class="positions-panel-actions">
