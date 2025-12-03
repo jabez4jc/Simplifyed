@@ -120,6 +120,13 @@ rsync -av \
   --exclude='*.log' \
   "$SOURCE_DIR/" "$INSTALL_DIR/"
 
+# Ensure writable dirs (db/logs/public assets) belong to app user
+chown -R "$APP_USER":"$APP_USER" \
+  "$INSTALL_DIR/backend/database" \
+  "$INSTALL_DIR/backend/logs" \
+  "$INSTALL_DIR/backend/data" \
+  "$INSTALL_DIR/backend/public"
+
 # Check .env vs .env.example for new keys
 ENV_FILE="$INSTALL_DIR/backend/.env"
 ENV_EXAMPLE="$INSTALL_DIR/backend/.env.example"
