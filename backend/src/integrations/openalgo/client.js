@@ -1469,6 +1469,21 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   /**
+   * Convenience: single quote fetch (wraps getQuotes)
+   * @param {Object} instance
+   * @param {String} symbol
+   * @param {String} exchange
+   * @param {Object} options
+   * @returns {Promise<Object|{quotes:[],failed:[]}>}
+   */
+  async getQuote(instance, symbol, exchange, options = {}) {
+    const res = await this.getQuotes(instance, [{ symbol, exchange }], options);
+    // If returnErrors was requested, bubble up the richer payload
+    if (options?.returnErrors) return res;
+    return Array.isArray(res) ? res[0] : null;
+  }
+
+  /**
    * Fetch quotes for multiple symbols in a single request
    * @param {Object} instance - Instance configuration
    * @param {Array<Object>} symbols - Array of {exchange, symbol}

@@ -370,18 +370,18 @@ class OrderMonitorService {
    */
   async sendTelegramAlert(instance, alert) {
     try {
-      // Get first admin user (Phase 1: single user)
-      // TODO: In Phase 2, send to all users with access to this instance
-      const user = await db.get(
-        'SELECT * FROM users WHERE is_admin = 1 LIMIT 1'
-      );
-
-      if (!user) {
-        log.warn('No admin user found for Telegram alert');
-        return;
-      }
-
-      await telegramService.sendAlert(user.id, alert);
+      const orderLike = {
+        symbol: alert?.position?.symbol,
+        exchange: alert?.position?.exchange,
+        side: alert?.position?.side,
+        quantity: alert?.position?.quantity,
+        price: alert?.trigger?.exit_price,
+      };
+      await telegramService.sendOrderNotification(orderLike, {
+        type: alert?.type || 'ORDER',
+        pnl: alert?.pnl,
+        instance_name: alert?.position?.instance_name || instance?.name,
+      });
     } catch (error) {
       log.error('Telegram alert failed', { error: error.message });
     }

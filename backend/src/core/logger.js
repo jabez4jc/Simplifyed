@@ -7,6 +7,7 @@ import winston from 'winston';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import sqlite3 from 'sqlite3';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -18,20 +19,96 @@ if (!existsSync(logsDir)) {
 }
 
 const enableDebug = process.env.ENABLE_DEBUG_LOGS === 'true';
+const logNotifications = process.env.LOG_NOTIFICATIONS === 'true';
 
-// Minimal console formatter: HH:mm:ss level message (meta trimmed)
+// Notification writer (direct sqlite, avoid core db circular deps)
+let notifDb = null;
+let notifDbReady = false;
+let notifDbFailed = false;
+const dbPath = join(__dirname, '../../', process.env.DATABASE_PATH || './database/simplifyed.db');
+
+function ensureNotifDb() {
+  if (notifDbFailed || notifDbReady) return notifDbReady;
+  try {
+    notifDb = new sqlite3.Database(dbPath);
+    // Make sure table exists (no migration dependency here)
+    notifDb.run(
+      `CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        body TEXT,
+        severity TEXT DEFAULT 'info',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        read INTEGER DEFAULT 0
+      )`
+    );
+    notifDbReady = true;
+    return true;
+  } catch (err) {
+    notifDbFailed = true;
+    // Avoid recursion into logger; emit to stderr once
+    console.error('LOG_NOTIFICATIONS init failed:', err?.message || err);
+    return false;
+  }
+}
+
+function pushNotification(level, message, meta = {}) {
+  if (!logNotifications) return;
+  if (!ensureNotifDb()) return;
+  try {
+    const severity = level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'debug';
+    const context = sanitizeMeta(meta);
+    const bodyParts = [];
+    Object.entries(context).forEach(([k, v]) => {
+      if (v !== undefined && v !== null) bodyParts.push(`${k}=${v}`);
+    });
+    const body = bodyParts.length ? `${message} | ${bodyParts.join(' ')}` : message;
+    notifDb.run(
+      `INSERT INTO notifications (title, body, severity) VALUES (?, ?, ?)` ,
+      [`[${severity}]`, body.slice(0, 500), severity],
+      () => {}
+    );
+  } catch (err) {
+    // Avoid recursion into logger; emit once and disable further attempts
+    notifDbFailed = true;
+    console.error('LOG_NOTIFICATIONS insert failed:', err?.message || err);
+  }
+}
+
+// Structured, high-signal formatter (key=value, stable field order)
+const allowedMetaKeys = new Set([
+  'trace_id', 'user_id', 'instance_id', 'instance_name', 'order_id', 'event', 'status',
+  'duration_ms', 'endpoint', 'method', 'path', 'symbol', 'exchange',
+  'error_code', 'reason', 'count', 'size', 'host', 'port', 'chat_id'
+]);
+
+const kvFormatter = winston.format.printf(({ timestamp, level, message, ...rest }) => {
+  const meta = rest[Symbol.for('splat')]?.[0] || {};
+  const fields = [];
+  fields.push(`ts=${timestamp}`);
+  fields.push(`lvl=${level.toUpperCase()}`);
+  if (meta.service || rest.service) fields.push(`svc=${meta.service || rest.service}`);
+  // Append meta in deterministic order, only allowed keys to avoid bloat
+  const keys = Object.keys(meta).filter((k) => allowedMetaKeys.has(k));
+  keys.sort();
+  for (const k of keys) {
+    const v = meta[k];
+    if (v === undefined || v === null) continue;
+    fields.push(`${k}=${v}`);
+  }
+  // Message last for grep-friendliness
+  if (message) fields.push(`msg="${String(message)}"`);
+  return fields.join(' ');
+});
+
 const consoleFormat = winston.format.combine(
-  winston.format.colorize(),
-  winston.format.timestamp({ format: 'HH:mm:ss' }),
-  winston.format.printf(({ timestamp, level, message }) => `${timestamp} [${level}] ${message}`)
+  winston.format.timestamp({ format: 'YYYY-MM-DDTHH:mm:ss.SSSZ' }),
+  kvFormatter
 );
 
-// Compact JSON for files (no stacks to keep logs short)
 const fileFormat = winston.format.combine(
   winston.format.timestamp(),
-  winston.format.printf(({ timestamp, level, message }) =>
-    JSON.stringify({ t: timestamp, lvl: level, msg: message })
-  )
+  kvFormatter
 );
 
 /**
@@ -83,11 +160,10 @@ function scheduleDailyTruncate() {
 }
 scheduleDailyTruncate();
 
-const compactMeta = (meta = {}) => {
-  // Only keep a few keys to avoid noisy logs
-  const allow = ['context', 'id', 'instanceId', 'status', 'duration'];
+const sanitizeMeta = (meta = {}) => {
+  // Keep only primitive values; drop objects/arrays to prevent noisy logs
   return Object.fromEntries(
-    Object.entries(meta).filter(([key]) => allow.includes(key))
+    Object.entries(meta).filter(([, v]) => ['string', 'number', 'boolean'].includes(typeof v))
   );
 };
 
@@ -99,27 +175,32 @@ export const log = {
    * Log info message
    */
   info: (message, meta = {}) => {
-    logger.info(message, compactMeta(meta));
+    const clean = sanitizeMeta(meta);
+    logger.info(message, clean);
+    // Do not push info to notifications to avoid noise
   },
 
   /**
    * Log error message
    */
   error: (message, error = null, meta = {}) => {
-    const payload = compactMeta(meta);
+    const payload = sanitizeMeta(meta);
     if (error instanceof Error) {
       payload.error = { message: error.message };
     } else if (error) {
       payload.error = error;
     }
     logger.error(message, payload);
+    pushNotification('error', message, payload);
   },
 
   /**
    * Log warning message
    */
   warn: (message, meta = {}) => {
-    logger.warn(message, compactMeta(meta));
+    const payload = sanitizeMeta(meta);
+    logger.warn(message, payload);
+    pushNotification('warn', message, payload);
   },
 
   /**
@@ -127,7 +208,9 @@ export const log = {
    */
   debug: (message, meta = {}) => {
     if (enableDebug) {
-      logger.debug(message, meta);
+      const payload = sanitizeMeta(meta);
+      logger.debug(message, payload);
+      pushNotification('debug', message, payload);
     }
   },
 
@@ -135,12 +218,13 @@ export const log = {
    * Log HTTP request
    */
   http: (req, res, duration) => {
-    logger.info('HTTP', {
+    logger.info('http_request', sanitizeMeta({
       method: req.method,
-      url: req.url,
+      path: req.url,
       status: res.statusCode,
-      duration: `${duration}ms`,
-    });
+      duration_ms: duration,
+      trace_id: req.headers['x-request-id'],
+    }));
   },
 
   /**
@@ -148,7 +232,7 @@ export const log = {
    */
   query: (sql, params, duration) => {
     if (enableDebug) {
-      logger.debug('DB', { sql, params, duration: `${duration}ms` });
+      logger.debug('db_query', sanitizeMeta({ duration_ms: duration, sql: sql?.slice(0, 200), param_count: Array.isArray(params) ? params.length : 0 }));
     }
   },
 
@@ -157,12 +241,7 @@ export const log = {
    */
   openalgo: (method, endpoint, duration, success) => {
     const level = success ? 'info' : 'error';
-    logger[level]('OpenAlgo', {
-      method,
-      endpoint,
-      duration: `${duration}ms`,
-      success,
-    });
+    logger[level]('openalgo_call', sanitizeMeta({ method, endpoint, duration_ms: duration, status: success ? 'success' : 'failure' }));
   },
 };
 

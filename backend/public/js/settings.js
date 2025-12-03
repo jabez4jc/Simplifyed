@@ -5,7 +5,6 @@
 
 class SettingsHandler {
   constructor() {
-    this.telegramStatus = null;
     this.categories = [];
     this.settings = {};
     this.activeCategory = 'server';
@@ -130,13 +129,11 @@ class SettingsHandler {
       const canViewAppSettings = this.canViewApplicationSettings();
 
       // Fetch the rest, but only pull settings/categories if allowed
-      const [telegramStatus, categories, allSettings] = await Promise.all([
-        this.fetchTelegramStatus(),
+      const [categories, allSettings] = await Promise.all([
         canViewAppSettings ? this.fetchCategories() : Promise.resolve([]),
         canViewAppSettings ? this.fetchAllSettings() : Promise.resolve({})
       ]);
 
-      this.telegramStatus = telegramStatus;
       this.categories = categories;
       this.settings = allSettings;
       // Load instance health test config
@@ -228,16 +225,6 @@ class SettingsHandler {
                 ${this.renderWatchlistCsvSection()}
               </div>
             </div>` : ''}
-
-            <!-- Telegram Notifications Section -->
-            <div class="card">
-              <div class="card-header">
-                <h3 class="card-title">📱 Telegram Notifications</h3>
-              </div>
-              <div class="p-6">
-                ${this.renderTelegramSection()}
-              </div>
-            </div>
 
             <!-- Monitor Status Section -->
             <div class="card">
@@ -1181,88 +1168,6 @@ class SettingsHandler {
   }
 
   /**
-   * Render Telegram section
-   */
-  renderTelegramSection() {
-    const isLinked = this.telegramStatus?.is_linked;
-    const linkedAt = this.telegramStatus?.linked_at;
-    const username = this.telegramStatus?.username;
-
-    if (isLinked) {
-      return `
-        <div class="space-y-4">
-          <div class="flex items-center justify-between p-4 bg-success-50 rounded-lg border border-success-200">
-            <div>
-              <p class="font-medium text-success-700">✅ Telegram Connected</p>
-              <p class="text-sm text-success-600 mt-1">
-                @${Utils.escapeHTML(username || 'Unknown')} • Linked ${this.formatDate(linkedAt)}
-              </p>
-            </div>
-            <button class="btn btn-error btn-sm" onclick="settings.unlinkTelegram()">
-              Unlink
-            </button>
-          </div>
-
-          <div class="space-y-3">
-            <h4 class="font-semibold text-neutral-700">Notification Preferences</h4>
-            <p class="text-sm text-neutral-600">
-              You'll receive Telegram alerts when targets and stop losses are hit in your analyzer mode instances.
-            </p>
-          </div>
-        </div>
-      `;
-    } else {
-      return `
-        <div class="space-y-4">
-          <div class="flex items-center justify-between p-4 bg-neutral-50 rounded-lg border border-neutral-200">
-            <div>
-              <p class="font-medium text-neutral-700">📱 Telegram Not Connected</p>
-              <p class="text-sm text-neutral-600 mt-1">
-                Link your Telegram account to receive instant trade alerts
-              </p>
-            </div>
-            <button class="btn btn-primary" onclick="settings.linkTelegram()">
-              Link Telegram
-            </button>
-          </div>
-
-          <div id="telegram-linking-instructions" class="hidden space-y-3">
-            <div class="p-4 bg-primary-50 rounded-lg border border-primary-200">
-              <h4 class="font-semibold text-primary-900 mb-3">📋 Setup Instructions</h4>
-              <ol class="list-decimal list-inside space-y-2 text-sm text-primary-800">
-                <li>Copy the command below</li>
-                <li>Open Telegram and search for <strong id="bot-username">...</strong></li>
-                <li>Send the copied command to the bot</li>
-                <li>Wait for confirmation (page will auto-refresh)</li>
-              </ol>
-            </div>
-
-            <div class="p-4 bg-neutral-100 rounded-lg border border-neutral-300">
-              <div class="flex items-center justify-between">
-                <code id="telegram-link-command" class="text-sm font-mono text-neutral-800">
-                  Loading...
-                </code>
-                <button class="btn btn-secondary btn-sm" onclick="settings.copyLinkCommand()">
-                  📋 Copy
-                </button>
-              </div>
-            </div>
-
-            <div class="flex items-center gap-2">
-              <button class="btn btn-primary" onclick="settings.openTelegramBot()">
-                Open Telegram Bot
-              </button>
-              <button class="btn btn-secondary" onclick="settings.checkLinkStatus()">
-                Check Status
-              </button>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-  }
-
-  /**
    * Render monitor status section
    */
   async renderMonitorStatusSection() {
@@ -1310,107 +1215,6 @@ class SettingsHandler {
   /**
    * Fetch Telegram link status
    */
-  async fetchTelegramStatus() {
-    try {
-      const response = await this.authFetch('/api/v1/telegram/status');
-      if (!response.ok) throw new Error('Failed to fetch Telegram status');
-      const data = await response.json();
-      return data.data;
-    } catch (error) {
-      console.error('[Settings] Error fetching Telegram status:', error);
-      return { is_linked: false };
-    }
-  }
-
-  /**
-   * Link Telegram account
-   */
-  async linkTelegram() {
-    try {
-      // Generate linking code
-      const response = await this.authFetch('/api/v1/telegram/link', { method: 'POST' });
-      if (!response.ok) throw new Error('Failed to generate linking code');
-
-      const data = await response.json();
-      const { linking_code, bot_username, link_url } = data.data;
-
-      // Show instructions
-      const instructionsDiv = document.getElementById('telegram-linking-instructions');
-      instructionsDiv.classList.remove('hidden');
-
-      // Update command
-      document.getElementById('telegram-link-command').textContent = `/start ${linking_code}`;
-      document.getElementById('bot-username').textContent = `@${bot_username}`;
-
-      // Store for later use
-      this.linkingData = { linking_code, bot_username, link_url };
-
-      Utils.showToast('Linking code generated! Follow the instructions above.', 'success');
-    } catch (error) {
-      console.error('[Settings] Error linking Telegram:', error);
-      Utils.showToast(`Failed to link: ${error.message}`, 'error');
-    }
-  }
-
-  /**
-   * Copy link command
-   */
-  copyLinkCommand() {
-    const command = document.getElementById('telegram-link-command').textContent;
-    navigator.clipboard.writeText(command);
-    Utils.showToast('Command copied to clipboard!', 'success');
-  }
-
-  /**
-   * Open Telegram bot
-   */
-  openTelegramBot() {
-    if (this.linkingData?.link_url) {
-      window.open(this.linkingData.link_url, '_blank');
-    }
-  }
-
-  /**
-   * Check link status
-   */
-  async checkLinkStatus() {
-    try {
-      this.telegramStatus = await this.fetchTelegramStatus();
-
-      if (this.telegramStatus.is_linked) {
-        Utils.showToast('✅ Telegram linked successfully!', 'success');
-        // Refresh view
-        await this.renderSettingsView();
-      } else {
-        Utils.showToast('Not linked yet. Please send the command to the bot.', 'info');
-      }
-    } catch (error) {
-      Utils.showToast(`Error checking status: ${error.message}`, 'error');
-    }
-  }
-
-  /**
-   * Unlink Telegram account
-   */
-  async unlinkTelegram() {
-    if (!confirm('Are you sure you want to unlink your Telegram account?')) {
-      return;
-    }
-
-    try {
-      const response = await this.authFetch('/api/v1/telegram/unlink', { method: 'DELETE' });
-      if (!response.ok) throw new Error('Failed to unlink');
-
-      Utils.showToast('Telegram unlinked successfully', 'success');
-
-      // Refresh view
-      await this.renderSettingsView();
-    } catch (error) {
-      console.error('[Settings] Error unlinking Telegram:', error);
-      Utils.showToast(`Failed to unlink: ${error.message}`, 'error');
-    }
-  }
-
   /**
    * Format date for display
    */

@@ -9,6 +9,7 @@ import openalgoClient from '../integrations/openalgo/client.js';
 import orderPlacementService from './order-placement.service.js';
 import orderPayloadFactory from './order-payload.factory.js';
 import orderRepository from './order-repository.js';
+import telegramService from './telegram.service.js';
 import {
   NotFoundError,
   ValidationError,
@@ -128,6 +129,14 @@ class OrderService {
         order_id: orderId,
         symbol: normalized.symbol,
       });
+
+      // Fire-and-forget Telegram notification for manual/direct orders
+      telegramService
+        .sendOrderNotification(order, {
+          type: 'ORDER',
+          instance_name: instance.name,
+        })
+        .catch((err) => log.warn('telegram_notify_failed', { error: err.message }));
 
       return order;
     } catch (error) {
@@ -498,6 +507,7 @@ class OrderService {
 
       log.info('Order status synced', {
         instance_id: instanceId,
+        instance_name: instance?.name,
         updated_count: updatedCount,
       });
 
@@ -507,7 +517,7 @@ class OrderService {
       };
     } catch (error) {
       if (error instanceof NotFoundError) throw error;
-      log.error('Failed to sync order status', error, { instanceId });
+      log.error('Failed to sync order status', error, { instance_id: instanceId, instance_name: instance?.name });
       throw error;
     }
   }

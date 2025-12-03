@@ -83,10 +83,13 @@ async function updateInstanceEndpoint(instance, endpoint, ok, reason = null) {
 
 async function testQuotes(instance, tests) {
   try {
+    // Fetch in bulk to reduce calls; re-use existing getQuotes helper
+    const res = await openalgoClient.getQuotes(instance, tests, { returnErrors: true });
+    const quotes = res?.quotes || [];
     for (const t of tests) {
-      const res = await openalgoClient.getQuote(instance, t.symbol, t.exchange);
-      const ltp = Number(res?.ltp || res?.last_price || 0);
-      const close = Number(res?.close || 0);
+      const q = quotes.find((q) => q.symbol === t.symbol && q.exchange === t.exchange);
+      const ltp = Number(q?.ltp || q?.last_price || 0);
+      const close = Number(q?.close || 0);
       if (!(ltp > 0 || close > 0)) throw new Error(`Zero quote for ${t.symbol}:${t.exchange}`);
     }
     return { ok: true };

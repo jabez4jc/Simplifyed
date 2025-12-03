@@ -199,8 +199,8 @@ async function enrichWithQuotes(rows, exchangeLabel) {
     });
 
     return rows.map((r) => {
-      const ceKey = r.ce?.symbol ? `${r.ce.symbol}|${exchangeLabel}` : null;
-      const peKey = r.pe?.symbol ? `${r.pe.symbol}|${exchangeLabel}` : null;
+      const ceKey = r.ce?.symbol ? `${r.ce.symbol}|${quoteExchange}` : null;
+      const peKey = r.pe?.symbol ? `${r.pe.symbol}|${quoteExchange}` : null;
       const ceQuote = ceKey ? map.get(ceKey) : null;
       const peQuote = peKey ? map.get(peKey) : null;
       return {

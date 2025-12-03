@@ -20,6 +20,7 @@ import tradeRoutes from './trades.js';
 import rbacRoutes from './rbac.js';
 import notificationRoutes from './notifications.js';
 import healthCheckRoutes from './health-check.js';
+import telegramRoutes from './telegram.js';
 import { getAppReadyStatus } from '../../middleware/instruments-refresh.middleware.js';
 import { config } from '../../core/config.js';
 
@@ -35,7 +36,7 @@ router.use('/instruments', instrumentsRoutes);
 router.use('/polling', pollingRoutes);
 router.use('/quickorders', quickOrderRoutes);
 router.use('/dashboard', dashboardRoutes);
-// Telegram routes disabled temporarily
+router.use('/telegram', telegramRoutes);
 router.use('/monitor', monitorRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/option-chain', optionChainRoutes);
