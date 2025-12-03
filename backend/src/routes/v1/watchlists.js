@@ -344,10 +344,12 @@ router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res,
     const symCols = (await db.all("PRAGMA table_info('watchlist_symbols')")).map((c) => c.name);
     const mapCols = (await db.all("PRAGMA table_info('watchlist_instances')")).map((c) => c.name);
 
-    const upsertTable = async (table, cols, keySelector, rows) => {
+    const upsertTable = async (table, cols, keySelector, rows, headers) => {
+      const headerIndex = new Map(headers.map((h, i) => [h, i]));
       for (const row of rows) {
         const payload = {};
-        cols.forEach((col, idx) => {
+        cols.forEach((col) => {
+          const idx = headerIndex.get(col);
           const val = row[idx];
           if (val === undefined || val === null || val === '') return;
           const lowered = String(val).toLowerCase();
@@ -384,28 +386,33 @@ router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res,
         const csv = section.replace(/^WATCHLISTS\s*/,'');
         const parsed = parser.parse(csv.trim());
         if (parsed.headers?.length) {
-          await upsertTable('watchlists', parsed.headers.filter((h) => wlCols.includes(h)), (p) => ({ name: p.name }), parsed.rows);
+          const cols = parsed.headers.filter((h) => wlCols.includes(h));
+          await upsertTable('watchlists', cols, (p) => ({ name: p.name }), parsed.rows, parsed.headers);
         }
       } else if (section.startsWith('WATCHLIST_SYMBOLS')) {
         const csv = section.replace(/^WATCHLIST_SYMBOLS\s*/,'');
         const parsed = parser.parse(csv.trim());
         if (parsed.headers?.length) {
+          const cols = parsed.headers.filter((h) => symCols.includes(h));
           await upsertTable(
             'watchlist_symbols',
-            parsed.headers.filter((h) => symCols.includes(h)),
+            cols,
             (p) => ({ watchlist_id: p.watchlist_id, symbol: p.symbol, exchange: p.exchange }),
-            parsed.rows
+            parsed.rows,
+            parsed.headers
           );
         }
       } else if (section.startsWith('WATCHLIST_INSTANCES')) {
         const csv = section.replace(/^WATCHLIST_INSTANCES\s*/,'');
         const parsed = parser.parse(csv.trim());
         if (parsed.headers?.length) {
+          const cols = parsed.headers.filter((h) => mapCols.includes(h));
           await upsertTable(
             'watchlist_instances',
-            parsed.headers.filter((h) => mapCols.includes(h)),
+            cols,
             (p) => ({ watchlist_id: p.watchlist_id, instance_id: p.instance_id }),
-            parsed.rows
+            parsed.rows,
+            parsed.headers
           );
         }
       }
