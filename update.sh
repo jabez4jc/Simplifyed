@@ -127,6 +127,12 @@ chown -R "$APP_USER":"$APP_USER" \
   "$INSTALL_DIR/backend/data" \
   "$INSTALL_DIR/backend/public"
 
+# Ensure package-lock and workspace files are writable by app user
+chown "$APP_USER":"$APP_USER" \
+  "$INSTALL_DIR/backend/package-lock.json" \
+  "$INSTALL_DIR/backend/package.json" \
+  "$INSTALL_DIR/backend"
+
 # Check .env vs .env.example for new keys
 ENV_FILE="$INSTALL_DIR/backend/.env"
 ENV_EXAMPLE="$INSTALL_DIR/backend/.env.example"
