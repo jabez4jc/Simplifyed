@@ -9,6 +9,7 @@ import db from '../core/database.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import instrumentsService from './instruments.service.js';
 import { NotFoundError } from '../core/errors.js';
+import { toISTDate } from '../utils/time.js';
 
 class ExpiryManagementService {
   constructor() {
@@ -52,7 +53,7 @@ class ExpiryManagementService {
    */
   async _getNearestExpiryFromCache(underlying, exchange) {
     try {
-      const now = new Date();
+      const now = toISTDate();
       const todayStr = now.toISOString().split('T')[0];
 
       const result = await db.get(
@@ -231,7 +232,7 @@ class ExpiryManagementService {
    * @private
    */
   _formatDate(date) {
-    return date.toISOString().split('T')[0];
+    return toISTDate(date).toISOString().split('T')[0];
   }
 
   /**
@@ -425,7 +426,11 @@ class ExpiryManagementService {
     const params = [underlying, exchange];
 
     if (futureOnly) {
-      const todayStr = new Date().toISOString().split('T')[0];
+      const todayStr = (() => {
+        const d = toISTDate();
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      })();
       query += ' AND expiry_date >= ?';
       params.push(todayStr);
     }

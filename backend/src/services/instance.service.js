@@ -21,6 +21,7 @@ import {
   parseIntSafe,
 } from '../utils/sanitizers.js';
 import settingsService from './settings.service.js';
+import { toISTDate, toISTISOString } from '../utils/time.js';
 
 const INSTANCE_REQUEST_DELAY_MS = 300;
 const instanceRequestTimestamps = new Map();
@@ -499,7 +500,7 @@ class InstanceService {
 
         if (!instance.is_analyzer_mode) {
           lastLiveTotalPnl = totalPnl;
-          lastLiveTotalPnlAt = new Date().toISOString();
+          lastLiveTotalPnlAt = toISTISOString();
         }
 
         if (!instance.is_analyzer_mode && currentSession) {
@@ -868,8 +869,7 @@ class InstanceService {
   }
 
   _nowInIST() {
-    const istString = new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
-    return new Date(istString);
+    return toISTDate();
   }
 
   _formatDateIST(date) {

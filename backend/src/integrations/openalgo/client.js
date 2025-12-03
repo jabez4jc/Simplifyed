@@ -8,6 +8,7 @@ import { EventEmitter } from 'events';
 import { log } from '../../core/logger.js';
 import { OpenAlgoError } from '../../core/errors.js';
 import config from '../../core/config.js';
+import { toISTISOString } from '../../utils/time.js';
 import { maskApiKey } from '../../utils/sanitizers.js';
 import settingsService from '../../services/settings.service.js';
 import { isBlackout } from '../../services/instance-health.service.js';
@@ -297,7 +298,7 @@ class OpenAlgoClient extends EventEmitter {
           retriesRemaining: maxDnsRetries - health.dnsRetryCount,
           reason: isDnsError ? 'dns_error' : 'html_response',
           lastError: health.lastError,
-          resumeAt: new Date(health.cooldownUntil).toISOString(),
+          resumeAt: toISTISOString(health.cooldownUntil),
         });
       }
 
@@ -320,7 +321,7 @@ class OpenAlgoClient extends EventEmitter {
         cooldownMs: calculatedCooldown,
         cooldownCount: health.cooldownCount,
         lastError: health.lastError,
-        resumeAt: new Date(health.cooldownUntil).toISOString(),
+        resumeAt: toISTISOString(health.cooldownUntil),
       });
     }
 
@@ -1045,7 +1046,7 @@ class OpenAlgoClient extends EventEmitter {
       log.error('Error limits exceeded, entering backoff', {
         instKey,
         endpoint,
-        backoffUntil: new Date(errState.backoffUntil).toISOString(),
+        backoffUntil: toISTISOString(errState.backoffUntil),
         count404: errState.count404,
         countInvalid: errState.countInvalid,
       });

@@ -3,6 +3,9 @@
  * Complete rebuild with clean architecture
  */
 
+// Force server timezone to IST for consistent timestamps across the app
+process.env.TZ = 'Asia/Kolkata';
+
 import express from 'express';
 import helmet from 'helmet';
 import cors from 'cors';

@@ -22,6 +22,7 @@ import notificationRoutes from './notifications.js';
 import healthCheckRoutes from './health-check.js';
 import telegramRoutes from './telegram.js';
 import { getAppReadyStatus } from '../../middleware/instruments-refresh.middleware.js';
+import { toISTISOString } from '../../utils/time.js';
 import { config } from '../../core/config.js';
 
 const router = express.Router();
@@ -60,7 +61,7 @@ router.get('/public-config', (req, res) => {
 router.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    timestamp: new Date().toISOString(),
+    timestamp: toISTISOString(),
     version: '2.0.0',
   });
 });
@@ -80,7 +81,7 @@ router.get('/ready', (req, res) => {
     refreshInProgress: status.refreshInProgress,
     error: status.error,
     lastRefreshDate: status.lastRefreshDate,
-    timestamp: new Date().toISOString(),
+    timestamp: toISTISOString(),
     message: status.ready
       ? 'App is ready for trading'
       : status.refreshInProgress

@@ -11,6 +11,8 @@ import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { ValidationError } from '../core/errors.js';
 import { config } from '../core/config.js';
+import { toISTDate } from '../utils/time.js';
+import { toISTISOString } from '../utils/time.js';
 
 const MONTH_ABBR_TO_NUMBER = {
   JAN: '01', FEB: '02', MAR: '03', APR: '04',
@@ -170,8 +172,8 @@ class InstrumentsService {
       const logResult = await db.run(
         `INSERT INTO instruments_refresh_log (
           exchange, status, refresh_started_at
-        ) VALUES (?, 'in_progress', CURRENT_TIMESTAMP)`,
-        [exchange || null]
+        ) VALUES (?, 'in_progress', ?)`,
+        [exchange || null, toISTISOString()]
       );
 
       refreshLogId = logResult.lastID;
@@ -298,9 +300,9 @@ class InstrumentsService {
         `UPDATE instruments_refresh_log
          SET status = 'completed',
              instrument_count = ?,
-             refresh_completed_at = CURRENT_TIMESTAMP
+             refresh_completed_at = ?
          WHERE id = ?`,
-        [instruments.length, refreshLogId]
+        [instruments.length, toISTISOString(), refreshLogId]
       );
 
       log.info('Instruments refresh completed successfully', {
@@ -688,7 +690,7 @@ class InstrumentsService {
         by_exchange: byExchange,
         by_type: byType,
         last_refresh: lastRefresh ? {
-          completed_at: lastRefresh.refresh_completed_at,
+          completed_at: toISTISOString(lastRefresh.refresh_completed_at),
           count: lastRefresh.instrument_count,
           exchange: lastRefresh.exchange || 'ALL'
         } : null
@@ -724,7 +726,11 @@ class InstrumentsService {
 
   _buildExpiryDisplayList(rows = []) {
     const map = new Map();
-    const todayIso = new Date().toISOString().split('T')[0];
+    const todayIso = (() => {
+      const d = toISTDate();
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    })();
 
     for (const row of rows) {
       if (!row || !row.expiry) continue;
@@ -998,8 +1004,8 @@ class InstrumentsService {
       await db.run(`
         INSERT INTO instruments_refresh_log (
           exchange, status, instrument_count, refresh_started_at, refresh_completed_at
-        ) VALUES ('CSV_UPLOAD', 'completed', ?, datetime('now'), datetime('now'))
-      `, [finalCount]);
+        ) VALUES ('CSV_UPLOAD', 'completed', ?, ?, ?)
+      `, [finalCount, toISTISOString(), toISTISOString()]);
 
       const result = {
         total: totalRecords,
@@ -1335,8 +1341,8 @@ class InstrumentsService {
       await db.run(`
         INSERT INTO instruments_refresh_log (
           exchange, status, instrument_count, refresh_started_at, refresh_completed_at
-        ) VALUES ('INSTANCE_FETCH', 'completed', ?, datetime('now'), datetime('now'))
-      `, [finalCount]);
+        ) VALUES ('INSTANCE_FETCH', 'completed', ?, ?, ?)
+      `, [finalCount, toISTISOString(), toISTISOString()]);
 
       const result = {
         totalInstruments,

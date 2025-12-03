@@ -3,6 +3,8 @@
  * Shared helpers for normalizing trade responses from OpenAlgo.
  */
 
+import { toISTISOString } from './time.js';
+
 export function parseTradeTimestamp(raw) {
   if (!raw) return null;
   const value = String(raw).trim();
@@ -57,7 +59,7 @@ export function normalizeTradebookEntry(trade = {}) {
     average_price: priceValue,
     trade_value: tradeValue,
     timestamp: timestampRaw,
-    timestamp_iso: parsedTimestamp ? parsedTimestamp.toISOString() : null,
+    timestamp_iso: parsedTimestamp ? toISTISOString(parsedTimestamp) : null,
     timestamp_epoch: timestampEpoch,
     metadata: trade,
   };

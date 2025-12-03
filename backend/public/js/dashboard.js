@@ -52,7 +52,7 @@ class DashboardApp {
     try {
       const res = await api.getNotifications();
       const rows = res.data || [];
-      const fmtDate = (ts) => new Date(ts).toLocaleString();
+      const fmtDate = (ts) => Utils.formatDateTime(ts, true);
       const items = rows.length
         ? rows
             .map(

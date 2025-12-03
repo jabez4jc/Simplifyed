@@ -61,11 +61,14 @@ const Utils = {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
+      timeZone: 'Asia/Kolkata',
     };
 
     if (includeTime) {
       options.hour = '2-digit';
       options.minute = '2-digit';
+      options.second = '2-digit';
+      options.hour12 = false;
     }
 
     return new Intl.DateTimeFormat('en-IN', options).format(date);

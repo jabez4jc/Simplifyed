@@ -4,6 +4,7 @@ import settingsService from './settings.service.js';
 import instanceService from './instance.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import db from '../core/database.js';
+import { toISTDate, toISTISOString } from '../utils/time.js';
 
 async function createNotification(title, body, severity = 'warn') {
   try {
@@ -33,9 +34,7 @@ const DEFAULT_TESTS = {
 };
 
 function getIstDate() {
-  const now = new Date();
-  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
-  return new Date(utc + 5.5 * 3600000);
+  return toISTDate();
 }
 
 function isBlackout() {
@@ -60,7 +59,7 @@ async function persistTestConfig(cfg) {
 }
 
 async function updateInstanceEndpoint(instance, endpoint, ok, reason = null) {
-  const now = new Date().toISOString();
+  const now = toISTISOString();
   const fields = {
     quotes: ['quotes_ok', 'quotes_checked_at', 'quotes_failure_reason'],
     multiquotes: ['multiquotes_ok', 'multiquotes_checked_at', 'multiquotes_failure_reason'],

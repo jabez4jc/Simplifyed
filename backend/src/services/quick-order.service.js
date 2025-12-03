@@ -20,6 +20,7 @@ import telegramService from './telegram.service.js';
 import { ValidationError, NotFoundError } from '../core/errors.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
 import instrumentsService from './instruments.service.js';
+import { toISTDate, toISTISOString } from '../utils/time.js';
 
 class QuickOrderService {
   constructor() {
@@ -2361,9 +2362,9 @@ class QuickOrderService {
   async getQuickOrderStats(filters = {}) {
     try {
       const days = filters.days || 7;
-      const sinceDate = new Date();
+      const sinceDate = toISTDate();
       sinceDate.setDate(sinceDate.getDate() - days);
-      const sinceDateStr = sinceDate.toISOString();
+      const sinceDateStr = toISTISOString(sinceDate);
 
       let query = `
         SELECT
@@ -2841,7 +2842,11 @@ class QuickOrderService {
       );
 
     // Never use past expiries: if user-supplied expiry is stale, fall back to nearest future
-    const todayIso = new Date().toISOString().split('T')[0];
+    const todayIso = (() => {
+      const d = toISTDate();
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    })();
     if (effectiveExpiry && effectiveExpiry < todayIso) {
       effectiveExpiry = await expiryManagementService.getNearestExpiry(
         underlying,
@@ -2927,7 +2932,7 @@ class QuickOrderService {
       expiry: effectiveExpiry,
       strikeOffset,
       derivativeExchange,
-      updatedAt: new Date().toISOString(),
+      updatedAt: toISTISOString(),
       atmStrike,
       underlying: {
         symbol: underlying,
@@ -2980,7 +2985,11 @@ class QuickOrderService {
     const marketDataInstance = await marketDataInstanceService.getMarketDataInstance();
 
     // Prevent using past expiries; if stale, switch to nearest future
-    const todayIso = new Date().toISOString().split('T')[0];
+    const todayIso = (() => {
+      const d = toISTDate();
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    })();
     const chosenExpiry = (normalizedExpiry && normalizedExpiry < todayIso)
       ? await expiryManagementService.getNearestExpiry(underlying, derivativeExchange, marketDataInstance, true)
       : normalizedExpiry;
@@ -3019,7 +3028,7 @@ class QuickOrderService {
             fetchedAt,
           }
         : null,
-      updatedAt: new Date().toISOString(),
+      updatedAt: toISTISOString(),
     };
   }
 

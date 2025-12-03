@@ -8,6 +8,7 @@ import multer from 'multer';
 import instrumentsService, { SUPPORTED_EXCHANGES } from '../../services/instruments.service.js';
 import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
+import { toISTISOString } from '../../utils/time.js';
 import { sanitizeString } from '../../utils/sanitizers.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';
 
@@ -372,7 +373,7 @@ router.post('/fetch-from-instance', requirePermission('settings.instruments.refr
     // Mark fetch as active with status tracking
     const fetchStatus = {
       status: 'starting',
-      startedAt: new Date().toISOString(),
+      startedAt: toISTISOString(),
       exchanges: SUPPORTED_EXCHANGES,
       currentExchange: null,
       completedExchanges: [],
