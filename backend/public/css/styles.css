@@ -3004,3 +3004,623 @@ body {
   flex-direction: column;
   gap: var(--space-6);
 }
+
+/* ========== Watchlist Page Redesign - Compact Layout ========== */
+
+/* Page Container */
+.watchlists-page-compact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background-color: var(--color-neutral-50);
+}
+
+/* Compact Toolbar */
+.watchlists-compact-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: white;
+  border: 1px solid var(--color-neutral-200);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.watchlists-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.watchlists-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-xl);
+  font-weight: 600;
+  color: var(--color-neutral-900);
+  margin: 0;
+}
+
+.watchlists-title svg {
+  width: 24px;
+  height: 24px;
+  stroke: var(--color-primary, #6366F1);
+  stroke-width: 2;
+}
+
+.watchlists-count {
+  padding: var(--space-1) var(--space-2);
+  background-color: var(--color-neutral-100);
+  color: var(--color-neutral-600);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  border-radius: 999px;
+}
+
+.watchlists-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Compact Button Styles */
+.btn-icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-neutral-200);
+  background: white;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-icon svg {
+  width: 18px;
+  height: 18px;
+  stroke: var(--color-neutral-600);
+  stroke-width: 2;
+}
+
+.btn-icon:hover {
+  background-color: var(--color-neutral-50);
+  border-color: var(--color-neutral-300);
+}
+
+.btn-icon.active {
+  background-color: var(--color-primary, #6366F1);
+  border-color: var(--color-primary, #6366F1);
+}
+
+.btn-icon.active svg {
+  stroke: white;
+}
+
+.btn-compact {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  border-radius: var(--radius-md);
+}
+
+.btn-compact svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2;
+}
+
+/* Collapsible Positions Panel */
+.positions-panel-compact {
+  background: white;
+  border: 1px solid var(--color-neutral-200);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition: all 0.3s ease;
+}
+
+.positions-panel-compact.collapsed .positions-panel-content {
+  display: none;
+}
+
+.positions-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background-color: var(--color-neutral-50);
+  border-bottom: 1px solid var(--color-neutral-200);
+  cursor: pointer;
+}
+
+.positions-panel-compact.collapsed .positions-panel-header {
+  border-bottom: none;
+}
+
+.positions-panel-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  color: var(--color-neutral-900);
+}
+
+.positions-panel-title svg {
+  width: 20px;
+  height: 20px;
+  stroke: var(--color-primary, #6366F1);
+  stroke-width: 2;
+}
+
+.positions-summary-compact {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.positions-panel-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.btn-icon.btn-sm {
+  width: 32px;
+  height: 32px;
+}
+
+.btn-icon.btn-sm svg {
+  width: 16px;
+  height: 16px;
+}
+
+.btn-icon.btn-danger:hover {
+  background-color: var(--color-loss-bg);
+  border-color: var(--color-loss);
+}
+
+.btn-icon.btn-danger svg {
+  stroke: var(--color-loss);
+}
+
+.positions-panel-content {
+  padding: 0;
+}
+
+/* Watchlists Grid Compact */
+.watchlists-grid-compact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Compact Watchlist Card */
+.watchlist-card-compact {
+  background: white;
+  border: 1px solid var(--color-neutral-200);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition: box-shadow 0.2s ease;
+}
+
+.watchlist-card-compact:hover {
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.watchlist-card-compact__header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background-color: var(--color-neutral-50);
+  border-bottom: 1px solid var(--color-neutral-200);
+}
+
+.watchlist-card-compact__toggle {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-neutral-200);
+  background: white;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.watchlist-card-compact__toggle svg {
+  width: 16px;
+  height: 16px;
+  transition: transform 0.2s ease;
+}
+
+.watchlist-card-compact__toggle.is-open svg {
+  transform: rotate(90deg);
+}
+
+.watchlist-card-compact__toggle:hover {
+  background-color: var(--color-neutral-100);
+  border-color: var(--color-neutral-300);
+}
+
+.watchlist-card-compact__info {
+  flex: 1;
+  min-width: 0;
+}
+
+.watchlist-card-compact__title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.watchlist-card-compact__name {
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  color: var(--color-neutral-900);
+  margin: 0;
+}
+
+.watchlist-card-compact__badge {
+  padding: 2px var(--space-2);
+  font-size: 0.625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  border-radius: 999px;
+  letter-spacing: 0.5px;
+}
+
+.watchlist-card-compact__badge.success {
+  background-color: var(--color-profit-bg);
+  color: var(--color-profit);
+}
+
+.watchlist-card-compact__badge.neutral {
+  background-color: var(--color-neutral-100);
+  color: var(--color-neutral-600);
+}
+
+.watchlist-card-compact__meta {
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-500);
+}
+
+.watchlist-card-compact__desc {
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-600);
+  margin: var(--space-1) 0 0;
+}
+
+.watchlist-card-compact__actions {
+  display: flex;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
+.btn-icon-compact {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-neutral-200);
+  background: white;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-icon-compact svg {
+  width: 16px;
+  height: 16px;
+  stroke: var(--color-neutral-600);
+  stroke-width: 2;
+}
+
+.btn-icon-compact:hover {
+  background-color: var(--color-neutral-50);
+  border-color: var(--color-neutral-300);
+}
+
+.btn-icon-compact.danger {
+  border-color: var(--color-loss);
+}
+
+.btn-icon-compact.danger svg {
+  stroke: var(--color-loss);
+}
+
+.btn-icon-compact.danger:hover {
+  background-color: var(--color-loss-bg);
+}
+
+.watchlist-card-compact__body {
+  display: none;
+  padding: var(--space-3);
+  background-color: white;
+}
+
+.watchlist-card-compact__body.is-visible {
+  display: block;
+}
+
+/* Feed Meta Compact */
+.watchlist-feed-meta-compact {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background-color: var(--color-info-bg);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* Table Compact */
+.watchlist-table-wrapper {
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-neutral-200);
+}
+
+.watchlist-table-compact {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+
+.watchlist-table-compact thead {
+  background-color: var(--color-neutral-100);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.watchlist-table-compact th {
+  padding: var(--space-2);
+  text-align: left;
+  font-weight: 600;
+  color: var(--color-neutral-600);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 2px solid var(--color-neutral-200);
+  white-space: nowrap;
+}
+
+.watchlist-table-compact td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-neutral-100);
+  color: var(--color-neutral-800);
+}
+
+/* Column Widths */
+.watchlist-table-compact .col-expand {
+  width: 36px;
+  text-align: center;
+}
+
+.watchlist-table-compact .col-symbol {
+  min-width: 120px;
+  font-weight: 600;
+}
+
+.watchlist-table-compact .col-exchange {
+  width: 60px;
+}
+
+.watchlist-table-compact .col-type {
+  width: 80px;
+}
+
+.watchlist-table-compact .col-expiry {
+  width: 90px;
+  font-size: 0.75rem;
+}
+
+.watchlist-table-compact .col-strike {
+  width: 70px;
+  text-align: right;
+}
+
+.watchlist-table-compact .col-lot {
+  width: 60px;
+  text-align: right;
+}
+
+.watchlist-table-compact .col-ltp {
+  width: 90px;
+  text-align: right;
+  font-weight: 600;
+}
+
+.watchlist-table-compact .col-change {
+  width: 80px;
+  text-align: right;
+}
+
+.watchlist-table-compact .col-volume {
+  width: 100px;
+  text-align: right;
+}
+
+.watchlist-table-compact .col-actions {
+  width: 80px;
+  text-align: center;
+}
+
+/* Row Hover */
+.symbol-row-compact {
+  transition: background-color 0.15s ease;
+}
+
+.symbol-row-compact:hover {
+  background-color: var(--color-neutral-50);
+}
+
+/* Expand Button */
+.btn-expand-compact {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-neutral-200);
+  background: white;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-expand-compact svg {
+  width: 14px;
+  height: 14px;
+  stroke: var(--color-neutral-600);
+  stroke-width: 2.5;
+}
+
+.btn-expand-compact:hover {
+  background-color: var(--color-neutral-100);
+  border-color: var(--color-neutral-300);
+}
+
+/* Badge Compact */
+.badge-compact {
+  padding: 2px var(--space-2);
+  font-size: 0.625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  border-radius: var(--radius-sm);
+  letter-spacing: 0.5px;
+  display: inline-block;
+}
+
+/* Actions Group */
+.actions-group {
+  display: flex;
+  gap: var(--space-1);
+  justify-content: center;
+}
+
+.btn-icon-table {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-neutral-200);
+  background: white;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-icon-table svg {
+  width: 14px;
+  height: 14px;
+  stroke: var(--color-neutral-600);
+  stroke-width: 2;
+}
+
+.btn-icon-table:hover {
+  background-color: var(--color-neutral-50);
+  border-color: var(--color-neutral-300);
+}
+
+.btn-icon-table.danger {
+  border-color: var(--color-loss);
+}
+
+.btn-icon-table.danger svg {
+  stroke: var(--color-loss);
+}
+
+.btn-icon-table.danger:hover {
+  background-color: var(--color-loss-bg);
+}
+
+/* Expansion Row */
+.expansion-row-compact {
+  background-color: var(--color-neutral-50);
+}
+
+.expansion-cell-compact {
+  padding: 0 !important;
+  border-bottom: 1px solid var(--color-neutral-200);
+}
+
+/* Responsive Design */
+@media (max-width: 1024px) {
+  .watchlists-page-compact {
+    padding: var(--space-3);
+  }
+
+  .watchlists-compact-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .watchlists-toolbar-left,
+  .watchlists-toolbar-right {
+    justify-content: space-between;
+  }
+
+  .watchlist-card-compact__header {
+    flex-wrap: wrap;
+  }
+
+  .watchlist-card-compact__actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+@media (max-width: 768px) {
+  .watchlists-page-compact {
+    padding: var(--space-2);
+    gap: var(--space-2);
+  }
+
+  .watchlists-title {
+    font-size: var(--font-size-lg);
+  }
+
+  .btn-compact span {
+    display: none;
+  }
+
+  .watchlist-card-compact__header {
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .watchlist-table-compact {
+    font-size: 0.75rem;
+  }
+
+  .watchlist-table-compact th,
+  .watchlist-table-compact td {
+    padding: var(--space-1) var(--space-2);
+  }
+
+  /* Hide less important columns on mobile */
+  .watchlist-table-compact .col-exchange,
+  .watchlist-table-compact .col-strike,
+  .watchlist-table-compact .col-volume {
+    display: none;
+  }
+}
