@@ -1145,6 +1145,7 @@ class DashboardApp {
           <span class="text-xs text-neutral-500">Quotes auto-refresh</span>
           <span class="text-xs text-neutral-500" data-watchlist-last-update="${watchlistId}">waiting…</span>
           <span class="text-xs text-neutral-500" data-watchlist-feed-source="${watchlistId}">—</span>
+          <span class="text-xs text-neutral-500" data-watchlist-feed-coverage="${watchlistId}"></span>
         </div>
         <div class="watchlist-table-wrapper">
           <table class="watchlist-table-compact" id="watchlist-table-${watchlistId}">
