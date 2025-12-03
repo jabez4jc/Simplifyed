@@ -339,81 +339,172 @@ router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res,
 
     let inserted = { watchlists: 0, symbols: 0, mappings: 0 };
     let updated = { watchlists: 0, symbols: 0, mappings: 0 };
+    let errors = [];
 
     const wlCols = (await db.all("PRAGMA table_info('watchlists')")).map((c) => c.name);
     const symCols = (await db.all("PRAGMA table_info('watchlist_symbols')")).map((c) => c.name);
     const mapCols = (await db.all("PRAGMA table_info('watchlist_instances')")).map((c) => c.name);
+    const instances = await db.all('SELECT id FROM instances');
+    const validInstanceIds = new Set(instances.map((i) => i.id));
 
-    const upsertTable = async (table, cols, keySelector, rows, headers) => {
+    const buildPayload = (cols, headers, row) => {
       const headerIndex = new Map(headers.map((h, i) => [h, i]));
-      for (const row of rows) {
-        const payload = {};
-        cols.forEach((col) => {
-          const idx = headerIndex.get(col);
-          const val = row[idx];
-          if (val === undefined || val === null || val === '') return;
-          const lowered = String(val).toLowerCase();
-          if (lowered === 'true' || lowered === 'false') payload[col] = lowered === 'true' ? 1 : 0;
-          else if (!Number.isNaN(Number(val)) && val !== '') payload[col] = Number(val);
-          else payload[col] = val;
-        });
-        const key = keySelector(payload);
-        if (!key) continue;
-
-        const whereClause = Object.keys(key).map((k) => `${k} = ?`).join(' AND ');
-        const whereParams = Object.values(key);
-        const existing = await db.get(`SELECT id FROM ${table} WHERE ${whereClause} LIMIT 1`, whereParams);
-        if (existing) {
-          const fields = Object.keys(payload).filter((c) => c !== 'id');
-          if (!fields.length) continue;
-          const setSql = fields.map((f) => `${f} = ?`).join(', ');
-          const params = fields.map((f) => payload[f]);
-          params.push(existing.id);
-          await db.run(`UPDATE ${table} SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, params);
-          updated[table === 'watchlists' ? 'watchlists' : table === 'watchlist_symbols' ? 'symbols' : 'mappings'] += 1;
-        } else {
-          const fields = Object.keys(payload).filter((c) => c !== 'id');
-          const placeholders = fields.map(() => '?').join(', ');
-          const params = fields.map((f) => payload[f]);
-          await db.run(`INSERT INTO ${table} (${fields.join(', ')}) VALUES (${placeholders})`, params);
-          inserted[table === 'watchlists' ? 'watchlists' : table === 'watchlist_symbols' ? 'symbols' : 'mappings'] += 1;
-        }
-      }
+      const payload = {};
+      cols.forEach((col) => {
+        const idx = headerIndex.get(col);
+        const val = row[idx];
+        if (val === undefined || val === null || val === '') return;
+        const lowered = String(val).toLowerCase();
+        if (lowered === 'true' || lowered === 'false') payload[col] = lowered === 'true' ? 1 : 0;
+        else if (!Number.isNaN(Number(val)) && val !== '') payload[col] = Number(val);
+        else payload[col] = val;
+      });
+      return payload;
     };
+
+    const watchlistIdMap = new Map(); // oldId -> newId
 
     for (const section of sections) {
       if (section.startsWith('WATCHLISTS')) {
         const csv = section.replace(/^WATCHLISTS\s*/,'');
         const parsed = parser.parse(csv.trim());
         if (parsed.headers?.length) {
-          const cols = parsed.headers.filter((h) => wlCols.includes(h));
-          await upsertTable('watchlists', cols, (p) => ({ name: p.name }), parsed.rows, parsed.headers);
+          const cols = parsed.headers.filter((h) =>
+            wlCols.includes(h) && h !== 'created_at' && h !== 'updated_at'
+          );
+          const headerIndex = new Map(parsed.headers.map((h, i) => [h, i]));
+          for (const row of parsed.rows) {
+            const payload = buildPayload(cols, parsed.headers, row);
+            const originalId = headerIndex.has('id') ? row[headerIndex.get('id')] : null;
+            const key = { name: payload.name };
+            if (!key.name) continue;
+
+            let dbId = null;
+            try {
+              const existing = await db.get('SELECT id FROM watchlists WHERE name = ? LIMIT 1', [key.name]);
+              if (existing) {
+                const fields = Object.keys(payload).filter((c) => c !== 'id');
+                if (fields.length) {
+                  const setSql = fields.map((f) => `${f} = ?`).join(', ');
+                  const params = fields.map((f) => payload[f]);
+                  params.push(existing.id);
+                  await db.run(`UPDATE watchlists SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, params);
+                  updated.watchlists += 1;
+                }
+                dbId = existing.id;
+              } else {
+                const fields = Object.keys(payload).filter((c) => c !== 'id');
+                const placeholders = fields.map(() => '?').join(', ');
+                const params = fields.map((f) => payload[f]);
+                const result = await db.run(
+                  `INSERT INTO watchlists (${fields.join(', ')}) VALUES (${placeholders})`,
+                  params
+                );
+                inserted.watchlists += 1;
+                dbId = result?.lastID;
+              }
+            } catch (err) {
+              errors.push({ section: 'watchlists', name: key.name, error: err.message });
+              continue;
+            }
+
+            if (originalId && dbId) {
+              watchlistIdMap.set(String(originalId), dbId);
+            }
+          }
         }
       } else if (section.startsWith('WATCHLIST_SYMBOLS')) {
         const csv = section.replace(/^WATCHLIST_SYMBOLS\s*/,'');
         const parsed = parser.parse(csv.trim());
         if (parsed.headers?.length) {
-          const cols = parsed.headers.filter((h) => symCols.includes(h));
-          await upsertTable(
-            'watchlist_symbols',
-            cols,
-            (p) => ({ watchlist_id: p.watchlist_id, symbol: p.symbol, exchange: p.exchange }),
-            parsed.rows,
-            parsed.headers
+          const cols = parsed.headers.filter((h) =>
+            symCols.includes(h) && h !== 'id' && h !== 'created_at' && h !== 'updated_at'
           );
+          const headerIndex = new Map(parsed.headers.map((h, i) => [h, i]));
+          for (const row of parsed.rows) {
+            const payload = buildPayload(cols, parsed.headers, row);
+            const origWatchlistId = headerIndex.has('watchlist_id') ? row[headerIndex.get('watchlist_id')] : null;
+            const mappedWatchlistId = origWatchlistId ? watchlistIdMap.get(String(origWatchlistId)) : payload.watchlist_id;
+            if (!mappedWatchlistId) continue;
+            payload.watchlist_id = mappedWatchlistId;
+
+            const key = { watchlist_id: payload.watchlist_id, symbol: payload.symbol, exchange: payload.exchange };
+            if (!key.watchlist_id || !key.symbol || !key.exchange) continue;
+
+            try {
+              const existing = await db.get(
+                'SELECT id FROM watchlist_symbols WHERE watchlist_id = ? AND symbol = ? AND exchange = ? LIMIT 1',
+                [key.watchlist_id, key.symbol, key.exchange]
+              );
+              if (existing) {
+                const fields = Object.keys(payload).filter((c) => c !== 'id');
+                if (!fields.length) continue;
+                const setSql = fields.map((f) => `${f} = ?`).join(', ');
+                const params = fields.map((f) => payload[f]);
+                params.push(existing.id);
+                await db.run(`UPDATE watchlist_symbols SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, params);
+                updated.symbols += 1;
+              } else {
+                const fields = Object.keys(payload).filter((c) => c !== 'id');
+                const placeholders = fields.map(() => '?').join(', ');
+                const params = fields.map((f) => payload[f]);
+                await db.run(
+                  `INSERT INTO watchlist_symbols (${fields.join(', ')}) VALUES (${placeholders})`,
+                  params
+                );
+                inserted.symbols += 1;
+              }
+            } catch (err) {
+              errors.push({ section: 'watchlist_symbols', watchlist_id: payload.watchlist_id, symbol: payload.symbol, exchange: payload.exchange, error: err.message });
+            }
+          }
         }
       } else if (section.startsWith('WATCHLIST_INSTANCES')) {
         const csv = section.replace(/^WATCHLIST_INSTANCES\s*/,'');
         const parsed = parser.parse(csv.trim());
         if (parsed.headers?.length) {
-          const cols = parsed.headers.filter((h) => mapCols.includes(h));
-          await upsertTable(
-            'watchlist_instances',
-            cols,
-            (p) => ({ watchlist_id: p.watchlist_id, instance_id: p.instance_id }),
-            parsed.rows,
-            parsed.headers
+          const cols = parsed.headers.filter((h) =>
+            mapCols.includes(h) && h !== 'id' && h !== 'created_at' && h !== 'updated_at'
           );
+          const headerIndex = new Map(parsed.headers.map((h, i) => [h, i]));
+          for (const row of parsed.rows) {
+            const payload = buildPayload(cols, parsed.headers, row);
+            const origWatchlistId = headerIndex.has('watchlist_id') ? row[headerIndex.get('watchlist_id')] : null;
+            const mappedWatchlistId = origWatchlistId ? watchlistIdMap.get(String(origWatchlistId)) : payload.watchlist_id;
+            if (!mappedWatchlistId) continue;
+            payload.watchlist_id = mappedWatchlistId;
+
+            // Ensure instance exists; if not, skip to avoid FK failures
+            if (!validInstanceIds.has(payload.instance_id)) continue;
+
+            const key = { watchlist_id: payload.watchlist_id, instance_id: payload.instance_id };
+            try {
+              const existing = await db.get(
+                'SELECT id FROM watchlist_instances WHERE watchlist_id = ? AND instance_id = ? LIMIT 1',
+                [key.watchlist_id, key.instance_id]
+              );
+              if (existing) {
+                const fields = Object.keys(payload).filter((c) => c !== 'id');
+                if (!fields.length) continue;
+                const setSql = fields.map((f) => `${f} = ?`).join(', ');
+                const params = fields.map((f) => payload[f]);
+                params.push(existing.id);
+                await db.run(`UPDATE watchlist_instances SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, params);
+                updated.mappings += 1;
+              } else {
+                const fields = Object.keys(payload).filter((c) => c !== 'id');
+                const placeholders = fields.map(() => '?').join(', ');
+                const params = fields.map((f) => payload[f]);
+                await db.run(
+                  `INSERT INTO watchlist_instances (${fields.join(', ')}) VALUES (${placeholders})`,
+                  params
+                );
+                inserted.mappings += 1;
+              }
+            } catch (err) {
+              errors.push({ section: 'watchlist_instances', watchlist_id: payload.watchlist_id, instance_id: payload.instance_id, error: err.message });
+            }
+          }
         }
       }
     }
@@ -421,7 +512,7 @@ router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res,
     res.json({
       status: 'success',
       message: 'Watchlists import completed',
-      data: { inserted, updated },
+      data: { inserted, updated, errors },
     });
   } catch (error) {
     next(error);
