@@ -2,7 +2,8 @@
  * Migration 030: Add password_hash to users
  */
 
-export const version = '030';
+// Use a unique version key to avoid clashing with other 030 migrations
+export const version = '030b';
 export const name = 'add_password_hash';
 
 export async function up(db) {
