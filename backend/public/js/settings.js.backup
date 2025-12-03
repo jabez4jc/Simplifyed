@@ -8,7 +8,6 @@ class SettingsHandler {
     this.categories = [];
     this.settings = {};
     this.activeCategory = 'server';
-    this.activeMainTab = 'general'; // New: Track main tab (general, access, data, status)
     this.isSaving = false;
     this.searchQuery = '';
     this.allowedCategories = null; // show all categories by default
@@ -119,7 +118,7 @@ class SettingsHandler {
   }
 
   /**
-   * Render settings view with new tab-based layout
+   * Render settings view
    */
   async renderSettingsView() {
     const contentArea = document.getElementById('content-area');
@@ -137,7 +136,6 @@ class SettingsHandler {
 
       this.categories = categories;
       this.settings = allSettings;
-
       // Load instance health test config
       if (this.isAdmin()) {
         try {
@@ -152,25 +150,114 @@ class SettingsHandler {
         await this.fetchRbacData();
       }
 
-      // Render the new tab-based layout
       contentArea.innerHTML = `
-        <div class="settings-page-container">
-          <!-- Main Tab Navigation -->
-          ${this.renderMainTabNavigation()}
+        <div class="space-y-6">
 
-          <!-- Tab Content -->
-          <div class="settings-tab-content">
-            ${await this.renderActiveTabContent(canViewAppSettings)}
-          </div>
+            <!-- Application Settings Section -->
+            ${canViewAppSettings ? `
+              <div class="card">
+                <div class="card-header">
+                  <h3 class="card-title">⚙️ Application Settings</h3>
+                </div>
+                <div class="p-6">
+                  ${this.renderApplicationSettings()}
+                </div>
+              </div>
+            ` : `
+              <div class="card">
+                <div class="card-header">
+                  <h3 class="card-title">⚙️ Application Settings</h3>
+                </div>
+                <div class="p-6">
+                  <p class="text-neutral-600 text-sm">
+                    You don't have permission to view application settings. Contact an admin if you need access.
+                  </p>
+                </div>
+              </div>
+            `}
+
+            ${this.isAdmin() ? `
+            <div class="card">
+              <div class="card-header">
+                <h3 class="card-title">🔐 Role &amp; User Access</h3>
+                <p class="text-sm text-neutral-600 mt-1">Manage roles and assign users</p>
+              </div>
+              <div class="p-6">
+                ${this.renderRbacSection()}
+              </div>
+            </div>` : ''}
+
+            <!-- Instruments Cache Section -->
+            <div class="card">
+              <div class="card-header">
+                <h3 class="card-title">📊 Instruments Cache</h3>
+                <p class="text-sm text-neutral-600 mt-1">
+                  Manage broker instruments cache. Upload CSV file or refresh from broker API.
+                </p>
+              </div>
+              <div class="p-6">
+                ${await this.renderInstrumentsCacheSection()}
+              </div>
+            </div>
+
+            ${this.isAdmin() ? `
+            <div class="card">
+              <div class="card-header">
+                <h3 class="card-title">🗂️ Instances Import / Export</h3>
+                <p class="text-sm text-neutral-600 mt-1">
+                  Admin-only: export all instances to CSV or import/update from CSV (upsert by host_url).
+                </p>
+              </div>
+              <div class="p-6 space-y-3">
+                ${this.renderInstanceCsvSection()}
+              </div>
+            </div>` : ''}
+
+            ${this.isAdmin() ? `
+            <div class="card">
+              <div class="card-header">
+                <h3 class="card-title">🗂️ Watchlists Import / Export</h3>
+                <p class="text-sm text-neutral-600 mt-1">
+                  Admin-only: export all watchlists, symbols, and instance mappings, or import/update from CSV.
+                </p>
+              </div>
+              <div class="p-6 space-y-3">
+                ${this.renderWatchlistCsvSection()}
+              </div>
+            </div>` : ''}
+
+            <!-- Monitor Status Section -->
+            <div class="card">
+              <div class="card-header">
+                <h3 class="card-title">📊 Order Monitor Status</h3>
+              </div>
+              <div class="p-6">
+                ${await this.renderMonitorStatusSection()}
+              </div>
+            </div>
+
+            ${this.isAdmin() ? `
+            <div class="card">
+              <div class="card-header">
+                <h3 class="card-title">🩺 Instance Health Tests</h3>
+                <p class="text-sm text-neutral-600 mt-1">
+                  Configure test symbols for quotes, multiquotes, and option chains. Cron runs every 3h from 08:00 IST.
+                </p>
+              </div>
+              <div class="p-6 space-y-4">
+                ${this.renderInstanceHealthTests()}
+              </div>
+            </div>` : ''}
+
         </div>
       `;
 
-      // Initialize event listeners
       if (this.isAdmin()) {
         this.initRbacListeners();
       }
+
+      // Initialize category tabs
       this.initCategoryTabs();
-      this.initMainTabListeners();
     } catch (error) {
       contentArea.innerHTML = `
         <div class="p-4">
@@ -179,223 +266,6 @@ class SettingsHandler {
       `;
       console.error('[Settings] Error rendering settings view:', error);
     }
-  }
-
-  /**
-   * Render main tab navigation
-   */
-  renderMainTabNavigation() {
-    const tabs = [
-      { id: 'general', icon: '⚙️', label: 'General', description: 'Application configuration' },
-      { id: 'access', icon: '🔐', label: 'Access Control', description: 'Roles and permissions', adminOnly: true },
-      { id: 'data', icon: '📊', label: 'Data Management', description: 'Instruments and imports' },
-      { id: 'status', icon: '🩺', label: 'System Status', description: 'Monitor and health' }
-    ];
-
-    return `
-      <div class="settings-main-tabs">
-        <div class="settings-main-tabs-header">
-          <h2 class="text-2xl font-bold text-neutral-900">Settings</h2>
-          <p class="text-sm text-neutral-600 mt-1">Manage your application configuration and preferences</p>
-        </div>
-        <div class="settings-main-tabs-nav">
-          ${tabs.map(tab => {
-            if (tab.adminOnly && !this.isAdmin()) return '';
-            const isActive = this.activeMainTab === tab.id;
-            return `
-              <button
-                class="settings-main-tab ${isActive ? 'active' : ''}"
-                data-tab="${tab.id}"
-                onclick="settings.switchMainTab('${tab.id}')"
-              >
-                <span class="settings-main-tab-icon">${tab.icon}</span>
-                <div class="settings-main-tab-text">
-                  <span class="settings-main-tab-label">${tab.label}</span>
-                  <span class="settings-main-tab-description">${tab.description}</span>
-                </div>
-              </button>
-            `;
-          }).join('')}
-        </div>
-      </div>
-    `;
-  }
-
-  /**
-   * Render active tab content
-   */
-  async renderActiveTabContent(canViewAppSettings) {
-    switch (this.activeMainTab) {
-      case 'general':
-        return this.renderGeneralTab(canViewAppSettings);
-      case 'access':
-        return this.renderAccessControlTab();
-      case 'data':
-        return await this.renderDataManagementTab();
-      case 'status':
-        return await this.renderSystemStatusTab();
-      default:
-        return this.renderGeneralTab(canViewAppSettings);
-    }
-  }
-
-  /**
-   * Switch main tab
-   */
-  switchMainTab(tabId) {
-    this.activeMainTab = tabId;
-    this.renderSettingsView();
-  }
-
-  /**
-   * Initialize main tab listeners
-   */
-  initMainTabListeners() {
-    // Tab switching is handled by onclick in the HTML
-  }
-
-  /**
-   * Render General tab (Application Settings)
-   */
-  renderGeneralTab(canViewAppSettings) {
-    if (!canViewAppSettings) {
-      return `
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">⚙️ Application Settings</h3>
-          </div>
-          <div class="p-6">
-            <p class="text-neutral-600 text-sm">
-              You don't have permission to view application settings. Contact an admin if you need access.
-            </p>
-          </div>
-        </div>
-      `;
-    }
-
-    return `
-      <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">⚙️ Application Settings</h3>
-        </div>
-        <div class="p-6">
-          ${this.renderApplicationSettings()}
-        </div>
-      </div>
-    `;
-  }
-
-  /**
-   * Render Access Control tab (RBAC)
-   */
-  renderAccessControlTab() {
-    if (!this.isAdmin()) {
-      return `
-        <div class="card">
-          <div class="p-6">
-            <p class="text-neutral-600 text-sm">
-              You don't have permission to access this section. Admin access required.
-            </p>
-          </div>
-        </div>
-      `;
-    }
-
-    return `
-      <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">🔐 Role & User Access</h3>
-          <p class="text-sm text-neutral-600 mt-1">Manage roles and assign users</p>
-        </div>
-        <div class="p-6">
-          ${this.renderRbacSection()}
-        </div>
-      </div>
-    `;
-  }
-
-  /**
-   * Render Data Management tab (Instruments Cache + Import/Export)
-   */
-  async renderDataManagementTab() {
-    return `
-      <div class="space-y-6">
-        <!-- Instruments Cache Section -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">📊 Instruments Cache</h3>
-            <p class="text-sm text-neutral-600 mt-1">
-              Manage broker instruments cache. Upload CSV file or refresh from broker API.
-            </p>
-          </div>
-          <div class="p-6">
-            ${await this.renderInstrumentsCacheSection()}
-          </div>
-        </div>
-
-        ${this.isAdmin() ? `
-        <!-- Instances Import / Export Section -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">🗂️ Instances Import / Export</h3>
-            <p class="text-sm text-neutral-600 mt-1">
-              Admin-only: export all instances to CSV or import/update from CSV (upsert by host_url).
-            </p>
-          </div>
-          <div class="p-6 space-y-3">
-            ${this.renderInstanceCsvSection()}
-          </div>
-        </div>
-
-        <!-- Watchlists Import / Export Section -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">🗂️ Watchlists Import / Export</h3>
-            <p class="text-sm text-neutral-600 mt-1">
-              Admin-only: export all watchlists, symbols, and instance mappings, or import/update from CSV.
-            </p>
-          </div>
-          <div class="p-6 space-y-3">
-            ${this.renderWatchlistCsvSection()}
-          </div>
-        </div>
-        ` : ''}
-      </div>
-    `;
-  }
-
-  /**
-   * Render System Status tab (Monitor Status + Health Tests)
-   */
-  async renderSystemStatusTab() {
-    return `
-      <div class="space-y-6">
-        <!-- Monitor Status Section -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">📊 Order Monitor Status</h3>
-          </div>
-          <div class="p-6">
-            ${await this.renderMonitorStatusSection()}
-          </div>
-        </div>
-
-        ${this.isAdmin() ? `
-        <!-- Instance Health Tests Section -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">🩺 Instance Health Tests</h3>
-            <p class="text-sm text-neutral-600 mt-1">
-              Configure test symbols for quotes, multiquotes, and option chains. Cron runs every 3h from 08:00 IST.
-            </p>
-          </div>
-          <div class="p-6 space-y-4">
-            ${this.renderInstanceHealthTests()}
-          </div>
-        </div>
-        ` : ''}
-      </div>
-    `;
   }
 
   /**
