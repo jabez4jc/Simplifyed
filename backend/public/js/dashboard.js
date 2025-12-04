@@ -3872,7 +3872,7 @@ class DashboardApp {
     }
 
     return `
-      <div class="space-y-6">
+      <div style="display: flex; flex-direction: column; gap: 0.5rem;">
         ${this.renderPositionsSection(
           'Live Market Instances',
           'Instances actively executing trades',
@@ -3894,12 +3894,12 @@ class DashboardApp {
           <div class="card-header-compact">
             <div>
               <h3 class="card-title-compact">${title}</h3>
-              <p class="text-xs text-neutral-600">${subtitle}</p>
+              <p style="font-size: 0.688rem;" class="text-neutral-600">${subtitle}</p>
             </div>
             <span class="badge-count-compact">0</span>
           </div>
-          <div class="p-3">
-            <p class="text-xs text-neutral-500">No open positions in this category.</p>
+          <div style="padding: 0.5rem;">
+            <p style="font-size: 0.688rem;" class="text-neutral-500">No open positions in this category.</p>
           </div>
         </div>
       `;
@@ -3910,11 +3910,11 @@ class DashboardApp {
         <div class="card-header-compact">
           <div>
             <h3 class="card-title-compact">${title}</h3>
-            <p class="text-xs text-neutral-600">${subtitle}</p>
+            <p style="font-size: 0.688rem;" class="text-neutral-600">${subtitle}</p>
           </div>
           <span class="badge-count-compact">${instances.length}</span>
         </div>
-        <div class="p-2 space-y-2">
+        <div style="padding: 0.375rem; display: flex; flex-direction: column; gap: 0.375rem;">
           ${instances.map(inst => this.renderPositionsInstanceCard(inst)).join('')}
         </div>
       </div>
@@ -3952,10 +3952,10 @@ class DashboardApp {
           </button>
         </div>
         <div id="positions-body-${inst.instance_id}" class="${isExpanded ? 'block' : 'hidden'} border-t border-base-200">
-          <div class="p-2">
+          <div style="padding: 0.25rem;">
             ${positions.length > 0
               ? this.renderPositionsTable(positions, inst.instance_id)
-              : '<p class="text-xs text-neutral-500">No open positions for this instance.</p>'}
+              : '<p style="font-size: 0.688rem;" class="text-neutral-500">No open positions for this instance.</p>'}
           </div>
         </div>
       </div>
