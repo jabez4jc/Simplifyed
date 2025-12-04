@@ -3639,7 +3639,7 @@ body {
 /* Config and Preview Wrapper - 2 Column Layout */
 .quick-order-config-wrapper {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: var(--space-3);
   align-items: start;
 }
@@ -3648,6 +3648,14 @@ body {
 .quick-order-config-compact {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* Right Column Container */
+.quick-order-right-column {
+  display: flex;
+  flex-direction: column;
   gap: var(--space-2);
   min-width: 0;
 }
