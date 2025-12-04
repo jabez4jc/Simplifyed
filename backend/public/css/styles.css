@@ -3065,7 +3065,8 @@ body {
 }
 
 /* Compact Button Styles */
-.btn-icon {
+.watchlists-compact-toolbar .btn-icon,
+.positions-panel-actions .btn-icon {
   width: 36px;
   height: 36px;
   display: flex;
@@ -3076,26 +3077,28 @@ body {
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: all 0.2s ease;
-}
-
-.btn-icon svg {
+.watchlists-compact-toolbar .btn-icon svg,
+.positions-panel-actions .btn-icon svg {
   width: 18px;
   height: 18px;
   stroke: var(--color-neutral-600);
   stroke-width: 2;
 }
 
-.btn-icon:hover {
+.watchlists-compact-toolbar .btn-icon:hover,
+.positions-panel-actions .btn-icon:hover {
   background-color: var(--color-neutral-50);
   border-color: var(--color-neutral-300);
 }
 
-.btn-icon.active {
+.watchlists-compact-toolbar .btn-icon.active,
+.positions-panel-actions .btn-icon.active {
   background-color: var(--color-primary, #6366F1);
   border-color: var(--color-primary, #6366F1);
 }
 
-.btn-icon.active svg {
+.watchlists-compact-toolbar .btn-icon.active svg,
+.positions-panel-actions .btn-icon.active svg {
   stroke: white;
 }
 
@@ -3173,22 +3176,22 @@ body {
   gap: var(--space-2);
 }
 
-.btn-icon.btn-sm {
+.positions-panel-actions .btn-icon.btn-sm {
   width: 32px;
   height: 32px;
 }
 
-.btn-icon.btn-sm svg {
+.positions-panel-actions .btn-icon.btn-sm svg {
   width: 16px;
   height: 16px;
 }
 
-.btn-icon.btn-danger:hover {
+.positions-panel-actions .btn-icon.btn-danger:hover {
   background-color: var(--color-loss-bg);
   border-color: var(--color-loss);
 }
 
-.btn-icon.btn-danger svg {
+.positions-panel-actions .btn-icon.btn-danger svg {
   stroke: var(--color-loss);
 }
 
@@ -3506,6 +3509,7 @@ body {
   letter-spacing: 0.5px;
   display: inline-block;
 }
+
 
 /* Actions Group */
 .actions-group {
@@ -4126,7 +4130,7 @@ body {
   margin: 0;
 }
 
-.badge-compact {
+.badge-count-compact {
   display: inline-flex;
   align-items: center;
   justify-content: center;

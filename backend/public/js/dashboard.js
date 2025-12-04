@@ -890,6 +890,8 @@ class DashboardApp {
       window.quickOrder.stopAllFuturesPreviewPolling();
     }
 
+    this.stopPositionsPolling();
+
     // Fetch watchlists + instances in parallel to reduce latency
     const [watchlistsRes, instancesRes] = await Promise.all([
       api.getWatchlists(),
@@ -969,8 +971,11 @@ class DashboardApp {
       </section>
     `;
 
-    // Load positions by default and start auto-refresh
-    this.startPositionsPolling();
+    const toggleBtn = document.getElementById('toggle-positions-btn');
+    if (toggleBtn) {
+      toggleBtn.setAttribute('aria-expanded', 'false');
+      toggleBtn.setAttribute('aria-controls', 'positions-panel-compact');
+    }
   }
 
   /**
@@ -1083,9 +1088,16 @@ class DashboardApp {
     const panel = document.getElementById('positions-panel-compact');
     const btn = document.getElementById('toggle-positions-btn');
     if (panel) {
-      panel.classList.toggle('collapsed');
+      const isCollapsed = panel.classList.toggle('collapsed');
       if (btn) {
-        btn.classList.toggle('active');
+        btn.classList.toggle('active', !isCollapsed);
+        btn.setAttribute('aria-expanded', String(!isCollapsed));
+        btn.setAttribute('aria-controls', 'positions-panel-compact');
+      }
+      if (!isCollapsed) {
+        this.startPositionsPolling({ immediate: true });
+      } else {
+        this.stopPositionsPolling();
       }
     }
   }
@@ -1360,9 +1372,11 @@ class DashboardApp {
     keysToDelete.forEach(key => this.quoteCache.delete(key));
   }
 
-  startPositionsPolling() {
-    this.stopPositionsPolling();
-    this.requestWatchlistRefresh({ showLoader: true, force: true });
+  startPositionsPolling({ immediate = false } = {}) {
+    if (this.positionsPollingInterval) return;
+    if (immediate) {
+      this.requestWatchlistRefresh({ showLoader: true, force: true });
+    }
     this.positionsPollingInterval = setInterval(() => {
       this.requestWatchlistRefresh();
     }, 10000);
@@ -3717,6 +3731,7 @@ class DashboardApp {
       } else {
         Utils.showToast(`Close-all request sent to ${successes} instance(s)`, 'success');
       }
+      this.requestWatchlistRefresh({ showLoader: true, force: true });
     } catch (error) {
       Utils.showToast('Failed to close all positions: ' + error.message, 'error');
     }
@@ -3878,7 +3893,7 @@ class DashboardApp {
               <h3 class="card-title-compact">${title}</h3>
               <p class="text-xs text-neutral-600">${subtitle}</p>
             </div>
-            <span class="badge-compact">0</span>
+            <span class="badge-count-compact">0</span>
           </div>
           <div class="p-3">
             <p class="text-xs text-neutral-500">No open positions in this category.</p>
@@ -3894,7 +3909,7 @@ class DashboardApp {
             <h3 class="card-title-compact">${title}</h3>
             <p class="text-xs text-neutral-600">${subtitle}</p>
           </div>
-          <span class="badge-compact">${instances.length}</span>
+          <span class="badge-count-compact">${instances.length}</span>
         </div>
         <div class="p-2 space-y-2">
           ${instances.map(inst => this.renderPositionsInstanceCard(inst)).join('')}
