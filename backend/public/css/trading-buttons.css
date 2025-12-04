@@ -1,0 +1,1015 @@
+@charset "UTF-8";
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 24px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  vertical-align: middle;
+  cursor: pointer;
+  user-select: none;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  min-width: 120px;
+  transition: all 0.2s ease-in-out;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn:focus {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(74, 144, 226, 0.3);
+}
+.btn:active {
+  transform: translateY(1px);
+}
+.btn:disabled, .btn.disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  pointer-events: none;
+  background-color: #E8E8E8;
+  color: #B0B0B0;
+  border-color: #D0D0D0;
+}
+.btn:disabled:hover, .btn:disabled:active, .btn.disabled:hover, .btn.disabled:active {
+  transform: none;
+}
+.btn svg,
+.btn i {
+  margin-right: 6px;
+}
+.btn svg:last-child:not(:first-child),
+.btn i:last-child:not(:first-child) {
+  margin-right: 0;
+  margin-left: 6px;
+}
+.btn.loading {
+  position: relative;
+  color: transparent;
+  pointer-events: none;
+}
+.btn.loading::after {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  top: 50%;
+  left: 50%;
+  margin-left: -8px;
+  margin-top: -8px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  border-top-color: transparent;
+  animation: button-spinner 0.6s linear infinite;
+}
+
+@keyframes button-spinner {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.btn-buy,
+.btn-buy-ce,
+.btn-buy-pe,
+.btn-long {
+  background-color: #7ED6B2;
+  color: #1A5A45;
+  border-color: #6BC9A3;
+}
+.btn-buy:hover:not(:disabled):not(.disabled),
+.btn-buy-ce:hover:not(:disabled):not(.disabled),
+.btn-buy-pe:hover:not(:disabled):not(.disabled),
+.btn-long:hover:not(:disabled):not(.disabled) {
+  background-color: #6BC9A3;
+  border-color: rgb(88.3168316832, 194.1831683168, 151.3861386139);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+.btn-buy:active:not(:disabled):not(.disabled),
+.btn-buy-ce:active:not(:disabled):not(.disabled),
+.btn-buy-pe:active:not(:disabled):not(.disabled),
+.btn-long:active:not(:disabled):not(.disabled) {
+  background-color: #58BC94;
+  border-color: rgb(69.6336633663, 187.3663366337, 139.7722772277);
+  transform: translateY(1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+.btn-buy:focus:not(:disabled):not(.disabled),
+.btn-buy-ce:focus:not(:disabled):not(.disabled),
+.btn-buy-pe:focus:not(:disabled):not(.disabled),
+.btn-long:focus:not(:disabled):not(.disabled) {
+  box-shadow: 0 0 0 3px rgba(126, 214, 178, 0.3);
+}
+
+.btn-sell,
+.btn-reduce,
+.btn-reduce-ce,
+.btn-reduce-pe,
+.btn-cover {
+  background-color: #FFD494;
+  color: #8B5A00;
+  border-color: #FFC974;
+}
+.btn-sell:hover:not(:disabled):not(.disabled),
+.btn-reduce:hover:not(:disabled):not(.disabled),
+.btn-reduce-ce:hover:not(:disabled):not(.disabled),
+.btn-reduce-pe:hover:not(:disabled):not(.disabled),
+.btn-cover:hover:not(:disabled):not(.disabled) {
+  background-color: #FFC974;
+  border-color: rgb(255, 191.0935251799, 90.5);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+.btn-sell:active:not(:disabled):not(.disabled),
+.btn-reduce:active:not(:disabled):not(.disabled),
+.btn-reduce-ce:active:not(:disabled):not(.disabled),
+.btn-reduce-pe:active:not(:disabled):not(.disabled),
+.btn-cover:active:not(:disabled):not(.disabled) {
+  background-color: #FFBE5A;
+  border-color: rgb(255, 181.1870503597, 65);
+  transform: translateY(1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+.btn-sell:focus:not(:disabled):not(.disabled),
+.btn-reduce:focus:not(:disabled):not(.disabled),
+.btn-reduce-ce:focus:not(:disabled):not(.disabled),
+.btn-reduce-pe:focus:not(:disabled):not(.disabled),
+.btn-cover:focus:not(:disabled):not(.disabled) {
+  box-shadow: 0 0 0 3px rgba(255, 212, 148, 0.3);
+}
+
+.btn-short {
+  background-color: #FFB380;
+  color: #8B3A00;
+  border-color: #FFA666;
+}
+.btn-short:hover:not(:disabled):not(.disabled) {
+  background-color: #FFA666;
+  border-color: rgb(255, 151.1666666667, 76.5);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+.btn-short:active:not(:disabled):not(.disabled) {
+  background-color: #FF994D;
+  border-color: rgb(255, 136.3333333333, 51);
+  transform: translateY(1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+.btn-short:focus:not(:disabled):not(.disabled) {
+  box-shadow: 0 0 0 3px rgba(255, 179, 128, 0.3);
+}
+
+.btn-exit,
+.btn-close,
+.btn-close-all,
+.btn-close-all-ce,
+.btn-close-all-pe,
+.btn-exit-all,
+.btn-cancel,
+.btn-cancel-all,
+.btn-remove {
+  background-color: #FF9999;
+  color: #8B0000;
+  border-color: #FF8080;
+}
+.btn-exit:hover:not(:disabled):not(.disabled),
+.btn-close:hover:not(:disabled):not(.disabled),
+.btn-close-all:hover:not(:disabled):not(.disabled),
+.btn-close-all-ce:hover:not(:disabled):not(.disabled),
+.btn-close-all-pe:hover:not(:disabled):not(.disabled),
+.btn-exit-all:hover:not(:disabled):not(.disabled),
+.btn-cancel:hover:not(:disabled):not(.disabled),
+.btn-cancel-all:hover:not(:disabled):not(.disabled),
+.btn-remove:hover:not(:disabled):not(.disabled) {
+  background-color: #FF8080;
+  border-color: rgb(255, 102.5, 102.5);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+.btn-exit:active:not(:disabled):not(.disabled),
+.btn-close:active:not(:disabled):not(.disabled),
+.btn-close-all:active:not(:disabled):not(.disabled),
+.btn-close-all-ce:active:not(:disabled):not(.disabled),
+.btn-close-all-pe:active:not(:disabled):not(.disabled),
+.btn-exit-all:active:not(:disabled):not(.disabled),
+.btn-cancel:active:not(:disabled):not(.disabled),
+.btn-cancel-all:active:not(:disabled):not(.disabled),
+.btn-remove:active:not(:disabled):not(.disabled) {
+  background-color: #FF6666;
+  border-color: #ff4d4d;
+  transform: translateY(1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+.btn-exit:focus:not(:disabled):not(.disabled),
+.btn-close:focus:not(:disabled):not(.disabled),
+.btn-close-all:focus:not(:disabled):not(.disabled),
+.btn-close-all-ce:focus:not(:disabled):not(.disabled),
+.btn-close-all-pe:focus:not(:disabled):not(.disabled),
+.btn-exit-all:focus:not(:disabled):not(.disabled),
+.btn-cancel:focus:not(:disabled):not(.disabled),
+.btn-cancel-all:focus:not(:disabled):not(.disabled),
+.btn-remove:focus:not(:disabled):not(.disabled) {
+  box-shadow: 0 0 0 3px rgba(255, 153, 153, 0.3);
+}
+
+.btn-neutral,
+.btn-refresh,
+.btn-default {
+  background-color: #B8C9D9;
+  color: #2C3E50;
+  border-color: #A8BBCC;
+}
+.btn-neutral:hover:not(:disabled):not(.disabled),
+.btn-refresh:hover:not(:disabled):not(.disabled),
+.btn-default:hover:not(:disabled):not(.disabled) {
+  background-color: #A8BBCC;
+  border-color: rgb(151.9239130435, 174.4347826087, 194.5760869565);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+.btn-neutral:active:not(:disabled):not(.disabled),
+.btn-refresh:active:not(:disabled):not(.disabled),
+.btn-default:active:not(:disabled):not(.disabled) {
+  background-color: #98AEC0;
+  border-color: rgb(135.847826087, 161.8695652174, 185.152173913);
+  transform: translateY(1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+.btn-neutral:focus:not(:disabled):not(.disabled),
+.btn-refresh:focus:not(:disabled):not(.disabled),
+.btn-default:focus:not(:disabled):not(.disabled) {
+  box-shadow: 0 0 0 3px rgba(184, 201, 217, 0.3);
+}
+
+.btn-edit,
+.btn-modify {
+  background-color: #D4D4F5;
+  color: #4A4A8B;
+  border-color: #C5C5F0;
+}
+.btn-edit:hover:not(:disabled):not(.disabled),
+.btn-modify:hover:not(:disabled):not(.disabled) {
+  background-color: #C5C5F0;
+  border-color: rgb(176.7397260274, 176.7397260274, 234.7602739726);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+.btn-edit:active:not(:disabled):not(.disabled),
+.btn-modify:active:not(:disabled):not(.disabled) {
+  background-color: #B6B6EB;
+  border-color: rgb(156.4794520548, 156.4794520548, 229.5205479452);
+  transform: translateY(1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+.btn-edit:focus:not(:disabled):not(.disabled),
+.btn-modify:focus:not(:disabled):not(.disabled) {
+  box-shadow: 0 0 0 3px rgba(212, 212, 245, 0.3);
+}
+
+.btn-sm {
+  padding: 8px 16px;
+  font-size: 12px;
+  min-width: 80px;
+}
+.btn-sm svg,
+.btn-sm i {
+  margin-right: 4px;
+}
+.btn-sm svg:last-child:not(:first-child),
+.btn-sm i:last-child:not(:first-child) {
+  margin-right: 0;
+  margin-left: 4px;
+}
+
+.btn-lg {
+  padding: 16px 32px;
+  font-size: 16px;
+  min-width: 160px;
+}
+.btn-lg svg,
+.btn-lg i {
+  margin-right: 8px;
+}
+.btn-lg svg:last-child:not(:first-child),
+.btn-lg i:last-child:not(:first-child) {
+  margin-right: 0;
+  margin-left: 8px;
+}
+
+.btn-block {
+  display: flex;
+  width: 100%;
+  min-width: auto;
+}
+
+.btn-group {
+  display: inline-flex;
+  gap: 8px;
+}
+.btn-group.btn-group-vertical {
+  flex-direction: column;
+}
+.btn-group.btn-group-attached {
+  gap: 0;
+}
+.btn-group.btn-group-attached .btn {
+  border-radius: 0;
+}
+.btn-group.btn-group-attached .btn:first-child {
+  border-top-left-radius: 8px;
+  border-bottom-left-radius: 8px;
+}
+.btn-group.btn-group-attached .btn:last-child {
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+.btn-group.btn-group-attached .btn:not(:last-child) {
+  border-right-width: 1px;
+}
+
+.btn.active {
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+.btn.active.btn-buy {
+  background-color: #58BC94;
+}
+.btn.active.btn-sell, .btn.active.btn-reduce {
+  background-color: #FFBE5A;
+}
+.btn.active.btn-short {
+  background-color: #FF994D;
+}
+.btn.active.btn-exit, .btn.active.btn-close {
+  background-color: #FF6666;
+}
+
+.btn-outline {
+  background-color: transparent;
+}
+.btn-outline.btn-buy {
+  color: #1A5A45;
+  border-color: #7ED6B2;
+}
+.btn-outline.btn-buy:hover:not(:disabled) {
+  background-color: #7ED6B2;
+  color: #1A5A45;
+}
+.btn-outline.btn-sell {
+  color: #8B5A00;
+  border-color: #FFD494;
+}
+.btn-outline.btn-sell:hover:not(:disabled) {
+  background-color: #FFD494;
+  color: #8B5A00;
+}
+.btn-outline.btn-exit {
+  color: #8B0000;
+  border-color: #FF9999;
+}
+.btn-outline.btn-exit:hover:not(:disabled) {
+  background-color: #FF9999;
+  color: #8B0000;
+}
+
+.btn-ghost {
+  background-color: transparent;
+  border-color: transparent;
+  min-width: auto;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.btn-ghost.btn-buy {
+  color: #1A5A45;
+}
+.btn-ghost.btn-buy:hover:not(:disabled) {
+  background-color: rgba(126, 214, 178, 0.1);
+}
+.btn-ghost.btn-sell {
+  color: #8B5A00;
+}
+.btn-ghost.btn-sell:hover:not(:disabled) {
+  background-color: rgba(255, 212, 148, 0.1);
+}
+.btn-ghost.btn-exit {
+  color: #8B0000;
+}
+.btn-ghost.btn-exit:hover:not(:disabled) {
+  background-color: rgba(255, 153, 153, 0.1);
+}
+
+@media (max-width: 768px) {
+  .btn {
+    padding: 10px 20px;
+    font-size: 13px;
+    min-width: 100px;
+  }
+  .btn-sm {
+    padding: 7px 14px;
+    font-size: 11px;
+    min-width: 70px;
+  }
+  .btn-lg {
+    padding: 14px 28px;
+    font-size: 15px;
+    min-width: 140px;
+  }
+  .btn-group {
+    flex-wrap: wrap;
+  }
+  .btn-group-mobile-stack {
+    flex-direction: column;
+  }
+  .btn-group-mobile-stack .btn {
+    width: 100%;
+    min-width: auto;
+  }
+}
+.btn:focus-visible {
+  outline: 3px solid #4A90E2;
+  outline-offset: 2px;
+}
+
+@media (prefers-contrast: high) {
+  .btn {
+    border-width: 3px;
+    font-weight: 700;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn {
+    transition: none;
+  }
+  .btn:hover, .btn:active {
+    transform: none;
+  }
+  .btn.loading::after {
+    animation: none;
+  }
+}
+/*
+@media (prefers-color-scheme: dark) {
+  .btn {
+    // Darken backgrounds for dark mode
+    filter: brightness(0.85);
+  }
+}
+*/
+.btn-icon-only {
+  min-width: auto;
+  padding: 12px;
+  width: calc(12px * 2 + 1.5em);
+  height: calc(12px * 2 + 1.5em);
+}
+.btn-icon-only svg,
+.btn-icon-only i {
+  margin: 0;
+}
+.btn-icon-only.btn-sm {
+  padding: 8px;
+  width: calc(8px * 2 + 1.5em);
+  height: calc(8px * 2 + 1.5em);
+}
+.btn-icon-only.btn-lg {
+  padding: 16px;
+  width: calc(16px * 2 + 1.5em);
+  height: calc(16px * 2 + 1.5em);
+}
+
+.btn-rounded {
+  border-radius: 999px;
+}
+
+.btn-square {
+  border-radius: 4px;
+}
+
+.btn-no-animation {
+  transition: none;
+}
+.btn-no-animation:hover, .btn-no-animation:active {
+  transform: none;
+}
+
+a.btn {
+  text-decoration: none;
+}
+a.btn:hover {
+  text-decoration: none;
+}
+
+button.btn:not(:disabled),
+input[type=submit].btn:not(:disabled),
+input[type=button].btn:not(:disabled),
+input[type=reset].btn:not(:disabled) {
+  cursor: pointer;
+}
+
+@media print {
+  .btn {
+    border: 2px solid #000;
+    color: #000;
+    background: #fff;
+  }
+}
+.text-buy,
+.text-long {
+  color: #1A5A45 !important;
+}
+
+.text-sell,
+.text-reduce {
+  color: #8B5A00 !important;
+}
+
+.text-short {
+  color: #8B3A00 !important;
+}
+
+.text-exit,
+.text-danger {
+  color: #8B0000 !important;
+}
+
+.text-neutral,
+.text-muted {
+  color: #2C3E50 !important;
+}
+
+.text-edit,
+.text-info {
+  color: #4A4A8B !important;
+}
+
+.bg-buy-light {
+  background-color: rgb(164.7, 226.3, 201.1) !important;
+  color: #1A5A45 !important;
+}
+
+.bg-sell-light {
+  background-color: rgb(255, 228.3962616822, 188.8) !important;
+  color: #8B5A00 !important;
+}
+
+.bg-short-light {
+  background-color: rgb(255, 209.5196850394, 179) !important;
+  color: #8B3A00 !important;
+}
+
+.bg-exit-light {
+  background-color: #ffcccc !important;
+  color: #8B0000 !important;
+}
+
+.bg-neutral-light {
+  background-color: rgb(210.576146789, 221.2128440367, 231.223853211) !important;
+  color: #2C3E50 !important;
+}
+
+.bg-info-light {
+  background-color: rgb(232.6886792453, 232.6886792453, 249.8113207547) !important;
+  color: #4A4A8B !important;
+}
+
+.bg-buy {
+  background-color: #7ED6B2 !important;
+  color: #1A5A45 !important;
+}
+
+.bg-sell {
+  background-color: #FFD494 !important;
+  color: #8B5A00 !important;
+}
+
+.bg-short {
+  background-color: #FFB380 !important;
+  color: #8B3A00 !important;
+}
+
+.bg-exit {
+  background-color: #FF9999 !important;
+  color: #8B0000 !important;
+}
+
+.bg-neutral {
+  background-color: #B8C9D9 !important;
+  color: #2C3E50 !important;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  border-radius: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+.badge.badge-sm {
+  padding: 2px 8px;
+  font-size: 10px;
+}
+.badge.badge-lg {
+  padding: 6px 16px;
+  font-size: 14px;
+}
+.badge.badge-pill {
+  border-radius: 999px;
+}
+
+.badge-buy {
+  background-color: #7ED6B2;
+  color: #1A5A45;
+}
+
+.badge-sell {
+  background-color: #FFD494;
+  color: #8B5A00;
+}
+
+.badge-short {
+  background-color: #FFB380;
+  color: #8B3A00;
+}
+
+.badge-exit {
+  background-color: #FF9999;
+  color: #8B0000;
+}
+
+.badge-neutral {
+  background-color: #B8C9D9;
+  color: #2C3E50;
+}
+
+.badge-info {
+  background-color: #D4D4F5;
+  color: #4A4A8B;
+}
+
+.badge-outline {
+  background-color: transparent;
+  border: 2px solid currentColor;
+}
+.badge-outline.badge-buy {
+  color: #1A5A45;
+  border-color: #7ED6B2;
+}
+.badge-outline.badge-sell {
+  color: #8B5A00;
+  border-color: #FFD494;
+}
+.badge-outline.badge-exit {
+  color: #8B0000;
+  border-color: #FF9999;
+}
+
+.alert {
+  display: flex;
+  align-items: flex-start;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  border-radius: 8px;
+  border-left: 4px solid transparent;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.alert.alert-sm {
+  padding: 12px 16px;
+  font-size: 13px;
+}
+.alert.alert-lg {
+  padding: 20px 24px;
+  font-size: 15px;
+}
+.alert .alert-icon {
+  margin-right: 12px;
+  flex-shrink: 0;
+}
+.alert .alert-content {
+  flex: 1;
+}
+.alert .alert-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.alert .alert-close {
+  margin-left: 12px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  opacity: 0.7;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+}
+.alert .alert-close:hover {
+  opacity: 1;
+}
+
+.alert-buy,
+.alert-success {
+  background-color: rgb(164.7, 226.3, 201.1);
+  color: #1A5A45;
+  border-left-color: #7ED6B2;
+}
+
+.alert-sell,
+.alert-warning {
+  background-color: rgb(255, 228.3962616822, 188.8);
+  color: #8B5A00;
+  border-left-color: #FFD494;
+}
+
+.alert-exit,
+.alert-danger {
+  background-color: #ffcccc;
+  color: #8B0000;
+  border-left-color: #FF9999;
+}
+
+.alert-info {
+  background-color: rgb(232.6886792453, 232.6886792453, 249.8113207547);
+  color: #4A4A8B;
+  border-left-color: #D4D4F5;
+}
+
+.alert-neutral {
+  background-color: rgb(210.576146789, 221.2128440367, 231.223853211);
+  color: #2C3E50;
+  border-left-color: #B8C9D9;
+}
+
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 500;
+}
+.status-indicator::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.status-indicator.status-buy::before {
+  background-color: #7ED6B2;
+}
+.status-indicator.status-sell::before {
+  background-color: #FFD494;
+}
+.status-indicator.status-exit::before {
+  background-color: #FF9999;
+}
+.status-indicator.status-neutral::before {
+  background-color: #B8C9D9;
+}
+.status-indicator.status-pulse::before {
+  animation: status-pulse 2s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.2);
+  }
+}
+.tag {
+  display: inline-block;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: 4px;
+  line-height: 1.4;
+}
+.tag.tag-buy {
+  background-color: rgb(164.7, 226.3, 201.1);
+  color: #1A5A45;
+}
+.tag.tag-sell {
+  background-color: rgb(255, 228.3962616822, 188.8);
+  color: #8B5A00;
+}
+.tag.tag-exit {
+  background-color: #ffcccc;
+  color: #8B0000;
+}
+.tag.tag-neutral {
+  background-color: rgb(210.576146789, 221.2128440367, 231.223853211);
+  color: #2C3E50;
+}
+
+.highlight {
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+.highlight.highlight-buy {
+  background-color: rgb(164.7, 226.3, 201.1);
+  color: #1A5A45;
+}
+.highlight.highlight-sell {
+  background-color: rgb(255, 228.3962616822, 188.8);
+  color: #8B5A00;
+}
+.highlight.highlight-short {
+  background-color: rgb(255, 209.5196850394, 179);
+  color: #8B3A00;
+}
+.highlight.highlight-exit {
+  background-color: #ffcccc;
+  color: #8B0000;
+}
+.highlight.highlight-neutral {
+  background-color: rgb(210.576146789, 221.2128440367, 231.223853211);
+  color: #2C3E50;
+}
+.highlight.highlight-info {
+  background-color: rgb(232.6886792453, 232.6886792453, 249.8113207547);
+  color: #4A4A8B;
+}
+
+.price-change {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  font-size: 14px;
+}
+.price-change.price-up {
+  color: #1A5A45;
+}
+.price-change.price-up::before {
+  content: "▲";
+  font-size: 10px;
+}
+.price-change.price-down {
+  color: #8B0000;
+}
+.price-change.price-down::before {
+  content: "▼";
+  font-size: 10px;
+}
+.price-change.price-neutral {
+  color: #2C3E50;
+}
+.price-change.price-neutral::before {
+  content: "▬";
+  font-size: 10px;
+}
+
+.position-card {
+  padding: 16px;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-color: #fff;
+}
+.position-card.position-long {
+  border-color: #7ED6B2;
+  background-color: rgb(164.7, 226.3, 201.1);
+}
+.position-card.position-short {
+  border-color: #FFB380;
+  background-color: rgb(255, 209.5196850394, 179);
+}
+
+.pnl {
+  font-weight: 700;
+  font-size: 16px;
+}
+.pnl.pnl-profit {
+  color: #1A5A45;
+}
+.pnl.pnl-loss {
+  color: #8B0000;
+}
+.pnl.pnl-neutral {
+  color: #2C3E50;
+}
+
+.pnl-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-weight: 600;
+  font-size: 14px;
+}
+.pnl-badge.pnl-profit {
+  background-color: #7ED6B2;
+  color: #1A5A45;
+}
+.pnl-badge.pnl-loss {
+  background-color: #FF9999;
+  color: #8B0000;
+}
+
+.tooltip-container {
+  position: relative;
+  display: inline-block;
+}
+.tooltip-container .tooltip-text {
+  visibility: hidden;
+  position: absolute;
+  z-index: 1000;
+  bottom: 125%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 12px;
+  background-color: #2C3E50;
+  color: white;
+  font-size: 12px;
+  border-radius: 6px;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.2s ease-in-out;
+}
+.tooltip-container .tooltip-text::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  margin-left: -5px;
+  border-width: 5px;
+  border-style: solid;
+  border-color: #2C3E50 transparent transparent transparent;
+}
+.tooltip-container:hover .tooltip-text {
+  visibility: visible;
+  opacity: 1;
+}
+
+.tooltip-buy .tooltip-text {
+  background-color: #1A5A45;
+}
+.tooltip-buy .tooltip-text::after {
+  border-color: #1A5A45 transparent transparent transparent;
+}
+
+.tooltip-sell .tooltip-text {
+  background-color: #8B5A00;
+}
+.tooltip-sell .tooltip-text::after {
+  border-color: #8B5A00 transparent transparent transparent;
+}
+
+.tooltip-exit .tooltip-text {
+  background-color: #8B0000;
+}
+.tooltip-exit .tooltip-text::after {
+  border-color: #8B0000 transparent transparent transparent;
+}
+
+.table-row-buy {
+  background-color: rgba(126, 214, 178, 0.15);
+}
+.table-row-buy:hover {
+  background-color: rgba(126, 214, 178, 0.25);
+}
+
+.table-row-sell {
+  background-color: rgba(255, 212, 148, 0.15);
+}
+.table-row-sell:hover {
+  background-color: rgba(255, 212, 148, 0.25);
+}
+
+.table-row-exit {
+  background-color: rgba(255, 153, 153, 0.15);
+}
+.table-row-exit:hover {
+  background-color: rgba(255, 153, 153, 0.25);
+}
+
+.table-cell-buy {
+  color: #1A5A45;
+  font-weight: 600;
+}
+
+.table-cell-sell {
+  color: #8B5A00;
+  font-weight: 600;
+}
+
+.table-cell-exit {
+  color: #8B0000;
+  font-weight: 600;
+}

@@ -97,21 +97,21 @@ const Utils = {
   },
 
   /**
-   * Get color class for P&L value
+   * Get color class for P&L value using ButtonHighlights text colors
    */
   getPnLColorClass(value) {
     const num = parseFloat(value);
-    if (isNaN(num) || num === 0) return 'text-neutral-600';
-    return num > 0 ? 'text-profit' : 'text-loss';
+    if (isNaN(num) || num === 0) return 'text-neutral';
+    return num > 0 ? 'text-buy' : 'text-exit';
   },
 
   /**
-   * Get background color class for P&L
+   * Get background color class for P&L using ButtonHighlights backgrounds
    */
   getPnLBgClass(value) {
     const num = parseFloat(value);
-    if (isNaN(num) || num === 0) return 'bg-neutral-100';
-    return num > 0 ? 'bg-profit-bg' : 'bg-loss-bg';
+    if (isNaN(num) || num === 0) return 'bg-neutral-light';
+    return num > 0 ? 'bg-buy-light' : 'bg-exit-light';
   },
 
   /**
@@ -144,17 +144,21 @@ const Utils = {
   },
 
   /**
-   * Show toast notification
+   * Show toast notification using ButtonHighlights alert styles
    */
   showToast(message, type = 'info', duration = 3000) {
     const toast = document.createElement('div');
-    const alertType = type === 'error' ? 'alert-error' :
+    // Map notification types to ButtonHighlights alert classes
+    const alertType = type === 'error' ? 'alert-danger' :
                       type === 'success' ? 'alert-success' :
                       type === 'warning' ? 'alert-warning' : 'alert-info';
 
-    toast.className = `alert ${alertType} shadow-lg`;
+    toast.className = `alert ${alertType} alert-sm`;
+    toast.style.cssText = 'position: fixed; top: 20px; right: 20px; z-index: 9999; min-width: 300px; max-width: 500px; animation: slideIn 0.3s ease;';
     toast.innerHTML = `
-      <span>${this.getToastIcon(type)} ${message}</span>
+      <div class="alert-icon">${this.getToastIcon(type)}</div>
+      <div class="alert-content">${message}</div>
+      <button class="alert-close" onclick="this.parentElement.remove()">×</button>
     `;
 
     const container = document.getElementById('toast-container');
@@ -163,7 +167,8 @@ const Utils = {
 
       // Auto remove
       setTimeout(() => {
-        toast.remove();
+        toast.style.animation = 'slideOut 0.3s ease';
+        setTimeout(() => toast.remove(), 300);
       }, duration);
     }
   },
@@ -197,8 +202,8 @@ const Utils = {
             <p>${message}</p>
           </div>
           <div class="modal-footer">
-            <button class="btn btn-secondary" data-action="cancel">Cancel</button>
-            <button class="btn btn-primary" data-action="confirm">Confirm</button>
+            <button class="btn btn-neutral btn-outline" data-action="cancel">Cancel</button>
+            <button class="btn btn-buy" data-action="confirm">Confirm</button>
           </div>
         </div>
       `;
@@ -387,18 +392,18 @@ const Utils = {
   },
 
   /**
-   * Get status badge HTML
+   * Get status badge HTML using ButtonHighlights badge styles
    */
   getStatusBadge(status) {
     const badges = {
-      healthy: '<span class="badge badge-success">Healthy</span>',
-      unhealthy: '<span class="badge badge-error">Unhealthy</span>',
-      pending: '<span class="badge badge-warning">Pending</span>',
-      active: '<span class="badge badge-success">Active</span>',
+      healthy: '<span class="badge badge-buy">Healthy</span>',
+      unhealthy: '<span class="badge badge-exit">Unhealthy</span>',
+      pending: '<span class="badge badge-sell">Pending</span>',
+      active: '<span class="badge badge-buy">Active</span>',
       inactive: '<span class="badge badge-neutral">Inactive</span>',
-      complete: '<span class="badge badge-success">Complete</span>',
+      complete: '<span class="badge badge-buy">Complete</span>',
       cancelled: '<span class="badge badge-neutral">Cancelled</span>',
-      rejected: '<span class="badge badge-error">Rejected</span>',
+      rejected: '<span class="badge badge-exit">Rejected</span>',
       open: '<span class="badge badge-info">Open</span>',
     };
 

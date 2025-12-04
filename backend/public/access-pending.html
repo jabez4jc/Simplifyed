@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Access Pending | Simplifyed</title>
   <link rel="stylesheet" href="/css/styles.css">
+  <link rel="stylesheet" href="/css/trading-buttons.css">
   <style>
     body {
       background: radial-gradient(circle at 20% 20%, #f3f4f6, #e5e7eb 45%, #f9fafb);
@@ -37,34 +38,7 @@
       font-size: 0.6875rem;
       letter-spacing: 0.01em;
     }
-    .button {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      padding: 10px 14px;
-      border-radius: 12px;
-      border: 1px solid #e5e7eb;
-      background: #111827;
-      color: #f9fafb;
-      font-weight: 600;
-      font-size: 0.875rem;
-      cursor: pointer;
-      width: 100%;
-      transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
-    }
-    .button:hover {
-      background: #0f172a;
-      transform: translateY(-1px);
-      box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
-    }
-    .secondary {
-      background: #f9fafb;
-      color: #111827;
-    }
-    .secondary:hover {
-      background: #fff;
-    }
+    /* Using ButtonHighlights btn classes */
     .checklist {
       margin-top: 16px;
       padding: 10px 12px;
@@ -92,8 +66,8 @@
     </div>
 
     <div style="display: flex; gap: 10px; margin-top: 16px;">
-      <button class="button" id="retry-btn">🔄 Check Again</button>
-      <button class="button secondary" id="logout-btn">🚪 Logout</button>
+      <button class="btn btn-refresh btn-block" id="retry-btn">🔄 Check Again</button>
+      <button class="btn btn-exit btn-outline btn-block" id="logout-btn">🚪 Logout</button>
     </div>
 
     <p id="status-text" style="margin-top: 12px; color: #6b7280; font-size: 0.8125rem;">
