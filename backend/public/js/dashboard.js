@@ -976,6 +976,9 @@ class DashboardApp {
       toggleBtn.setAttribute('aria-expanded', 'false');
       toggleBtn.setAttribute('aria-controls', 'positions-panel-compact');
     }
+
+    // Populate positions summary once so the inline panel is not empty
+    this.refreshWatchlistPositions({ showLoader: false });
   }
 
   /**
