@@ -3624,3 +3624,405 @@ body {
     display: none;
   }
 }
+
+/* ========== Trading Controls Compact Redesign ========== */
+
+/* Compact Panel Container */
+.quick-order-panel-compact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background-color: var(--color-neutral-50);
+}
+
+/* Compact Config Grid */
+.quick-order-config-compact {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--space-2);
+}
+
+/* Compact Field */
+.compact-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.compact-field-full {
+  grid-column: 1 / -1;
+}
+
+.compact-field-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-neutral-600);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.field-help-compact {
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  cursor: help;
+  padding: 0;
+}
+
+.field-help-compact svg {
+  width: 14px;
+  height: 14px;
+  stroke: var(--color-neutral-400);
+  stroke-width: 2;
+}
+
+.field-help-compact:hover svg {
+  stroke: var(--color-info);
+}
+
+.compact-field-control {
+  width: 100%;
+}
+
+/* Trade Mode Selector Compact */
+.trade-mode-selector-compact {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.btn-mode-compact {
+  flex: 1;
+  padding: var(--space-2);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  border: 1px solid var(--color-neutral-300);
+  background: white;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  letter-spacing: 0.5px;
+}
+
+.btn-mode-compact:hover:not(.disabled) {
+  border-color: var(--color-primary, #6366F1);
+  background-color: var(--color-neutral-50);
+}
+
+.btn-mode-compact.active {
+  background-color: var(--color-primary, #6366F1);
+  color: white;
+  border-color: var(--color-primary, #6366F1);
+}
+
+.btn-mode-compact.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Compact Selects and Inputs */
+.select-compact,
+.input-compact {
+  width: 100%;
+  padding: var(--space-2);
+  font-size: var(--font-size-sm);
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--radius-sm);
+  background: white;
+  color: var(--color-neutral-800);
+  transition: border-color 0.2s ease;
+}
+
+.select-compact:focus,
+.input-compact:focus {
+  outline: none;
+  border-color: var(--color-primary, #6366F1);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.1);
+}
+
+.input-compact {
+  font-weight: 600;
+}
+
+/* Leg Chain Row */
+.leg-chain-row {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.leg-chain-row .select-compact {
+  flex: 1;
+}
+
+.btn-compact-secondary {
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: 1px solid var(--color-neutral-300);
+  background: white;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.btn-compact-secondary:hover:not(.disabled) {
+  background-color: var(--color-neutral-50);
+  border-color: var(--color-neutral-400);
+}
+
+.btn-compact-secondary.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Operating Mode Compact */
+.operating-mode-compact {
+  display: flex;
+  gap: var(--space-1);
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.btn-operating {
+  flex: 1;
+  padding: var(--space-2);
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: none;
+  background: white;
+  color: var(--color-neutral-600);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-operating:hover {
+  background-color: var(--color-neutral-50);
+}
+
+.btn-operating.active {
+  background-color: var(--color-info);
+  color: white;
+}
+
+/* Preview Card Compact */
+.preview-card-compact {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-neutral-200);
+  border-radius: var(--radius-md);
+  background-color: var(--color-neutral-100);
+}
+
+/* Quick Order Actions Compact */
+.quick-order-actions-compact {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Action Buttons Grid */
+.action-buttons-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.action-row {
+  display: grid;
+  grid-template-columns: 40px 1fr 1fr;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.action-row-exit {
+  grid-template-columns: 40px 1fr;
+  border-top: 1px solid var(--color-neutral-200);
+  padding-top: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.action-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-neutral-600);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  text-align: right;
+  padding-right: var(--space-1);
+}
+
+/* Compact Action Buttons */
+.btn-action-compact {
+  padding: var(--space-2) var(--space-3);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--radius-sm);
+  background: white;
+  color: var(--color-neutral-800);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.btn-action-compact:hover:not(:disabled) {
+  border-color: var(--color-neutral-400);
+  background-color: var(--color-neutral-50);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.btn-action-compact:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-action-compact:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-action-compact.is-loading {
+  position: relative;
+  color: transparent;
+}
+
+.btn-action-compact.is-loading::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--color-neutral-300);
+  border-top-color: var(--color-neutral-600);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+/* Button Color Variants */
+.btn-action-compact.btn-buy,
+.btn-action-compact.btn-buy-ce,
+.btn-action-compact.btn-buy-pe {
+  border-color: var(--color-profit);
+  color: var(--color-profit);
+}
+
+.btn-action-compact.btn-buy:hover:not(:disabled),
+.btn-action-compact.btn-buy-ce:hover:not(:disabled),
+.btn-action-compact.btn-buy-pe:hover:not(:disabled) {
+  background-color: var(--color-profit-bg);
+  border-color: var(--color-profit);
+}
+
+.btn-action-compact.btn-sell,
+.btn-action-compact.btn-sell-ce,
+.btn-action-compact.btn-sell-pe,
+.btn-action-compact.btn-short {
+  border-color: var(--color-loss);
+  color: var(--color-loss);
+}
+
+.btn-action-compact.btn-sell:hover:not(:disabled),
+.btn-action-compact.btn-sell-ce:hover:not(:disabled),
+.btn-action-compact.btn-sell-pe:hover:not(:disabled),
+.btn-action-compact.btn-short:hover:not(:disabled) {
+  background-color: var(--color-loss-bg);
+  border-color: var(--color-loss);
+}
+
+.btn-action-compact.btn-reduce-ce,
+.btn-action-compact.btn-reduce-pe,
+.btn-action-compact.btn-increase-ce,
+.btn-action-compact.btn-increase-pe,
+.btn-action-compact.btn-cover {
+  border-color: var(--color-neutral-400);
+  color: var(--color-neutral-700);
+}
+
+.btn-action-compact.btn-reduce-ce:hover:not(:disabled),
+.btn-action-compact.btn-reduce-pe:hover:not(:disabled),
+.btn-action-compact.btn-increase-ce:hover:not(:disabled),
+.btn-action-compact.btn-increase-pe:hover:not(:disabled),
+.btn-action-compact.btn-cover:hover:not(:disabled) {
+  background-color: var(--color-neutral-100);
+  border-color: var(--color-neutral-500);
+}
+
+.btn-action-compact.btn-close-all-ce,
+.btn-action-compact.btn-close-all-pe,
+.btn-action-compact.btn-exit-all,
+.btn-action-compact.btn-exit {
+  border-color: var(--color-warning);
+  color: var(--color-warning);
+}
+
+.btn-action-compact.btn-close-all-ce:hover:not(:disabled),
+.btn-action-compact.btn-close-all-pe:hover:not(:disabled),
+.btn-action-compact.btn-exit-all:hover:not(:disabled),
+.btn-action-compact.btn-exit:hover:not(:disabled) {
+  background-color: var(--color-warning-bg);
+  border-color: var(--color-warning);
+}
+
+/* Spin Animation */
+@keyframes spin {
+  to {
+    transform: translate(-50%, -50%) rotate(360deg);
+  }
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .quick-order-config-compact {
+    grid-template-columns: 1fr;
+  }
+
+  .action-row {
+    grid-template-columns: 35px 1fr;
+    gap: var(--space-1);
+  }
+
+  .action-row .btn-action-compact:nth-child(3) {
+    grid-column: 2;
+    margin-top: var(--space-1);
+  }
+
+  .action-row-exit {
+    grid-template-columns: 35px 1fr;
+  }
+
+  .btn-action-compact {
+    font-size: 0.625rem;
+    padding: var(--space-1) var(--space-2);
+  }
+
+  .action-label {
+    font-size: 0.625rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .quick-order-panel-compact {
+    padding: var(--space-2);
+  }
+
+  .btn-mode-compact {
+    font-size: 0.625rem;
+    padding: var(--space-1);
+  }
+
+  .compact-field-label {
+    font-size: 0.625rem;
+  }
+}
