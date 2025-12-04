@@ -1272,17 +1272,17 @@ class DashboardApp {
   }
 
   /**
-   * Get badge class for symbol type
+   * Get badge class for symbol type with pastel highlights
    */
   getSymbolTypeBadgeClass(type) {
     const classes = {
-      INDEX: 'badge-primary',    // Indices - cannot be traded directly
-      EQUITY: 'badge-info',       // Equity stocks
-      FUTURES: 'badge-warning',   // Futures contracts
-      OPTIONS: 'badge-success',   // Options contracts
-      UNKNOWN: 'badge-neutral',   // Unknown/unclassified
+      INDEX: 'badge badge-info',       // Indices - light blue pastel
+      EQUITY: 'badge badge-buy',        // Equity stocks - light green pastel
+      FUTURES: 'badge badge-sell',      // Futures contracts - light orange pastel
+      OPTIONS: 'badge badge-neutral',   // Options contracts - light purple/neutral pastel
+      UNKNOWN: 'badge badge-neutral',   // Unknown/unclassified
     };
-    return classes[type] || 'badge-neutral';
+    return classes[type] || 'badge badge-neutral';
   }
 
   /**

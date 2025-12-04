@@ -1467,15 +1467,15 @@ body {
 }
 
 .btn-trade-mode:hover:not(.disabled) {
-  border-color: var(--color-info);
-  color: var(--color-info);
-  background-color: var(--color-info-bg);
+  border-color: #7ED6B2;
+  color: #1A5A45;
+  background-color: rgba(126, 214, 178, 0.1);
 }
 
 .btn-trade-mode.active {
-  background-color: var(--color-info);
-  color: white;
-  border-color: var(--color-info);
+  background-color: rgba(126, 214, 178, 0.2);
+  color: #1A5A45;
+  border-color: #7ED6B2;
 }
 
 .btn-trade-mode.disabled {
@@ -1547,12 +1547,12 @@ body {
 }
 
 .operating-mode-toggle button:not(.is-active):hover {
-  background-color: var(--color-neutral-50);
+  background-color: rgba(126, 214, 178, 0.1);
 }
 
 .operating-mode-toggle button.is-active {
-  background-color: var(--color-info);
-  color: white;
+  background-color: rgba(126, 214, 178, 0.2);
+  color: #1A5A45;
 }
 
 .options-leg-row {
