@@ -12,7 +12,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
       color: #111827;
     }
     .pending-card {
@@ -20,29 +20,29 @@
       border: 1px solid #e5e7eb;
       border-radius: 16px;
       box-shadow: 0 20px 50px rgba(0, 0, 0, 0.06);
-      padding: 32px;
+      padding: 20px;
       max-width: 560px;
       width: 100%;
     }
     .badge {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
       background: #fff7ed;
       color: #9a3412;
       border: 1px solid #fed7aa;
       border-radius: 999px;
-      padding: 6px 12px;
+      padding: 5px 10px;
       font-weight: 600;
-      font-size: 13px;
+      font-size: 11px;
       letter-spacing: 0.01em;
     }
     .button {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      gap: 8px;
-      padding: 12px 16px;
+      gap: 6px;
+      padding: 8px 12px;
       border-radius: 12px;
       border: 1px solid #e5e7eb;
       background: #111827;
@@ -65,13 +65,13 @@
       background: #fff;
     }
     .checklist {
-      margin-top: 20px;
-      padding: 12px 14px;
+      margin-top: 16px;
+      padding: 10px 12px;
       background: #f9fafb;
       border: 1px dashed #e5e7eb;
       border-radius: 12px;
       color: #374151;
-      font-size: 14px;
+      font-size: 12px;
       line-height: 1.5;
     }
   </style>
@@ -79,23 +79,23 @@
 <body>
   <div class="pending-card">
     <div class="badge">🔒 Access Pending</div>
-    <h1 style="margin: 16px 0 8px; font-size: 26px; font-weight: 800;">Hang tight — your access is being reviewed</h1>
-    <p style="margin-bottom: 20px; color: #4b5563; line-height: 1.6;">
-      You’ve successfully signed in, but an administrator needs to assign you a role before you can use the dashboard.
-      This is usually quick. We’ll keep checking for you.
+    <h1 style="margin: 12px 0 6px; font-size: 18px; font-weight: 800;">Hang tight — your access is being reviewed</h1>
+    <p style="margin-bottom: 16px; color: #4b5563; line-height: 1.6; font-size: 14px;">
+      You've successfully signed in, but an administrator needs to assign you a role before you can use the dashboard.
+      This is usually quick. We'll keep checking for you.
     </p>
 
     <div class="checklist">
-      <div>• Keep this page open — we’ll auto-check every 10 seconds.</div>
+      <div>• Keep this page open — we'll auto-check every 10 seconds.</div>
       <div>• If you believe you should already have access, contact your admin.</div>
     </div>
 
-    <div style="display: flex; gap: 12px; margin-top: 20px;">
+    <div style="display: flex; gap: 10px; margin-top: 16px;">
       <button class="button" id="retry-btn">🔄 Check Again</button>
       <button class="button secondary" id="logout-btn">🚪 Logout</button>
     </div>
 
-    <p id="status-text" style="margin-top: 14px; color: #6b7280; font-size: 14px;">
+    <p id="status-text" style="margin-top: 12px; color: #6b7280; font-size: 12px;">
       Checking access status...
     </p>
   </div>
