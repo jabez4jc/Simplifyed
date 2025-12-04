@@ -1097,10 +1097,13 @@ body {
 /* ========== Landing Page ========== */
 .landing-container {
   display: flex;
-<<<<<<< ours
   gap: 12px;
   flex-wrap: wrap;
   margin-bottom: 14px;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
 }
 
 .hero-highlights {
@@ -1220,12 +1223,6 @@ body {
   position: absolute;
   left: 0;
   color: #22c55e;
-=======
-  align-items: center;
-  justify-content: center;
-  min-height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
->>>>>>> theirs
 }
 
 .landing-card {

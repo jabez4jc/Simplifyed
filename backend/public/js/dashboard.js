@@ -1168,9 +1168,9 @@ class DashboardApp {
               ${symbols.map(sym => `
                 <tr class="symbol-row-compact"
                     data-symbol-id="${sym.id}"
-                    data-symbol="${sym.symbol}"
-                    data-exchange="${sym.exchange}"
-                    data-symbol-type="${sym.symbol_type || 'UNKNOWN'}"
+                    data-symbol="${Utils.escapeHTML(sym.symbol)}"
+                    data-exchange="${Utils.escapeHTML(sym.exchange)}"
+                    data-symbol-type="${Utils.escapeHTML(sym.symbol_type || 'UNKNOWN')}"
                     data-tradable-equity="${sym.tradable_equity ? 1 : 0}"
                     data-tradable-futures="${sym.tradable_futures ? 1 : 0}"
                     data-tradable-options="${sym.tradable_options ? 1 : 0}"
