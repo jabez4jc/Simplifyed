@@ -3652,8 +3652,8 @@ body {
   min-width: 0;
 }
 
-/* Right Column Container */
-.quick-order-right-column {
+/* Left Column Container */
+.quick-order-left-column {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);

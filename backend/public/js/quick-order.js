@@ -417,23 +417,23 @@ class QuickOrderHandler {
     return `
       <div class="quick-order-panel-compact">
         <div class="quick-order-config-wrapper">
-          <div class="quick-order-config-compact">
-            ${tradeModeField}
-            ${expiryField}
-            ${optionsLegField}
-            ${operatingModeField}
-            ${strikePolicyField}
-            ${quantityField}
-            ${productField}
-          </div>
-          <div class="quick-order-right-column">
+          <div class="quick-order-left-column">
+            <div class="quick-order-config-compact">
+              ${tradeModeField}
+              ${expiryField}
+              ${optionsLegField}
+              ${operatingModeField}
+              ${strikePolicyField}
+              ${quantityField}
+              ${productField}
+            </div>
             <div class="quick-order-preview">
               ${futuresPreviewBlock}
               ${optionPreviewBlock}
             </div>
-            <div class="quick-order-actions-compact">
-              ${this.renderActionButtons(watchlistId, symbolId, symbol, exchange, tradeMode, operatingMode, strikePolicy, quantity, selectedExpiry, optionsLeg)}
-            </div>
+          </div>
+          <div class="quick-order-actions-compact">
+            ${this.renderActionButtons(watchlistId, symbolId, symbol, exchange, tradeMode, operatingMode, strikePolicy, quantity, selectedExpiry, optionsLeg)}
           </div>
         </div>
       </div>
