@@ -3068,8 +3068,8 @@ body {
 /* Compact Button Styles */
 .watchlists-compact-toolbar .btn-icon,
 .positions-panel-actions .btn-icon {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3080,8 +3080,8 @@ body {
   transition: all 0.2s ease;
 .watchlists-compact-toolbar .btn-icon svg,
 .positions-panel-actions .btn-icon svg {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   stroke: var(--color-neutral-600);
   stroke-width: 2;
 }
