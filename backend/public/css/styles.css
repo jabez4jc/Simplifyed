@@ -3631,9 +3631,17 @@ body {
 .quick-order-panel-compact {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-3);
+  gap: var(--space-2);
+  padding: var(--space-2);
   background-color: var(--color-neutral-50);
+}
+
+/* Config and Preview Wrapper - 2 Column Layout */
+.quick-order-config-wrapper {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-3);
+  align-items: start;
 }
 
 /* Compact Config Grid */
@@ -3641,6 +3649,15 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: var(--space-2);
+  min-width: 0;
+}
+
+/* Preview Container */
+.quick-order-preview {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  min-width: 0;
 }
 
 /* Compact Field */
@@ -3700,7 +3717,7 @@ body {
 
 .btn-mode-compact {
   flex: 1;
-  padding: var(--space-2);
+  padding: var(--space-1) var(--space-2);
   font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -3732,7 +3749,7 @@ body {
 .select-compact,
 .input-compact {
   width: 100%;
-  padding: var(--space-2);
+  padding: var(--space-1) var(--space-2);
   font-size: var(--font-size-sm);
   border: 1px solid var(--color-neutral-300);
   border-radius: var(--radius-sm);
@@ -3795,7 +3812,7 @@ body {
 
 .btn-operating {
   flex: 1;
-  padding: var(--space-2);
+  padding: var(--space-1) var(--space-2);
   font-size: 0.75rem;
   font-weight: 600;
   border: none;
@@ -4022,6 +4039,11 @@ body {
 
 /* Responsive Design */
 @media (max-width: 768px) {
+  .quick-order-config-wrapper {
+    grid-template-columns: 1fr;
+    gap: var(--space-2);
+  }
+
   .quick-order-config-compact {
     grid-template-columns: 1fr;
   }
