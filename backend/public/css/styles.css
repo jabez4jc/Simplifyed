@@ -1877,8 +1877,8 @@ body {
 }
 
 .options-button-row.exit-row {
-  background-color: var(--color-warning-bg);
-  border: 1px solid var(--color-warning);
+  background-color: var(--color-warning-50);
+  border: 1px solid var(--color-warning-200);
 }
 
 .button-row-label {
@@ -3011,7 +3011,6 @@ body {
   gap: var(--space-3);
   padding: var(--space-4);
   background-color: var(--color-neutral-50);
-  min-height: 100vh;
 }
 
 /* Compact Toolbar */
@@ -3066,10 +3065,9 @@ body {
 }
 
 /* Compact Button Styles */
-.watchlists-compact-toolbar .btn-icon,
-.positions-panel-actions .btn-icon {
-  width: 32px;
-  height: 32px;
+.btn-icon {
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -3078,28 +3076,26 @@ body {
   border-radius: var(--radius-md);
   cursor: pointer;
   transition: all 0.2s ease;
-.watchlists-compact-toolbar .btn-icon svg,
-.positions-panel-actions .btn-icon svg {
-  width: 16px;
-  height: 16px;
+}
+
+.btn-icon svg {
+  width: 18px;
+  height: 18px;
   stroke: var(--color-neutral-600);
   stroke-width: 2;
 }
 
-.watchlists-compact-toolbar .btn-icon:hover,
-.positions-panel-actions .btn-icon:hover {
+.btn-icon:hover {
   background-color: var(--color-neutral-50);
   border-color: var(--color-neutral-300);
 }
 
-.watchlists-compact-toolbar .btn-icon.active,
-.positions-panel-actions .btn-icon.active {
+.btn-icon.active {
   background-color: var(--color-primary, #6366F1);
   border-color: var(--color-primary, #6366F1);
 }
 
-.watchlists-compact-toolbar .btn-icon.active svg,
-.positions-panel-actions .btn-icon.active svg {
+.btn-icon.active svg {
   stroke: white;
 }
 
@@ -3177,22 +3173,22 @@ body {
   gap: var(--space-2);
 }
 
-.positions-panel-actions .btn-icon.btn-sm {
+.btn-icon.btn-sm {
   width: 32px;
   height: 32px;
 }
 
-.positions-panel-actions .btn-icon.btn-sm svg {
+.btn-icon.btn-sm svg {
   width: 16px;
   height: 16px;
 }
 
-.positions-panel-actions .btn-icon.btn-danger:hover {
+.btn-icon.btn-danger:hover {
   background-color: var(--color-loss-bg);
   border-color: var(--color-loss);
 }
 
-.positions-panel-actions .btn-icon.btn-danger svg {
+.btn-icon.btn-danger svg {
   stroke: var(--color-loss);
 }
 
@@ -3510,7 +3506,6 @@ body {
   letter-spacing: 0.5px;
   display: inline-block;
 }
-
 
 /* Actions Group */
 .actions-group {
@@ -3972,7 +3967,7 @@ body {
   border: 2px solid var(--color-neutral-300);
   border-top-color: var(--color-neutral-600);
   border-radius: 50%;
-  animation: spin-centered 0.6s linear infinite;
+  animation: spin 0.6s linear infinite;
 }
 
 /* Button Color Variants */
@@ -4041,7 +4036,7 @@ body {
 }
 
 /* Spin Animation */
-@keyframes spin-centered {
+@keyframes spin {
   to {
     transform: translate(-50%, -50%) rotate(360deg);
   }
@@ -4119,26 +4114,26 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--color-neutral-200);
   background-color: var(--color-neutral-50);
 }
 
 .card-title-compact {
-  font-size: 0.813rem;
+  font-size: 0.875rem;
   font-weight: 700;
   color: var(--color-neutral-900);
   margin: 0;
 }
 
-.badge-count-compact {
+.badge-compact {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 1.25rem;
-  height: 1.25rem;
+  min-width: 1.5rem;
+  height: 1.5rem;
   padding: 0 var(--space-1);
-  font-size: 0.688rem;
+  font-size: 0.75rem;
   font-weight: 600;
   border-radius: 9999px;
   background-color: var(--color-primary, #6366F1);
@@ -4147,7 +4142,7 @@ body {
 
 /* Position Instance Card Compact */
 .position-instance-card-compact {
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   border: 1px solid var(--color-neutral-200);
   background-color: white;
 }
@@ -4155,15 +4150,15 @@ body {
 .position-instance-header-compact {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-1) var(--space-2);
+  gap: var(--space-2);
+  padding: var(--space-2);
 }
 
 .position-instance-toggle {
   display: flex;
   flex: 1;
   align-items: center;
-  gap: var(--space-1);
+  gap: var(--space-2);
   text-align: left;
   background: none;
   border: none;
@@ -4180,12 +4175,12 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1rem;
-  height: 1rem;
+  width: 1.25rem;
+  height: 1.25rem;
   border-radius: 9999px;
   border: 1px solid var(--color-neutral-300);
   color: var(--color-neutral-600);
-  font-size: 0.625rem;
+  font-size: 0.75rem;
   transition: transform 0.2s ease;
 }
 
@@ -4194,19 +4189,19 @@ body {
 }
 
 .instance-name {
-  font-size: 0.813rem;
+  font-size: 0.875rem;
   font-weight: 600;
   color: var(--color-neutral-900);
 }
 
 .instance-meta {
-  font-size: 0.688rem;
+  font-size: 0.75rem;
   color: var(--color-neutral-600);
 }
 
 .btn-close-all-compact {
-  padding: 2px var(--space-2);
-  font-size: 0.688rem;
+  padding: var(--space-1) var(--space-3);
+  font-size: 0.75rem;
   font-weight: 600;
   border: 1px solid var(--color-error);
   border-radius: var(--radius-sm);
