@@ -1211,14 +1211,13 @@ class QuickOrderHandler {
       : 'Refreshed moments ago';
 
     container.innerHTML = `
-      <div class="flex items-center justify-between gap-4 flex-wrap text-xs text-neutral-600">
-        <div>
-          <p class="font-semibold text-base-content">Option Symbols (${preview.strikeOffset})</p>
-          <p>Exp ${expiryLabel} • ${Utils.escapeHTML(underlyingSymbol)} ${underlyingLtp} • ATM ${atmStrike}</p>
+      <div class="flex items-center justify-between gap-2 text-xs mb-2">
+        <div class="font-semibold text-base-content">
+          Option Symbols (${preview.strikeOffset}) | Expiry <span class="text-neutral-700">${expiryLabel}</span> • ${Utils.escapeHTML(underlyingSymbol)} <span class="text-neutral-700">${underlyingLtp}</span> • ATM <span class="text-neutral-700">${atmStrike}</span>
         </div>
-        <span>${updatedLabel}</span>
+        <span class="text-neutral-500 whitespace-nowrap">${updatedLabel}</span>
       </div>
-      <div class="option-preview-grid grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
         ${this.renderOptionPreviewLeg('CALL', preview.ce)}
         ${this.renderOptionPreviewLeg('PUT', preview.pe)}
       </div>
@@ -1228,7 +1227,7 @@ class QuickOrderHandler {
   renderOptionPreviewLeg(label, leg) {
     if (!leg) {
       return `
-        <div class="option-leg-card border border-dashed rounded-lg p-3 text-sm text-neutral-500">
+        <div class="text-xs text-neutral-500 p-1">
           No ${label} leg available
         </div>
       `;
@@ -1245,13 +1244,12 @@ class QuickOrderHandler {
       : 'text-neutral-500';
 
     return `
-      <div class="option-leg-card border border-base-200 rounded-lg p-3 bg-base-100/80 space-y-1">
-        <div class="text-xs uppercase tracking-wide text-neutral-500">${label}</div>
-        <div class="font-mono text-sm break-all">${Utils.escapeHTML(leg.symbol || '')}</div>
-        <div class="text-xs text-neutral-600">Strike ${leg.strike ?? '—'} • Lot ${leg.lotSize ?? '—'}</div>
+      <div class="text-xs">
+        <div class="text-neutral-600 mb-1">
+          ${label} • <span class="font-mono">${Utils.escapeHTML(leg.symbol || '')}</span> • Strike ${leg.strike ?? '—'} • Lot ${leg.lotSize ?? '—'}
+        </div>
         <div class="flex items-baseline gap-2">
-          <span class="text-lg font-semibold">${ltpText}</span>
-          <span class="${changeClass} text-xs">${changeText}</span>
+          <span class="text-base font-semibold">${ltpText}</span>
         </div>
       </div>
     `;
@@ -1356,18 +1354,14 @@ class QuickOrderHandler {
         : '';
 
     container.innerHTML = `
-      <div class="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <p class="text-xs uppercase tracking-wide text-neutral-500">Contract</p>
-          <p class="font-semibold text-base-content">${Utils.escapeHTML(preview.tradingSymbol || preview.futuresSymbol)}</p>
-          <p class="text-xs text-neutral-500">Expiry ${expiryLabel}</p>
+      <div class="flex items-center justify-between gap-2 text-xs mb-1">
+        <div class="font-semibold text-base-content">
+          Contract | <span class="text-neutral-700">${Utils.escapeHTML(preview.tradingSymbol || preview.futuresSymbol)}</span> • Expiry <span class="text-neutral-700">${expiryLabel}</span>
         </div>
-        <div class="text-right">
-          <p class="text-xs uppercase tracking-wide text-neutral-500">LTP</p>
-          <p class="text-2xl font-semibold ${changeClass}">${ltp}</p>
-          <p class="text-xs ${changeClass}">${changeText}</p>
-          ${refreshedLabel ? `<p class="text-[11px] text-neutral-500 mt-1">${Utils.escapeHTML(refreshedLabel)}</p>` : ''}
-        </div>
+        ${refreshedLabel ? `<span class="text-neutral-500 whitespace-nowrap">${Utils.escapeHTML(refreshedLabel)}</span>` : ''}
+      </div>
+      <div class="flex items-baseline gap-2">
+        <span class="text-lg font-semibold ${changeClass}">${ltp}</span>
       </div>
     `;
   }
