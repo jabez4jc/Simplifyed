@@ -75,8 +75,8 @@ class DashboardApp {
           </div>
           <div class="space-y-2">${items}</div>
           <div class="flex gap-2">
-            <button class="btn btn-primary btn-sm" onclick="app.markAllNotificationsRead()">Mark all read</button>
-            <button class="btn btn-secondary btn-sm" onclick="app.renderNotificationsView()">Refresh</button>
+            <button class="btn btn-buy btn-sm" onclick="app.markAllNotificationsRead()">Mark all read</button>
+            <button class="btn btn-neutral btn-outline btn-sm" onclick="app.renderNotificationsView()">Refresh</button>
             <button class="btn btn-outline btn-sm" onclick="app.triggerHealthCheck()">Run health check now</button>
           </div>
         </div>
@@ -614,7 +614,7 @@ class DashboardApp {
       <div class="card">
         <div class="card-header">
           <h3 class="card-title">Active Instances</h3>
-          <button class="btn btn-primary btn-sm" onclick="app.showAddInstanceModal()">
+          <button class="btn btn-buy btn-sm" onclick="app.showAddInstanceModal()">
             + Add Instance
           </button>
         </div>
@@ -685,7 +685,7 @@ class DashboardApp {
       <div class="card">
         <div class="card-header">
           <h3 class="card-title">All Instances</h3>
-          <button class="btn btn-primary" onclick="app.showAddInstanceModal()">
+          <button class="btn btn-buy" onclick="app.showAddInstanceModal()">
             + Add Instance
           </button>
         </div>
@@ -705,13 +705,13 @@ class DashboardApp {
           <div class="flex items-center gap-4">
             <span id="selected-count" class="text-sm font-medium">0 selected</span>
             <div class="flex gap-2">
-              <button class="btn btn-secondary btn-sm" onclick="app.bulkSetActive(true)">
+              <button class="btn btn-neutral btn-outline btn-sm" onclick="app.bulkSetActive(true)">
                 Set Active
               </button>
-              <button class="btn btn-secondary btn-sm" onclick="app.bulkSetActive(false)">
+              <button class="btn btn-neutral btn-outline btn-sm" onclick="app.bulkSetActive(false)">
                 Set Inactive
               </button>
-              <button class="btn btn-success btn-sm" onclick="app.bulkSetAnalyzerMode(false)">
+              <button class="btn btn-buy btn-sm" onclick="app.bulkSetAnalyzerMode(false)">
                 Set Live Mode
               </button>
               <button class="btn btn-warning btn-sm" onclick="app.bulkSetAnalyzerMode(true)">
@@ -821,12 +821,12 @@ class DashboardApp {
               </td>
               <td>
                 <div class="flex gap-2">
-                  <button class="btn btn-secondary btn-sm"
+                  <button class="btn btn-neutral btn-outline btn-sm"
                           onclick="app.refreshInstance(${instance.id})"
                           title="Refresh">
                     🔄
                   </button>
-                  <button class="btn btn-secondary btn-sm"
+                  <button class="btn btn-neutral btn-outline btn-sm"
                           onclick="app.showEditInstanceModal(${instance.id})">
                     Edit
                   </button>
@@ -834,7 +834,7 @@ class DashboardApp {
                           onclick="app.toggleAnalyzerMode(${instance.id}, ${!instance.is_analyzer_mode})">
                     ${instance.is_analyzer_mode ? 'Go Live' : 'Analyzer'}
                   </button>
-                  <button class="btn btn-error btn-sm"
+                  <button class="btn btn-exit btn-sm"
                           onclick="app.deleteInstance(${instance.id})">
                     Delete
                   </button>
@@ -909,7 +909,7 @@ class DashboardApp {
           <div class="p-4 space-y-2">
             <h3 class="text-lg font-semibold text-loss">Unable to load watchlists</h3>
             <p class="text-sm text-neutral-600">${Utils.escapeHTML(error?.message || 'Network error')}</p>
-            <button class="btn btn-primary btn-sm" onclick="app.renderWatchlistsView()">Retry</button>
+            <button class="btn btn-buy btn-sm" onclick="app.renderWatchlistsView()">Retry</button>
           </div>
         </div>
       `;
@@ -940,7 +940,7 @@ class DashboardApp {
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2-2v2m8 0V6a2 2 0 012 2v6a2 2 0 01-2 2H8a2 2 0 01-2-2V8a2 2 0 012-2h8z" />
               </svg>
             </button>
-            <button class="btn btn-primary btn-compact" onclick="app.showAddWatchlistModal()">
+            <button class="btn btn-buy btn-compact" onclick="app.showAddWatchlistModal()">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
               </svg>
@@ -967,7 +967,7 @@ class DashboardApp {
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h4M20 20v-5h-4M5 9a7 7 0 0112-4M19 15a7 7 0 01-12 4" />
                 </svg>
               </button>
-              <button class="btn-icon btn-sm btn-danger" onclick="app.closeAllOpenPositions()" title="Close All">
+              <button class="btn btn-exit btn-sm btn-icon-only" onclick="app.closeAllOpenPositions()" title="Close All">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                 </svg>
@@ -1006,7 +1006,7 @@ class DashboardApp {
         <div class="watchlists-empty">
           <h4 class="text-lg font-semibold">No watchlists yet</h4>
           <p>Create your first watchlist to start tracking instruments.</p>
-          <button class="btn btn-primary btn-sm mt-2" onclick="app.showAddWatchlistModal()">
+          <button class="btn btn-buy btn-sm mt-2" onclick="app.showAddWatchlistModal()">
             + Create Watchlist
           </button>
         </div>
@@ -1736,7 +1736,7 @@ class DashboardApp {
               <button class="btn btn-outline btn-sm" onclick="app.loadOrders()">
                 Refresh
               </button>
-              <button class="btn btn-error btn-sm" onclick="app.cancelAllOpenOrdersGlobal()">
+              <button class="btn btn-exit btn-sm" onclick="app.cancelAllOpenOrdersGlobal()">
                 Cancel All Open
               </button>
             </div>
@@ -1876,7 +1876,7 @@ class DashboardApp {
           <div class="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              class="btn btn-error btn-sm"
+              class="btn btn-exit btn-sm"
               onclick="event.stopPropagation(); app.cancelAllOrders(${instanceEntry.instance_id})"
             >
               Cancel All Open Orders
@@ -2351,7 +2351,7 @@ class DashboardApp {
           <button class="btn btn-outline btn-sm" onclick="app.renderPositionsView()">
             Refresh
           </button>
-          <button class="btn btn-error btn-sm" onclick="app.closeAllPositionsGlobal()">
+          <button class="btn btn-exit btn-sm" onclick="app.closeAllPositionsGlobal()">
             Close All Positions
           </button>
         </div>
@@ -2406,7 +2406,7 @@ class DashboardApp {
             <span>P&L: <span class="font-medium ${Utils.getPnLColorClass(inst.total_pnl)}">${Utils.formatCurrency(inst.total_pnl)}</span></span>
           </div>
         </div>
-        <button class="btn btn-error btn-sm"
+        <button class="btn btn-exit btn-sm"
                 onclick="app.closeAllPositions(${inst.instance_id})">
           Close All Positions
         </button>
@@ -2489,7 +2489,7 @@ class DashboardApp {
               <div style="display: flex; gap: 0.5rem; align-items: center;">
                 <input type="text" name="broker" id="instance-broker" class="form-input" readonly
                        placeholder="Click 'Test Connection' to detect">
-                <button type="button" class="btn btn-secondary btn-sm"
+                <button type="button" class="btn btn-neutral btn-outline btn-sm"
                         onclick="app.testInstanceConnection()">
                   Test Connection
                 </button>
@@ -2499,7 +2499,7 @@ class DashboardApp {
 
             <div class="form-group">
               <label class="form-label">Verify API Key</label>
-              <button type="button" class="btn btn-secondary btn-sm" style="width: 100%;"
+              <button type="button" class="btn btn-neutral btn-outline btn-sm" style="width: 100%;"
                       onclick="app.testInstanceApiKey()">
                 Test API Key with Funds Endpoint
               </button>
@@ -2562,10 +2562,10 @@ class DashboardApp {
           </form>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">
+          <button class="btn btn-neutral btn-outline" onclick="this.closest('.modal-overlay').remove()">
             Cancel
           </button>
-          <button class="btn btn-primary" onclick="app.submitAddInstance()">
+          <button class="btn btn-buy" onclick="app.submitAddInstance()">
             Add Instance
           </button>
         </div>
@@ -2755,10 +2755,10 @@ class DashboardApp {
           </form>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">
+          <button class="btn btn-neutral btn-outline" onclick="this.closest('.modal-overlay').remove()">
             Cancel
           </button>
-          <button class="btn btn-primary" onclick="app.submitAddWatchlist()">
+          <button class="btn btn-buy" onclick="app.submitAddWatchlist()">
             Add Watchlist
           </button>
         </div>
@@ -2977,7 +2977,7 @@ class DashboardApp {
           <div id="symbol-search-results" class="mt-4"></div>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="app.closeSymbolSearchModal()">
+          <button class="btn btn-neutral btn-outline" onclick="app.closeSymbolSearchModal()">
             Cancel
           </button>
         </div>
@@ -3237,10 +3237,10 @@ class DashboardApp {
           </form>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="app.cancelSymbolConfig()">
+          <button class="btn btn-neutral btn-outline" onclick="app.cancelSymbolConfig()">
             Cancel
           </button>
-          <button class="btn btn-primary" onclick="app.confirmAddSymbol()">
+          <button class="btn btn-buy" onclick="app.confirmAddSymbol()">
             ${saveLabel}
           </button>
         </div>
@@ -3435,10 +3435,10 @@ class DashboardApp {
           </div>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">
+          <button class="btn btn-neutral btn-outline" onclick="this.closest('.modal-overlay').remove()">
             Cancel
           </button>
-          <button class="btn btn-primary" onclick="app.submitInstanceAssignments(${watchlistId})">
+          <button class="btn btn-buy" onclick="app.submitInstanceAssignments(${watchlistId})">
             Save Assignments
           </button>
         </div>
@@ -4097,7 +4097,7 @@ class DashboardApp {
                   <input type="text" name="broker" id="edit-instance-broker" class="form-input" readonly
                         value="${Utils.escapeHTML(instance.broker || 'N/A')}"
                         style="background-color: var(--color-neutral-100); cursor: not-allowed;">
-                  <button type="button" class="btn btn-secondary btn-sm"
+                  <button type="button" class="btn btn-neutral btn-outline btn-sm"
                           onclick="app.testEditInstanceConnection()">
                     Test Connection
                   </button>
@@ -4180,10 +4180,10 @@ class DashboardApp {
             </form>
           </div>
           <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">
+            <button class="btn btn-neutral btn-outline" onclick="this.closest('.modal-overlay').remove()">
               Cancel
             </button>
-            <button class="btn btn-primary" onclick="app.submitEditInstance()">
+            <button class="btn btn-buy" onclick="app.submitEditInstance()">
               Update Instance
             </button>
           </div>
@@ -4283,10 +4283,10 @@ class DashboardApp {
             </form>
           </div>
           <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">
+            <button class="btn btn-neutral btn-outline" onclick="this.closest('.modal-overlay').remove()">
               Cancel
             </button>
-            <button class="btn btn-primary" onclick="app.submitEditWatchlist()">
+            <button class="btn btn-buy" onclick="app.submitEditWatchlist()">
               Update Watchlist
             </button>
           </div>
@@ -4424,10 +4424,10 @@ class DashboardApp {
             </div>
           </div>
           <div class="modal-footer">
-            <button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">
+            <button class="btn btn-neutral btn-outline" onclick="this.closest('.modal-overlay').remove()">
               Close
             </button>
-            <button class="btn btn-primary" onclick="this.closest('.modal-overlay').remove(); app.showEditWatchlistModal(${id})">
+            <button class="btn btn-buy" onclick="this.closest('.modal-overlay').remove(); app.showEditWatchlistModal(${id})">
               Edit Watchlist
             </button>
           </div>

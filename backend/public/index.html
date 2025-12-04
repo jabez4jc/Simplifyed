@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Simplifyed Admin V2</title>
   <link rel="stylesheet" href="/css/styles.css">
+  <link rel="stylesheet" href="/css/trading-buttons.css">
   <style>
     /* Landing styles are fully scoped to avoid affecting the dashboard */
     .lp-body {
@@ -65,27 +66,13 @@
       margin-bottom: 10px;
     }
     .lp-btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      padding: 10px 14px;
-      border-radius: 12px;
       text-decoration: none;
-      font-weight: 700;
-      font-size: 0.8125rem;
-      transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
     }
     .lp-btn-primary {
-      background: linear-gradient(120deg, #2563eb, #4f46e5);
-      color: white;
-      box-shadow: 0 12px 30px rgba(79,70,229,0.35);
+      /* Using ButtonHighlights btn-buy style for primary actions */
     }
-    .lp-btn-primary:hover { transform: translateY(-1px); }
     .lp-btn-secondary {
-      background: white;
-      border: 1px solid #d1d5db;
-      color: #111827;
+      /* Using ButtonHighlights btn-neutral btn-outline style for secondary actions */
     }
     .lp-pills {
       display: flex;
@@ -173,8 +160,8 @@
           Run every OpenAlgo instance from one secure dashboard. Execute orders, monitor positions, keep instruments fresh, and protect rate limits—without hopping tabs.
         </p>
         <div class="lp-actions">
-          <a href="/login.html" class="lp-btn lp-btn-primary">Enter Dashboard</a>
-          <a href="#capabilities" class="lp-btn lp-btn-secondary">See what’s inside</a>
+          <a href="/login.html" class="btn btn-buy btn-lg">Enter Dashboard</a>
+          <a href="#capabilities" class="btn btn-neutral btn-outline btn-lg">See what's inside</a>
         </div>
         <div class="lp-pills">
           <div class="lp-pill">Unified watchlists</div>
@@ -262,8 +249,8 @@
         <p style="margin:4px 0 0;color:#cbd5e1;">Unified control for OpenAlgo trading infrastructure.</p>
       </div>
       <div class="lp-footer-actions">
-        <a href="/login.html" class="lp-btn lp-btn-primary">Launch Dashboard</a>
-        <a href="/QUICKSTART.md" class="lp-btn lp-btn-secondary">Quickstart Guide</a>
+        <a href="/login.html" class="btn btn-buy">Launch Dashboard</a>
+        <a href="/QUICKSTART.md" class="btn btn-neutral btn-outline">Quickstart Guide</a>
       </div>
     </div>
   </footer>

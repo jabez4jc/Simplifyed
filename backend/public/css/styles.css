@@ -645,6 +645,11 @@ body {
 }
 
 /* ========== Buttons ========== */
+/*
+ * Note: ButtonHighlights template (trading-buttons.css) is now the primary button system.
+ * The styles below are kept for backward compatibility and specific customizations.
+ * ButtonHighlights provides: btn-buy, btn-sell, btn-exit, btn-neutral, btn-edit, btn-refresh, etc.
+ */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -966,6 +971,29 @@ body {
 }
 
 /* ========== Toast Notifications ========== */
+/* ButtonHighlights alert system animations */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideOut {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+}
+
 #toast-container {
   position: fixed;
   top: var(--space-6);

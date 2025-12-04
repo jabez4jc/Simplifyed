@@ -487,14 +487,14 @@ class SettingsHandler {
         <!-- Save Button -->
         <div class="settings-actions">
           <button
-            class="btn btn-primary"
+            class="btn btn-buy"
             onclick="settings.saveSettings()"
             ${this.isSaving ? 'disabled' : ''}
           >
             ${this.isSaving ? '💾 Saving...' : '💾 Save Changes'}
           </button>
           <button
-            class="btn btn-secondary"
+            class="btn btn-neutral btn-outline"
             onclick="settings.resetSettings()"
             ${this.isSaving ? 'disabled' : ''}
           >
@@ -532,7 +532,7 @@ class SettingsHandler {
         <textarea id="health-optionchain" class="textarea textarea-bordered w-full h-32 font-mono text-xs">${toTextarea(optionchain)}</textarea>
       </div>
       <div class="mt-4 flex gap-3">
-        <button class="btn btn-primary" onclick="settings.saveInstanceHealthTests()">Save Tests</button>
+        <button class="btn btn-buy" onclick="settings.saveInstanceHealthTests()">Save Tests</button>
         <button class="btn" onclick="settings.renderSettingsView()">Cancel</button>
       </div>
     `;
@@ -624,7 +624,7 @@ class SettingsHandler {
         <div class="settings-search-empty">
           <div class="settings-search-empty-icon">🔍</div>
           <p class="text-neutral-600">No settings found matching "<strong>${Utils.escapeHTML(this.searchQuery)}</strong>"</p>
-          <button class="btn btn-secondary btn-sm mt-3" onclick="settings.clearSearch()">Clear Search</button>
+          <button class="btn btn-neutral btn-outline btn-sm mt-3" onclick="settings.clearSearch()">Clear Search</button>
         </div>
       `;
     }
@@ -1779,14 +1779,14 @@ class SettingsHandler {
     return `
       <div class="flex flex-col gap-3">
         <div class="flex gap-2 items-center flex-wrap">
-          <button class="btn btn-primary btn-sm" onclick="settings.exportInstancesCsv()" id="btn-export-instances">
+          <button class="btn btn-buy btn-sm" onclick="settings.exportInstancesCsv()" id="btn-export-instances">
             Export Instances CSV
           </button>
           <span class="text-xs text-neutral-500">Exports all instance fields (excluding timestamps) to CSV.</span>
         </div>
         <div class="flex gap-2 items-center flex-wrap">
           <input type="file" accept=".csv,text/csv" id="instances-csv-file" class="input input-sm" />
-          <button class="btn btn-secondary btn-sm" onclick="settings.importInstancesCsv()" id="btn-import-instances">
+          <button class="btn btn-neutral btn-outline btn-sm" onclick="settings.importInstancesCsv()" id="btn-import-instances">
             Import Instances CSV
           </button>
           <span class="text-xs text-neutral-500">Upserts by host_url. Blank cells are ignored.</span>
@@ -1853,14 +1853,14 @@ class SettingsHandler {
     return `
       <div class="flex flex-col gap-3">
         <div class="flex gap-2 items-center flex-wrap">
-          <button class="btn btn-primary btn-sm" onclick="settings.exportWatchlistsCsv()" id="btn-export-watchlists">
+          <button class="btn btn-buy btn-sm" onclick="settings.exportWatchlistsCsv()" id="btn-export-watchlists">
             Export Watchlists CSV
           </button>
           <span class="text-xs text-neutral-500">Exports watchlists, symbols, and instance mappings as a text bundle.</span>
         </div>
         <div class="flex gap-2 items-center flex-wrap">
           <input type="file" accept=".txt,.csv,text/plain" id="watchlists-csv-file" class="input input-sm" />
-          <button class="btn btn-secondary btn-sm" onclick="settings.importWatchlistsCsv()" id="btn-import-watchlists">
+          <button class="btn btn-neutral btn-outline btn-sm" onclick="settings.importWatchlistsCsv()" id="btn-import-watchlists">
             Import Watchlists CSV
           </button>
           <span class="text-xs text-neutral-500">Upserts by watchlist name; symbols by (watchlist_id, symbol, exchange); mappings by (watchlist_id, instance_id).</span>

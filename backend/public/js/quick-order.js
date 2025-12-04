@@ -836,7 +836,7 @@ class QuickOrderHandler {
               </span>
               <span id="oc-forward-values" class="oc-forward-values"></span>
             </div>
-            <button class="btn btn-secondary btn-sm" onclick="quickOrder._closeOptionChainModal()">Close</button>
+            <button class="btn btn-neutral btn-outline btn-sm" onclick="quickOrder._closeOptionChainModal()">Close</button>
           </div>
           <div class="modal-body option-chain-body">
             <div class="option-chain-scroll">
