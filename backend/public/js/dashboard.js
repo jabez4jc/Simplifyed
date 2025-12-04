@@ -899,7 +899,8 @@ class DashboardApp {
         api.getInstances(),
       ]);
       this.watchlists = watchlistsRes.data;
-      this.expandedWatchlists = this.expandedWatchlists || new Set();
+      // Default to expanding all watchlists so the grid is visible immediately
+      this.expandedWatchlists = new Set(this.watchlists.map((wl) => wl.id));
       this.instances = instancesRes.data;
     } catch (error) {
       console.error('Failed to load watchlists view:', error);
