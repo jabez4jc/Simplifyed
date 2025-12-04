@@ -12,7 +12,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
+      font-family: var(--font-family);
       color: #111827;
     }
     .pending-card {
@@ -34,7 +34,7 @@
       border-radius: 999px;
       padding: 5px 10px;
       font-weight: 600;
-      font-size: 11px;
+      font-size: 0.6875rem;
       letter-spacing: 0.01em;
     }
     .button {
@@ -42,12 +42,13 @@
       align-items: center;
       justify-content: center;
       gap: 6px;
-      padding: 8px 12px;
+      padding: 10px 14px;
       border-radius: 12px;
       border: 1px solid #e5e7eb;
       background: #111827;
       color: #f9fafb;
       font-weight: 600;
+      font-size: 0.875rem;
       cursor: pointer;
       width: 100%;
       transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
@@ -71,7 +72,7 @@
       border: 1px dashed #e5e7eb;
       border-radius: 12px;
       color: #374151;
-      font-size: 12px;
+      font-size: 0.8125rem;
       line-height: 1.5;
     }
   </style>
@@ -79,8 +80,8 @@
 <body>
   <div class="pending-card">
     <div class="badge">🔒 Access Pending</div>
-    <h1 style="margin: 12px 0 6px; font-size: 18px; font-weight: 800;">Hang tight — your access is being reviewed</h1>
-    <p style="margin-bottom: 16px; color: #4b5563; line-height: 1.6; font-size: 14px;">
+    <h1 style="margin: 12px 0 6px; font-size: 1.25rem; font-weight: 800;">Hang tight — your access is being reviewed</h1>
+    <p style="margin-bottom: 16px; color: #4b5563; line-height: 1.6; font-size: 0.875rem;">
       You've successfully signed in, but an administrator needs to assign you a role before you can use the dashboard.
       This is usually quick. We'll keep checking for you.
     </p>
@@ -95,7 +96,7 @@
       <button class="button secondary" id="logout-btn">🚪 Logout</button>
     </div>
 
-    <p id="status-text" style="margin-top: 12px; color: #6b7280; font-size: 12px;">
+    <p id="status-text" style="margin-top: 12px; color: #6b7280; font-size: 0.8125rem;">
       Checking access status...
     </p>
   </div>

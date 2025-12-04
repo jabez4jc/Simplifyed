@@ -29,8 +29,8 @@
 
   /* Typography - San Francisco Font Family */
   --font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
-  --font-size-xs: 0.625rem;    /* 10px - reduced from 12px */
-  --font-size-sm: 0.75rem;     /* 12px - reduced from 14px */
+  --font-size-xs: 0.6875rem;   /* 11px - increased from 10px for readability */
+  --font-size-sm: 0.8125rem;   /* 13px - increased from 12px for readability */
   --font-size-base: 0.875rem;  /* 14px - reduced from 16px */
   --font-size-lg: 1rem;        /* 16px - reduced from 18px */
   --font-size-xl: 1.125rem;    /* 18px - reduced from 20px */
@@ -42,6 +42,7 @@
   --space-2: 0.375rem;   /* 6px - reduced from 8px */
   --space-3: 0.5rem;     /* 8px - reduced from 12px */
   --space-4: 0.75rem;    /* 12px - reduced from 16px */
+  --space-5: 0.875rem;   /* 14px - between space-4 and space-6 */
   --space-6: 1rem;       /* 16px - reduced from 24px */
   --space-8: 1.5rem;     /* 24px - reduced from 32px */
   --space-12: 2rem;      /* 32px - reduced from 48px */
