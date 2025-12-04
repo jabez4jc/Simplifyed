@@ -3871,15 +3871,15 @@ class DashboardApp {
     if (!instances || instances.length === 0) {
       return `
         <div class="card">
-          <div class="card-header">
+          <div class="card-header-compact">
             <div>
-              <h3 class="card-title">${title}</h3>
-              <p class="text-sm text-neutral-600">${subtitle}</p>
+              <h3 class="card-title-compact">${title}</h3>
+              <p class="text-xs text-neutral-600">${subtitle}</p>
             </div>
-            <span class="badge">0</span>
+            <span class="badge-compact">0</span>
           </div>
-          <div class="p-4">
-            <p class="text-sm text-neutral-500">No open positions in this category.</p>
+          <div class="p-3">
+            <p class="text-xs text-neutral-500">No open positions in this category.</p>
           </div>
         </div>
       `;
@@ -3887,14 +3887,14 @@ class DashboardApp {
 
     return `
       <div class="card">
-        <div class="card-header">
+        <div class="card-header-compact">
           <div>
-            <h3 class="card-title">${title}</h3>
-            <p class="text-sm text-neutral-600">${subtitle}</p>
+            <h3 class="card-title-compact">${title}</h3>
+            <p class="text-xs text-neutral-600">${subtitle}</p>
           </div>
-          <span class="badge">${instances.length}</span>
+          <span class="badge-compact">${instances.length}</span>
         </div>
-        <div class="p-4 space-y-4">
+        <div class="p-2 space-y-2">
           ${instances.map(inst => this.renderPositionsInstanceCard(inst)).join('')}
         </div>
       </div>
@@ -3909,35 +3909,33 @@ class DashboardApp {
     const isExpanded = this.watchlistPositionsExpanded.has(inst.instance_id);
 
     return `
-      <div class="rounded-lg border border-base-200">
-        <div class="flex flex-wrap items-center gap-3 p-3">
+      <div class="position-instance-card-compact">
+        <div class="position-instance-header-compact">
           <button
-            class="flex flex-1 flex-wrap items-center gap-3 text-left focus:outline-none"
+            class="position-instance-toggle"
             onclick="app.toggleWatchlistPositionInstance(${inst.instance_id})"
             aria-expanded="${isExpanded}"
             aria-controls="positions-body-${inst.instance_id}"
           >
-            <span class="inline-flex items-center justify-center w-6 h-6 rounded-full border border-base-300 text-base-content/70 transform transition-transform ${isExpanded ? 'rotate-90' : ''}">
-              ▸
-            </span>
-            <span class="font-semibold text-base">${Utils.escapeHTML(inst.instance_name)}</span>
-            <span class="text-sm text-neutral-500">Broker: <span class="font-medium">${Utils.escapeHTML(inst.broker || 'N/A')}</span></span>
-            <span class="text-sm text-neutral-500">Open: <span class="font-medium">${openCount}</span></span>
-            <span class="text-sm text-neutral-500">P&L:
+            <span class="toggle-icon ${isExpanded ? 'rotate-90' : ''}">▸</span>
+            <span class="instance-name">${Utils.escapeHTML(inst.instance_name)}</span>
+            <span class="instance-meta">Broker: <span class="font-medium">${Utils.escapeHTML(inst.broker || 'N/A')}</span></span>
+            <span class="instance-meta">Open: <span class="font-medium">${openCount}</span></span>
+            <span class="instance-meta">P&L:
               <span class="font-semibold ${Utils.getPnLColorClass(inst.total_pnl)}">
                 ${Utils.formatCurrency(inst.total_pnl)}
               </span>
             </span>
           </button>
-          <button class="btn btn-error btn-sm ml-auto" onclick="app.closeAllPositions(${inst.instance_id})">
+          <button class="btn-close-all-compact" onclick="app.closeAllPositions(${inst.instance_id})">
             Close All
           </button>
         </div>
         <div id="positions-body-${inst.instance_id}" class="${isExpanded ? 'block' : 'hidden'} border-t border-base-200">
-          <div class="p-4">
+          <div class="p-2">
             ${positions.length > 0
               ? this.renderPositionsTable(positions, inst.instance_id)
-              : '<p class="text-sm text-neutral-500">No open positions for this instance.</p>'}
+              : '<p class="text-xs text-neutral-500">No open positions for this instance.</p>'}
           </div>
         </div>
       </div>
@@ -3947,7 +3945,7 @@ class DashboardApp {
   renderPositionsTable(positions, instanceId = null) {
     return `
       <div class="table-container overflow-x-auto">
-        <table class="table">
+        <table class="positions-table-compact">
           <thead>
             <tr>
               <th>Symbol</th>
@@ -3974,7 +3972,7 @@ class DashboardApp {
                   <td class="text-center">
                     ${instanceId ? `
                       <button
-                        class="btn btn-sm btn-outline"
+                        class="btn-close-position-compact"
                         onclick="app.closePosition(${instanceId}, '${encodeURIComponent(pos.symbol || '')}', '${encodeURIComponent(pos.exchange || '')}', '${encodeURIComponent(pos.product || 'MIS')}')"
                       >
                         Close

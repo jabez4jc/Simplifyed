@@ -4109,3 +4109,200 @@ body {
     padding: 4px 8px;
   }
 }
+
+/* ========== Positions Section Compact Redesign ========== */
+
+/* Compact Card Header */
+.card-header-compact {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-neutral-200);
+  background-color: var(--color-neutral-50);
+}
+
+.card-title-compact {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--color-neutral-900);
+  margin: 0;
+}
+
+.badge-compact {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  padding: 0 var(--space-1);
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: 9999px;
+  background-color: var(--color-primary, #6366F1);
+  color: white;
+}
+
+/* Position Instance Card Compact */
+.position-instance-card-compact {
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-neutral-200);
+  background-color: white;
+}
+
+.position-instance-header-compact {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+}
+
+.position-instance-toggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  flex-wrap: wrap;
+}
+
+.position-instance-toggle:hover {
+  opacity: 0.8;
+}
+
+.toggle-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 9999px;
+  border: 1px solid var(--color-neutral-300);
+  color: var(--color-neutral-600);
+  font-size: 0.75rem;
+  transition: transform 0.2s ease;
+}
+
+.toggle-icon.rotate-90 {
+  transform: rotate(90deg);
+}
+
+.instance-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-neutral-900);
+}
+
+.instance-meta {
+  font-size: 0.75rem;
+  color: var(--color-neutral-600);
+}
+
+.btn-close-all-compact {
+  padding: var(--space-1) var(--space-3);
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: 1px solid var(--color-error);
+  border-radius: var(--radius-sm);
+  background-color: white;
+  color: var(--color-error);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.btn-close-all-compact:hover:not(:disabled) {
+  background-color: var(--color-error);
+  color: white;
+}
+
+.btn-close-all-compact:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Positions Table Compact */
+.positions-table-compact {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+}
+
+.positions-table-compact thead {
+  background-color: var(--color-neutral-100);
+}
+
+.positions-table-compact th {
+  padding: var(--space-1) var(--space-2);
+  text-align: left;
+  font-size: 0.688rem;
+  font-weight: 600;
+  color: var(--color-neutral-700);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--color-neutral-200);
+}
+
+.positions-table-compact tbody tr {
+  border-bottom: 1px solid var(--color-neutral-100);
+}
+
+.positions-table-compact tbody tr:hover {
+  background-color: var(--color-neutral-50);
+}
+
+.positions-table-compact td {
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-neutral-800);
+}
+
+.btn-close-position-compact {
+  padding: 2px var(--space-2);
+  font-size: 0.688rem;
+  font-weight: 500;
+  border: 1px solid var(--color-neutral-300);
+  border-radius: var(--radius-sm);
+  background-color: white;
+  color: var(--color-neutral-700);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.btn-close-position-compact:hover:not(:disabled) {
+  background-color: var(--color-neutral-100);
+  border-color: var(--color-neutral-400);
+}
+
+.btn-close-position-compact:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+@media (max-width: 768px) {
+  .position-instance-header-compact {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .position-instance-toggle {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .btn-close-all-compact {
+    width: 100%;
+  }
+
+  .positions-table-compact {
+    font-size: 0.688rem;
+  }
+
+  .positions-table-compact th,
+  .positions-table-compact td {
+    padding: 4px 6px;
+  }
+}
