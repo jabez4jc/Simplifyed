@@ -1877,8 +1877,8 @@ body {
 }
 
 .options-button-row.exit-row {
-  background-color: var(--color-warning-50);
-  border: 1px solid var(--color-warning-200);
+  background-color: var(--color-warning-bg);
+  border: 1px solid var(--color-warning);
 }
 
 .button-row-label {
@@ -3967,7 +3967,7 @@ body {
   border: 2px solid var(--color-neutral-300);
   border-top-color: var(--color-neutral-600);
   border-radius: 50%;
-  animation: spin 0.6s linear infinite;
+  animation: spin-centered 0.6s linear infinite;
 }
 
 /* Button Color Variants */
@@ -4036,7 +4036,7 @@ body {
 }
 
 /* Spin Animation */
-@keyframes spin {
+@keyframes spin-centered {
   to {
     transform: translate(-50%, -50%) rotate(360deg);
   }

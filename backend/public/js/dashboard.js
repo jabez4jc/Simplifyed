@@ -1235,7 +1235,8 @@ class DashboardApp {
         </div>
       `;
     } catch (error) {
-      return `<p class="text-error">Failed to load symbols: ${error.message}</p>`;
+      const message = Utils.escapeHTML(error?.message || 'Unknown error');
+      return `<p class="text-error">Failed to load symbols: ${message}</p>`;
     }
   }
 
@@ -3628,7 +3629,8 @@ class DashboardApp {
       positionsPanel.innerHTML = this.renderWatchlistPositionsMarkup(normalized);
     } catch (error) {
       console.error('Failed to refresh watchlist positions:', error);
-      positionsPanel.innerHTML = `<div class="p-4"><p class="text-center text-error-600">Failed to load positions: ${error.message}</p></div>`;
+      const message = Utils.escapeHTML(error?.message || 'Unknown error');
+      positionsPanel.innerHTML = `<div class="p-4"><p class="text-center text-error-600">Failed to load positions: ${message}</p></div>`;
     }
   }
 
