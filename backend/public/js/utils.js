@@ -154,12 +154,27 @@ const Utils = {
                       type === 'warning' ? 'alert-warning' : 'alert-info';
 
     toast.className = `alert ${alertType} alert-sm`;
-    toast.style.cssText = 'position: fixed; top: 20px; right: 20px; z-index: 9999; min-width: 300px; max-width: 500px; animation: slideIn 0.3s ease;';
-    toast.innerHTML = `
-      <div class="alert-icon">${this.getToastIcon(type)}</div>
-      <div class="alert-content">${message}</div>
-      <button class="alert-close" onclick="this.parentElement.remove()">×</button>
-    `;
+    toast.style.cssText = 'animation: slideIn 0.3s ease;';
+
+    // Create alert icon element
+    const iconDiv = document.createElement('div');
+    iconDiv.className = 'alert-icon';
+    iconDiv.textContent = this.getToastIcon(type);
+
+    // Create alert content element with escaped message
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'alert-content';
+    contentDiv.textContent = message; // Using textContent to prevent XSS
+
+    // Create close button
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'alert-close';
+    closeBtn.textContent = '×';
+    closeBtn.onclick = () => toast.remove();
+
+    toast.appendChild(iconDiv);
+    toast.appendChild(contentDiv);
+    toast.appendChild(closeBtn);
 
     const container = document.getElementById('toast-container');
     if (container) {
