@@ -233,33 +233,35 @@ class QuickOrderHandler {
 
     // debug removed
 
-    const renderField = (label, help, controlHtml, fullWidth = false) => `
-      <div class="compact-field ${fullWidth ? 'compact-field-full' : ''}">
-        <label class="compact-field-label">
-          ${label}
-          ${help ? `
-            <button type="button" class="field-help-compact" title="${help}">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="12" y1="8" x2="12" y2="12"></line>
-                <circle cx="12" cy="16" r="0.5"></circle>
-              </svg>
-            </button>
-          ` : ''}
-        </label>
-        <div class="compact-field-control">
+    const renderField = (label, help, controlHtml) => `
+      <div class="form-field-row">
+        <div class="form-label-stack">
+          <div class="form-label-line">
+            <span class="form-label-sm">${label}</span>
+            ${help ? `
+              <button type="button" class="field-help" title="${help}">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="12" y1="8" x2="12" y2="12"></line>
+                  <circle cx="12" cy="16" r="0.5"></circle>
+                </svg>
+              </button>
+            ` : ''}
+          </div>
+        </div>
+        <div class="field-control">
           ${controlHtml}
         </div>
       </div>
     `;
 
     const tradeModeField = renderField(
-      'Mode',
+      'Trade Mode',
       'Choose whether this quick order fires direct equity orders, futures contracts, or managed options legs.',
-      `<div class="trade-mode-selector-compact">
+      `<div class="trade-mode-selector">
         ${availableModes.map(mode => `
           <button
-            class="btn-mode-compact ${mode === tradeMode ? 'active' : ''} ${!this.isModeAvailable(mode, symbolType, capabilities) ? 'disabled' : ''}"
+            class="btn-trade-mode ${mode === tradeMode ? 'active' : ''} ${!this.isModeAvailable(mode, symbolType, capabilities) ? 'disabled' : ''}"
             data-mode="${mode}"
             data-symbol-id="${symbolId}"
             onclick="quickOrder.selectTradeMode(${symbolId}, '${mode}')"
@@ -268,17 +270,16 @@ class QuickOrderHandler {
             ${this.getTradeModeLabel(mode)}
           </button>
         `).join('')}
-      </div>`,
-      true
+      </div>`
     );
 
     const expiryField = showExpirySelector
       ? renderField(
           'Expiry',
-          'Pick the contract month you want to trade.',
+          'Pick the contract month you want to trade. Futures and options require an expiry.',
           expiries && expiries.length > 0
             ? `<select
-                class="select-compact"
+                class="select-expiry"
                 data-symbol-id="${symbolId}"
                 onchange="quickOrder.selectExpiry(${symbolId}, this.value)">
                 ${expiries.map(expiry => `
@@ -287,17 +288,17 @@ class QuickOrderHandler {
                   </option>
                 `).join('')}
               </select>`
-            : `<p class="text-xs text-warning">No expiries available</p>`
+            : `<p class="text-sm text-warning">No expiries available for this symbol. Verify the instruments cache.</p>`
         )
       : '';
 
     const optionsLegField = showOptionsLeg
       ? renderField(
-          'Strike',
-          'Shift the strike relative to ATM.',
-          `<div class="leg-chain-row">
+          'Options Leg',
+          'Shift the strike relative to ATM before firing CE/PE actions.',
+          `<div class="options-leg-row">
             <select
-            class="select-compact"
+            class="select-options-leg"
             data-symbol-id="${symbolId}"
             onchange="quickOrder.selectOptionsLeg(${symbolId}, this.value)">
             <option value="ITM3" ${optionsLeg === 'ITM3' ? 'selected' : ''}>ITM 3</option>
@@ -308,11 +309,11 @@ class QuickOrderHandler {
             <option value="OTM2" ${optionsLeg === 'OTM2' ? 'selected' : ''}>OTM 2</option>
             <option value="OTM3" ${optionsLeg === 'OTM3' ? 'selected' : ''}>OTM 3</option>
             </select>
-            <button class="btn-compact-secondary ${isMcx ? 'disabled' : ''}"
+            <button class="btn btn-secondary btn-sm ${isMcx ? 'disabled' : ''}"
               ${isMcx ? 'disabled' : ''}
-              title="${isMcx ? 'Option chain not available for MCX' : 'View live option chain'}"
+              title="${isMcx ? 'Option chain not available for MCX via OpenAlgo' : 'View live option chain'}"
               onclick="${isMcx ? 'return false;' : `quickOrder.showOptionChainModal(${symbolId})`}">
-              Chain
+              View Chain
             </button>
           </div>`
         )
@@ -320,23 +321,23 @@ class QuickOrderHandler {
 
     const operatingModeField = showOperatingMode
       ? renderField(
-          'Flow',
-          'Buyer (long premium) or Writer (short premium).',
-          `<div class="operating-mode-compact" role="group">
+          'Operating Mode',
+          'Toggle between Buyer (long premium) and Writer (short premium) flows.',
+          `<div class="operating-mode-toggle" role="group" aria-label="Buyer or Writer mode">
             <button
-              class="btn-operating ${operatingMode === 'BUYER' ? 'active' : ''}"
+              class="${operatingMode === 'BUYER' ? 'is-active' : ''}"
               data-mode="BUYER"
               data-symbol-id="${symbolId}"
               onclick="quickOrder.selectOperatingMode(${symbolId}, 'BUYER')"
-              title="Buyer Mode: BUY/REDUCE buttons">
+              title="Buyer Mode: go long premium (BUY/REDUCE buttons)">
               Buyer
             </button>
             <button
-              class="btn-operating ${operatingMode === 'WRITER' ? 'active' : ''}"
+              class="${operatingMode === 'WRITER' ? 'is-active' : ''}"
               data-mode="WRITER"
               data-symbol-id="${symbolId}"
               onclick="quickOrder.selectOperatingMode(${symbolId}, 'WRITER')"
-              title="Writer Mode: SELL/INCREASE buttons">
+              title="Writer Mode: short premium (SELL/INCREASE buttons)">
               Writer
             </button>
           </div>`
@@ -345,60 +346,62 @@ class QuickOrderHandler {
 
     const strikePolicyField = showStrikePolicy
       ? renderField(
-          'Policy',
-          'How strikes migrate as ATM moves.',
+          'Strike Policy',
+          'Controls how strikes migrate as ATM moves during FLOAT/ANCHOR offsets.',
           `<select
-            class="select-compact"
+            class="select-strike-policy"
             data-symbol-id="${symbolId}"
             onchange="quickOrder.selectStrikePolicy(${symbolId}, this.value)">
             <option value="FLOAT_OFS" ${strikePolicy === 'FLOAT_OFS' ? 'selected' : ''}>
-              FLOAT_OFS
+              FLOAT_OFS (Follow ATM)
             </option>
             <option value="ANCHOR_OFS" ${strikePolicy === 'ANCHOR_OFS' ? 'selected' : ''}>
-              ANCHOR_OFS
+              ANCHOR_OFS (Lock first strike)
             </option>
           </select>`
         )
       : '';
 
     const quantityField = renderField(
-      'Qty',
-      'Lots/contracts dispatched per click.',
+      'Quantity',
+      'Lots/contracts dispatched per click. Uses instrument lot size for totals.',
       `<input
         type="number"
-        class="input-compact"
+        class="input-quantity"
         value="${quantity}"
         min="1"
         step="1"
         data-symbol-id="${symbolId}"
         onchange="quickOrder.updateQuantity(${symbolId}, parseInt(this.value))"
-        title="Number of lots per order">`
+        title="Number of lots per order. Controls both position step size and order size. Example: 2 lots × 25 lot size = 50 contracts">`
     );
 
     const isDerivativeMode = tradeMode === 'FUTURES' || tradeMode === 'OPTIONS' || (symbolType === 'FUTURES' || symbolType === 'OPTIONS');
     const productField = renderField(
       'Product',
-      isDerivativeMode ? 'Futures/Options use NRML.' : 'Product type for all instances.',
       isDerivativeMode
-        ? `<select class="select-compact" disabled>
-             <option value="NRML" selected>NRML</option>
+        ? 'Futures/Options must use NRML.'
+        : 'Choose the product type to send for all instances.',
+      isDerivativeMode
+        ? `<select class="form-select" disabled>
+             <option value="NRML" selected>NRML (Derivatives)</option>
            </select>`
-        : `<select class="select-compact"
+        : `<select class="form-select"
                 data-symbol-id="${symbolId}"
                 onchange="quickOrder.selectProduct(${symbolId}, this.value)">
-             <option value="MIS" ${selectedProduct === 'MIS' ? 'selected' : ''}>MIS</option>
-             <option value="NRML" ${selectedProduct === 'NRML' ? 'selected' : ''}>NRML</option>
-             <option value="CNC" ${selectedProduct === 'CNC' ? 'selected' : ''}>CNC</option>
+             <option value="MIS" ${selectedProduct === 'MIS' ? 'selected' : ''}>MIS (Intraday)</option>
+             <option value="NRML" ${selectedProduct === 'NRML' ? 'selected' : ''}>NRML (Derivatives)</option>
+             <option value="CNC" ${selectedProduct === 'CNC' ? 'selected' : ''}>CNC (Delivery)</option>
            </select>`
     );
 
     const futuresPreviewBlock = tradeMode === 'FUTURES' && capabilities.futures
       ? `
         <div
-          class="preview-card-compact"
+          class="futures-preview-card border border-base-300 rounded-xl p-3 bg-base-100/80 space-y-1"
           id="futures-preview-${symbolId}"
           aria-live="polite">
-          <p class="text-xs text-neutral-500">Select an expiry to view futures quote.</p>
+          <p class="text-sm text-neutral-500">Select an expiry to view futures quote.</p>
         </div>
       `
       : '';
@@ -406,35 +409,29 @@ class QuickOrderHandler {
     const optionPreviewBlock = tradeMode === 'OPTIONS' && capabilities.options
       ? `
         <div
-          class="preview-card-compact"
+          class="option-preview-card border border-base-300 rounded-xl p-3 bg-base-200/60 space-y-3"
           id="option-preview-${symbolId}"
           aria-live="polite">
-          <p class="text-xs text-neutral-500">Resolving option strikes…</p>
+          <p class="text-sm text-neutral-500">Resolving option strikes…</p>
         </div>
       `
       : '';
 
     return `
-      <div class="quick-order-panel-compact">
-        <div class="quick-order-config-wrapper">
-          <div class="quick-order-left-column">
-            <div class="quick-order-config-compact">
-              ${tradeModeField}
-              ${expiryField}
-              ${optionsLegField}
-              ${operatingModeField}
-              ${strikePolicyField}
-              ${quantityField}
-              ${productField}
-            </div>
-            <div class="quick-order-preview">
-              ${futuresPreviewBlock}
-              ${optionPreviewBlock}
-            </div>
-          </div>
-          <div class="quick-order-actions-compact">
-            ${this.renderActionButtons(watchlistId, symbolId, symbol, exchange, tradeMode, operatingMode, strikePolicy, quantity, selectedExpiry, optionsLeg)}
-          </div>
+      <div class="quick-order-panel">
+        <div class="quick-order-config">
+          ${tradeModeField}
+          ${expiryField}
+          ${productField}
+          ${optionsLegField}
+          ${operatingModeField}
+          ${strikePolicyField}
+          ${quantityField}
+        </div>
+        ${futuresPreviewBlock}
+        ${optionPreviewBlock}
+        <div class="quick-order-actions">
+          ${this.renderActionButtons(watchlistId, symbolId, symbol, exchange, tradeMode, operatingMode, strikePolicy, quantity, selectedExpiry, optionsLeg)}
         </div>
       </div>
     `;
@@ -467,149 +464,156 @@ class QuickOrderHandler {
     const isConfigured = this.isOptionsModeConfigured(symbolId);
 
     if (tradeMode === 'OPTIONS') {
-      // CE Column - all CE buttons stacked
+      // CE Row
       let ceButtons = '';
       if (operatingMode === 'BUYER') {
         ceButtons = `
-          <button class="btn-action-compact btn-buy-ce"
+          <button class="btn-quick-action btn-buy-ce"
                   onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'BUY_CE')"
                   ${!isConfigured ? 'disabled' : ''}
                   title="Add CE longs at ${optionsLeg} strike">
             BUY CE
           </button>
-          <button class="btn-action-compact btn-reduce-ce"
+          <button class="btn-quick-action btn-reduce-ce"
                   onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'REDUCE_CE')"
                   ${!isConfigured ? 'disabled' : ''}
-                  title="Reduce CE longs">
+                  title="Reduce CE longs (sell to close)">
             REDUCE CE
-          </button>
-          <button class="btn-action-compact btn-close-all-ce"
-                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'CLOSE_ALL_CE')"
-                  ${!isConfigured ? 'disabled' : ''}
-                  title="Close all CE positions">
-            CLOSE CE
           </button>
         `;
       } else {
         ceButtons = `
-          <button class="btn-action-compact btn-sell-ce"
+          <button class="btn-quick-action btn-sell-ce"
                   onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SELL_CE')"
                   ${!isConfigured ? 'disabled' : ''}
                   title="Open CE shorts at ${optionsLeg} strike">
             SELL CE
           </button>
-          <button class="btn-action-compact btn-increase-ce"
+          <button class="btn-quick-action btn-increase-ce"
                   onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'INCREASE_CE')"
                   ${!isConfigured ? 'disabled' : ''}
-                  title="Cover CE shorts">
+                  title="Cover CE shorts (buy back)">
             INCREASE CE
-          </button>
-          <button class="btn-action-compact btn-close-all-ce"
-                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'CLOSE_ALL_CE')"
-                  ${!isConfigured ? 'disabled' : ''}
-                  title="Close all CE positions">
-            CLOSE CE
           </button>
         `;
       }
 
-      // PE Column - all PE buttons stacked
+      // PE Row
       let peButtons = '';
       if (operatingMode === 'BUYER') {
         peButtons = `
-          <button class="btn-action-compact btn-buy-pe"
+          <button class="btn-quick-action btn-buy-pe"
                   onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'BUY_PE')"
                   ${!isConfigured ? 'disabled' : ''}
                   title="Add PE longs at ${optionsLeg} strike">
             BUY PE
           </button>
-          <button class="btn-action-compact btn-reduce-pe"
+          <button class="btn-quick-action btn-reduce-pe"
                   onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'REDUCE_PE')"
                   ${!isConfigured ? 'disabled' : ''}
-                  title="Reduce PE longs">
+                  title="Reduce PE longs (sell to close)">
             REDUCE PE
-          </button>
-          <button class="btn-action-compact btn-close-all-pe"
-                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'CLOSE_ALL_PE')"
-                  ${!isConfigured ? 'disabled' : ''}
-                  title="Close all PE positions">
-            CLOSE PE
           </button>
         `;
       } else {
         peButtons = `
-          <button class="btn-action-compact btn-sell-pe"
+          <button class="btn-quick-action btn-sell-pe"
                   onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SELL_PE')"
                   ${!isConfigured ? 'disabled' : ''}
                   title="Open PE shorts at ${optionsLeg} strike">
             SELL PE
           </button>
-          <button class="btn-action-compact btn-increase-pe"
+          <button class="btn-quick-action btn-increase-pe"
                   onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'INCREASE_PE')"
                   ${!isConfigured ? 'disabled' : ''}
-                  title="Cover PE shorts">
+                  title="Cover PE shorts (buy back)">
             INCREASE PE
-          </button>
-          <button class="btn-action-compact btn-close-all-pe"
-                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'CLOSE_ALL_PE')"
-                  ${!isConfigured ? 'disabled' : ''}
-                  title="Close all PE positions">
-            CLOSE PE
           </button>
         `;
       }
 
+      // Exit Row
+      const exitButtons = `
+        <button class="btn-quick-action btn-close-all-ce"
+                onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'CLOSE_ALL_CE')"
+                ${!isConfigured ? 'disabled' : ''}
+                title="Close all CE positions">
+          CLOSE ALL CE
+        </button>
+        <button class="btn-quick-action btn-close-all-pe"
+                onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'CLOSE_ALL_PE')"
+                ${!isConfigured ? 'disabled' : ''}
+                title="Close all PE positions">
+          CLOSE ALL PE
+        </button>
+        <button class="btn-quick-action btn-exit-all"
+                onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'EXIT_ALL')"
+                ${!isConfigured ? 'disabled' : ''}
+                title="Exit all positions (CE & PE)">
+          EXIT ALL
+        </button>
+      `;
+
       return `
-        <div class="action-buttons-3col">
-          <div class="action-column">
-            <div class="action-column-label">CALL</div>
-            ${ceButtons}
+        <div class="options-action-buttons">
+          <div class="options-button-row">
+            <div class="button-row-label">CE Options</div>
+            <div class="button-group">
+              ${ceButtons}
+            </div>
           </div>
-          <div class="action-column">
-            <div class="action-column-label">PUT</div>
-            ${peButtons}
+          <div class="options-button-row">
+            <div class="button-row-label">PE Options</div>
+            <div class="button-group">
+              ${peButtons}
+            </div>
           </div>
-          <div class="action-column-exit">
-            <button class="btn-action-exit btn-exit-all"
-                    onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'EXIT_ALL')"
-                    ${!isConfigured ? 'disabled' : ''}
-                    title="Exit all positions (CE & PE)">
-              EXIT ALL
-            </button>
+          <div class="options-button-row exit-row">
+            <div class="button-row-label">Exit Positions</div>
+            <div class="button-group">
+              ${exitButtons}
+            </div>
           </div>
         </div>
       `;
     } else {
-      // EQUITY or FUTURES mode - 3 column layout
+      // EQUITY or FUTURES mode
       return `
-        <div class="action-buttons-3col">
-          <div class="action-column">
-            <div class="action-column-label">LONG</div>
-            <button class="btn-action-compact btn-buy"
-                    onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'BUY')">
-              BUY
-            </button>
-            <button class="btn-action-compact btn-sell"
-                    onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SELL')">
-              SELL
-            </button>
+        <div class="direct-actions options-action-buttons">
+          <div class="options-button-row">
+            <div class="button-row-label">Long</div>
+            <div class="button-group">
+              <button class="btn-quick-action btn-buy"
+                      onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'BUY')">
+                BUY
+              </button>
+              <button class="btn-quick-action btn-sell"
+                      onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SELL')">
+                SELL
+              </button>
+            </div>
           </div>
-          <div class="action-column">
-            <div class="action-column-label">SHORT</div>
-            <button class="btn-action-compact btn-short"
-                    onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SHORT')">
-              SHORT
-            </button>
-            <button class="btn-action-compact btn-cover"
-                    onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'COVER')">
-              COVER
-            </button>
+          <div class="options-button-row">
+            <div class="button-row-label">Short</div>
+            <div class="button-group">
+              <button class="btn-quick-action btn-short"
+                      onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SHORT')">
+                SHORT
+              </button>
+              <button class="btn-quick-action btn-cover"
+                      onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'COVER')">
+                COVER
+              </button>
+            </div>
           </div>
-          <div class="action-column-exit">
-            <button class="btn-action-exit btn-exit"
-                    onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'EXIT')">
-              EXIT
-            </button>
+          <div class="options-button-row exit-row">
+            <div class="button-row-label">Exit</div>
+            <div class="button-group">
+              <button class="btn-quick-action btn-exit"
+                      onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'EXIT')">
+                EXIT
+              </button>
+            </div>
           </div>
         </div>
       `;
@@ -1217,13 +1221,14 @@ class QuickOrderHandler {
       : 'Refreshed moments ago';
 
     container.innerHTML = `
-      <div class="flex items-center justify-between gap-2 text-xs mb-2">
-        <div class="font-semibold text-base-content">
-          Option Symbols (${preview.strikeOffset}) | Expiry <span class="text-neutral-700">${expiryLabel}</span> • ${Utils.escapeHTML(underlyingSymbol)} <span class="text-neutral-700">${underlyingLtp}</span> • ATM <span class="text-neutral-700">${atmStrike}</span>
+      <div class="flex items-center justify-between gap-4 flex-wrap text-xs text-neutral-600">
+        <div>
+          <p class="font-semibold text-base-content">Option Symbols (${preview.strikeOffset})</p>
+          <p>Exp ${expiryLabel} • ${Utils.escapeHTML(underlyingSymbol)} ${underlyingLtp} • ATM ${atmStrike}</p>
         </div>
-        <span class="text-neutral-500 whitespace-nowrap">${updatedLabel}</span>
+        <span>${updatedLabel}</span>
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
+      <div class="option-preview-grid grid grid-cols-1 md:grid-cols-2 gap-3">
         ${this.renderOptionPreviewLeg('CALL', preview.ce)}
         ${this.renderOptionPreviewLeg('PUT', preview.pe)}
       </div>
@@ -1233,7 +1238,7 @@ class QuickOrderHandler {
   renderOptionPreviewLeg(label, leg) {
     if (!leg) {
       return `
-        <div class="text-xs text-neutral-500 p-1">
+        <div class="option-leg-card border border-dashed rounded-lg p-3 text-sm text-neutral-500">
           No ${label} leg available
         </div>
       `;
@@ -1250,12 +1255,13 @@ class QuickOrderHandler {
       : 'text-neutral-500';
 
     return `
-      <div class="text-xs">
-        <div class="text-neutral-600 mb-1">
-          ${label} • <span class="font-mono">${Utils.escapeHTML(leg.symbol || '')}</span> • Strike ${leg.strike ?? '—'} • Lot ${leg.lotSize ?? '—'}
-        </div>
+      <div class="option-leg-card border border-base-200 rounded-lg p-3 bg-base-100/80 space-y-1">
+        <div class="text-xs uppercase tracking-wide text-neutral-500">${label}</div>
+        <div class="font-mono text-sm break-all">${Utils.escapeHTML(leg.symbol || '')}</div>
+        <div class="text-xs text-neutral-600">Strike ${leg.strike ?? '—'} • Lot ${leg.lotSize ?? '—'}</div>
         <div class="flex items-baseline gap-2">
-          <span class="text-base font-semibold">${ltpText}</span>
+          <span class="text-lg font-semibold">${ltpText}</span>
+          <span class="${changeClass} text-xs">${changeText}</span>
         </div>
       </div>
     `;
@@ -1360,14 +1366,18 @@ class QuickOrderHandler {
         : '';
 
     container.innerHTML = `
-      <div class="flex items-center justify-between gap-2 text-xs mb-1">
-        <div class="font-semibold text-base-content">
-          Contract | <span class="text-neutral-700">${Utils.escapeHTML(preview.tradingSymbol || preview.futuresSymbol)}</span> • Expiry <span class="text-neutral-700">${expiryLabel}</span>
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <p class="text-xs uppercase tracking-wide text-neutral-500">Contract</p>
+          <p class="font-semibold text-base-content">${Utils.escapeHTML(preview.tradingSymbol || preview.futuresSymbol)}</p>
+          <p class="text-xs text-neutral-500">Expiry ${expiryLabel}</p>
         </div>
-        ${refreshedLabel ? `<span class="text-neutral-500 whitespace-nowrap">${Utils.escapeHTML(refreshedLabel)}</span>` : ''}
-      </div>
-      <div class="flex items-baseline gap-2">
-        <span class="text-lg font-semibold ${changeClass}">${ltp}</span>
+        <div class="text-right">
+          <p class="text-xs uppercase tracking-wide text-neutral-500">LTP</p>
+          <p class="text-2xl font-semibold ${changeClass}">${ltp}</p>
+          <p class="text-xs ${changeClass}">${changeText}</p>
+          ${refreshedLabel ? `<p class="text-[11px] text-neutral-500 mt-1">${Utils.escapeHTML(refreshedLabel)}</p>` : ''}
+        </div>
       </div>
     `;
   }
@@ -1611,7 +1621,7 @@ class QuickOrderHandler {
 
       // debug removed
 
-      const actionButtons = document.querySelectorAll(`#expansion-content-${symbolId} .btn-quick-action, #expansion-content-${symbolId} .btn-action-compact`);
+      const actionButtons = document.querySelectorAll(`#expansion-content-${symbolId} .btn-quick-action`);
       actionButtons.forEach(btn => {
         btn.disabled = true;
         btn.classList.remove('loading'); // avoid global .loading conflicts
@@ -1673,7 +1683,7 @@ class QuickOrderHandler {
       console.error('Quick order failed:', error);
       Utils.showToast(`Order failed: ${error.message}`, 'error');
     } finally {
-      const actionButtons = document.querySelectorAll(`#expansion-content-${symbolId} .btn-quick-action, #expansion-content-${symbolId} .btn-action-compact`);
+      const actionButtons = document.querySelectorAll(`#expansion-content-${symbolId} .btn-quick-action`);
       actionButtons.forEach(btn => {
         btn.disabled = false;
         btn.classList.remove('loading');
