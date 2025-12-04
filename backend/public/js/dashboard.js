@@ -892,14 +892,28 @@ class DashboardApp {
 
     this.stopPositionsPolling();
 
-    // Fetch watchlists + instances in parallel to reduce latency
-    const [watchlistsRes, instancesRes] = await Promise.all([
-      api.getWatchlists(),
-      api.getInstances(),
-    ]);
-    this.watchlists = watchlistsRes.data;
-    this.expandedWatchlists = this.expandedWatchlists || new Set();
-    this.instances = instancesRes.data;
+    try {
+      // Fetch watchlists + instances in parallel to reduce latency
+      const [watchlistsRes, instancesRes] = await Promise.all([
+        api.getWatchlists(),
+        api.getInstances(),
+      ]);
+      this.watchlists = watchlistsRes.data;
+      this.expandedWatchlists = this.expandedWatchlists || new Set();
+      this.instances = instancesRes.data;
+    } catch (error) {
+      console.error('Failed to load watchlists view:', error);
+      contentArea.innerHTML = `
+        <div class="card">
+          <div class="p-4 space-y-2">
+            <h3 class="text-lg font-semibold text-loss">Unable to load watchlists</h3>
+            <p class="text-sm text-neutral-600">${Utils.escapeHTML(error?.message || 'Network error')}</p>
+            <button class="btn btn-primary btn-sm" onclick="app.renderWatchlistsView()">Retry</button>
+          </div>
+        </div>
+      `;
+      return;
+    }
 
     contentArea.innerHTML = `
       <section class="watchlists-page-compact">
@@ -979,6 +993,7 @@ class DashboardApp {
 
     // Populate positions summary once so the inline panel is not empty
     this.refreshWatchlistPositions({ showLoader: false });
+    // Begin polling when the user expands the panel
   }
 
   /**
