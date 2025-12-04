@@ -3814,12 +3814,19 @@ body {
   color: white;
 }
 
-/* Preview Card Compact */
+/* Preview Card Compact - Ultra Compressed */
 .preview-card-compact {
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--color-neutral-200);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background-color: var(--color-neutral-100);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.preview-card-compact p {
+  margin: 0;
+  font-size: 0.75rem;
 }
 
 /* Quick Order Actions Compact */
@@ -3828,35 +3835,66 @@ body {
   flex-direction: column;
 }
 
-/* Action Buttons Grid */
-.action-buttons-grid {
+/* 3-Column Action Buttons Layout */
+.action-buttons-3col {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: var(--space-2);
+  align-items: start;
+}
+
+.action-column {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-1);
 }
 
-.action-row {
-  display: grid;
-  grid-template-columns: 40px 1fr 1fr;
-  gap: var(--space-2);
-  align-items: center;
+.action-column-label {
+  font-size: 0.625rem;
+  font-weight: 700;
+  color: var(--color-neutral-500);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  text-align: center;
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--color-neutral-200);
+  margin-bottom: var(--space-1);
 }
 
-.action-row-exit {
-  grid-template-columns: 40px 1fr;
-  border-top: 1px solid var(--color-neutral-200);
-  padding-top: var(--space-2);
-  margin-top: var(--space-1);
+.action-column-exit {
+  display: flex;
+  align-items: stretch;
 }
 
-.action-label {
+.btn-action-exit {
+  min-height: 100%;
+  padding: var(--space-2) var(--space-4);
   font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--color-neutral-600);
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  text-align: right;
-  padding-right: var(--space-1);
+  border: 2px solid var(--color-warning);
+  border-radius: var(--radius-sm);
+  background: white;
+  color: var(--color-warning);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btn-action-exit:hover:not(:disabled) {
+  background-color: var(--color-warning);
+  color: white;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+}
+
+.btn-action-exit:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* Compact Action Buttons */
@@ -3988,18 +4026,18 @@ body {
     grid-template-columns: 1fr;
   }
 
-  .action-row {
-    grid-template-columns: 35px 1fr;
+  .action-buttons-3col {
+    grid-template-columns: 1fr 1fr auto;
     gap: var(--space-1);
   }
 
-  .action-row .btn-action-compact:nth-child(3) {
-    grid-column: 2;
-    margin-top: var(--space-1);
+  .action-column {
+    gap: 4px;
   }
 
-  .action-row-exit {
-    grid-template-columns: 35px 1fr;
+  .action-column-label {
+    font-size: 0.5rem;
+    padding: 2px 0;
   }
 
   .btn-action-compact {
@@ -4007,8 +4045,9 @@ body {
     padding: var(--space-1) var(--space-2);
   }
 
-  .action-label {
+  .btn-action-exit {
     font-size: 0.625rem;
+    padding: var(--space-1) var(--space-2);
   }
 }
 
@@ -4024,5 +4063,19 @@ body {
 
   .compact-field-label {
     font-size: 0.625rem;
+  }
+
+  .action-buttons-3col {
+    gap: 4px;
+  }
+
+  .btn-action-compact {
+    font-size: 0.5rem;
+    padding: 4px 6px;
+  }
+
+  .btn-action-exit {
+    font-size: 0.5rem;
+    padding: 4px 8px;
   }
 }

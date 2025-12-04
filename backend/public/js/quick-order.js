@@ -461,7 +461,7 @@ class QuickOrderHandler {
     const isConfigured = this.isOptionsModeConfigured(symbolId);
 
     if (tradeMode === 'OPTIONS') {
-      // CE Row
+      // CE Column - all CE buttons stacked
       let ceButtons = '';
       if (operatingMode === 'BUYER') {
         ceButtons = `
@@ -476,6 +476,12 @@ class QuickOrderHandler {
                   ${!isConfigured ? 'disabled' : ''}
                   title="Reduce CE longs">
             REDUCE CE
+          </button>
+          <button class="btn-action-compact btn-close-all-ce"
+                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'CLOSE_ALL_CE')"
+                  ${!isConfigured ? 'disabled' : ''}
+                  title="Close all CE positions">
+            CLOSE CE
           </button>
         `;
       } else {
@@ -492,10 +498,16 @@ class QuickOrderHandler {
                   title="Cover CE shorts">
             INCREASE CE
           </button>
+          <button class="btn-action-compact btn-close-all-ce"
+                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'CLOSE_ALL_CE')"
+                  ${!isConfigured ? 'disabled' : ''}
+                  title="Close all CE positions">
+            CLOSE CE
+          </button>
         `;
       }
 
-      // PE Row
+      // PE Column - all PE buttons stacked
       let peButtons = '';
       if (operatingMode === 'BUYER') {
         peButtons = `
@@ -510,6 +522,12 @@ class QuickOrderHandler {
                   ${!isConfigured ? 'disabled' : ''}
                   title="Reduce PE longs">
             REDUCE PE
+          </button>
+          <button class="btn-action-compact btn-close-all-pe"
+                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'CLOSE_ALL_PE')"
+                  ${!isConfigured ? 'disabled' : ''}
+                  title="Close all PE positions">
+            CLOSE PE
           </button>
         `;
       } else {
@@ -526,53 +544,41 @@ class QuickOrderHandler {
                   title="Cover PE shorts">
             INCREASE PE
           </button>
+          <button class="btn-action-compact btn-close-all-pe"
+                  onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'CLOSE_ALL_PE')"
+                  ${!isConfigured ? 'disabled' : ''}
+                  title="Close all PE positions">
+            CLOSE PE
+          </button>
         `;
       }
 
-      // Exit Row
-      const exitButtons = `
-        <button class="btn-action-compact btn-close-all-ce"
-                onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'CLOSE_ALL_CE')"
-                ${!isConfigured ? 'disabled' : ''}
-                title="Close all CE positions">
-          CLOSE CE
-        </button>
-        <button class="btn-action-compact btn-close-all-pe"
-                onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'CLOSE_ALL_PE')"
-                ${!isConfigured ? 'disabled' : ''}
-                title="Close all PE positions">
-          CLOSE PE
-        </button>
-        <button class="btn-action-compact btn-exit-all"
-                onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'EXIT_ALL')"
-                ${!isConfigured ? 'disabled' : ''}
-                title="Exit all positions (CE & PE)">
-          EXIT ALL
-        </button>
-      `;
-
       return `
-        <div class="action-buttons-grid">
-          <div class="action-row">
-            <span class="action-label">CE</span>
+        <div class="action-buttons-3col">
+          <div class="action-column">
+            <div class="action-column-label">CALL</div>
             ${ceButtons}
           </div>
-          <div class="action-row">
-            <span class="action-label">PE</span>
+          <div class="action-column">
+            <div class="action-column-label">PUT</div>
             ${peButtons}
           </div>
-          <div class="action-row action-row-exit">
-            <span class="action-label">Exit</span>
-            ${exitButtons}
+          <div class="action-column-exit">
+            <button class="btn-action-exit btn-exit-all"
+                    onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'EXIT_ALL')"
+                    ${!isConfigured ? 'disabled' : ''}
+                    title="Exit all positions (CE & PE)">
+              EXIT ALL
+            </button>
           </div>
         </div>
       `;
     } else {
-      // EQUITY or FUTURES mode
+      // EQUITY or FUTURES mode - 3 column layout
       return `
-        <div class="action-buttons-grid">
-          <div class="action-row">
-            <span class="action-label">Long</span>
+        <div class="action-buttons-3col">
+          <div class="action-column">
+            <div class="action-column-label">LONG</div>
             <button class="btn-action-compact btn-buy"
                     onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'BUY')">
               BUY
@@ -582,8 +588,8 @@ class QuickOrderHandler {
               SELL
             </button>
           </div>
-          <div class="action-row">
-            <span class="action-label">Short</span>
+          <div class="action-column">
+            <div class="action-column-label">SHORT</div>
             <button class="btn-action-compact btn-short"
                     onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'SHORT')">
               SHORT
@@ -593,9 +599,8 @@ class QuickOrderHandler {
               COVER
             </button>
           </div>
-          <div class="action-row action-row-exit">
-            <span class="action-label">Exit</span>
-            <button class="btn-action-compact btn-exit"
+          <div class="action-column-exit">
+            <button class="btn-action-exit btn-exit"
                     onclick="quickOrder.placeOrder(${watchlistId}, ${symbolId}, 'EXIT')">
               EXIT
             </button>
