@@ -6,7 +6,6 @@
 
 import { log } from '../core/logger.js';
 import db from '../core/database.js';
-import openalgoClient from '../integrations/openalgo/client.js';
 import optionsResolutionService from './options-resolution.service.js';
 import expiryManagementService from './expiry-management.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
@@ -14,6 +13,7 @@ import marketDataInstanceService from './market-data-instance.service.js';
 import derivativeResolutionService, { NSE_INDEX_UNDERLYINGS, BSE_INDEX_UNDERLYINGS } from './derivative-resolution.service.js';
 import orderPlacementService from './order-placement.service.js';
 import orderPayloadFactory from './order-payload.factory.js';
+import openalgoClient from '../integrations/openalgo/client.js';
 import orderRepository from './order-repository.js';
 import orderService from './order.service.js';
 import telegramService from './telegram.service.js';
@@ -206,6 +206,18 @@ class QuickOrderService {
         failed: results.filter(r => !r.success).length,
       },
     };
+  }
+
+  async _captureFallbackEntryPrice(instance, exchange, symbol) {
+    try {
+      const quote = await openalgoClient.getQuote(instance, symbol, exchange);
+      const ltp = Array.isArray(quote) ? quote[0]?.ltp || quote[0]?.last_price : quote?.ltp || quote?.last_price;
+      if (ltp && ltp > 0) {
+        marketDataFeedService.setFallbackEntryPrice(instance.id, exchange, symbol, ltp, 'manual_order_quote');
+      }
+    } catch (err) {
+      // best effort only
+    }
   }
 
   /**
@@ -840,6 +852,9 @@ class QuickOrderService {
       price,
     });
 
+    // Best-effort capture of entry LTP for manual orders (fallback for auto-exit)
+    this._captureFallbackEntryPrice(instance, finalExchange, finalSymbol).catch(() => {});
+
     const orderResult = await orderPlacementService.placeSmartOrder(instance, orderPayload, {
       request_type: 'DIRECT',
       trade_mode: tradeMode,
@@ -1124,6 +1139,9 @@ class QuickOrderService {
           'OPTIONS',
           { symbol_type: 'OPTIONS', exchange: derivativeExchange }
         );
+
+        // Capture fallback entry price per strike (best effort)
+        this._captureFallbackEntryPrice(instance, derivativeExchange, order.symbol).catch(() => {});
 
         const orderDataToSend = orderPayloadFactory.buildOptionsOrder({
           strategy: symbol.watchlist_name || 'default',

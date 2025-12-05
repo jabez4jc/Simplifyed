@@ -8,6 +8,7 @@ import log from '../core/logger.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
+import { extractAveragePrice, extractLtp } from '../utils/price-extraction.js';
 
 class PositionsService {
   /**
@@ -54,17 +55,17 @@ class PositionsService {
 
         if (promiseResult.status === 'fulfilled') {
           const data = promiseResult.value;
-        result.instances.push({
-          instance_id: instance.id,
-          instance_name: instance.name,
-          broker: instance.broker,
-          health_status: instance.health_status,
-          is_analyzer_mode: !!instance.is_analyzer_mode,
-          positions: data.positions,
-          total_pnl: data.total_pnl,
-          open_positions_count: data.open_positions_count,
-          closed_positions_count: data.closed_positions_count,
-          error: null,
+          result.instances.push({
+            instance_id: instance.id,
+            instance_name: instance.name,
+            broker: instance.broker,
+            health_status: instance.health_status,
+            is_analyzer_mode: !!instance.is_analyzer_mode,
+            positions: data.positions,
+            total_pnl: data.total_pnl,
+            open_positions_count: data.open_positions_count,
+            closed_positions_count: data.closed_positions_count,
+            error: null,
           });
 
           result.overall_total_pnl += data.total_pnl;
@@ -72,15 +73,15 @@ class PositionsService {
           result.overall_closed_positions += data.closed_positions_count;
         } else {
           // Include failed instances with error message
-        result.instances.push({
-          instance_id: instance.id,
-          instance_name: instance.name,
-          broker: instance.broker,
-          health_status: instance.health_status,
-          is_analyzer_mode: !!instance.is_analyzer_mode,
-          positions: [],
-          total_pnl: 0,
-          open_positions_count: 0,
+          result.instances.push({
+            instance_id: instance.id,
+            instance_name: instance.name,
+            broker: instance.broker,
+            health_status: instance.health_status,
+            is_analyzer_mode: !!instance.is_analyzer_mode,
+            positions: [],
+            total_pnl: 0,
+            open_positions_count: 0,
             closed_positions_count: 0,
             error: promiseResult.reason?.message || 'Failed to fetch positions',
           });
@@ -92,6 +93,34 @@ class PositionsService {
           });
         }
       });
+
+      // Cross-instance median LTP fallback for missing entry_price per symbol/exchange
+      const ltpBySymbol = new Map();
+      result.instances.forEach(inst => {
+        (inst.positions || []).forEach(pos => {
+          const entry = pos.entry_price;
+          const ltp = extractLtp(pos);
+          const key = this._symbolKey(pos);
+          if (entry && entry > 0 && ltp && ltp > 0 && key) {
+            if (!ltpBySymbol.has(key)) ltpBySymbol.set(key, []);
+            ltpBySymbol.get(key).push(ltp);
+          }
+        });
+      });
+
+      result.instances = result.instances.map(inst => ({
+        ...inst,
+        positions: (inst.positions || []).map(pos => {
+          if (pos.entry_price && pos.entry_price > 0) return pos;
+          const key = this._symbolKey(pos);
+          const ltps = key ? ltpBySymbol.get(key) : null;
+          if (ltps && ltps.length > 0) {
+            const medianLtp = this._median(ltps);
+            return { ...pos, entry_price: medianLtp, entry_price_source: 'median_ltp' };
+          }
+          return pos;
+        }),
+      }));
 
       return result;
     } catch (error) {
@@ -111,6 +140,43 @@ class PositionsService {
     // Try various field names used by different brokers
     const rawQty = pos.quantity ?? pos.netqty ?? pos.net_quantity ?? pos.netQty ?? pos.net ?? 0;
     return parseIntSafe(rawQty, 0);
+  }
+
+  _resolveEntryPrice(pos, instanceId) {
+    const direct =
+      extractAveragePrice(pos) ??
+      pos.avg_price ??
+      pos.net_avg_price ??
+      pos.average_price ??
+      pos.avgPrice;
+    if (direct && direct > 0) return direct;
+
+    // Fallback captured at manual order placement
+    const fallback = marketDataFeedService.getFallbackEntryPrice(
+      instanceId,
+      pos.exchange || pos.exch || pos.brexchange,
+      pos.symbol || pos.tradingsymbol || pos.trading_symbol
+    );
+    if (fallback?.price && fallback.price > 0) return fallback.price;
+
+    // As a last resort, if LTP exists and qty is zero (flat), return null
+    return null;
+  }
+
+  _median(values = []) {
+    if (!values.length) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 0
+      ? (sorted[mid - 1] + sorted[mid]) / 2
+      : sorted[mid];
+  }
+
+  _symbolKey(pos) {
+    const exchange = (pos.exchange || pos.exch || pos.brexchange || '').replace(/\s+/g, '').toUpperCase();
+    const symbol = (pos.symbol || pos.tradingsymbol || pos.trading_symbol || '').replace(/\s+/g, '').toUpperCase();
+    if (!exchange || !symbol) return null;
+    return `${exchange}|${symbol}`;
   }
 
   /**
@@ -146,6 +212,15 @@ class PositionsService {
         });
       }
 
+      // Enrich positions with derived entry price (including fallback)
+      const enrichedPositions = filteredPositions.map(pos => {
+        const entryPrice = this._resolveEntryPrice(pos, instance.id);
+        return {
+          ...pos,
+          entry_price: entryPrice,
+        };
+      });
+
       // Calculate totals
       const openPositions = positionBook.filter(pos => this._getPositionQuantity(pos) !== 0);
       const closedPositions = positionBook.filter(pos => this._getPositionQuantity(pos) === 0);
@@ -171,7 +246,7 @@ class PositionsService {
       });
 
       return {
-        positions: filteredPositions,
+        positions: enrichedPositions,
         total_pnl: totalPnL,
         open_positions_count: openPositions.length,
         closed_positions_count: closedPositions.length,

@@ -64,6 +64,8 @@ class MarketDataFeedService extends EventEmitter {
     this.orderbookRefreshTimestamps = new Map();
     this.tradebookCache = new Map();
     this.tradebookRefreshTimestamps = new Map();
+    // Fallback entry prices captured at order placement (key: instanceId|exchange|symbol)
+    this.entryPriceCache = new Map();
 
     // Unified symbol quote cache (consolidated from separate SYMBOL_QUOTE_TTL_MS)
     // TTL is now configurable per-call via ttlMs parameter
@@ -456,6 +458,25 @@ class MarketDataFeedService extends EventEmitter {
     if (refresh) {
       await this.refreshPositionsForInstance(instanceId, { force: true });
     }
+  }
+
+  // Fallback entry price helpers
+  setFallbackEntryPrice(instanceId, exchange, symbol, price, source = 'unknown') {
+    if (!instanceId || !exchange || !symbol || !price || price <= 0) return;
+    const key = `${instanceId}|${exchange.toUpperCase()}|${symbol.toUpperCase()}`;
+    this.entryPriceCache.set(key, { price, source, capturedAt: Date.now() });
+  }
+
+  getFallbackEntryPrice(instanceId, exchange, symbol) {
+    if (!instanceId || !exchange || !symbol) return null;
+    const key = `${instanceId}|${exchange.toUpperCase()}|${symbol.toUpperCase()}`;
+    return this.entryPriceCache.get(key) || null;
+  }
+
+  clearFallbackEntryPrice(instanceId, exchange, symbol) {
+    if (!instanceId || !exchange || !symbol) return;
+    const key = `${instanceId}|${exchange.toUpperCase()}|${symbol.toUpperCase()}`;
+    this.entryPriceCache.delete(key);
   }
 
   /**
