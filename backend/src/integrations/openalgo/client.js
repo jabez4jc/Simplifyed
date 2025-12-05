@@ -36,6 +36,8 @@ class OpenAlgoClient extends EventEmitter {
     this.criticalRetryDelay = config.openalgo.critical.retryDelay;
     this.nonCriticalRetries = config.openalgo.nonCritical.maxRetries;
     this.nonCriticalRetryDelay = config.openalgo.nonCritical.retryDelay;
+    this.instanceTimeoutOverrides = this._loadInstanceTimeoutOverrides();
+    this.fastSnapshotMode = process.env.OPENALGO_FAST_SNAPSHOT_MODE !== 'false';
 
     // Default dispatcher with HTTP/2 support and connection reuse
     // Conservative timeouts to avoid ECONNRESET from stale connections
@@ -663,6 +665,7 @@ class OpenAlgoClient extends EventEmitter {
     const payload = { ...data, apikey: api_key };
     const maskedPayload = { ...data, apikey: maskApiKey(api_key) };
     const instKey = this._instanceKey(instance);
+    const timeoutOverride = this._getInstanceTimeoutMs(instance);
     this._persistMeta(instKey, instance);
 
     // Select retry configuration based on operation type
@@ -674,12 +677,13 @@ class OpenAlgoClient extends EventEmitter {
 
     // Store initial position for order placement requests
     // Track snapshot success separately from position value to enable dedup for new positions
+    // Fast path (default): defer snapshot until a retry is needed to save ~300-500ms on first attempt
     let initialPosition = null;
     let initialPositionFetched = false;
-    if (isOrderPlacement) {
+    if (isOrderPlacement && !this.fastSnapshotMode) {
       try {
         initialPosition = await this._getPositionForOrder(instance, data);
-        initialPositionFetched = true; // Snapshot succeeded (position may be null for new positions)
+        initialPositionFetched = true;
       } catch (error) {
         log.warn('Could not fetch initial position for order retry check', {
           endpoint,
@@ -705,8 +709,10 @@ class OpenAlgoClient extends EventEmitter {
 
     // Retry with exponential backoff
     let lastError;
+    let attemptsUsed = 0;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
+        attemptsUsed = attempt + 1;
         const startTime = Date.now();
         if (!skipRateLimit) {
           await this._ensureLimits();
@@ -714,8 +720,8 @@ class OpenAlgoClient extends EventEmitter {
           await this._throttle(instance, endpoint, isOrderPlacement);
         }
         const response = skipRateLimit
-          ? await this._makeRequest(url, method, payload)
-          : await this._executeWithConcurrency(instance, endpoint, method, url, payload, isOrderPlacement);
+          ? await this._makeRequest(url, method, payload, timeoutOverride)
+          : await this._executeWithConcurrency(instance, endpoint, method, url, payload, isOrderPlacement, timeoutOverride);
         const duration = Date.now() - startTime;
 
         log.debug('OpenAlgo API Response', {
@@ -726,6 +732,17 @@ class OpenAlgoClient extends EventEmitter {
           instanceId: instance.id,
           instanceName: instance.name,
           success: true,
+        });
+
+        // Metrics hook: successful OpenAlgo request
+        log.info('metrics.openalgo_request', {
+          endpoint,
+          instance_id: instance.id,
+          instance_name: instance.name,
+          is_critical: isCritical,
+          attempts: attemptsUsed,
+          duration_ms: duration,
+          timeout_ms: timeoutOverride ?? this.timeout,
         });
 
         return response;
@@ -763,9 +780,25 @@ class OpenAlgoClient extends EventEmitter {
         }
 
         // For order placement requests, check if order was actually placed before retrying
-        if (isOrderPlacement && attempt < maxRetries && initialPositionFetched) {
-          try {
-            const currentPosition = await this._getPositionForOrder(instance, data);
+        // Snapshot is captured lazily on the first retry to avoid adding latency to attempt 0
+        if (isOrderPlacement && attempt < maxRetries) {
+          if (!initialPositionFetched) {
+            try {
+              initialPosition = await this._getPositionForOrder(instance, data);
+              initialPositionFetched = true;
+            } catch (error) {
+              log.warn('Could not fetch initial position for order retry check', {
+                endpoint,
+                symbol: data.symbol,
+                exchange: data.exchange,
+                error: error.message,
+              });
+            }
+          }
+
+          if (initialPositionFetched) {
+            try {
+              const currentPosition = await this._getPositionForOrder(instance, data);
 
             // Check if position changed (order was likely placed)
             if (this._hasPositionChanged(initialPosition, currentPosition, data)) {
@@ -823,6 +856,7 @@ class OpenAlgoClient extends EventEmitter {
             });
           }
         }
+        }
 
         // Log retry attempt
         if (attempt < maxRetries) {
@@ -851,7 +885,7 @@ class OpenAlgoClient extends EventEmitter {
     throw lastError;
   }
 
-  async _executeWithConcurrency(instance, endpoint, method, url, payload, isOrderPlacement) {
+  async _executeWithConcurrency(instance, endpoint, method, url, payload, isOrderPlacement, timeoutOverride = null) {
     const instKey = this._instanceKey(instance);
     await this._waitForConcurrency(instKey, endpoint);
 
@@ -867,7 +901,7 @@ class OpenAlgoClient extends EventEmitter {
     }
 
     try {
-      return await this._makeRequest(url, method, payload);
+      return await this._makeRequest(url, method, payload, timeoutOverride);
     } finally {
       this.currentTasks = Math.max(0, this.currentTasks - 1);
     }
@@ -930,6 +964,27 @@ class OpenAlgoClient extends EventEmitter {
     while (list.length && now - list[0] >= windowMs) {
       list.shift();
     }
+  }
+
+  _loadInstanceTimeoutOverrides() {
+    try {
+      const raw = process.env.OPENALGO_INSTANCE_TIMEOUT_MS_MAP;
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (err) {
+      log.warn('Failed to parse OPENALGO_INSTANCE_TIMEOUT_MS_MAP, ignoring', { error: err.message });
+      return {};
+    }
+  }
+
+  _getInstanceTimeoutMs(instance) {
+    if (!instance) return null;
+    const map = this.instanceTimeoutOverrides || {};
+    const byId = map[String(instance.id)];
+    if (byId) return byId;
+    const byName = instance.name ? map[String(instance.name)] : null;
+    return byName || null;
   }
 
   async _throttle(instance, endpoint, isOrderPlacement) {
@@ -1101,9 +1156,10 @@ class OpenAlgoClient extends EventEmitter {
    * Make HTTP request with timeout
    * @private
    */
-  async _makeRequest(url, method, payload) {
+  async _makeRequest(url, method, payload, timeoutOverride = null) {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    const effectiveTimeout = timeoutOverride ?? this.timeout;
+    const timeoutId = setTimeout(() => controller.abort(), effectiveTimeout);
 
     try {
       const fetchOptions = {
@@ -2734,6 +2790,7 @@ class OpenAlgoClient extends EventEmitter {
       return null;
     }
   }
+
 }
 
 // Export singleton instance
