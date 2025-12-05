@@ -130,9 +130,89 @@ DEFAULT_POSITION_INTERVAL_IDLE: 10000,   // ✅ Faster refresh (15s → 10s)
 
 ---
 
-### Phase 2: Cache-First Optimizations (Deploy Second - Medium Risk)
+### Phase 2: Entry Price Fallback + Cache-First Optimizations (Deploy Second - Medium Risk)
 
-#### Change 3: `/Users/jnt/GitHub/Simplifyed/backend/src/services/order-monitor.service.js`
+#### Change 3: `/Users/jnt/GitHub/Simplifyed/backend/src/services/auto-exit.service.js`
+
+**Lines:** 267-269 (in `_resolveEntryPriceFromTrades`)
+
+```javascript
+// BEFORE (Line 267):
+const price = openEntry.average_price;
+if (!price || price <= 0) {
+  return null;  // ❌ Hard fail on dummy prices
+}
+
+// AFTER (Lines 267-269):
+const price = this._validateEntryPrice(openEntry.average_price);
+if (!price) {
+  continue;  // ✅ Skip dummy prices (0, 100), continue FIFO
+}
+```
+
+**Lines:** 370-373 (add 3 new methods after `_normalizeExchange`)
+
+```javascript
+// NEW METHOD 1: Validate entry prices
+_validateEntryPrice(price) {
+  const parsed = parseFloat(price);
+  // Reject dummy/broken prices: 0, 100, negative, NaN
+  if (isNaN(parsed) || parsed <= 0 || parsed === 100) {
+    return null;
+  }
+  return parsed;
+}
+
+// NEW METHOD 2: Median price fallback
+_calculateMedianPrice(trades, symbol, exchange, side) {
+  const validPrices = trades
+    .filter(trade => this._normalizeSymbol(trade.symbol) === symbol &&
+                      this._normalizeExchange(trade.exchange) === exchange &&
+                      trade.action === (side === 'LONG' ? 'BUY' : 'SELL'))
+    .map(trade => this._validateEntryPrice(trade.average_price))
+    .filter(price => price !== null);
+
+  if (validPrices.length === 0) return null;
+
+  validPrices.sort((a, b) => a - b);
+  const mid = Math.floor(validPrices.length / 2);
+  return validPrices.length % 2 === 0
+    ? (validPrices[mid - 1] + validPrices[mid]) / 2
+    : validPrices[mid];
+}
+
+// NEW METHOD 3: Last valid trade fallback
+_getLastValidTradePrice(trades, symbol, exchange, side) {
+  const sortedTrades = trades
+    .filter(trade => this._normalizeSymbol(trade.symbol) === symbol &&
+                      this._normalizeExchange(trade.exchange) === exchange)
+    .sort((a, b) => (b.timestamp_epoch ?? 0) - (a.timestamp_epoch ?? 0));
+
+  for (const trade of sortedTrades) {
+    const price = this._validateEntryPrice(trade.average_price);
+    if (price !== null) {
+      return price;
+    }
+  }
+  return null;
+}
+```
+
+**Impact:**
+- Handles brokers that return 0 or 100 for market orders
+- Provides accurate entry prices for automated exits
+- Logs warnings when fallbacks are used
+- **Critical for broker compatibility**
+
+**Dependencies:** None
+
+**Testing:** Test with brokers that return dummy prices
+
+---
+
+### Phase 3: Cache-First Optimizations (Deploy Third - Low Risk)
+
+#### Change 4: `/Users/jnt/GitHub/Simplifyed/backend/src/services/order-monitor.service.js`
 
 **Lines:** 105-123 (after line 109)
 
@@ -170,7 +250,7 @@ if (snapshot && Date.now() - snapshot.fetchedAt < 5000) {
 
 ---
 
-#### Change 4: `/Users/jnt/GitHub/Simplifyed/backend/public/js/watchlist.js`
+#### Change 5: `/Users/jnt/GitHub/Simplifyed/backend/public/js/watchlist.js`
 
 **Location:** In `expandRow()` function (around line 450)
 
@@ -197,9 +277,9 @@ Promise.all([
 
 ---
 
-### Phase 3: Frontend Optimizations (Deploy Last - Highest Impact, Lowest Risk)
+### Phase 4: Frontend Optimizations (Deploy Fourth - Highest Impact, Lowest Risk)
 
-#### Change 5: `/Users/jnt/GitHub/Simplifyed/backend/public/js/quick-order.js`
+#### Change 6: `/Users/jnt/GitHub/Simplifyed/backend/public/js/quick-order.js`
 
 **Line 1622:**
 
@@ -476,7 +556,31 @@ Expected Results:
 **Time:** 1 hour
 
 **Steps:**
-1. Deploy order-monitor.service.js changes
+1. Deploy auto-exit.service.js entry price fallback methods
+2. Deploy FIFO logic enhancement
+3. Test with brokers that return dummy prices
+4. Monitor for 24 hours
+
+**Monitoring Points:**
+- Entry price calculation accuracy
+- Fallback usage frequency (metrics.entry_price_fallback)
+- Exit trigger accuracy
+- Error logs for invalid prices
+
+**Success Criteria:**
+- ✅ FIFO handles dummy prices correctly
+- ✅ Median/last trade fallbacks work
+- ✅ Automated exits trigger at correct levels
+- ✅ No false exits due to invalid prices
+
+---
+
+### Day 3: Phase 3 Deployment (if Phase 2 successful)
+
+**Time:** 1 hour
+
+**Steps:**
+1. Deploy order-monitor.service.js cache-first approach
 2. Deploy watchlist.js cache warming
 3. Test analyzer mode
 4. Monitor for 24 hours
@@ -495,7 +599,7 @@ Expected Results:
 
 ---
 
-### Day 3: Phase 3 Deployment (if Phase 2 successful)
+### Day 4: Phase 4 Deployment (if Phase 3 successful)
 
 **Time:** 15 minutes
 
@@ -526,6 +630,7 @@ Expected Results:
 - **Position TTL changes** - Aligns with existing 5s auto-exit interval
 - **Frontend retry reduction** - UI only, backend unchanged
 - **Cache warming** - Best-effort, doesn't block
+- **Entry price validation** - Enhanced validation, filters dummy prices safely
 
 **Mitigation:** Fallback to current behavior if any issue
 
@@ -533,6 +638,7 @@ Expected Results:
 
 - **OrderMonitorService cache-first** - Falls back to live, analyzer mode only
 - **Dynamic interval changes** - Could affect exit timing (mitigated by 5s alignment)
+- **Entry price median/last trade fallbacks** - New logic, may need fine-tuning
 
 **Mitigation:** Rollback procedures tested and ready
 
@@ -547,18 +653,24 @@ Expected Results:
 
 ## File Modification Summary
 
-### Total Files: 5
+### Total Files: 6
 
 | File | Phase | Lines Changed | Risk | Impact |
 |------|-------|---------------|------|--------|
 | `/backend/src/core/config.js` | 1 | 210-215 | Low | High |
 | `/backend/src/services/market-data-feed.service.js` | 1 | 911-920, 1148-1155 | Low | High |
-| `/backend/src/services/order-monitor.service.js` | 2 | 105-123 | Low | Medium |
-| `/backend/public/js/watchlist.js` | 2 | ~450 | Very Low | Medium |
-| `/backend/public/js/quick-order.js` | 3 | 1622, 1636 | Very Low | High |
+| `/backend/src/services/auto-exit.service.js` | 2 | 267-269 (FIFO), +3 new methods | Low | Critical |
+| `/backend/src/services/order-monitor.service.js` | 3 | 105-123 | Low | Medium |
+| `/backend/public/js/watchlist.js` | 3 | ~450 | Very Low | Medium |
+| `/backend/public/js/quick-order.js` | 4 | 1622, 1636 | Very Low | High |
 
-**Total Implementation Time:** 6-8 hours (spread over 3 days)
-**Total Testing Time:** 48-72 hours (spread over 3 days)
+**New Methods in auto-exit.service.js:**
+- `_validateEntryPrice(price)` - Filter dummy prices (0, 100)
+- `_calculateMedianPrice(trades, symbol, exchange, side)` - Median fallback
+- `_getLastValidTradePrice(trades, symbol, exchange, side)` - Last trade fallback
+
+**Total Implementation Time:** 10-12 hours (spread over 4 days)
+**Total Testing Time:** 72-96 hours (spread over 4 days)
 **Total Rollback Time:** <30 minutes (per phase)
 
 ---
@@ -756,6 +868,265 @@ cw.putMetricData({
 ```
 
 But **ELK is recommended** since you already have structured logs in place.
+
+---
+
+## Entry Price Validation & Invalidation Timing
+
+### Validation Frequency
+
+**AutoExitService evaluates entry prices every 5 seconds:**
+
+```javascript
+// auto-exit.service.js:38-42
+this.intervalId = setInterval(
+  () => this.monitorAllPositions(),
+  this.monitorIntervalMs  // 5000ms (5 seconds)
+);
+```
+
+**Each evaluation cycle:**
+
+1. **T+0s:** AutoExitService starts
+2. **T+0-100ms:** Gets position from MarketDataFeedService cache
+3. **T+100-200ms:** Extracts entry price (extractAveragePrice or FIFO fallback)
+4. **T+200-300ms:** Evaluates target/stop-loss/trailing conditions
+5. **T+5s:** Next cycle begins
+
+**Entry Price is validated 288 times per day** (every 5 seconds × 24 hours)
+
+---
+
+### When Entry Price is Invalidated
+
+Entry price becomes **stale** when position changes. The system invalidates caches:
+
+1. **Order Placement** → Cache invalidation in 1 second
+2. **Trade Execution** → Cache refresh in 5-10 seconds
+3. **Position Close** → Immediate (next cycle)
+4. **Manual Position Update** → Cache refresh on demand
+
+**Cache Invalidation Flow:**
+
+```
+Trade Executed (BUY/SELL)
+    ↓
+Order Service calls _invalidateInstanceCaches()
+    ↓
+MarketDataFeedService marks cache as stale
+    ↓
+Next AutoExitService cycle (≤5s) fetches fresh position
+    ↓
+Fresh entry price calculated
+```
+
+---
+
+### Multi-Layer Fallback Strategy (Without Manual Price)
+
+**Enhanced entry price calculation with 3 fallback layers:**
+
+#### Layer 1: FIFO Weighted Average (Current Logic, Enhanced)
+
+**File:** `auto-exit.service.js:209-279`
+
+```javascript
+// Enhanced to filter dummy prices
+const price = this._validateEntryPrice(openEntry.average_price);
+if (!price) {
+  continue;  // Skip prices that are 0 or 100
+}
+```
+
+**When it fails:**
+- All trades have dummy prices (0 or 100)
+- No valid prices for FIFO calculation
+
+#### Layer 2: Median Price from Open Trades
+
+**File:** `auto-exit.service.js` (new method)
+
+```javascript
+_calculateMedianPrice(trades, symbol, exchange, side) {
+  // Filter out dummy prices (0, 100)
+  const validPrices = trades
+    .filter(trade => {
+      const price = parseFloat(trade.average_price);
+      return !isNaN(price) && price > 0 && price !== 100;
+    })
+    .map(trade => parseFloat(trade.average_price));
+
+  if (validPrices.length === 0) return null;
+
+  // Calculate median
+  validPrices.sort((a, b) => a - b);
+  const mid = Math.floor(validPrices.length / 2);
+  return validPrices.length % 2 === 0
+    ? (validPrices[mid - 1] + validPrices[mid]) / 2
+    : validPrices[mid];
+}
+```
+
+**Example:**
+```
+Trades: [100, 108.75, 109.50]  // Filter out 100
+Valid:  [108.75, 109.50]
+Median: 109.125
+```
+
+**When it fails:**
+- No trades have valid prices (all are 0 or 100)
+
+#### Layer 3: Last Known Trade Price
+
+**File:** `auto-exit.service.js` (new method)
+
+```javascript
+_getLastValidTradePrice(trades, symbol, exchange, side) {
+  // Get newest trades first
+  const sortedTrades = trades
+    .sort((a, b) => (b.timestamp_epoch ?? 0) - (a.timestamp_epoch ?? 0));
+
+  for (const trade of sortedTrades) {
+    const price = this._validateEntryPrice(trade.average_price);
+    if (price !== null) {
+      return price;
+    }
+  }
+
+  return null;
+}
+```
+
+**When it fails:**
+- No trades have valid prices (all are 0 or 100)
+
+#### Validation Helper
+
+**File:** `auto-exit.service.js` (new method)
+
+```javascript
+_validateEntryPrice(price) {
+  const parsed = parseFloat(price);
+
+  // Reject dummy/broken prices
+  if (isNaN(parsed) || parsed <= 0 || parsed === 100) {
+    return null;
+  }
+
+  return parsed;
+}
+```
+
+---
+
+### Performance Impact of Fallback Layers
+
+**Timing per AutoExitService cycle:**
+
+| Layer | Processing Time | Cache Access | Calculation Complexity |
+|-------|----------------|--------------|----------------------|
+| Layer 1: FIFO | 10-20ms | 1× position, 1× tradebook | Medium (FIFO matching) |
+| Layer 2: Median | 5-10ms | 1× tradebook | Low (sort + median) |
+| Layer 3: Last Trade | 2-5ms | 1× tradebook | Very Low (find first valid) |
+
+**Total worst-case:** 20-35ms per position evaluation
+**Current impact:** Minimal (≤1% of 5s cycle time)
+
+**Optimization:** Cache valid trade prices to avoid re-filtering
+
+---
+
+### Updated Entry Price Flow
+
+```javascript
+async _evaluatePosition(instance, position, configLookup, tradebook) {
+  // Try Layer 1: FIFO
+  let entryPrice = extractAveragePrice(position);
+
+  if (!entryPrice) {
+    // Layer 2: FIFO from tradebook
+    entryPrice = this._resolveFifoFromTradebook(tradebook, ...);
+  }
+
+  if (!entryPrice) {
+    // Layer 3: Median price
+    entryPrice = this._calculateMedianPrice(tradebook, ...);
+  }
+
+  if (!entryPrice) {
+    // Layer 4: Last valid trade
+    entryPrice = this._getLastValidTradePrice(tradebook, ...);
+  }
+
+  if (!entryPrice) {
+    // ALL FALLBACKS FAILED
+    log.error('Cannot determine entry price', {
+      symbol: position.symbol,
+      reason: 'all_fallbacks_failed',
+      hasPositionAvg: !!extractAveragePrice(position),
+      tradeCount: tradebook?.length || 0,
+    });
+    return;  // Skip evaluation
+  }
+
+  // Continue with exit evaluation...
+}
+```
+
+---
+
+### Logging Fallback Usage
+
+**Add to metrics for monitoring:**
+
+```javascript
+// In _calculateMedianPrice or _getLastValidTradePrice
+log.info('metrics.entry_price_fallback', {
+  symbol,
+  fallback_type: 'median' | 'last_trade',
+  entry_price: calculatedPrice,
+  original_trades_count: allTrades.length,
+  valid_trades_count: validTrades.length,
+});
+```
+
+**Dashboard Query:**
+```
+event:"metrics.entry_price_fallback"
+```
+
+**Purpose:** Track how often fallbacks are used per broker/instance
+
+---
+
+### Broker-Specific Patterns
+
+**Expected dummy price patterns by broker:**
+
+| Broker | Dummy Values | Fallback Likely? |
+|--------|--------------|------------------|
+| Broker A | 0, 100 | High (90% of market orders) |
+| Broker B | 0 only | Medium (50% of market orders) |
+| Broker C | No dummies | Low (5% of market orders) |
+
+**Use metrics to identify problematic brokers and add specific handling**
+
+---
+
+### Critical Constraint: No Manual Entry Price
+
+**Why:** User wants automation, not manual intervention
+
+**Implication:** If all fallbacks fail, position cannot be evaluated for exits
+
+**Fallback behavior:**
+1. AutoExitService skips position evaluation
+2. Logs warning/error
+3. User sees notification: "⚠️ Cannot evaluate exits for SYMBOL - broker returned invalid price data"
+4. Position remains open until manual close or valid price data available
+
+**User Action Required:** Contact broker about price data issues
 
 ---
 

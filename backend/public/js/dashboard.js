@@ -3993,31 +3993,52 @@ class DashboardApp {
   renderPositionsTable(positions, instanceId = null) {
     return `
       <div class="table-container overflow-x-auto">
-        <table class="positions-table-compact">
+        <table class="positions-table-compact" style="table-layout: fixed; width: 100%;">
+          <colgroup>
+            <col style="width: 24%;">
+            <col style="width: 12%;">
+            <col style="width: 12%;">
+            <col style="width: 14%;">
+            <col style="width: 14%;">
+            <col style="width: 12%;">
+            <col style="width: 12%;">
+          </colgroup>
           <thead>
             <tr>
               <th>Symbol</th>
               <th>Quantity</th>
               <th>Product</th>
-              <th class="text-right">Avg Price</th>
-              <th class="text-right">LTP</th>
-              <th class="text-right">P&L</th>
-              <th class="text-center">Actions</th>
+              <th class="text-left">Entry</th>
+              <th class="text-left">LTP</th>
+              <th class="text-left">P&L</th>
+              <th class="text-left">Actions</th>
             </tr>
           </thead>
           <tbody>
             ${positions.map(pos => {
               const qty = this.getNormalizedPositionQty(pos);
-              const pnl = parseFloat(pos.pnl || pos.unrealized_pnl || pos.mtm || 0);
+              const entry = Number(pos.entry_price || pos.average_price || pos.avg_price || pos.net_avg_price || 0) || 0;
+              const ltp = Number(pos.ltp || pos.last_price || 0) || 0;
+              let derivedPnl = null;
+              if (entry && ltp && qty !== 0) {
+                if (qty > 0) {
+                  derivedPnl = (ltp - entry) * qty;
+                } else {
+                  derivedPnl = (entry - ltp) * Math.abs(qty);
+                }
+              }
+              const pnl = derivedPnl != null
+                ? derivedPnl
+                : parseFloat(pos.pnl || pos.unrealized_pnl || pos.mtm || 0);
               return `
                 <tr>
                   <td class="font-medium">${Utils.escapeHTML(pos.symbol || pos.tradingsymbol || '-')}</td>
                   <td>${qty}</td>
                   <td>${Utils.escapeHTML(pos.product || pos.product_type || '-')}</td>
-                  <td class="text-right">${Utils.formatCurrency(pos.average_price || pos.avg_price || 0)}</td>
-                  <td class="text-right">${Utils.formatCurrency(pos.ltp || pos.last_price || 0)}</td>
-                  <td class="text-right ${Utils.getPnLColorClass(pnl)}">${Utils.formatCurrency(pnl)}</td>
-                  <td class="text-center">
+                  <td class="text-left">${Utils.formatCurrency(entry)}</td>
+                  <td class="text-left">${Utils.formatCurrency(ltp)}</td>
+                  <td class="text-left ${Utils.getPnLColorClass(pnl)}">${Utils.formatCurrency(pnl)}</td>
+                  <td class="text-left">
                     ${instanceId ? `
                       <button
                         class="btn-close-position-compact"

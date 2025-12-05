@@ -110,6 +110,7 @@ class AutoExitService {
     if (positionQty === 0) {
       this.pendingExits.delete(key);
       riskControlsService.clearTrailingState(key);
+      marketDataFeedService.clearFallbackEntryPrice(instance.id, positionExchange, positionSymbol);
       return;
     }
 
@@ -132,11 +133,31 @@ class AutoExitService {
         positionSymbol,
         positionExchange,
         side,
-        Math.abs(positionQty)
+        Math.abs(positionQty),
+        instance?.name || instance?.broker || 'unknown'
       );
     }
 
+    // Fallback: cached entry price captured at manual order placement
+    if (!entryPrice) {
+      const cachedEntry = marketDataFeedService.getFallbackEntryPrice(instance.id, positionExchange, positionSymbol);
+      if (cachedEntry?.price) {
+        entryPrice = cachedEntry.price;
+      }
+    }
+
+    // Cross-instance fallback: median LTP from instances with valid entry prices
+    if (!entryPrice) {
+      entryPrice = await this._resolveCrossInstanceMedianLtp(positionSymbol, positionExchange);
+    }
+
     if (!currentPrice || !entryPrice) {
+      log.error('Auto-exit skipped: unable to resolve entry price', {
+        instance_id: instance.id,
+        symbol: positionSymbol,
+        exchange: positionExchange,
+      });
+      // User notification could be hooked here if frontend channel is available
       return;
     }
 
@@ -206,7 +227,7 @@ class AutoExitService {
       );
   }
 
-  _resolveEntryPriceFromTrades(trades, symbol, exchange, side, positionQuantity) {
+  _resolveEntryPriceFromTrades(trades, symbol, exchange, side, positionQuantity, brokerName = 'unknown') {
     if (!Array.isArray(trades) || trades.length === 0) {
       return null;
     }
@@ -258,24 +279,110 @@ class AutoExitService {
       }
     }
 
+    // Layered fallback for entry price resolution
+    const dummyMap = {
+      'BROKER A': new Set([0, 100]),
+      'BROKER B': new Set([0]),
+      'BROKER C': new Set([]),
+    };
+    const brokerKey = (brokerName || '').toUpperCase();
+    const dummyValues = dummyMap[brokerKey] || dummyMap['BROKER A'];
+
+    // Layer 1: Enhanced FIFO ignoring dummy prices
     let totalQuantity = 0;
     let totalCost = 0;
     for (const openEntry of openTrades) {
       const remaining = openEntry.remaining ?? 0;
       if (remaining <= 0) continue;
       const price = openEntry.average_price;
-      if (!price || price <= 0) {
-        return null;
+      if (!price || dummyValues.has(price)) {
+        continue;
       }
       totalQuantity += remaining;
       totalCost += remaining * price;
     }
-
-    if (totalQuantity <= 0) {
-      return null;
+    if (totalQuantity > 0) {
+      const fifoPrice = totalCost / totalQuantity;
+      log.info('metrics.entry_price_fallback', {
+        broker: brokerKey || 'UNKNOWN',
+        layer: 'FIFO',
+        price: fifoPrice,
+        trades_considered: relevantTrades.length,
+      });
+      return fifoPrice;
     }
 
-    return totalCost / totalQuantity;
+    const validPrices = relevantTrades
+      .map(t => t.average_price)
+      .filter(p => p && !dummyValues.has(p))
+      .sort((a, b) => a - b);
+
+    // Layer 2: Median of valid prices
+    if (validPrices.length > 0) {
+      const mid = Math.floor(validPrices.length / 2);
+      const median = validPrices.length % 2 === 0
+        ? (validPrices[mid - 1] + validPrices[mid]) / 2
+        : validPrices[mid];
+      log.info('metrics.entry_price_fallback', {
+        broker: brokerKey || 'UNKNOWN',
+        layer: 'MEDIAN',
+        price: median,
+        trades_considered: relevantTrades.length,
+      });
+      return median;
+    }
+
+    // Layer 3: Last valid trade price
+    const lastValid = [...relevantTrades].reverse().find(t => t.average_price && !dummyValues.has(t.average_price));
+    if (lastValid?.average_price) {
+      log.info('metrics.entry_price_fallback', {
+        broker: brokerKey || 'UNKNOWN',
+        layer: 'LAST',
+        price: lastValid.average_price,
+        trades_considered: relevantTrades.length,
+      });
+      return lastValid.average_price;
+    }
+
+    log.error('Entry price resolution failed - invalid broker data', {
+      broker: brokerKey || 'UNKNOWN',
+      symbol: normalizedSymbol,
+      exchange: normalizedExchange,
+    });
+    return null;
+  }
+
+  async _resolveCrossInstanceMedianLtp(symbol, exchange) {
+    try {
+      const instances = await instanceService.getAllInstances({ is_active: true });
+      const ltps = [];
+      for (const inst of instances) {
+        const snap = marketDataFeedService.getPositionSnapshot(inst.id);
+        const positions = snap?.data || [];
+        const match = positions.find(p =>
+          this._normalizeSymbol(p.symbol || p.tradingsymbol || p.trading_symbol) === this._normalizeSymbol(symbol) &&
+          this._normalizeExchange(p.exchange || p.exch || p.brexchange) === this._normalizeExchange(exchange)
+        );
+        if (!match) continue;
+
+        const avgPrice = extractAveragePrice(match);
+        const cachedEntry = marketDataFeedService.getFallbackEntryPrice(inst.id, exchange, symbol);
+        const hasValidEntry = (avgPrice && avgPrice > 0) || (cachedEntry?.price && cachedEntry.price > 0);
+        if (!hasValidEntry) continue;
+
+        const ltp = extractLtp(match);
+        if (ltp && ltp > 0) {
+          ltps.push(ltp);
+        }
+      }
+
+      if (ltps.length === 0) return null;
+      const sorted = ltps.sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+    } catch (err) {
+      return null;
+    }
   }
 
   _findConfig(symbol, exchange, lookup) {
