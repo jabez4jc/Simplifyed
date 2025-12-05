@@ -1312,6 +1312,18 @@ class DashboardApp {
   }
 
   handleSymbolToggle(watchlistId, symbolId) {
+    // Best-effort cache warmup for quotes/positions to reduce first-click latency
+    try {
+      const row = document.querySelector(`tr[data-symbol-id="${symbolId}"]`);
+      const symbol = row?.dataset?.symbol;
+      const exchange = row?.dataset?.exchange;
+      if (symbol && exchange && window.api && typeof api.getMarketData === 'function') {
+        api.getMarketData(exchange, symbol).catch(() => {});
+      }
+    } catch (_) {
+      // non-blocking
+    }
+
     const handler = window.quickOrder;
     if (!handler || typeof handler.toggleRowExpansion !== 'function') {
       console.error('[Watchlist] quickOrder handler not ready', { watchlistId, symbolId });

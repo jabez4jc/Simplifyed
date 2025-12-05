@@ -7,6 +7,7 @@
 import db from '../core/database.js';
 import log from '../core/logger.js';
 import openalgoClient from '../integrations/openalgo/client.js';
+import marketDataFeedService from './market-data-feed.service.js';
 import telegramService from './telegram.service.js';
 import { parseIntSafe, parseFloatSafe } from '../utils/sanitizers.js';
 
@@ -105,15 +106,25 @@ class OrderMonitorService {
    */
   async monitorInstance(instance) {
     try {
-      // Fetch position book from broker
-      const positionsResponse = await openalgoClient.getPositionBook(instance);
+      // Prefer cached position snapshot if fresh (<5s), else fetch live and refresh cache
+      const snapshot = marketDataFeedService.getPositionSnapshot(instance.id);
+      const cacheFreshMs = 5000;
+      let positions;
 
-      if (!positionsResponse || !positionsResponse.data) {
-        log.debug('No positions data', { instance: instance.id });
-        return;
+      if (snapshot && Date.now() - snapshot.fetchedAt < cacheFreshMs) {
+        positions = snapshot.data || [];
+        log.debug('OrderMonitor using cached positions', { instance: instance.id });
+      } else {
+        const positionsResponse = await openalgoClient.getPositionBook(instance);
+        if (!positionsResponse || !positionsResponse.data) {
+          log.debug('No positions data', { instance: instance.id });
+          return;
+        }
+        positions = positionsResponse.data;
+        // Update cache for downstream consumers
+        marketDataFeedService.setPositionSnapshot(instance.id, positions);
+        log.debug('OrderMonitor fetched live positions', { instance: instance.id });
       }
-
-      const positions = positionsResponse.data;
 
       // Filter only open positions
       const openPositions = positions.filter((p) => {

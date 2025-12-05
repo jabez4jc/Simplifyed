@@ -20,8 +20,9 @@ import { log } from '../core/logger.js';
 import { extractLtp } from '../utils/price-extraction.js';
 
 const DEFAULT_QUOTE_INTERVAL = 5000;               // 5 seconds for quote refresh
-const DEFAULT_POSITION_INTERVAL_IDLE = 15000;      // 15 seconds when no open positions
-const DEFAULT_POSITION_INTERVAL_ACTIVE = 10000;    // 10 seconds when positions open (for SL/target tracking)
+// Align with implementation plan (Phase 1): 5s active, 10s idle via dynamic scheduler
+const DEFAULT_POSITION_INTERVAL_IDLE = 10000;      // 10 seconds when no open positions
+const DEFAULT_POSITION_INTERVAL_ACTIVE = 5000;     // 5 seconds when positions open (for SL/target tracking)
 const DEFAULT_FUNDS_INTERVAL = 5 * 60 * 1000;      // 5 minutes for funds refresh
 
 // TTL configurations
@@ -909,8 +910,8 @@ class MarketDataFeedService extends EventEmitter {
   }
 
   _getStatefulTtlMs(feed) {
-    const activeTtl = 10000; // 10s when open positions exist
-    const idleTtl = 15000;   // 15s when no open positions
+    const activeTtl = 5000; // 5s when open positions exist
+    const idleTtl = 10000;  // 10s when no open positions
 
     if (feed === 'positions' || feed === 'orderbook' || feed === 'tradebook') {
       return this.hasOpenPositions ? activeTtl : idleTtl;

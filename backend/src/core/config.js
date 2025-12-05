@@ -208,16 +208,16 @@ class Config {
 
     this.marketDataFeed = {
       quoteTtlMs: getEnvInt('MARKET_DATA_QUOTE_TTL_MS', 2500),
-      positionTtlMs: getEnvInt('MARKET_DATA_POSITION_TTL_MS', 8000),
+      positionTtlMs: getEnvInt('MARKET_DATA_POSITION_TTL_MS', 5000),   // plan: 8s -> 5s
       fundsTtlMs: getEnvInt('MARKET_DATA_FUNDS_TTL_MS', 20000),
-      orderbookTtlMs: getEnvInt('MARKET_DATA_ORDERBOOK_TTL_MS', 5000),
-      tradebookTtlMs: getEnvInt('MARKET_DATA_TRADEBOOK_TTL_MS', 5000),
+      orderbookTtlMs: getEnvInt('MARKET_DATA_ORDERBOOK_TTL_MS', 3000), // plan: 5s -> 3s
+      tradebookTtlMs: getEnvInt('MARKET_DATA_TRADEBOOK_TTL_MS', 3000), // plan: 5s -> 3s
     };
 
     this.openalgo = {
-      requestTimeout: getEnvInt('OPENALGO_REQUEST_TIMEOUT_MS', 15000),
+      requestTimeout: getEnvInt('OPENALGO_REQUEST_TIMEOUT_MS', 5000),
       critical: {
-        maxRetries: getEnvInt('OPENALGO_CRITICAL_MAX_RETRIES', 3),
+        maxRetries: getEnvInt('OPENALGO_CRITICAL_MAX_RETRIES', 2),
         retryDelay: getEnvInt('OPENALGO_CRITICAL_RETRY_DELAY_MS', 500),
       },
       nonCritical: {

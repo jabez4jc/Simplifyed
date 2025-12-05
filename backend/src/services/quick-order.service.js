@@ -25,8 +25,8 @@ import { toISTDate, toISTISOString } from '../utils/time.js';
 class QuickOrderService {
   constructor() {
     this.symbolResolutionCache = new Map();
-    this.symbolResolutionCacheTtl = 60 * 1000; // 60 seconds
-    this.symbolResolutionCacheMaxSize = 1000; // CRITICAL FIX: Add max cache size to prevent memory leak
+    this.symbolResolutionCacheTtl = 5 * 60 * 1000; // 5 minutes
+    this.symbolResolutionCacheMaxSize = 2000; // bounded cache
   }
   /**
    * Place quick order from watchlist
@@ -42,6 +42,8 @@ class QuickOrderService {
    * @returns {Promise<Object>} Order result
    */
   async placeQuickOrder(params) {
+    const startedAt = Date.now();
+    const latencyThresholds = { EQUITY: 4000, FUTURES: 5000, OPTIONS: 7000, DEFAULT: 5000 };
     const {
       symbolId,
       instanceId,
@@ -134,6 +136,7 @@ class QuickOrderService {
       tradeMode,
       successful: results.filter(r => r.success).length,
       failed: results.filter(r => !r.success).length,
+      duration_ms: Date.now() - startedAt,
     });
 
     // Send a single Telegram summary for the broadcast
@@ -170,6 +173,29 @@ class QuickOrderService {
     telegramService
       .sendOrderSummary(summaryPayload)
       .catch(err => log.warn('telegram_summary_notify_failed', { error: err.message }));
+
+    // Latency guardrail logging
+    const durationMs = Date.now() - startedAt;
+    const threshold = latencyThresholds[tradeMode] || latencyThresholds.DEFAULT;
+    if (durationMs > threshold) {
+      log.warn('Quick order latency threshold exceeded', {
+        tradeMode,
+        duration_ms: durationMs,
+        threshold_ms: threshold,
+        instances: instances.map(i => i.name),
+      });
+    }
+
+    // Metrics-style hook for observability (can be scraped/parsed from logs)
+    log.info('metrics.quickorder', {
+      trade_mode: tradeMode,
+      action,
+      duration_ms: durationMs,
+      instances: instances.map(i => i.name),
+      total_orders: results.length,
+      success_count: results.filter(r => r.success).length,
+      failure_count: results.filter(r => !r.success).length,
+    });
 
     return {
       success: results.every(r => r.success),
@@ -367,14 +393,15 @@ class QuickOrderService {
                           ['EXIT', 'EXIT_ALL', 'CLOSE_ALL_CE', 'CLOSE_ALL_PE'].includes(action);
 
     let preloadedPositions = null;
-    if (instances.length > 1 && !isCloseAction) {
-      // Pre-fetch positions for all instances in parallel (for entry/add orders)
-      log.info('Pre-fetching positions for all instances in parallel', {
+    if (!isCloseAction) {
+      const forceLive = instances.length > 1;
+      log.info('Pre-fetching positions', {
         instanceCount: instances.length,
         strategy,
+        forceLive,
       });
       preloadedPositions = await marketDataFeedService.fetchPositionsForInstances(instances, {
-        forceLive: true,
+        forceLive,
       });
     }
 
@@ -820,34 +847,36 @@ class QuickOrderService {
       expiry: expiry || null,
     });
 
-    // Verify final position using live positionbook
-    let finalPosition = null;
-    try {
-      finalPosition = await this._getCurrentPositionSize(
-        instance,
-        finalSymbol,
-        finalExchange,
-        finalProduct,
-        { forceLive: true, failOnError: true }
-      );
-      if (finalPosition !== targetPosition) {
-        log.warn('Post-trade position mismatch', {
+    // Verify final position using live positionbook (fire-and-forget to avoid blocking response)
+    const verifyPosition = async () => {
+      try {
+        const finalPosition = await this._getCurrentPositionSize(
+          instance,
+          finalSymbol,
+          finalExchange,
+          finalProduct,
+          { forceLive: true, failOnError: true }
+        );
+        if (finalPosition !== targetPosition) {
+          log.warn('Post-trade position mismatch', {
+            instance_id: instance.id,
+            instance_name: instance.name,
+            symbol: finalSymbol,
+            expected: targetPosition,
+            actual: finalPosition,
+            action,
+          });
+        }
+      } catch (verifyErr) {
+        log.warn('Failed to verify final position post-trade', {
           instance_id: instance.id,
           instance_name: instance.name,
           symbol: finalSymbol,
-          expected: targetPosition,
-          actual: finalPosition,
-          action,
+          error: verifyErr.message,
         });
       }
-    } catch (verifyErr) {
-      log.warn('Failed to verify final position post-trade', {
-        instance_id: instance.id,
-        instance_name: instance.name,
-        symbol: finalSymbol,
-        error: verifyErr.message,
-      });
-    }
+    };
+    verifyPosition().catch(() => {});
 
     // Record order in database
     await this._recordQuickOrder({
@@ -1069,6 +1098,24 @@ class QuickOrderService {
       if (ordersToPlace.length === 0) {
         log.warn('No orders to place - all positions already at target', { action });
         throw new ValidationError('No position change needed - all positions already at target');
+      }
+
+      // Fast path: if all orders are for the same strike (duplicate rows), collapse into one
+      const uniqueSymbols = new Set(ordersToPlace.map(o => o.symbol));
+      if (uniqueSymbols.size === 1 && ordersToPlace.length > 1) {
+        const primary = ordersToPlace[0];
+        const mergedQty = ordersToPlace.reduce((sum, o) => sum + o.quantity, 0);
+        const mergedTarget = ordersToPlace.reduce((_, o) => o.position_size, primary.position_size);
+        log.info('FLOAT_OFS: Collapsing duplicate-strike orders into single request', {
+          symbol: primary.symbol,
+          mergedQty,
+          orderCount: ordersToPlace.length,
+        });
+        ordersToPlace.splice(0, ordersToPlace.length, {
+          ...primary,
+          quantity: mergedQty,
+          position_size: mergedTarget,
+        });
       }
 
       const orderPromises = ordersToPlace.map(async order => {

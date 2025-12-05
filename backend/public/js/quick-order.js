@@ -59,6 +59,9 @@ class QuickOrderHandler {
         }
         this.expandedRows.add(rowKey);
 
+        // Best-effort cache warmup for derivatives/expiries to reduce first-click latency
+        this.warmExpansionCaches(watchlistId, symbolId).catch(() => {});
+
         // Load expansion content if not already loaded
         this.loadExpansionContent(watchlistId, symbolId);
       }
@@ -66,6 +69,62 @@ class QuickOrderHandler {
       console.error('Failed to toggle watchlist symbol expansion', { watchlistId, symbolId, error });
       if (window.Utils && typeof Utils.showToast === 'function') {
         Utils.showToast(`Failed to show trading controls: ${error.message}`, 'error');
+      }
+    }
+  }
+
+  /**
+   * Best-effort warmup of expiry/option/futures data to reduce first-click latency
+   */
+  async warmExpansionCaches(watchlistId, symbolId) {
+    const symbolRow = document.querySelector(`tr[data-symbol-id="${symbolId}"]`);
+    if (!symbolRow) return;
+
+    const symbol = symbolRow.dataset.symbol;
+    const exchange = symbolRow.dataset.exchange;
+    const rawUnderlying = symbolRow.dataset.underlying || symbol;
+    const underlyingSymbol = this.extractUnderlying(rawUnderlying) || rawUnderlying;
+
+    const capabilities = this.getSymbolCapabilities(symbolRow);
+    const symbolType = capabilities.symbolType || (symbolRow.querySelector('.badge')?.textContent.trim() || 'UNKNOWN');
+    const derivativeExchange = this.getDerivativeExchange(exchange, symbolType);
+
+    // Warm futures/options expiries cache
+    const instrumentTypes = [];
+    if (capabilities.futures) instrumentTypes.push('FUT');
+    if (capabilities.options) instrumentTypes.push('CE,PE');
+
+    let expiries = [];
+    if (instrumentTypes.length > 0) {
+      try {
+        const expResp = await api.getExpiry(underlyingSymbol, {
+          exchange: derivativeExchange,
+          instrumentTypes,
+        });
+        if (Array.isArray(expResp?.data)) {
+          expiries = expResp.data;
+          this.availableExpiries.set(symbolId, expiries);
+        }
+      } catch (_) {
+        // best effort only
+      }
+    }
+
+    // If options supported and an expiry is available, warm option preview cache (ATM)
+    if (capabilities.options && expiries.length > 0) {
+      const firstExpiry = this.normalizeExpiryDate(expiries[0]);
+      try {
+        await api.getQuickOrderOptionsPreview({
+          symbolId,
+          expiry: firstExpiry,
+          optionsLeg: 'ATM',
+        });
+        // Pre-store selected expiry to avoid re-fetch
+        if (!this.selectedExpiries.has(symbolId)) {
+          this.selectedExpiries.set(symbolId, firstExpiry);
+        }
+      } catch (_) {
+        // best effort only
       }
     }
   }
@@ -1619,11 +1678,21 @@ class QuickOrderHandler {
       });
 
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-      const maxRetries = 3;
+      const maxRetries = 2;
       let response = null;
       let lastError = null;
 
+      const updateProgressLabel = (attempt) => {
+        actionButtons.forEach(btn => {
+          if (!btn.dataset.originalText) {
+            btn.dataset.originalText = btn.textContent;
+          }
+          btn.textContent = `Placing (${attempt}/${maxRetries})`;
+        });
+      };
+
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        updateProgressLabel(attempt);
         try {
           response = await api.placeQuickOrder(orderData);
           lastError = null;
@@ -1633,7 +1702,8 @@ class QuickOrderHandler {
           const status = err?.status ?? 0;
           const transient = status === 0 || status >= 500;
           if (attempt < maxRetries && transient) {
-            await sleep(3000);
+            const backoff = Math.min(2000, 500 * Math.pow(2, attempt - 1)); // 0.5s, 1s
+            await sleep(backoff);
             continue;
           }
           throw err;
@@ -1642,9 +1712,12 @@ class QuickOrderHandler {
 
       if (response && response.data && response.data.summary) {
         const { successful, failed, total } = response.data.summary;
+        const instanceCount = Array.isArray(response.data.results)
+          ? new Set(response.data.results.map(r => r.instance_name || r.instance_id || 'inst')).size
+          : null;
         if (successful > 0) {
           Utils.showToast(
-            `Order placed: ${successful}/${total} successful`,
+            `Order placed: ${successful}/${total} successful${instanceCount ? ` across ${instanceCount} instance(s)` : ''}`,
             failed > 0 ? 'warning' : 'success'
           );
         } else {
@@ -1678,6 +1751,10 @@ class QuickOrderHandler {
         btn.disabled = false;
         btn.classList.remove('loading');
         btn.classList.remove('is-loading');
+        if (btn.dataset.originalText) {
+          btn.textContent = btn.dataset.originalText;
+          delete btn.dataset.originalText;
+        }
       });
       this.refreshPositionsAfterOrder();
     }
