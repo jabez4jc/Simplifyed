@@ -283,6 +283,12 @@ body {
     height: 100vh;
   }
 
+  /* Allow tooltips to extend beyond sidebar when collapsed */
+  body.sidebar-collapsed .drawer-side,
+  .drawer.sidebar-collapsed .drawer-side {
+    overflow: visible;
+  }
+
   .drawer .drawer-side>.drawer-overlay {
     display: none;
   }
@@ -303,9 +309,16 @@ body {
     overflow-y: auto;
   }
 
+  /* Allow tooltips in collapsed menu */
+  body.sidebar-collapsed .drawer-side .sidebar-shell .menu,
+  .drawer.sidebar-collapsed .drawer-side .sidebar-shell .menu {
+    overflow: visible;
+  }
+
   body.sidebar-collapsed .sidebar-shell,
   .drawer.sidebar-collapsed .sidebar-shell {
     width: 5.5rem;
+    overflow: visible;
   }
 
   body.sidebar-collapsed .sidebar-header,
