@@ -149,7 +149,7 @@ class PositionsService {
       pos.net_avg_price ??
       pos.average_price ??
       pos.avgPrice;
-    if (direct && direct > 0) return direct;
+    if (direct && direct > 0) return { price: direct, source: 'broker_avg', capturedAt: null };
 
     // Fallback captured at manual order placement
     const fallback = marketDataFeedService.getFallbackEntryPrice(
@@ -157,10 +157,16 @@ class PositionsService {
       pos.exchange || pos.exch || pos.brexchange,
       pos.symbol || pos.tradingsymbol || pos.trading_symbol
     );
-    if (fallback?.price && fallback.price > 0) return fallback.price;
+    if (fallback?.price && fallback.price > 0) {
+      return {
+        price: fallback.price,
+        source: fallback.source || 'fallback_cache',
+        capturedAt: fallback.capturedAt || null,
+      };
+    }
 
     // As a last resort, if LTP exists and qty is zero (flat), return null
-    return null;
+    return { price: null, source: null, capturedAt: null };
   }
 
   _median(values = []) {
@@ -235,7 +241,8 @@ class PositionsService {
 
       // Enrich positions with derived entry price (including fallback) and resolved LTP
       const enrichedPositions = filteredPositions.map(pos => {
-        const entryPrice = this._resolveEntryPrice(pos, instance.id);
+        const { price: entryPrice, source: entryPriceSource, capturedAt: entryCapturedAt } =
+          this._resolveEntryPrice(pos, instance.id);
         const ltpResolved = this._resolveLtp(pos);
         const qty = this._getPositionQuantity(pos);
         const derivedPnl =
@@ -245,6 +252,8 @@ class PositionsService {
         return {
           ...pos,
           entry_price: entryPrice,
+          entry_price_source: entryPriceSource,
+          entry_price_captured_at: entryCapturedAt,
           ltp_resolved: ltpResolved,
           pnl_derived: derivedPnl,
         };

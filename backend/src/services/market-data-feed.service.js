@@ -17,7 +17,7 @@ import watchlistService from './watchlist.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import config from '../core/config.js';
 import { log } from '../core/logger.js';
-import { extractLtp } from '../utils/price-extraction.js';
+import { extractAveragePrice, extractLtp } from '../utils/price-extraction.js';
 
 const DEFAULT_QUOTE_INTERVAL = 5000;               // 5 seconds for quote refresh
 // Align with implementation plan (Phase 1): 5s active, 10s idle via dynamic scheduler
@@ -444,6 +444,7 @@ class MarketDataFeedService extends EventEmitter {
       this.positionRefreshTimestamps.set(instanceId, now);
       const instance = await instanceService.getInstanceById(instanceId);
       const positionBook = await openalgoClient.getPositionBook(instance);
+      this._seedFallbackEntriesFromPositionBook(instanceId, positionBook);
       this.setPositionSnapshot(instanceId, positionBook);
       this._resetFailureState(circuitKey);
     } catch (error) {
@@ -461,10 +462,10 @@ class MarketDataFeedService extends EventEmitter {
   }
 
   // Fallback entry price helpers
-  setFallbackEntryPrice(instanceId, exchange, symbol, price, source = 'unknown') {
+  setFallbackEntryPrice(instanceId, exchange, symbol, price, source = 'unknown', meta = {}) {
     if (!instanceId || !exchange || !symbol || !price || price <= 0) return;
     const key = `${instanceId}|${exchange.toUpperCase()}|${symbol.toUpperCase()}`;
-    this.entryPriceCache.set(key, { price, source, capturedAt: Date.now() });
+    this.entryPriceCache.set(key, { price, source, capturedAt: Date.now(), ...meta });
   }
 
   getFallbackEntryPrice(instanceId, exchange, symbol) {
@@ -477,6 +478,71 @@ class MarketDataFeedService extends EventEmitter {
     if (!instanceId || !exchange || !symbol) return;
     const key = `${instanceId}|${exchange.toUpperCase()}|${symbol.toUpperCase()}`;
     this.entryPriceCache.delete(key);
+  }
+
+  /**
+   * Populate fallback entry prices for new/external positions when broker does not return avg price
+   * or returns dummy values (e.g., 0, 100). Uses best-effort LTP from position data or quote cache.
+   */
+  _seedFallbackEntriesFromPositionBook(instanceId, positionBook = []) {
+    if (!Array.isArray(positionBook) || positionBook.length === 0) return;
+
+    positionBook.forEach((pos) => {
+      const qty =
+        pos.quantity ??
+        pos.netqty ??
+        pos.net_quantity ??
+        pos.netQty ??
+        pos.net ??
+        0;
+      if (!qty || Number(qty) === 0) return;
+
+      const exchange = pos.exchange || pos.exch || pos.brexchange;
+      const symbol = pos.symbol || pos.tradingsymbol || pos.trading_symbol;
+      if (!exchange || !symbol) return;
+
+      const currentEntry = extractAveragePrice(pos);
+      const fallbackExisting = this.getFallbackEntryPrice(instanceId, exchange, symbol);
+      if (currentEntry && !this._isDummyEntryPrice(currentEntry)) {
+        // Do not override valid broker-provided entry
+        return;
+      }
+      if (fallbackExisting?.price && fallbackExisting.price > 0) {
+        // Already seeded; keep existing
+        return;
+      }
+
+      // Resolve LTP from position or cached quotes
+      let ltp = extractLtp(pos);
+      if (!ltp || ltp <= 0) {
+        const { cached } = this.getCachedQuotesForSymbols(
+          [{ exchange, symbol }],
+          { orderCritical: true }
+        );
+        if (cached?.length) {
+          ltp = extractLtp(cached[0]);
+        }
+      }
+      if (!ltp || ltp <= 0) return;
+
+      this.setFallbackEntryPrice(
+        instanceId,
+        exchange,
+        symbol,
+        ltp,
+        'positionbook_fallback',
+        { confirmed: true }
+      );
+    });
+  }
+
+  _isDummyEntryPrice(value) {
+    const num = Number(value);
+    if (!isFinite(num)) return true;
+    if (num <= 0) return true;
+    // Common dummy placeholders observed
+    const dummySet = new Set([100, 1, 0.01]);
+    return dummySet.has(num);
   }
 
   /**

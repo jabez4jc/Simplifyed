@@ -4017,25 +4017,50 @@ class DashboardApp {
           <tbody>
             ${positions.map(pos => {
               const qty = this.getNormalizedPositionQty(pos);
-              const entry = Number(pos.entry_price || pos.average_price || pos.avg_price || pos.net_avg_price || 0) || 0;
-              const ltp = Number(pos.ltp || pos.last_price || 0) || 0;
-              let derivedPnl = null;
-              if (entry && ltp && qty !== 0) {
-                if (qty > 0) {
-                  derivedPnl = (ltp - entry) * qty;
-                } else {
-                  derivedPnl = (entry - ltp) * Math.abs(qty);
-                }
-              }
-              const pnl = derivedPnl != null
-                ? derivedPnl
-                : parseFloat(pos.pnl || pos.unrealized_pnl || pos.mtm || 0);
+              const entry = Number(
+                pos.entry_price ??
+                pos.average_price ??
+                pos.avg_price ??
+                pos.net_avg_price ??
+                0
+              ) || 0;
+              const entrySourceRaw = pos.entry_price_source || pos.entryPriceSource || null;
+              const entrySourceLabel = (() => {
+                if (!entrySourceRaw) return (pos.average_price || pos.avg_price) ? 'BROKER' : '-';
+                const base = entrySourceRaw.split(':')[0];
+                const map = {
+                  broker_avg: 'BROKER',
+                  fallback_cache: 'FALLBACK (ORDER)',
+                  positionbook_fallback: 'POSITIONBOOK Fallback',
+                  median_ltp: 'Median LTP',
+                };
+                return map[base] || base.replace(/_/g, ' ').toUpperCase();
+              })();
+
+              const ltp = Number(
+                pos.ltp_resolved ??
+                pos.ltp ??
+                pos.last_price ??
+                pos.lastprice ??
+                0
+              ) || 0;
+              const pnl = pos.pnl_derived != null
+                ? pos.pnl_derived
+                : (() => {
+                    if (entry && ltp && qty !== 0) {
+                      return qty > 0 ? (ltp - entry) * qty : (entry - ltp) * Math.abs(qty);
+                    }
+                    return parseFloat(pos.pnl || pos.unrealized_pnl || pos.mtm || 0);
+                  })();
               return `
                 <tr>
                   <td class="font-medium">${Utils.escapeHTML(pos.symbol || pos.tradingsymbol || '-')}</td>
                   <td>${qty}</td>
                   <td>${Utils.escapeHTML(pos.product || pos.product_type || '-')}</td>
-                  <td class="text-left">${Utils.formatCurrency(entry)}</td>
+                  <td class="text-left">
+                    ${Utils.formatCurrency(entry)}
+                    <div class="text-2xs text-neutral-500">Source: ${Utils.escapeHTML(entrySourceLabel)}</div>
+                  </td>
                   <td class="text-left">${Utils.formatCurrency(ltp)}</td>
                   <td class="text-left ${Utils.getPnLColorClass(pnl)}">${Utils.formatCurrency(pnl)}</td>
                   <td class="text-left">
