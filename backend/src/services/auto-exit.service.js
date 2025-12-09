@@ -126,14 +126,22 @@ class AutoExitService {
     }
 
     // Use shared utility for price extraction
-    const currentPrice = await this._resolveCurrentPrice(
-      position,
-      rawExchange,
-      rawSymbol,
-      instance?.id
-    );
+    let currentPriceSource = 'position_ltp';
+    const { price: resolvedCurrentPrice, source: resolvedCurrentSource } =
+      await this._resolveCurrentPrice(
+        position,
+        rawExchange,
+        rawSymbol,
+        instance?.id
+      );
+    const currentPrice = resolvedCurrentPrice;
+    currentPriceSource = resolvedCurrentSource || currentPriceSource;
     const side = positionQty > 0 ? 'LONG' : 'SHORT';
+    let entryPriceSource = null;
     let entryPrice = extractAveragePrice(position);
+    if (entryPrice) {
+      entryPriceSource = 'position_avg';
+    }
     if (!entryPrice) {
       entryPrice = this._resolveEntryPriceFromTrades(
         tradebook,
@@ -143,6 +151,9 @@ class AutoExitService {
         Math.abs(positionQty),
         instance?.name || instance?.broker || 'unknown'
       );
+      if (entryPrice) {
+        entryPriceSource = 'tradebook';
+      }
     }
 
     // Fallback: cached entry price captured at manual order placement
@@ -150,19 +161,25 @@ class AutoExitService {
       const cachedEntry = marketDataFeedService.getFallbackEntryPrice(instance.id, positionExchange, positionSymbol);
       if (cachedEntry?.price) {
         entryPrice = cachedEntry.price;
+        entryPriceSource = `fallback_cache:${cachedEntry.source || 'unknown'}`;
       }
     }
 
     // Cross-instance fallback: median LTP from instances with valid entry prices
     if (!entryPrice) {
       entryPrice = await this._resolveCrossInstanceMedianLtp(positionSymbol, positionExchange);
+      if (entryPrice) {
+        entryPriceSource = 'cross_instance_median_ltp';
+      }
     }
 
     if (!currentPrice || !entryPrice) {
-      log.error('Auto-exit skipped: unable to resolve entry price', {
+      log.error('Auto-exit skipped: unable to resolve price data', {
         instance_id: instance.id,
         symbol: positionSymbol,
         exchange: positionExchange,
+        entry_source: entryPriceSource,
+        ltp_source: currentPriceSource,
       });
       // User notification could be hooked here if frontend channel is available
       return;
@@ -182,6 +199,17 @@ class AutoExitService {
 
     const { reason: exitReason, mode } = evaluation;
     if (exitReason) {
+      log.info('Auto-exit evaluation met threshold', {
+        instance_id: instance.id,
+        symbol: positionSymbol,
+        exchange: positionExchange,
+        side,
+        reason: exitReason,
+        entry_price: entryPrice,
+        current_price: currentPrice,
+        entry_source: entryPriceSource,
+        ltp_source: currentPriceSource,
+      });
       await this._executeAutoExit(instance, position, mode, exitReason);
       this.pendingExits.set(key, Date.now());
       return;
@@ -362,7 +390,7 @@ class AutoExitService {
   async _resolveCurrentPrice(position, rawExchange, rawSymbol, instanceId) {
     let currentPrice = extractLtp(position);
     if (currentPrice && currentPrice > 0) {
-      return currentPrice;
+      return { price: currentPrice, source: 'position_ltp' };
     }
 
     // Try cached quotes first (order-critical TTL)
@@ -378,7 +406,7 @@ class AutoExitService {
           exchange: rawExchange,
           symbol: rawSymbol,
         });
-        return currentPrice;
+        return { price: currentPrice, source: 'cached_quote' };
       }
     }
 
@@ -395,7 +423,7 @@ class AutoExitService {
           exchange: rawExchange,
           symbol: rawSymbol,
         });
-        return ltpResult.ltp;
+        return { price: ltpResult.ltp, source: `live_fetch:${ltpResult.source || 'pool'}` };
       }
     } catch (err) {
       log.debug('Auto-exit LTP fallback failed', {
@@ -406,7 +434,7 @@ class AutoExitService {
       });
     }
 
-    return null;
+    return { price: null, source: null };
   }
 
   async _resolveCrossInstanceMedianLtp(symbol, exchange) {
