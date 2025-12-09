@@ -179,6 +179,27 @@ class PositionsService {
     return `${exchange}|${symbol}`;
   }
 
+  _resolveLtp(pos) {
+    const direct = extractLtp(pos);
+    if (direct && direct > 0) return direct;
+
+    const exchange = pos.exchange || pos.exch || pos.brexchange;
+    const symbol = pos.symbol || pos.tradingsymbol || pos.trading_symbol;
+    if (!exchange || !symbol) return null;
+
+    // Use cached quotes with aggressive TTL suitable for order/tracking views
+    const { cached } = marketDataFeedService.getCachedQuotesForSymbols(
+      [{ exchange, symbol }],
+      { orderCritical: true }
+    );
+    if (cached?.length) {
+      const ltp = extractLtp(cached[0]);
+      if (ltp && ltp > 0) return ltp;
+    }
+
+    return null;
+  }
+
   /**
    * Fetch positions from a single instance
    * @private
@@ -212,12 +233,20 @@ class PositionsService {
         });
       }
 
-      // Enrich positions with derived entry price (including fallback)
+      // Enrich positions with derived entry price (including fallback) and resolved LTP
       const enrichedPositions = filteredPositions.map(pos => {
         const entryPrice = this._resolveEntryPrice(pos, instance.id);
+        const ltpResolved = this._resolveLtp(pos);
+        const qty = this._getPositionQuantity(pos);
+        const derivedPnl =
+          entryPrice && ltpResolved && qty
+            ? (ltpResolved - entryPrice) * qty
+            : null;
         return {
           ...pos,
           entry_price: entryPrice,
+          ltp_resolved: ltpResolved,
+          pnl_derived: derivedPnl,
         };
       });
 
