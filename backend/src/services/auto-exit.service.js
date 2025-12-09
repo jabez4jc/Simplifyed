@@ -98,8 +98,10 @@ class AutoExitService {
 
   async _evaluatePosition(instance, position, configLookup, tradebook = []) {
     const positionQty = this._getPositionQuantity(position);
-    const positionSymbol = this._normalizeSymbol(position.symbol || position.tradingsymbol || position.trading_symbol);
-    const positionExchange = this._normalizeExchange(position.exchange || position.exch || position.brexchange);
+    const rawSymbol = position.symbol || position.tradingsymbol || position.trading_symbol;
+    const rawExchange = position.exchange || position.exch || position.brexchange;
+    const positionSymbol = this._normalizeSymbol(rawSymbol);
+    const positionExchange = this._normalizeExchange(rawExchange);
 
     if (!positionSymbol || !positionExchange) {
       return;
@@ -124,7 +126,12 @@ class AutoExitService {
     }
 
     // Use shared utility for price extraction
-    const currentPrice = extractLtp(position);
+    const currentPrice = await this._resolveCurrentPrice(
+      position,
+      rawExchange,
+      rawSymbol,
+      instance?.id
+    );
     const side = positionQty > 0 ? 'LONG' : 'SHORT';
     let entryPrice = extractAveragePrice(position);
     if (!entryPrice) {
@@ -349,6 +356,56 @@ class AutoExitService {
       symbol: normalizedSymbol,
       exchange: normalizedExchange,
     });
+    return null;
+  }
+
+  async _resolveCurrentPrice(position, rawExchange, rawSymbol, instanceId) {
+    let currentPrice = extractLtp(position);
+    if (currentPrice && currentPrice > 0) {
+      return currentPrice;
+    }
+
+    // Try cached quotes first (order-critical TTL)
+    const { cached } = marketDataFeedService.getCachedQuotesForSymbols(
+      [{ exchange: rawExchange, symbol: rawSymbol }],
+      { orderCritical: true }
+    );
+    if (cached?.length) {
+      currentPrice = extractLtp(cached[0]);
+      if (currentPrice && currentPrice > 0) {
+        log.debug('Auto-exit using cached quote LTP fallback', {
+          instance_id: instanceId,
+          exchange: rawExchange,
+          symbol: rawSymbol,
+        });
+        return currentPrice;
+      }
+    }
+
+    // Force fetch LTP as last resort to avoid stuck tracking
+    try {
+      const ltpResult = await marketDataFeedService.fetchLtpForSymbol(
+        rawExchange,
+        rawSymbol,
+        { maxRounds: 2 }
+      );
+      if (ltpResult?.ltp && ltpResult.ltp > 0) {
+        log.debug('Auto-exit using live LTP fallback', {
+          instance_id: instanceId,
+          exchange: rawExchange,
+          symbol: rawSymbol,
+        });
+        return ltpResult.ltp;
+      }
+    } catch (err) {
+      log.debug('Auto-exit LTP fallback failed', {
+        instance_id: instanceId,
+        exchange: rawExchange,
+        symbol: rawSymbol,
+        error: err.message,
+      });
+    }
+
     return null;
   }
 

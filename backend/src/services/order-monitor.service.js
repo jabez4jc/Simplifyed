@@ -10,6 +10,7 @@ import openalgoClient from '../integrations/openalgo/client.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import telegramService from './telegram.service.js';
 import { parseIntSafe, parseFloatSafe } from '../utils/sanitizers.js';
+import { extractAveragePrice, extractLtp } from '../utils/price-extraction.js';
 
 class OrderMonitorService {
   constructor() {
@@ -156,22 +157,69 @@ class OrderMonitorService {
   async checkPosition(instance, position) {
     try {
       // Normalize position data
-      const symbol = position.symbol || position.tradingsymbol;
-      const exchange = position.exchange;
+      const rawSymbol = position.symbol || position.tradingsymbol || position.trading_symbol;
+      const rawExchange = position.exchange || position.exch || position.brexchange;
+      const symbol = rawSymbol;
+      const exchange = rawExchange;
+      const normalizedSymbol = this._normalize(rawSymbol);
+      const normalizedExchange = this._normalize(rawExchange);
       const quantity = this._getPositionQuantity(position);
-      const entryPrice = parseFloat(
-        position.average_price || position.avgprice || position.avg_price || 0
-      );
-      const currentPrice = parseFloat(
-        position.ltp || position.last_price || position.lastprice || 0
-      );
+      let entryPrice = extractAveragePrice(position);
+      let currentPrice = extractLtp(position);
 
-      if (!symbol || !exchange) {
+      if (!normalizedSymbol || !normalizedExchange) {
         log.debug('Invalid position data (missing symbol/exchange)');
         return;
       }
 
-      if (entryPrice === 0 || currentPrice === 0) {
+      // Entry price fallback: captured LTP during order placement for brokers not returning avg price
+      if (!entryPrice || entryPrice <= 0) {
+        const fallback = marketDataFeedService.getFallbackEntryPrice(
+          instance.id,
+          rawExchange,
+          rawSymbol
+        );
+        if (fallback?.price) {
+          entryPrice = fallback.price;
+          log.debug('Using fallback entry price from cache', {
+            instance: instance.id,
+            symbol,
+            exchange,
+            source: fallback.source,
+          });
+        }
+      }
+
+      // LTP fallback: try cached quotes, then force-fetch if still missing/zero
+      if (!currentPrice || currentPrice <= 0) {
+        const { cached } = marketDataFeedService.getCachedQuotesForSymbols(
+          [{ exchange: rawExchange, symbol: rawSymbol }],
+          { orderCritical: true }
+        );
+        if (cached?.length) {
+          currentPrice = extractLtp(cached[0]);
+        }
+      }
+
+      if (!currentPrice || currentPrice <= 0) {
+        try {
+          const ltpResult = await marketDataFeedService.fetchLtpForSymbol(
+            rawExchange,
+            rawSymbol,
+            { maxRounds: 2 }
+          );
+          currentPrice = ltpResult?.ltp || currentPrice;
+        } catch (err) {
+          log.debug('LTP fetch fallback failed', {
+            instance: instance.id,
+            symbol,
+            exchange,
+            error: err.message,
+          });
+        }
+      }
+
+      if (!entryPrice || !currentPrice || entryPrice <= 0 || currentPrice <= 0) {
         log.debug('Invalid price data', { symbol, entryPrice, currentPrice });
         return;
       }
@@ -238,7 +286,8 @@ class OrderMonitorService {
           position,
           watchlistSymbol,
           currentPrice,
-          side
+          side,
+          entryPrice
         );
 
         // Clean up old checked positions
@@ -290,13 +339,13 @@ class OrderMonitorService {
   /**
    * Simulate exit in analyzer mode
    */
-  async simulateExit(instance, position, watchlistSymbol, exitPrice, side) {
+  async simulateExit(instance, position, watchlistSymbol, exitPrice, side, resolvedEntryPrice) {
     const symbol = position.symbol || position.tradingsymbol;
     const exchange = position.exchange;
     const quantity = Math.abs(this._getPositionQuantity(position));
-    const entryPrice = parseFloat(
-      position.average_price || position.avgprice || position.avg_price || 0
-    );
+    const entryPrice =
+      resolvedEntryPrice ??
+      parseFloat(position.average_price || position.avgprice || position.avg_price || 0);
 
     // Calculate P&L
     const pnl =
@@ -447,6 +496,11 @@ class OrderMonitorService {
       pos.net ??
       0;
     return parseIntSafe(rawQty, 0);
+  }
+
+  _normalize(value) {
+    if (!value || typeof value !== 'string') return null;
+    return value.replace(/\s+/g, '').toUpperCase();
   }
 
   /**
