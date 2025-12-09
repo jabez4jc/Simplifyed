@@ -138,6 +138,7 @@ class AutoExitService {
     currentPriceSource = resolvedCurrentSource || currentPriceSource;
     const side = positionQty > 0 ? 'LONG' : 'SHORT';
     let entryPriceSource = null;
+    let entryFallbackMeta = null;
     let entryPrice = extractAveragePrice(position);
     if (entryPrice) {
       entryPriceSource = 'position_avg';
@@ -162,6 +163,7 @@ class AutoExitService {
       if (cachedEntry?.price) {
         entryPrice = cachedEntry.price;
         entryPriceSource = `fallback_cache:${cachedEntry.source || 'unknown'}`;
+        entryFallbackMeta = cachedEntry;
       }
     }
 
@@ -171,6 +173,25 @@ class AutoExitService {
       if (entryPrice) {
         entryPriceSource = 'cross_instance_median_ltp';
       }
+    }
+
+    // Guard: avoid using provisional fallback entry before tradebook/avg arrives (prevents instant exits)
+    if (
+      entryPrice &&
+      entryPriceSource?.startsWith('fallback_cache') &&
+      !entryFallbackMeta?.confirmed &&
+      entryFallbackMeta?.capturedAt &&
+      Date.now() - entryFallbackMeta.capturedAt < 20000 // 20s grace
+    ) {
+      log.info('Auto-exit deferring: provisional fallback entry price', {
+        instance_id: instance.id,
+        symbol: positionSymbol,
+        exchange: positionExchange,
+        entry_price: entryPrice,
+        captured_at: entryFallbackMeta.capturedAt,
+        age_ms: Date.now() - entryFallbackMeta.capturedAt,
+      });
+      return;
     }
 
     if (!currentPrice || !entryPrice) {
