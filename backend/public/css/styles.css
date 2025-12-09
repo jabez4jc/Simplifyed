@@ -153,28 +153,43 @@ body {
   color: var(--color-neutral-900);
 }
 
+/* Shared tooltip base styles for collapsed sidebar */
 @media (min-width: 1024px) {
   body.sidebar-collapsed .drawer-side .nav-link[data-label]:hover::after,
-  .drawer.sidebar-collapsed .drawer-side .nav-link[data-label]:hover::after {
+  .drawer.sidebar-collapsed .drawer-side .nav-link[data-label]:hover::after,
+  body.sidebar-collapsed .sidebar-logout:hover::after,
+  .drawer.sidebar-collapsed .sidebar-logout:hover::after {
     content: attr(data-label) !important;
     display: block !important;
     position: absolute !important;
     left: calc(100% + 12px) !important;
     top: 50% !important;
     transform: translateY(-50%) !important;
-    padding: 8px 12px !important;
-    background-color: #111827 !important;
-    color: #ffffff !important;
-    font-size: 14px !important;
+    padding: var(--space-2) var(--space-3) !important;
+    color: white !important;
+    font-size: var(--font-size-base) !important;
     font-weight: 500 !important;
     line-height: 1.4 !important;
-    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.35) !important;
-    border-radius: 8px !important;
+    border-radius: var(--radius-lg) !important;
     white-space: nowrap !important;
-    z-index: 9999 !important;
+    z-index: 40 !important;
     pointer-events: none !important;
     opacity: 1 !important;
     visibility: visible !important;
+  }
+
+  /* Nav link tooltips - dark background */
+  body.sidebar-collapsed .drawer-side .nav-link[data-label]:hover::after,
+  .drawer.sidebar-collapsed .drawer-side .nav-link[data-label]:hover::after {
+    background-color: var(--color-neutral-900) !important;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.35) !important;
+  }
+
+  /* Logout button tooltip - red background */
+  body.sidebar-collapsed .sidebar-logout:hover::after,
+  .drawer.sidebar-collapsed .sidebar-logout:hover::after {
+    background-color: var(--color-loss) !important;
+    box-shadow: 0 8px 20px rgba(239, 68, 68, 0.35) !important;
   }
 }
 
@@ -229,16 +244,15 @@ body {
   justify-content: center;
   gap: var(--space-2);
   background-color: transparent !important;
-  border: 2px solid #ef4444 !important;
-  color: #ef4444 !important;
+  border: 2px solid var(--color-loss) !important;
+  color: var(--color-loss) !important;
   opacity: 1 !important;
   visibility: visible !important;
 }
 
 .sidebar-logout:hover {
-  background-color: #ef4444 !important;
+  background-color: var(--color-loss) !important;
   color: white !important;
-  border-color: #ef4444 !important;
 }
 
 @media (min-width: 1024px) {
@@ -349,53 +363,25 @@ body {
     display: none;
   }
 
-  body.sidebar-collapsed .sidebar-logout {
-    justify-content: center;
+  body.sidebar-collapsed .sidebar-logout,
+  .drawer.sidebar-collapsed .sidebar-logout {
     width: 48px;
     height: 48px;
     padding: 0 !important;
     min-height: 48px;
     border-radius: 999px;
-    background-color: transparent !important;
-    border: 2px solid #ef4444 !important;
-    color: #ef4444 !important;
   }
 
-  body.sidebar-collapsed .sidebar-logout:hover {
-    background-color: #ef4444 !important;
-    color: white !important;
-  }
-
-  body.sidebar-collapsed .sidebar-logout .nav-label {
+  body.sidebar-collapsed .sidebar-logout .nav-label,
+  .drawer.sidebar-collapsed .sidebar-logout .nav-label {
     display: none !important;
   }
 
-  body.sidebar-collapsed .sidebar-logout svg {
+  body.sidebar-collapsed .sidebar-logout svg,
+  .drawer.sidebar-collapsed .sidebar-logout svg {
     margin: 0;
     width: 20px;
     height: 20px;
-  }
-
-  body.sidebar-collapsed .sidebar-logout:hover::after {
-    content: attr(data-label) !important;
-    display: block !important;
-    position: absolute !important;
-    left: calc(100% + 12px) !important;
-    top: 50% !important;
-    transform: translateY(-50%) !important;
-    padding: 8px 12px !important;
-    background-color: #ef4444 !important;
-    color: #ffffff !important;
-    font-size: 14px !important;
-    font-weight: 500 !important;
-    line-height: 1.4 !important;
-    border-radius: 8px !important;
-    white-space: nowrap !important;
-    box-shadow: 0 8px 20px rgba(239, 68, 68, 0.35) !important;
-    z-index: 9999 !important;
-    pointer-events: none !important;
-    opacity: 1 !important;
-    visibility: visible !important;
   }
 }
 
