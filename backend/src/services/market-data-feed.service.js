@@ -846,6 +846,21 @@ class MarketDataFeedService extends EventEmitter {
     return `${instanceId}:${feed}`;
   }
 
+  getCircuitState(instanceId, feed) {
+    const key = this._getCircuitKey(instanceId, feed);
+    const state = this.failureState.get(key);
+    if (!state || !state.cooldownUntil) {
+      return { open: false, resumeInMs: null, lastError: null };
+    }
+
+    const remaining = state.cooldownUntil - Date.now();
+    return {
+      open: remaining > 0,
+      resumeInMs: remaining > 0 ? remaining : null,
+      lastError: state.lastErrorMessage || null,
+    };
+  }
+
   _chunkSymbols(symbols = [], chunkSize = 5) {
     const chunks = [];
     for (let i = 0; i < symbols.length; i += chunkSize) {

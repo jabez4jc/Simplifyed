@@ -25,7 +25,16 @@ class AutoExitService {
     this.intervalId = null;
     this.isCycleRunning = false;
     this.pendingExits = new Map();
-    this.monitorIntervalMs = config.autoExit?.monitorIntervalMs || 5000;
+    this.exitConfirmations = new Map();
+    const autoExitCfg = config.autoExit || {};
+    this.monitorIntervalMs = autoExitCfg.monitorIntervalMs || 5000;
+    this.provisionalEntryGraceMs = autoExitCfg.provisionalEntryGraceMs ?? 20000;
+    this.pendingExitCooldownMs = autoExitCfg.pendingExitCooldownMs ?? 30000;
+    const baseWindow = autoExitCfg.confirmationWindowMs && autoExitCfg.confirmationWindowMs > 0
+      ? autoExitCfg.confirmationWindowMs
+      : Math.max(1500, this.monitorIntervalMs * 1.2);
+    // Minimum dwell window before honouring an exit trigger (guards against single-tick spikes)
+    this.confirmationWindowMs = baseWindow;
   }
 
   async start() {
@@ -52,6 +61,7 @@ class AutoExitService {
     this.isRunning = false;
     this.isCycleRunning = false;
     this.pendingExits.clear();
+    this.exitConfirmations.clear();
     riskControlsService.reset();
     log.info('AutoExitService stopped');
   }
@@ -84,6 +94,28 @@ class AutoExitService {
   async _monitorInstance(instance, configLookup) {
     const snapshot = marketDataFeedService.getPositionSnapshot(instance.id);
     const positions = snapshot?.data || [];
+    const snapshotAge = snapshot?.fetchedAt ? Date.now() - snapshot.fetchedAt : null;
+    const positionTtl = config.marketDataFeed?.positionTtlMs || 5000;
+    const circuitState = marketDataFeedService.getCircuitState(instance.id, 'positions');
+    if (snapshotAge !== null && snapshotAge > positionTtl * 3) {
+      log.warn('Auto-exit skipped stale position snapshot', {
+        instance_id: instance.id,
+        age_ms: snapshotAge,
+        ttl_ms: positionTtl,
+        circuit_open: circuitState.open,
+        circuit_resume_ms: circuitState.resumeInMs,
+      });
+      return;
+    }
+
+    if ((!positions || positions.length === 0) && circuitState.open) {
+      log.warn('Auto-exit paused due to position feed circuit breaker', {
+        instance_id: instance.id,
+        circuit_resume_ms: circuitState.resumeInMs,
+        last_error: circuitState.lastError,
+      });
+      return;
+    }
     if (!positions.length) {
       return;
     }
@@ -111,6 +143,7 @@ class AutoExitService {
 
     if (positionQty === 0) {
       this.pendingExits.delete(key);
+      this.exitConfirmations.delete(key);
       riskControlsService.clearTrailingState(key);
       marketDataFeedService.clearFallbackEntryPrice(instance.id, positionExchange, positionSymbol);
       return;
@@ -181,7 +214,7 @@ class AutoExitService {
       entryPriceSource?.startsWith('fallback_cache') &&
       !entryFallbackMeta?.confirmed &&
       entryFallbackMeta?.capturedAt &&
-      Date.now() - entryFallbackMeta.capturedAt < 20000 // 20s grace
+      Date.now() - entryFallbackMeta.capturedAt < this.provisionalEntryGraceMs
     ) {
       log.info('Auto-exit deferring: provisional fallback entry price', {
         instance_id: instance.id,
@@ -190,6 +223,7 @@ class AutoExitService {
         entry_price: entryPrice,
         captured_at: entryFallbackMeta.capturedAt,
         age_ms: Date.now() - entryFallbackMeta.capturedAt,
+        grace_ms: this.provisionalEntryGraceMs,
       });
       return;
     }
@@ -220,6 +254,21 @@ class AutoExitService {
 
     const { reason: exitReason, mode } = evaluation;
     if (exitReason) {
+      const confirmed = this._confirmExit(
+        key,
+        exitReason,
+        {
+          currentPrice,
+          entryPrice,
+          side,
+          entryPriceSource,
+          currentPriceSource,
+        }
+      );
+      if (!confirmed) {
+        return;
+      }
+
       log.info('Auto-exit evaluation met threshold', {
         instance_id: instance.id,
         symbol: positionSymbol,
@@ -231,10 +280,19 @@ class AutoExitService {
         entry_source: entryPriceSource,
         ltp_source: currentPriceSource,
       });
-      await this._executeAutoExit(instance, position, mode, exitReason);
-      this.pendingExits.set(key, Date.now());
+      const exitSuccess = await this._executeAutoExit(instance, position, mode, exitReason);
+      if (exitSuccess) {
+        this.pendingExits.set(key, Date.now());
+        this.exitConfirmations.delete(key);
+      } else {
+        // Allow immediate retry on next tick if broker rejected/failed
+        this.exitConfirmations.delete(key);
+      }
       return;
     }
+
+    // No trigger this cycle - clear sticky confirmation to avoid holding stale triggers
+    this.exitConfirmations.delete(key);
   }
 
   async _executeAutoExit(instance, position, mode, reason = 'AUTO_EXIT') {
@@ -257,6 +315,7 @@ class AutoExitService {
         trade_mode: tradeMode,
         strategy: reason,
       });
+      return true;
     } catch (error) {
       log.warn('Auto-exit close failed', {
         instance_id: instance.id,
@@ -265,7 +324,46 @@ class AutoExitService {
         trade_mode: tradeMode,
         error: error.message,
       });
+      return false;
     }
+  }
+
+  _confirmExit(key, reason, context = {}) {
+    const now = Date.now();
+    const record = this.exitConfirmations.get(key);
+    const baseWindow = this.confirmationWindowMs;
+
+    // Fallback-derived entries need a longer dwell to avoid premature exits on bad seeds
+    const cautiousEntry =
+      (context.entryPriceSource || '').startsWith('fallback_cache') ||
+      context.entryPriceSource === 'cross_instance_median_ltp';
+    const requiredWindow = cautiousEntry ? baseWindow * 2 : baseWindow;
+
+    if (!record || record.reason !== reason) {
+      this.exitConfirmations.set(key, {
+        reason,
+        firstDetectedAt: now,
+        lastPrice: context.currentPrice,
+        entryPriceSource: context.entryPriceSource,
+        ltpSource: context.currentPriceSource,
+      });
+      log.debug('Auto-exit awaiting confirmation', {
+        key,
+        reason,
+        cautious_entry: cautiousEntry,
+        required_ms: requiredWindow,
+      });
+      return false;
+    }
+
+    const age = now - record.firstDetectedAt;
+    if (age < requiredWindow) {
+      record.lastPrice = context.currentPrice;
+      this.exitConfirmations.set(key, record);
+      return false;
+    }
+
+    return true;
   }
 
   _prepareTradebookSnapshot(trades = []) {
@@ -559,7 +657,7 @@ class AutoExitService {
   _isPendingExit(key) {
     const timestamp = this.pendingExits.get(key);
     if (!timestamp) return false;
-    if (Date.now() - timestamp > 30 * 1000) {
+    if (Date.now() - timestamp > this.pendingExitCooldownMs) {
       this.pendingExits.delete(key);
       return false;
     }

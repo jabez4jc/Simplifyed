@@ -204,6 +204,9 @@ class Config {
 
     this.autoExit = {
       monitorIntervalMs: getEnvInt('AUTO_EXIT_MONITOR_INTERVAL_MS', 5000),
+      pendingExitCooldownMs: getEnvInt('AUTO_EXIT_PENDING_COOLDOWN_MS', 30000),
+      provisionalEntryGraceMs: getEnvInt('AUTO_EXIT_PROVISIONAL_ENTRY_GRACE_MS', 20000),
+      confirmationWindowMs: getEnvInt('AUTO_EXIT_CONFIRMATION_WINDOW_MS', 0),
     };
 
     this.marketDataFeed = {
@@ -279,6 +282,9 @@ class Config {
       this.marketDataFeed.orderbookTtlMs = await getSettingInt('market_data_feed.orderbook_ttl_ms', this.marketDataFeed.orderbookTtlMs);
       this.marketDataFeed.tradebookTtlMs = await getSettingInt('market_data_feed.tradebook_ttl_ms', this.marketDataFeed.tradebookTtlMs);
       this.autoExit.monitorIntervalMs = await getSettingInt('auto_exit.monitor_interval_ms', this.autoExit.monitorIntervalMs);
+      this.autoExit.pendingExitCooldownMs = await getSettingInt('auto_exit.pending_cooldown_ms', this.autoExit.pendingExitCooldownMs);
+      this.autoExit.provisionalEntryGraceMs = await getSettingInt('auto_exit.provisional_entry_grace_ms', this.autoExit.provisionalEntryGraceMs);
+      this.autoExit.confirmationWindowMs = await getSettingInt('auto_exit.confirmation_window_ms', this.autoExit.confirmationWindowMs);
 
       this.openalgo.requestTimeout = await getSettingInt('openalgo.request_timeout_ms', this.openalgo.requestTimeout);
       this.openalgo.critical.maxRetries = await getSettingInt('openalgo.critical.max_retries', this.openalgo.critical.maxRetries);
