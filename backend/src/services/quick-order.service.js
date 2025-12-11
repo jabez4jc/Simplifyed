@@ -3001,7 +3001,7 @@ class QuickOrderService {
       .map(req => this._buildQuoteMatchKey(req.exchange || derivativeExchange, req.symbol))
       .filter(Boolean);
 
-    const chainHasAll = this._hasAllQuotes(optionChainQuotes, requestedKeys);
+    const chainHasAll = this._hasAllQuotes(optionChainQuotes, requestedKeys, true);
     const fallbackQuotes = chainHasAll ? null : await this._getQuotesFromCache(marketDataInstance, quoteRequests);
     const quotesMap = this._mergeQuoteMaps(optionChainQuotes, fallbackQuotes);
 
@@ -3622,10 +3622,15 @@ class QuickOrderService {
     return merged;
   }
 
-  _hasAllQuotes(map, keys = []) {
+  _hasAllQuotes(map, keys = [], requirePrice = false) {
     if (!keys || keys.length === 0) return true;
     if (!map || typeof map.get !== 'function') return false;
-    return keys.every((k) => map.has(k));
+    return keys.every((k) => {
+      const q = map.get(k);
+      if (!q) return false;
+      if (!requirePrice) return true;
+      return this._extractLtpFromQuote(q) !== null;
+    });
   }
 
   async _getOptionChainQuotesMap({
