@@ -581,23 +581,23 @@ class DashboardApp {
     };
 
     const telemetryCards = `
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-        <div class="stat-card" id="telemetry-card-circuits">
+      <div class="flex flex-nowrap gap-3 mb-4 overflow-x-auto">
+        <div class="stat-card min-w-[240px]" id="telemetry-card-circuits">
           <div class="stat-label">Circuits Open</div>
           <div class="stat-value" id="telemetry-circuits">${telemetrySnapshot.openCircuits}</div>
           <div class="stat-subtext text-xs text-neutral-500">Feeds paused due to failures</div>
         </div>
-        <div class="stat-card" id="telemetry-card-stale">
+        <div class="stat-card min-w-[240px]" id="telemetry-card-stale">
           <div class="stat-label">Stale Caches</div>
           <div class="stat-value" id="telemetry-stale">${telemetrySnapshot.staleCaches}</div>
           <div class="stat-subtext text-xs text-neutral-500">Quotes/positions beyond TTL</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card min-w-[240px]">
           <div class="stat-label">Orders/sec Headroom</div>
           <div class="stat-value" id="telemetry-orders-headroom">${telemetrySnapshot.minOrdersRemaining ?? 'n/a'}</div>
           <div class="stat-subtext text-xs text-neutral-500">Lowest remaining across instances</div>
         </div>
-        <div class="stat-card">
+        <div class="stat-card min-w-[240px]">
           <div class="stat-label">RPS Headroom</div>
           <div class="stat-value" id="telemetry-rps-headroom">${telemetrySnapshot.minRpsRemaining ?? 'n/a'}</div>
           <div class="stat-subtext text-xs text-neutral-500">Lowest remaining across instances</div>
