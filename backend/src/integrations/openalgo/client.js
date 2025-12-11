@@ -1135,6 +1135,42 @@ class OpenAlgoClient extends EventEmitter {
     return metrics;
   }
 
+  getRateBudgets() {
+    const budgets = [];
+    for (const [instKey, rate] of this.instanceRate.entries()) {
+      const meta = this.instanceMeta.get(instKey) || {};
+      const rpsLimit = this.rpsLimitPerInstance;
+      const rpmLimit = this.rpmLimitPerInstance;
+      const ordersLimit = this.ordersPerSecondLimit;
+
+      budgets.push({
+        key: instKey,
+        id: meta.id,
+        host_url: meta.host_url,
+        name: meta.name,
+        limits: {
+          rps: rpsLimit,
+          rpm: rpmLimit,
+          ordersPerSecond: ordersLimit,
+          maxConcurrent: this.maxConcurrentTasks,
+        },
+        usage: {
+          rpsUsed: rate.rps.length,
+          rpmUsed: rate.rpm.length,
+          ordersUsed: rate.orders.length,
+          currentConcurrent: this.currentTasks,
+        },
+        remaining: {
+          rps: Math.max(0, rpsLimit - rate.rps.length),
+          rpm: Math.max(0, rpmLimit - rate.rpm.length),
+          orders: Math.max(0, ordersLimit - rate.orders.length),
+          concurrentSlots: Math.max(0, this.maxConcurrentTasks - this.currentTasks),
+        },
+      });
+    }
+    return budgets;
+  }
+
   async _ensureLimits() {
     // Rate limits are now loaded once at startup via initializeRateLimits()
     // and refreshed only on settings change via reloadRateLimits()

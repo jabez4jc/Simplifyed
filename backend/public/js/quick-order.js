@@ -25,6 +25,7 @@ class QuickOrderHandler {
     this.optionChainForwardSource = 'carry';
     this.optionChainPrevValues = new Map(); // key: `${underlying}|${expiry}` -> Map of last values
     this.optionChainActiveKey = null;
+    this.strikeOffsetSnapshots = new Map(); // symbolId -> { atmStrike, offsets }
   }
 
   /**
@@ -350,6 +351,8 @@ class QuickOrderHandler {
         )
       : '';
 
+    const strikePreview = this.strikeOffsetSnapshots.get(symbolId) || null;
+
     const optionsLegField = showOptionsLeg
       ? renderField(
           'Strike',
@@ -357,15 +360,16 @@ class QuickOrderHandler {
           `<div class="leg-chain-row">
             <select
             class="select-compact"
+            data-role="strike-select"
             data-symbol-id="${symbolId}"
             onchange="quickOrder.selectOptionsLeg(${symbolId}, this.value)">
-            <option value="ITM3" ${optionsLeg === 'ITM3' ? 'selected' : ''}>ITM 3</option>
-            <option value="ITM2" ${optionsLeg === 'ITM2' ? 'selected' : ''}>ITM 2</option>
-            <option value="ITM1" ${optionsLeg === 'ITM1' ? 'selected' : ''}>ITM 1</option>
-            <option value="ATM" ${optionsLeg === 'ATM' ? 'selected' : ''}>ATM</option>
-            <option value="OTM1" ${optionsLeg === 'OTM1' ? 'selected' : ''}>OTM 1</option>
-            <option value="OTM2" ${optionsLeg === 'OTM2' ? 'selected' : ''}>OTM 2</option>
-            <option value="OTM3" ${optionsLeg === 'OTM3' ? 'selected' : ''}>OTM 3</option>
+            <option value="ITM3" ${optionsLeg === 'ITM3' ? 'selected' : ''}>${this.getStrikeOptionLabel('ITM3', strikePreview)}</option>
+            <option value="ITM2" ${optionsLeg === 'ITM2' ? 'selected' : ''}>${this.getStrikeOptionLabel('ITM2', strikePreview)}</option>
+            <option value="ITM1" ${optionsLeg === 'ITM1' ? 'selected' : ''}>${this.getStrikeOptionLabel('ITM1', strikePreview)}</option>
+            <option value="ATM" ${optionsLeg === 'ATM' ? 'selected' : ''}>${this.getStrikeOptionLabel('ATM', strikePreview)}</option>
+            <option value="OTM1" ${optionsLeg === 'OTM1' ? 'selected' : ''}>${this.getStrikeOptionLabel('OTM1', strikePreview)}</option>
+            <option value="OTM2" ${optionsLeg === 'OTM2' ? 'selected' : ''}>${this.getStrikeOptionLabel('OTM2', strikePreview)}</option>
+            <option value="OTM3" ${optionsLeg === 'OTM3' ? 'selected' : ''}>${this.getStrikeOptionLabel('OTM3', strikePreview)}</option>
             </select>
             <button class="btn-compact-secondary ${isMcx ? 'disabled' : ''}"
               ${isMcx ? 'disabled' : ''}
@@ -760,6 +764,7 @@ class QuickOrderHandler {
     }
     this.selectedExpiries.delete(symbolId);
     this.availableExpiries.delete(symbolId);
+    this.strikeOffsetSnapshots.delete(symbolId);
     this.reloadExpansionContent(symbolId);
   }
 
@@ -769,6 +774,61 @@ class QuickOrderHandler {
   selectOptionsLeg(symbolId, leg) {
     this.selectedOptionsLegs.set(symbolId, leg);
     this.triggerOptionPreviewRefresh(symbolId);
+  }
+
+  /**
+   * Build user-facing label for strike offsets with ATM context
+   */
+  getStrikeOptionLabel(offset, strikePreview = null) {
+    const baseLabels = {
+      ITM3: 'ITM 3',
+      ITM2: 'ITM 2',
+      ITM1: 'ITM 1',
+      ATM: 'ATM',
+      OTM1: 'OTM 1',
+      OTM2: 'OTM 2',
+      OTM3: 'OTM 3',
+    };
+
+    const base = baseLabels[offset] || offset;
+    if (!strikePreview || !strikePreview.offsets || !strikePreview.offsets[offset]) {
+      if (offset === 'ATM' && strikePreview?.atmStrike != null) {
+        return `${base} - ${this._formatStrikeValue(strikePreview.atmStrike)}`;
+      }
+      return base;
+    }
+
+    const entry = strikePreview.offsets[offset];
+    const ceStrike = this._formatStrikeValue(entry.ceStrike);
+    const peStrike = this._formatStrikeValue(entry.peStrike);
+
+    if (offset === 'ATM') {
+      const atmVal = this._formatStrikeValue(strikePreview.atmStrike ?? entry.ceStrike ?? entry.peStrike);
+      return `${base} - ${atmVal}`;
+    }
+
+    return `${base} - (CE = ${ceStrike}, PE = ${peStrike})`;
+  }
+
+  _formatStrikeValue(value) {
+    if (value == null || Number.isNaN(Number(value))) {
+      return '-';
+    }
+    return Utils.formatNumber(value);
+  }
+
+  /**
+   * Update strike dropdown labels in-place when preview refreshes
+   */
+  refreshStrikeDropdownLabels(symbolId) {
+    const strikePreview = this.strikeOffsetSnapshots.get(symbolId) || null;
+    const selectEl = document.querySelector(`select[data-symbol-id="${symbolId}"][data-role="strike-select"]`);
+    if (!selectEl) return;
+
+    Array.from(selectEl.options).forEach((opt) => {
+      const offset = (opt.value || '').toUpperCase();
+      opt.textContent = this.getStrikeOptionLabel(offset, strikePreview);
+    });
   }
 
   /**
@@ -1119,6 +1179,8 @@ class QuickOrderHandler {
     const normalizedExpiry = this.normalizeExpiryDate(expiry);
     // debug: removed noisy log
     this.selectedExpiries.set(symbolId, normalizedExpiry);
+    this.strikeOffsetSnapshots.delete(symbolId);
+    this.refreshStrikeDropdownLabels(symbolId);
     this.triggerOptionPreviewRefresh(symbolId);
     this.triggerFuturesPreviewRefresh(symbolId);
   }
@@ -1263,6 +1325,13 @@ class QuickOrderHandler {
       container.innerHTML = '<p class="text-sm text-error">Option preview unavailable.</p>';
       return;
     }
+
+    if (preview.strikePreview) {
+      this.strikeOffsetSnapshots.set(symbolId, preview.strikePreview);
+    } else {
+      this.strikeOffsetSnapshots.delete(symbolId);
+    }
+    this.refreshStrikeDropdownLabels(symbolId);
 
     const expiryLabel = preview.expiry ? this.formatExpiryDate(preview.expiry) : 'N/A';
     const underlyingSymbol = preview.underlying?.symbol || '';

@@ -92,6 +92,7 @@ class OptionsResolutionService {
     strikeOffset,
     ltp,
     instance,
+    optionChain = null,
   }) {
     // Validate inputs
     const missingParams = [];
@@ -127,7 +128,7 @@ class OptionsResolutionService {
     });
 
     // Step 1: Get or fetch option chain
-    const optionChain = await this._getOptionChain(underlying, exchange, expiry, instance);
+    const chain = optionChain || await this._getOptionChain(underlying, exchange, expiry, instance);
 
     // Step 2: Calculate target strike based on LTP and offset (with ATM hysteresis)
     const lockKey = this._buildAtmLockKey(underlying, exchange, expiry);
@@ -135,14 +136,14 @@ class OptionsResolutionService {
       ltp,
       strikeOffset,
       optionType,
-      optionChain.strikes,
-      optionChain.strikeStep,
+      chain.strikes,
+      chain.strikeStep,
       lockKey
     );
 
     // Step 3: Find the option symbol for the target strike
     const optionSymbol = this._findOptionSymbol(
-      optionChain,
+      chain,
       targetStrike,
       optionType
     );
@@ -170,7 +171,7 @@ class OptionsResolutionService {
       strikeOffset,
       targetStrike,
       atmStrike,
-      strikeStep: optionChain.strikeStep,
+      strikeStep: chain.strikeStep,
       ...optionSymbol,
     };
   }
@@ -444,6 +445,84 @@ class OptionsResolutionService {
       strikes,
       strikeStep,
       optionsByStrike,
+    };
+  }
+
+  /**
+   * Provide the resolved option chain (strikes + step) for reuse by callers
+   * @param {Object} params
+   * @param {string} params.underlying
+   * @param {string} params.exchange
+   * @param {string} params.expiry
+   * @param {Object} params.instance
+   * @returns {Promise<Object|null>}
+   */
+  async getOptionChainSnapshot({ underlying, exchange, expiry, instance }) {
+    return this._getOptionChain(underlying, exchange, expiry, instance);
+  }
+
+  /**
+   * Build strike preview for all offsets around ATM (ITM/ATM/OTM)
+   * @param {Object} params
+   * @param {string} params.underlying
+   * @param {string} params.exchange
+   * @param {string} params.expiry
+   * @param {number} params.ltp
+   * @param {Object} params.instance
+   * @param {Object|null} params.optionChain
+   * @returns {Promise<Object|null>}
+   */
+  async buildStrikePreview({
+    underlying,
+    exchange,
+    expiry,
+    ltp,
+    instance,
+    optionChain = null,
+  }) {
+    if (!Number.isFinite(ltp) || ltp === 0) {
+      return null;
+    }
+
+    const chain = optionChain || await this._getOptionChain(underlying, exchange, expiry, instance);
+    if (!chain || !Array.isArray(chain.strikes) || chain.strikes.length === 0) {
+      return null;
+    }
+
+    const lockKey = this._buildAtmLockKey(underlying, exchange, expiry);
+    const offsets = ['ITM3', 'ITM2', 'ITM1', 'ATM', 'OTM1', 'OTM2', 'OTM3'];
+    const offsetStrikes = {};
+    let atmStrike = null;
+
+    for (const offset of offsets) {
+      const ceCalc = this._calculateTargetStrike(
+        ltp,
+        offset,
+        'CE',
+        chain.strikes,
+        chain.strikeStep,
+        lockKey
+      );
+      const peCalc = this._calculateTargetStrike(
+        ltp,
+        offset,
+        'PE',
+        chain.strikes,
+        chain.strikeStep,
+        lockKey
+      );
+      atmStrike = atmStrike ?? ceCalc.atmStrike ?? peCalc.atmStrike ?? null;
+
+      offsetStrikes[offset] = {
+        ceStrike: ceCalc.targetStrike,
+        peStrike: peCalc.targetStrike,
+      };
+    }
+
+    return {
+      atmStrike,
+      strikeStep: chain.strikeStep,
+      offsets: offsetStrikes,
     };
   }
 

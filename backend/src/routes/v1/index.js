@@ -21,6 +21,8 @@ import rbacRoutes from './rbac.js';
 import notificationRoutes from './notifications.js';
 import healthCheckRoutes from './health-check.js';
 import telegramRoutes from './telegram.js';
+import telemetryRoutes from './telemetry.js';
+import snapshotRoutes from './snapshots.js';
 import { getAppReadyStatus } from '../../middleware/instruments-refresh.middleware.js';
 import { toISTISOString } from '../../utils/time.js';
 import { config } from '../../core/config.js';
@@ -45,6 +47,8 @@ router.use('/trades', tradeRoutes);
 router.use('/rbac', rbacRoutes);
 router.use('/notifications', notificationRoutes);
 router.use('/health-check', healthCheckRoutes);
+router.use('/telemetry', telemetryRoutes);
+router.use('/snapshots', snapshotRoutes);
 
 // Public config for frontend (Supabase)
 router.get('/public-config', (req, res) => {

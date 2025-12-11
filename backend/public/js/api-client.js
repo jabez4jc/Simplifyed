@@ -193,6 +193,35 @@ class APIClient {
     return this.request('/dashboard/metrics');
   }
 
+  // Telemetry + snapshots
+  async getTelemetryRateLimits() {
+    return this.request('/telemetry/rate-limits');
+  }
+
+  async getTelemetryCacheStatus() {
+    return this.request('/telemetry/cache-status');
+  }
+
+  async getQuoteSnapshots(params = {}) {
+    const search = new URLSearchParams(params);
+    return this.request(`/snapshots/quotes?${search.toString()}`);
+  }
+
+  async getPositionSnapshot(instanceId, params = {}) {
+    const search = new URLSearchParams(params);
+    return this.request(`/snapshots/positions/${instanceId}?${search.toString()}`);
+  }
+
+  async getOrderSnapshot(instanceId, params = {}) {
+    const search = new URLSearchParams(params);
+    return this.request(`/snapshots/orders/${instanceId}?${search.toString()}`);
+  }
+
+  async getTradeSnapshot(instanceId, params = {}) {
+    const search = new URLSearchParams(params);
+    return this.request(`/snapshots/trades/${instanceId}?${search.toString()}`);
+  }
+
   // Watchlist APIs
   async getWatchlists(filters = {}) {
     const params = new URLSearchParams(filters);

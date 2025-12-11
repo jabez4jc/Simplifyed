@@ -27,6 +27,8 @@ class QuickOrderService {
     this.symbolResolutionCache = new Map();
     this.symbolResolutionCacheTtl = 5 * 60 * 1000; // 5 minutes
     this.symbolResolutionCacheMaxSize = 2000; // bounded cache
+    this.optionChainQuoteCache = new Map(); // key: inst|exch|underlying|expiry -> { map, fetchedAt }
+    this.optionChainQuoteTtlMs = 10000; // retain option chain quotes for 10s to avoid blanks
   }
   /**
    * Place quick order from watchlist
@@ -2936,6 +2938,17 @@ class QuickOrderService {
       baseExchange
     );
 
+    const optionChain = await optionsResolutionService.getOptionChainSnapshot({
+      underlying,
+      exchange: derivativeExchange,
+      expiry: effectiveExpiry,
+      instance: marketDataInstance,
+    });
+
+    if (!optionChain) {
+      throw new ValidationError('Unable to fetch option strikes for preview. Please try again.');
+    }
+
     const resolveParamsBase = {
       underlying,
       exchange: derivativeExchange,
@@ -2943,6 +2956,7 @@ class QuickOrderService {
       strikeOffset,
       ltp: underlyingLtp,
       instance: marketDataInstance,
+      optionChain,
     };
 
     const [ceResolution, peResolution] = await Promise.all([
@@ -2958,6 +2972,15 @@ class QuickOrderService {
 
     const atmStrike = ceResolution?.atmStrike ?? peResolution?.atmStrike ?? null;
 
+    const strikePreview = await optionsResolutionService.buildStrikePreview({
+      underlying,
+      exchange: derivativeExchange,
+      expiry: effectiveExpiry,
+      ltp: underlyingLtp,
+      instance: marketDataInstance,
+      optionChain,
+    });
+
     const quoteRequests = [];
     if (ceResolution?.symbol) {
       quoteRequests.push({ exchange: derivativeExchange, symbol: ceResolution.symbol });
@@ -2966,7 +2989,21 @@ class QuickOrderService {
       quoteRequests.push({ exchange: derivativeExchange, symbol: peResolution.symbol });
     }
 
-    const quotesMap = await this._getQuotesFromCache(marketDataInstance, quoteRequests);
+    const optionChainQuotes = await this._getOptionChainQuotesMap({
+      instance: marketDataInstance,
+      underlying,
+      expiry: effectiveExpiry,
+      exchange: derivativeExchange,
+      minStrikeCount: 5,
+    });
+
+    const requestedKeys = quoteRequests
+      .map(req => this._buildQuoteMatchKey(req.exchange || derivativeExchange, req.symbol))
+      .filter(Boolean);
+
+    const chainHasAll = this._hasAllQuotes(optionChainQuotes, requestedKeys);
+    const fallbackQuotes = chainHasAll ? null : await this._getQuotesFromCache(marketDataInstance, quoteRequests);
+    const quotesMap = this._mergeQuoteMaps(optionChainQuotes, fallbackQuotes);
 
     const buildLegResponse = (resolution) => {
       if (!resolution?.symbol) {
@@ -2999,6 +3036,7 @@ class QuickOrderService {
       derivativeExchange,
       updatedAt: toISTISOString(),
       atmStrike,
+      strikePreview,
       underlying: {
         symbol: underlying,
         exchange: symbol.exchange,
@@ -3562,6 +3600,124 @@ class QuickOrderService {
 
       return total + qty;
     }, 0);
+  }
+
+  _mergeQuoteMaps(primary, secondary) {
+    const merged = new Map();
+    if (secondary) {
+      secondary.forEach((value, key) => merged.set(key, value));
+    }
+    if (primary) {
+      primary.forEach((value, key) => {
+        const existing = merged.get(key);
+        const hasExistingLtp = existing && this._extractLtpFromQuote(existing) !== null;
+        const hasNewLtp = this._extractLtpFromQuote(value) !== null;
+
+        // Prefer the option chain quote when it has an LTP; otherwise keep the richer entry
+        if (!existing || (hasNewLtp || !hasExistingLtp)) {
+          merged.set(key, value);
+        }
+      });
+    }
+    return merged;
+  }
+
+  _hasAllQuotes(map, keys = []) {
+    if (!keys || keys.length === 0) return true;
+    if (!map || typeof map.get !== 'function') return false;
+    return keys.every((k) => map.has(k));
+  }
+
+  async _getOptionChainQuotesMap({
+    instance,
+    underlying,
+    expiry,
+    exchange,
+    minStrikeCount = 5,
+  }) {
+    if (!instance || !instance.supports_option_chain) {
+      return null;
+    }
+
+    const cacheKey = `${instance.id || 'INSTANCE'}|${(exchange || '').toUpperCase()}|${(underlying || '').toUpperCase()}|${expiry || ''}`;
+    const cached = this.optionChainQuoteCache.get(cacheKey);
+    const now = Date.now();
+    if (cached && now - cached.fetchedAt <= this.optionChainQuoteTtlMs) {
+      return cached.map;
+    }
+
+    try {
+      const strikeCount = Math.max(parseIntSafe(minStrikeCount) || 0, 5);
+      const chain = await openalgoClient.getOptionChain(
+        instance,
+        underlying,
+        expiry,
+        exchange,
+        { strikeCount, skipBackoff: true }
+      );
+
+      const quotes = this._extractQuotesFromOptionChain(chain, exchange);
+      const map = this._quotesArrayToMap(quotes, now);
+      this.optionChainQuoteCache.set(cacheKey, { map, fetchedAt: now });
+      return map;
+    } catch (error) {
+      log.warn('Option chain quote fetch failed; falling back to multiquotes', {
+        instance_id: instance?.id,
+        underlying,
+        expiry,
+        exchange,
+        error: error?.message,
+      });
+      if (cached) {
+        return cached.map;
+      }
+      return null;
+    }
+  }
+
+  _extractQuotesFromOptionChain(chainData, exchange) {
+    const rows = Array.isArray(chainData?.chain) ? chainData.chain : [];
+    const quotes = [];
+
+    for (const row of rows) {
+      const strike = parseFloatSafe(row.strike, null);
+      const ce = row.ce || row.CE;
+      const pe = row.pe || row.PE;
+
+      if (ce && ce.symbol) {
+        quotes.push({
+          exchange,
+          symbol: ce.symbol || ce.trading_symbol || ce.tradingsymbol,
+          strike,
+          option_type: 'CE',
+          ltp: this._extractLtpFromQuote(ce),
+          changePercent: this._extractChangePercentFromQuote(ce),
+        });
+      }
+
+      if (pe && pe.symbol) {
+        quotes.push({
+          exchange,
+          symbol: pe.symbol || pe.trading_symbol || pe.tradingsymbol,
+          strike,
+          option_type: 'PE',
+          ltp: this._extractLtpFromQuote(pe),
+          changePercent: this._extractChangePercentFromQuote(pe),
+        });
+      }
+    }
+
+    return quotes;
+  }
+
+  _quotesArrayToMap(quotes = [], fetchedAt = Date.now()) {
+    const map = new Map();
+    for (const quote of quotes) {
+      const key = this._buildQuoteMatchKey(quote.exchange, quote.symbol);
+      if (!key) continue;
+      map.set(key, { ...quote, fetchedAt });
+    }
+    return map;
   }
 
   async _getQuotesFromCache(instance, requests = []) {

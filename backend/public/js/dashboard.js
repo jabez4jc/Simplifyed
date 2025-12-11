@@ -44,7 +44,16 @@ class DashboardApp {
     this.positionsInstanceStore = new Map();
     // Track expanded instances in positions view; default is collapsed
     this.positionsExpanded = new Set();
+    this.expandedWatchlists = new Set();
     this.isPaused = false; // default running; user can pause manually
+    // Telemetry auto-refresh
+    this.telemetryInterval = null;
+    this.lastTelemetry = { circuits: 0, stale: 0 };
+    // Snapshot auto-resync
+    this.snapshotResyncInterval = null;
+    this.lastSnapshotResyncAt = 0;
+    this.isSnapshotResyncing = false;
+    this.autoSnapshotResyncEnabled = this.loadSnapshotResyncPreference();
   }
 
   async renderNotificationsView() {
@@ -151,6 +160,24 @@ class DashboardApp {
   loadSidebarState() {
     const stored = localStorage.getItem('sidebarCollapsed');
     this.isSidebarCollapsed = stored === 'true';
+  }
+
+  loadSnapshotResyncPreference() {
+    try {
+      const stored = localStorage.getItem('autoSnapshotResyncEnabled');
+      if (stored === 'false') return false;
+      return true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  persistSnapshotResyncPreference(enabled) {
+    try {
+      localStorage.setItem('autoSnapshotResyncEnabled', enabled ? 'true' : 'false');
+    } catch (_) {
+      // ignore
+    }
   }
 
   applySidebarState() {
@@ -416,6 +443,14 @@ class DashboardApp {
       this.stopTradesPolling();
     }
 
+    if (this.currentView === 'dashboard' && viewName !== 'dashboard') {
+      this.stopTelemetryRefresh();
+    }
+
+    if (['watchlists', 'positions'].includes(this.currentView) && !['watchlists', 'positions'].includes(viewName)) {
+      this.stopSnapshotResync();
+    }
+
     this.currentView = viewName;
 
     // Update title
@@ -448,6 +483,7 @@ class DashboardApp {
           break;
         case 'watchlists':
           await this.renderWatchlistsView();
+          this.startSnapshotResync('watchlists');
           break;
         case 'orders':
           await this.renderOrdersView();
@@ -457,6 +493,7 @@ class DashboardApp {
           break;
         case 'positions':
           await this.renderPositionsView();
+          this.startSnapshotResync('positions');
           break;
         case 'settings':
           await settings.renderSettingsView();
@@ -484,7 +521,7 @@ class DashboardApp {
     const contentArea = document.getElementById('content-area');
 
     // Fetch data
-    const [instancesRes, metricsRes] = await Promise.all([
+    const [instancesRes, metricsRes, telemetryRateRes, cacheStatusRes] = await Promise.all([
       api.getInstances({ is_active: true }),
       api.getDashboardMetrics().catch(() => ({
         data: {
@@ -504,6 +541,8 @@ class DashboardApp {
           },
         },
       })),
+      api.getTelemetryRateLimits().catch(() => ({ data: [] })),
+      api.getTelemetryCacheStatus().catch(() => ({ data: { entries: [] } })),
     ]);
 
     this.instances = instancesRes.data;
@@ -532,16 +571,51 @@ class DashboardApp {
       }),
     }));
 
+    // Telemetry summary
+    const rateEntries = telemetryRateRes?.data || [];
+    const cacheEntries = cacheStatusRes?.data?.entries || [];
+    const telemetrySnapshot = this.computeTelemetrySnapshot(rateEntries, cacheEntries);
+    this.lastTelemetry = {
+      circuits: telemetrySnapshot.openCircuits,
+      stale: telemetrySnapshot.staleCaches,
+    };
+
+    const telemetryCards = `
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+        <div class="stat-card" id="telemetry-card-circuits">
+          <div class="stat-label">Circuits Open</div>
+          <div class="stat-value" id="telemetry-circuits">${telemetrySnapshot.openCircuits}</div>
+          <div class="stat-subtext text-xs text-neutral-500">Feeds paused due to failures</div>
+        </div>
+        <div class="stat-card" id="telemetry-card-stale">
+          <div class="stat-label">Stale Caches</div>
+          <div class="stat-value" id="telemetry-stale">${telemetrySnapshot.staleCaches}</div>
+          <div class="stat-subtext text-xs text-neutral-500">Quotes/positions beyond TTL</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Orders/sec Headroom</div>
+          <div class="stat-value" id="telemetry-orders-headroom">${telemetrySnapshot.minOrdersRemaining ?? 'n/a'}</div>
+          <div class="stat-subtext text-xs text-neutral-500">Lowest remaining across instances</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">RPS Headroom</div>
+          <div class="stat-value" id="telemetry-rps-headroom">${telemetrySnapshot.minRpsRemaining ?? 'n/a'}</div>
+          <div class="stat-subtext text-xs text-neutral-500">Lowest remaining across instances</div>
+        </div>
+      </div>
+    `;
+
     // Render
     contentArea.innerHTML = `
+      ${telemetryCards}
       <!-- Live Mode Stats (Primary) -->
       <div class="mb-4">
         <div class="flex items-center mb-2">
           <h2 class="text-xl font-semibold">Live Trading</h2>
           <span class="ml-2 px-2 py-1 text-xs font-semibold bg-green-100 text-green-800 rounded">LIVE</span>
         </div>
-        <div class="stats-grid">
-          <div class="stat-card pnl-card ${Utils.getPnLBgClass(metrics.live.total_pnl)}">
+      <div class="stats-grid">
+        <div class="stat-card pnl-card ${Utils.getPnLBgClass(metrics.live.total_pnl)}">
             <div class="stat-label">Total P&L</div>
             <div class="stat-value ${Utils.getPnLColorClass(metrics.live.total_pnl)}">
               ${Utils.formatCurrency(metrics.live.total_pnl)}
@@ -623,6 +697,110 @@ class DashboardApp {
         </div>
       </div>
     `;
+
+    this.applyTelemetrySnapshot(telemetrySnapshot);
+    this.stopTelemetryRefresh();
+    this.startTelemetryRefresh();
+  }
+
+  computeTelemetrySnapshot(rateEntries = [], cacheEntries = []) {
+    const openCircuits = cacheEntries.filter((e) => e.circuitOpen).length;
+    const staleCaches = cacheEntries.filter((e) => e.stale === true).length;
+    const ordersRemaining = rateEntries
+      .map((e) => e.budget?.remaining?.orders)
+      .filter((v) => v !== null && v !== undefined);
+    const rpsRemaining = rateEntries
+      .map((e) => e.budget?.remaining?.rps)
+      .filter((v) => v !== null && v !== undefined);
+
+    return {
+      openCircuits,
+      staleCaches,
+      minOrdersRemaining: ordersRemaining.length ? Math.min(...ordersRemaining) : null,
+      minRpsRemaining: rpsRemaining.length ? Math.min(...rpsRemaining) : null,
+    };
+  }
+
+  applyTelemetrySnapshot(snapshot) {
+    const circuitsEl = document.getElementById('telemetry-circuits');
+    const staleEl = document.getElementById('telemetry-stale');
+    const ordersEl = document.getElementById('telemetry-orders-headroom');
+    const rpsEl = document.getElementById('telemetry-rps-headroom');
+    const cardCircuits = document.getElementById('telemetry-card-circuits');
+    const cardStale = document.getElementById('telemetry-card-stale');
+
+    if (circuitsEl) {
+      circuitsEl.textContent = snapshot.openCircuits;
+    }
+    if (staleEl) {
+      staleEl.textContent = snapshot.staleCaches;
+    }
+    if (ordersEl) {
+      ordersEl.textContent =
+        snapshot.minOrdersRemaining !== null && snapshot.minOrdersRemaining !== undefined
+          ? snapshot.minOrdersRemaining
+          : 'n/a';
+    }
+    if (rpsEl) {
+      rpsEl.textContent =
+        snapshot.minRpsRemaining !== null && snapshot.minRpsRemaining !== undefined
+          ? snapshot.minRpsRemaining
+          : 'n/a';
+    }
+
+    if (cardCircuits) {
+      cardCircuits.classList.toggle('bg-warning/10', snapshot.openCircuits > 0);
+      cardCircuits.classList.toggle('border-warning', snapshot.openCircuits > 0);
+      cardCircuits.querySelector('.stat-value')?.classList.toggle('text-warning', snapshot.openCircuits > 0);
+    }
+    if (cardStale) {
+      cardStale.classList.toggle('bg-error/10', snapshot.staleCaches > 0);
+      cardStale.classList.toggle('border-error', snapshot.staleCaches > 0);
+      cardStale.querySelector('.stat-value')?.classList.toggle('text-error', snapshot.staleCaches > 0);
+    }
+  }
+
+  async refreshTelemetryCards() {
+    if (this.currentView !== 'dashboard') {
+      return;
+    }
+    try {
+      const [rateRes, cacheRes] = await Promise.all([
+        api.getTelemetryRateLimits().catch(() => ({ data: [] })),
+        api.getTelemetryCacheStatus().catch(() => ({ data: { entries: [] } })),
+      ]);
+      const snapshot = this.computeTelemetrySnapshot(rateRes?.data || [], cacheRes?.data?.entries || []);
+      this.applyTelemetrySnapshot(snapshot);
+
+      if (snapshot.openCircuits > 0 && this.lastTelemetry.circuits === 0) {
+        Utils.showToast(`Feed circuits opened (${snapshot.openCircuits})`, 'warning');
+      }
+      if (snapshot.staleCaches > 0 && this.lastTelemetry.stale === 0) {
+        Utils.showToast(`Stale caches detected (${snapshot.staleCaches})`, 'error');
+        // Opportunistic resync if on a data-heavy view
+        if (['watchlists', 'positions'].includes(this.currentView)) {
+          this.triggerSnapshotResync();
+        }
+      }
+      this.lastTelemetry = {
+        circuits: snapshot.openCircuits,
+        stale: snapshot.staleCaches,
+      };
+    } catch (err) {
+      console.warn('Telemetry refresh failed', err);
+    }
+  }
+
+  startTelemetryRefresh() {
+    this.stopTelemetryRefresh();
+    this.telemetryInterval = setInterval(() => this.refreshTelemetryCards(), 20000);
+  }
+
+  stopTelemetryRefresh() {
+    if (this.telemetryInterval) {
+      clearInterval(this.telemetryInterval);
+      this.telemetryInterval = null;
+    }
   }
 
   /**
@@ -899,8 +1077,8 @@ class DashboardApp {
         api.getInstances(),
       ]);
       this.watchlists = watchlistsRes.data;
-      // Default to expanding all watchlists so the grid is visible immediately
-      this.expandedWatchlists = new Set(this.watchlists.map((wl) => wl.id));
+      // Default to collapsed watchlists; user opt-in to load quotes/expansions
+      this.expandedWatchlists = new Set();
       this.instances = instancesRes.data;
     } catch (error) {
       console.error('Failed to load watchlists view:', error);
@@ -930,6 +1108,14 @@ class DashboardApp {
             <span class="watchlists-count">${this.watchlists.length} lists</span>
           </div>
           <div class="watchlists-toolbar-right">
+            <button class="btn-icon" onclick="app.resyncQuotesFromSnapshots()" title="Resync quotes (snapshot)">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 12A7.5 7.5 0 116 6.75M6 6.75V3m0 3.75h3.75" />
+              </svg>
+            </button>
+            <button class="btn btn-outline btn-sm" onclick="app.toggleSnapshotResync()" title="Toggle auto snapshot resync">
+              Auto Resync: ${this.autoSnapshotResyncEnabled ? 'On' : 'Off'}
+            </button>
             <button class="btn-icon" onclick="app.renderWatchlistsView()" title="Refresh data">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h4M20 20v-5h-4M5 9a7 7 0 0112-4M19 15a7 7 0 01-12 4" />
@@ -1118,6 +1304,55 @@ class DashboardApp {
       } else {
         this.stopPositionsPolling();
       }
+    }
+  }
+
+  async resyncQuotesFromSnapshots() {
+    try {
+      await api.getQuoteSnapshots({ refresh: true });
+      const expandedIds = Array.from(this.expandedWatchlists || []);
+      for (const wlId of expandedIds) {
+        await this.updateWatchlistQuotes(wlId, { force: true });
+      }
+      Utils.showToast('Quotes resynced from snapshots', 'success');
+    } catch (error) {
+      console.error('Failed to resync quotes', error);
+      Utils.showToast('Failed to resync quotes', 'error');
+    }
+  }
+
+  async triggerSnapshotResync() {
+    if (this.isSnapshotResyncing) return;
+    this.isSnapshotResyncing = true;
+    try {
+      if (this.currentView === 'watchlists') {
+        await this.resyncQuotesFromSnapshots();
+      } else if (this.currentView === 'positions') {
+        await this.resyncAllPositionsFromSnapshots();
+      }
+      this.lastSnapshotResyncAt = Date.now();
+    } finally {
+      this.isSnapshotResyncing = false;
+    }
+  }
+
+  startSnapshotResync(viewName) {
+    this.stopSnapshotResync();
+    // Only start for targeted views
+    if (!['watchlists', 'positions'].includes(viewName)) return;
+    if (!this.autoSnapshotResyncEnabled) return;
+    const intervalMs = 60000; // 60s gentle resync
+    this.snapshotResyncInterval = setInterval(() => {
+      // Avoid hammering while paused or busy
+      if (this.isPaused || this.isSnapshotResyncing) return;
+      this.triggerSnapshotResync();
+    }, intervalMs);
+  }
+
+  stopSnapshotResync() {
+    if (this.snapshotResyncInterval) {
+      clearInterval(this.snapshotResyncInterval);
+      this.snapshotResyncInterval = null;
     }
   }
 
@@ -2359,15 +2594,21 @@ class DashboardApp {
             </div>
           </div>
         </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <button class="btn btn-outline btn-sm" onclick="app.renderPositionsView()">
-            Refresh
+          <div class="flex flex-wrap items-center gap-2">
+            <button class="btn btn-outline btn-sm" onclick="app.renderPositionsView()">
+              Refresh
+            </button>
+          <button class="btn btn-outline btn-sm" onclick="app.toggleSnapshotResync()">
+            Auto Resync: ${this.autoSnapshotResyncEnabled ? 'On' : 'Off'}
           </button>
-          <button class="btn btn-exit btn-sm" onclick="app.closeAllPositionsGlobal()">
-            Close All Positions
+          <button class="btn btn-outline btn-sm" onclick="app.resyncAllPositionsFromSnapshots()">
+            Resync snapshots
           </button>
+            <button class="btn btn-exit btn-sm" onclick="app.closeAllPositionsGlobal()">
+              Close All Positions
+            </button>
+          </div>
         </div>
-      </div>
     `;
   }
 
@@ -2418,10 +2659,16 @@ class DashboardApp {
             <span>P&L: <span class="font-medium ${Utils.getPnLColorClass(inst.total_pnl)}">${Utils.formatCurrency(inst.total_pnl)}</span></span>
           </div>
         </div>
-        <button class="btn btn-exit btn-sm"
-                onclick="app.closeAllPositions(${inst.instance_id})">
-          Close All Positions
-        </button>
+        <div class="flex items-center gap-2">
+          <button class="btn btn-outline btn-sm"
+                  onclick="event.stopPropagation(); app.resyncPositionsFromSnapshot(${inst.instance_id})">
+            Resync
+          </button>
+          <button class="btn btn-exit btn-sm"
+                  onclick="event.stopPropagation(); app.closeAllPositions(${inst.instance_id})">
+            Close All Positions
+          </button>
+        </div>
       </summary>
     `;
 
@@ -2465,6 +2712,59 @@ class DashboardApp {
         }
       });
     });
+  }
+
+  async resyncPositionsFromSnapshot(instanceId) {
+    try {
+      const res = await api.getPositionSnapshot(instanceId, { refresh: true });
+      const positions = res?.data?.positions || [];
+      this.positionsInstanceStore.set(String(instanceId), positions);
+      const body = document.querySelector(
+        `details.card[data-instance-id="${instanceId}"] .instance-positions-body`
+      );
+      if (body) {
+        body.innerHTML = this.renderPositionsBody(positions, { instance_id: instanceId });
+        body.dataset.loaded = 'true';
+      }
+      Utils.showToast(`Positions resynced for instance ${instanceId}`, 'success');
+    } catch (error) {
+      console.error('Failed to resync positions snapshot', error);
+      Utils.showToast('Failed to resync positions snapshot', 'error');
+    }
+  }
+
+  async resyncAllPositionsFromSnapshots() {
+    try {
+      const instances = (this.latestAllPositionsData?.instances || []).map((i) => i.instance_id);
+      if (!instances.length) {
+        await this.renderPositionsView();
+        return;
+      }
+      await Promise.all(
+        instances.map((id) => api.getPositionSnapshot(id, { refresh: true }).catch(() => null))
+      );
+      await this.renderPositionsView();
+      Utils.showToast('Positions resynced from snapshots', 'success');
+    } catch (error) {
+      console.error('Failed to resync all positions snapshots', error);
+      Utils.showToast('Failed to resync all positions snapshots', 'error');
+    }
+  }
+
+  toggleSnapshotResync() {
+    this.autoSnapshotResyncEnabled = !this.autoSnapshotResyncEnabled;
+    this.persistSnapshotResyncPreference(this.autoSnapshotResyncEnabled);
+    Utils.showToast(`Auto snapshot resync ${this.autoSnapshotResyncEnabled ? 'enabled' : 'disabled'}`, 'info');
+    // Restart interval if applicable
+    if (['watchlists', 'positions'].includes(this.currentView)) {
+      this.startSnapshotResync(this.currentView);
+    }
+    // Refresh UI buttons to reflect state
+    if (this.currentView === 'positions') {
+      this.renderPositionsView();
+    } else if (this.currentView === 'watchlists') {
+      this.renderWatchlistsView();
+    }
   }
 
   /**

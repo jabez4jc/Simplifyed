@@ -11,19 +11,21 @@
  */
 
 import EventEmitter from 'events';
+import { createHash } from 'crypto';
 import instanceService from './instance.service.js';
 import marketDataInstanceService from './market-data-instance.service.js';
 import watchlistService from './watchlist.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import config from '../core/config.js';
 import { log } from '../core/logger.js';
+import db from '../core/database.js';
 import { extractAveragePrice, extractLtp } from '../utils/price-extraction.js';
 
 const DEFAULT_QUOTE_INTERVAL = 5000;               // 5 seconds for quote refresh
 // Align with implementation plan (Phase 1): 5s active, 10s idle via dynamic scheduler
 const DEFAULT_POSITION_INTERVAL_IDLE = 10000;      // 10 seconds when no open positions
 const DEFAULT_POSITION_INTERVAL_ACTIVE = 5000;     // 5 seconds when positions open (for SL/target tracking)
-const DEFAULT_FUNDS_INTERVAL = 5 * 60 * 1000;      // 5 minutes for funds refresh
+const DEFAULT_FUNDS_INTERVAL = 30 * 60 * 1000;      // 30 minutes for funds refresh (sequential)
 
 // TTL configurations
 const TTL_DISPLAY = 5000;      // 5s TTL for watchlist display (relaxed)
@@ -66,6 +68,9 @@ class MarketDataFeedService extends EventEmitter {
     this.tradebookRefreshTimestamps = new Map();
     // Fallback entry prices captured at order placement (key: instanceId|exchange|symbol)
     this.entryPriceCache = new Map();
+    // Track last persisted quote hashes to avoid noisy writes
+    this.quoteSnapshotHashes = new Map();
+    this.quoteSnapshotTableMissing = false;
 
     // Unified symbol quote cache (consolidated from separate SYMBOL_QUOTE_TTL_MS)
     // TTL is now configurable per-call via ttlMs parameter
@@ -75,6 +80,9 @@ class MarketDataFeedService extends EventEmitter {
 
     // Track whether there are open positions for dynamic refresh interval
     this.hasOpenPositions = false;
+    this.openPositionInstances = new Set();
+    this.instanceHealth = new Map(); // id -> { healthy: boolean, lastPing: number, nextPing: number, notified: boolean }
+    this.healthPingIntervalHandle = null;
     this.positionIntervalHandle = null;
   }
 
@@ -84,6 +92,9 @@ class MarketDataFeedService extends EventEmitter {
 
     const quoteInterval = config.quoteInterval ?? DEFAULT_QUOTE_INTERVAL;
     const fundsInterval = config.fundsInterval ?? DEFAULT_FUNDS_INTERVAL;
+
+    // Warm in-memory cache from persisted snapshots before live refreshes
+    await this._hydrateQuoteSnapshotsFromDb();
 
     // Fire-and-forget warmup to avoid blocking startup
     setTimeout(() => this.refreshQuotes({ force: true }).catch(() => {}), 0);
@@ -96,6 +107,8 @@ class MarketDataFeedService extends EventEmitter {
     this._startDynamicPositionRefresh(FEED_STAGGER_MS);
     // Funds interval (already slow)
     this.intervals.push(setInterval(() => this.refreshFunds(), fundsInterval));
+    // Health pings (5m healthy, 10s unhealthy)
+    this.healthPingIntervalHandle = setInterval(() => this._pingInstancesHeartbeat(), 10000);
 
     log.info('MarketDataFeedService started', {
       quoteInterval,
@@ -112,6 +125,10 @@ class MarketDataFeedService extends EventEmitter {
     if (this.positionIntervalHandle) {
       clearInterval(this.positionIntervalHandle);
       this.positionIntervalHandle = null;
+    }
+    if (this.healthPingIntervalHandle) {
+      clearInterval(this.healthPingIntervalHandle);
+      this.healthPingIntervalHandle = null;
     }
     this.multiQuoteTimestamps.clear();
     this.isRunning = false;
@@ -133,7 +150,8 @@ class MarketDataFeedService extends EventEmitter {
     this.lastQuoteRefreshAt = now;
 
     try {
-      const marketDataInstances = await marketDataInstanceService.getPoolForEndpoint('multiquotes');
+      const marketDataInstances = (await marketDataInstanceService.getPoolForEndpoint('multiquotes'))
+        .filter(inst => !this._isInstanceUnhealthy(inst.id));
       const symbolList = this._dedupeSymbols(await this._buildGlobalSymbolList());
 
       if (symbolList.length === 0 || marketDataInstances.length === 0) {
@@ -156,72 +174,47 @@ class MarketDataFeedService extends EventEmitter {
         }
       }
 
-      // Fallback to individual quote calls only if no usable multi-quotes were returned or there are still pending symbols
+      // Fallback to multiquotes only; no single-quote fanout for multiple symbols
       if (pendingSymbols.length > 0) {
         const poolForFallback = supportPool.length > 0 ? supportPool.concat(regularPool) : marketDataInstances;
-        const assignments = new Map();
-        const poolSize = Math.max(1, poolForFallback.length);
-        const chunkSize = Math.max(3, Math.min(5, Math.ceil(pendingSymbols.length / poolSize)));
-        const chunks = this._chunkSymbols(pendingSymbols, chunkSize);
-        chunks.forEach((chunk, idx) => {
-          const inst = poolForFallback[idx % poolForFallback.length];
-          if (!assignments.has(inst.id)) assignments.set(inst.id, []);
-          assignments.get(inst.id).push(...chunk);
-        });
-
-        // Sequential per-instance execution with jitter to smooth RPS
-        const entries = Array.from(assignments.entries());
-        for (const [instId, symbols] of entries) {
-          const inst = poolForFallback.find(i => i.id === instId);
-          if (!inst) continue;
+        for (const inst of poolForFallback) {
+          if (this._isInstanceUnhealthy(inst.id)) continue;
           const circuitKey = this._getCircuitKey(inst.id, 'quotes');
           if (this._shouldSkipPolling(circuitKey)) {
             continue;
           }
-
           const maxRetries = 2;
           let lastError = null;
 
+          const symbolsForInst = pendingSymbols.slice(0, MULTI_QUOTE_SYMBOL_LIMIT);
+          if (symbolsForInst.length === 0) break;
+
           for (let attempt = 0; attempt <= maxRetries; attempt++) {
             try {
-              const snapshot = await openalgoClient.getQuotes(inst, symbols);
-              this.setQuoteSnapshot(inst.id, snapshot);
-              collectedQuotes = collectedQuotes.concat(snapshot || []);
-              log.debug('Quotes refreshed (fallback)', {
-                instance: inst.name,
-                count: Array.isArray(snapshot) ? snapshot.length : 0,
-                symbols: symbols.length,
-                attempt: attempt + 1,
-              });
+              const multiResult = await openalgoClient.getMultiQuotes(inst, symbolsForInst, { returnErrors: true });
+              const quotes = multiResult?.quotes || [];
+              this.setQuoteSnapshot(inst.id, quotes);
+              collectedQuotes = collectedQuotes.concat(quotes);
+              const resolvedKeys = new Set(quotes.map((q) => `${(q.exchange || '').toUpperCase()}|${(q.symbol || '').toUpperCase()}`));
+              pendingSymbols = pendingSymbols.filter((s) => !resolvedKeys.has(`${(s.exchange || '').toUpperCase()}|${(s.symbol || '').toUpperCase()}`));
               this._resetFailureState(circuitKey);
               break;
             } catch (error) {
               lastError = error;
               if (attempt < maxRetries) {
                 const delay = Math.min(1000 * Math.pow(2, attempt), 5000);
-                log.debug('Quote refresh failed, retrying', {
-                  instance: inst.name,
-                  attempt: attempt + 1,
-                  maxRetries: maxRetries + 1,
-                  retryInMs: delay,
-                  error: error.message,
-                });
                 await new Promise(resolve => setTimeout(resolve, delay));
               }
             }
           }
 
           if (lastError) {
-            log.warn('Failed to refresh quotes after retries', {
-              instance: inst.name,
-              attempts: maxRetries + 1,
-              error: lastError?.message,
-            });
+            log.warn('Failed multiquotes fallback', { instance: inst.name, error: lastError?.message });
             this._recordFailure(circuitKey, lastError);
           }
 
-          // Per-instance jitter to smooth outbound RPS
           await this._sleep(Math.floor(Math.random() * FEED_STAGGER_MS) + FEED_STAGGER_MS);
+          if (pendingSymbols.length === 0) break;
         }
       }
 
@@ -270,6 +263,8 @@ class MarketDataFeedService extends EventEmitter {
       this.symbolQuoteCache.set(key, { quote: q, fetchedAt: snapshot.fetchedAt });
     });
     this.emit('quotes:update', { instanceId, data: snapshot.data });
+    // Persist snapshot asynchronously for warm restarts
+    this._persistQuoteSnapshot(instanceId, snapshot.data, snapshot.fetchedAt);
   }
 
   /**
@@ -426,17 +421,22 @@ class MarketDataFeedService extends EventEmitter {
   setPositionSnapshot(instanceId, positions) {
     this.positionCache.set(instanceId, { data: positions, fetchedAt: Date.now() });
     this.emit('positions:update', { instanceId, data: positions });
+    this._updateOpenPositionState(instanceId, positions);
   }
 
   async refreshPositionsForInstance(instanceId, { force = false } = {}) {
     try {
+      if (this._isInstanceUnhealthy(instanceId)) {
+        log.warn('Skipping positions refresh - instance unhealthy', { instanceId });
+        return;
+      }
       const circuitKey = this._getCircuitKey(instanceId, 'positions');
       if (this._shouldSkipPolling(circuitKey)) {
         return;
       }
       const now = Date.now();
       const last = this.positionRefreshTimestamps.get(instanceId) || 0;
-      const ttlMs = this._getStatefulTtlMs('positions');
+      const ttlMs = this._getStatefulTtlMs('positions', instanceId);
       if (!force && now - last < ttlMs) {
         log.debug('Skipping position refresh (TTL)', { instanceId, elapsedMs: now - last, ttlMs });
         return;
@@ -456,6 +456,8 @@ class MarketDataFeedService extends EventEmitter {
 
   async invalidatePositions(instanceId, { refresh = false } = {}) {
     this.positionCache.delete(instanceId);
+    this.openPositionInstances.delete(instanceId);
+    this.hasOpenPositions = this.openPositionInstances.size > 0;
     if (refresh) {
       await this.refreshPositionsForInstance(instanceId, { force: true });
     }
@@ -697,6 +699,10 @@ class MarketDataFeedService extends EventEmitter {
       log.debug('Skipping funds refresh for instance - non-critical polling paused', { instanceId });
       return;
     }
+    if (this._isInstanceUnhealthy(instanceId)) {
+      log.warn('Skipping funds refresh - instance unhealthy', { instanceId });
+      return;
+    }
 
     try {
       const circuitKey = this._getCircuitKey(instanceId, 'funds');
@@ -791,7 +797,15 @@ class MarketDataFeedService extends EventEmitter {
     const now = Date.now();
     const last = this.orderbookRefreshTimestamps.get(instanceId);
     const cache = this.orderbookCache.get(instanceId);
-    const ttlMs = this._getStatefulTtlMs('orderbook');
+    const ttlMs = this._getStatefulTtlMs('orderbook', instanceId);
+
+    if (ttlMs === Number.POSITIVE_INFINITY) {
+      return cache || null;
+    }
+    if (this._isInstanceUnhealthy(instanceId)) {
+      log.warn('Skipping orderbook refresh - instance unhealthy', { instanceId });
+      return cache || null;
+    }
 
     if (!force && cache && last && now - last < ttlMs) {
       return cache;
@@ -818,7 +832,15 @@ class MarketDataFeedService extends EventEmitter {
     const now = Date.now();
     const last = this.tradebookRefreshTimestamps.get(instanceId);
     const cache = this.tradebookCache.get(instanceId);
-    const ttlMs = this._getStatefulTtlMs('tradebook');
+    const ttlMs = this._getStatefulTtlMs('tradebook', instanceId);
+
+    if (ttlMs === Number.POSITIVE_INFINITY) {
+      return cache || null;
+    }
+    if (this._isInstanceUnhealthy(instanceId)) {
+      log.warn('Skipping tradebook refresh - instance unhealthy', { instanceId });
+      return cache || null;
+    }
 
     if (!force && cache && last && now - last < ttlMs) {
       return cache;
@@ -844,6 +866,74 @@ class MarketDataFeedService extends EventEmitter {
 
   _getCircuitKey(instanceId, feed) {
     return `${instanceId}:${feed}`;
+  }
+
+  _isInstanceUnhealthy(instanceId) {
+    const state = this.instanceHealth.get(instanceId);
+    return state?.healthy === false;
+  }
+
+  async _pingInstancesHeartbeat() {
+    try {
+      const instances = await instanceService.getAllInstances({ is_active: true });
+      const now = Date.now();
+      for (const inst of instances) {
+        const state = this.instanceHealth.get(inst.id) || { healthy: true, lastPing: 0, nextPing: 0, notified: false };
+        const interval = state.healthy !== false ? 5 * 60 * 1000 : 10 * 1000;
+        if (now >= state.nextPing || now - state.lastPing >= interval) {
+          await this._maybePingInstance(inst);
+        }
+      }
+    } catch (error) {
+      log.warn('Health ping heartbeat failed', { error: error.message });
+    }
+  }
+
+  async _maybePingInstance(instance) {
+    const id = instance.id;
+    const state = this.instanceHealth.get(id) || { healthy: true, lastPing: 0, nextPing: 0, notified: false };
+    try {
+      await openalgoClient.ping(instance);
+      this._markInstanceHealthy(id);
+    } catch (error) {
+      this._markInstanceUnhealthy(id, error?.message);
+    }
+  }
+
+  _markInstanceHealthy(instanceId) {
+    this.instanceHealth.set(instanceId, {
+      healthy: true,
+      lastPing: Date.now(),
+      nextPing: Date.now() + 5 * 60 * 1000,
+      notified: false,
+    });
+  }
+
+  async _markInstanceUnhealthy(instanceId, reason = null) {
+    const prev = this.instanceHealth.get(instanceId) || {};
+    this.instanceHealth.set(instanceId, {
+      healthy: false,
+      lastPing: Date.now(),
+      nextPing: Date.now() + 10 * 1000,
+      notified: prev.notified || false,
+    });
+
+    if (this.openPositionInstances.has(instanceId) && !prev.notified) {
+      try {
+        await db.run(
+          `INSERT INTO notifications (title, body, severity) VALUES (?, ?, ?)`,
+          ['Instance unhealthy', `Instance ${instanceId} became unhealthy while positions are open.`, 'error']
+        );
+        this.instanceHealth.set(instanceId, {
+          healthy: false,
+          lastPing: Date.now(),
+          nextPing: Date.now() + 10 * 1000,
+          notified: true,
+        });
+      } catch (err) {
+        log.warn('Failed to notify unhealthy instance', { instanceId, error: err.message });
+      }
+    }
   }
 
   getCircuitState(instanceId, feed) {
@@ -965,29 +1055,37 @@ class MarketDataFeedService extends EventEmitter {
       return [];
     }
 
-    const now = Date.now();
     const supportsMulti = Boolean(instance.supports_multiquotes);
+    const now = Date.now();
 
-    if (supportsMulti && normalizedSymbols.length <= MULTI_QUOTE_SYMBOL_LIMIT) {
+    if (normalizedSymbols.length > 1) {
+      if (!supportsMulti) {
+        log.warn('Skipping multi-symbol quote fetch on instance without multiquotes support', { instance_id: instance.id });
+        return [];
+      }
       const cooldown = this.hasOpenPositions ? MULTI_QUOTE_COOLDOWN_ACTIVE_MS : MULTI_QUOTE_COOLDOWN_IDLE_MS;
       const lastMultiAt = this.multiQuoteTimestamps.get(instance.id) || 0;
-      if (now - lastMultiAt >= cooldown) {
-        try {
-          const multiQuotes = await openalgoClient.getMultiQuotes(instance, normalizedSymbols);
-          this.multiQuoteTimestamps.set(instance.id, now);
-          return multiQuotes;
-        } catch (error) {
-          log.warn('MultiQuotes fetch failed, falling back to single-symbol quotes', {
-            instance_id: instance.id,
-            error: error.message,
-          });
-        }
-      } else {
+      if (now - lastMultiAt < cooldown) {
         log.debug('Skipping MultiQuotes fetch due to cooldown', {
           instance_id: instance.id,
           elapsedMs: now - lastMultiAt,
           cooldownMs: cooldown,
         });
+        return [];
+      }
+      const multiQuotes = await openalgoClient.getMultiQuotes(instance, normalizedSymbols);
+      this.multiQuoteTimestamps.set(instance.id, now);
+      return multiQuotes;
+    }
+
+    // Single-symbol fetch; allowed path for order placement usage
+    if (supportsMulti) {
+      try {
+        const mq = await openalgoClient.getMultiQuotes(instance, normalizedSymbols);
+        this.multiQuoteTimestamps.set(instance.id, now);
+        return mq;
+      } catch (error) {
+        log.warn('Single-symbol multiquote failed, falling back to quote', { instance_id: instance.id, error: error.message });
       }
     }
 
@@ -1011,14 +1109,17 @@ class MarketDataFeedService extends EventEmitter {
     return result;
   }
 
-  _getStatefulTtlMs(feed) {
-    const activeTtl = 5000; // 5s when open positions exist
-    const idleTtl = 10000;  // 10s when no open positions
-
-    if (feed === 'positions' || feed === 'orderbook' || feed === 'tradebook') {
-      return this.hasOpenPositions ? activeTtl : idleTtl;
+  _getStatefulTtlMs(feed, instanceId = null) {
+    const hasOpenForInstance = instanceId ? this.openPositionInstances.has(instanceId) : this.hasOpenPositions;
+    if (feed === 'positions') {
+      return hasOpenForInstance ? 3000 : 10000;
     }
-
+    if (feed === 'orderbook') {
+      return hasOpenForInstance ? 10000 : Number.POSITIVE_INFINITY;
+    }
+    if (feed === 'tradebook') {
+      return hasOpenForInstance ? 5000 : Number.POSITIVE_INFINITY;
+    }
     return this.QUOTE_TTL_MS;
   }
 
@@ -1363,6 +1464,165 @@ class MarketDataFeedService extends EventEmitter {
     }
 
     return 0;
+  }
+
+  _updateOpenPositionState(instanceId, positions = []) {
+    const hasOpen = Array.isArray(positions) && positions.some((p) => this._getPositionNetQuantity(p) !== 0);
+    if (hasOpen) {
+      this.openPositionInstances.add(instanceId);
+    } else {
+      this.openPositionInstances.delete(instanceId);
+    }
+    this.hasOpenPositions = this.openPositionInstances.size > 0;
+  }
+
+  _hashPayload(payload) {
+    return createHash('sha256').update(payload || '').digest('hex');
+  }
+
+  async _persistQuoteSnapshot(instanceId, quotes = [], fetchedAt = Date.now()) {
+    try {
+      if (this.quoteSnapshotTableMissing) {
+        return;
+      }
+
+      const payload = JSON.stringify(quotes || []);
+      const hash = this._hashPayload(payload);
+      const last = this.quoteSnapshotHashes.get(instanceId);
+      if (last && last.hash === hash && last.fetchedAt === fetchedAt) {
+        return;
+      }
+
+      const exchangeCount = new Set(
+        (quotes || []).map((q) => (q.exchange || q.exch || '').toUpperCase()).filter(Boolean)
+      ).size;
+      const symbolCount = Array.isArray(quotes) ? quotes.length : 0;
+
+      await db.run(
+        `
+          INSERT INTO quote_snapshots (
+            instance_id, payload, hash, fetched_at, exchange_count, symbol_count, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(instance_id) DO UPDATE SET
+            payload=excluded.payload,
+            hash=excluded.hash,
+            fetched_at=excluded.fetched_at,
+            exchange_count=excluded.exchange_count,
+            symbol_count=excluded.symbol_count,
+            updated_at=CURRENT_TIMESTAMP
+        `,
+        [instanceId, payload, hash, fetchedAt, exchangeCount, symbolCount]
+      );
+
+      this.quoteSnapshotHashes.set(instanceId, { hash, fetchedAt });
+    } catch (error) {
+      if ((error?.message || '').includes('quote_snapshots')) {
+        this.quoteSnapshotTableMissing = true;
+      }
+      log.warn('Failed to persist quote snapshot', { instanceId, error: error.message });
+    }
+  }
+
+  async _hydrateQuoteSnapshotsFromDb() {
+    try {
+      if (this.quoteSnapshotTableMissing) {
+        return;
+      }
+      const rows = await db.all('SELECT instance_id, payload, fetched_at FROM quote_snapshots');
+      if (!rows?.length) {
+        return;
+      }
+
+      for (const row of rows) {
+        if (!row?.payload) continue;
+        try {
+          const parsed = JSON.parse(row.payload);
+          const data = Array.isArray(parsed) ? parsed : parsed?.data || [];
+          const fetchedAt = row.fetched_at ? Number(row.fetched_at) : Date.now();
+          this.setQuoteSnapshot(row.instance_id, data, { fetchedAt, source: 'l2' });
+          this.quoteSnapshotHashes.set(row.instance_id, {
+            hash: this._hashPayload(row.payload),
+            fetchedAt,
+          });
+        } catch (error) {
+          log.warn('Failed to parse quote snapshot payload', {
+            instance_id: row.instance_id,
+            error: error.message,
+          });
+        }
+      }
+
+      log.info('Quote snapshots hydrated from database', { count: rows.length });
+    } catch (error) {
+      if ((error?.message || '').includes('quote_snapshots')) {
+        this.quoteSnapshotTableMissing = true;
+      }
+      log.warn('Failed to hydrate quote snapshots', { error: error.message });
+    }
+  }
+
+  /**
+   * Lightweight cache telemetry for monitoring endpoints
+   * Returns freshness and circuit state per feed/instance without mutating state
+   */
+  getCacheStatus() {
+    const now = Date.now();
+    const feeds = [
+      { name: 'quotes', cache: this.quoteCache, ttlMs: this.QUOTE_TTL_MS },
+      { name: 'positions', cache: this.positionCache, ttlMs: this.POSITION_TTL_MS },
+      { name: 'funds', cache: this.fundsCache, ttlMs: this.FUNDS_TTL_MS },
+      { name: 'orderbook', cache: this.orderbookCache, ttlMs: this.ORDERBOOK_TTL_MS },
+      { name: 'tradebook', cache: this.tradebookCache, ttlMs: this.TRADEBOOK_TTL_MS },
+    ];
+
+    const entries = [];
+
+    for (const { name, cache, ttlMs } of feeds) {
+      for (const [instanceId, snapshot] of cache.entries()) {
+        const fetchedAt = snapshot?.fetchedAt || null;
+        const ageMs = fetchedAt ? now - fetchedAt : null;
+        const circuit = this.getCircuitState(instanceId, name);
+        entries.push({
+          instanceId,
+          feed: name,
+          count: Array.isArray(snapshot?.data) ? snapshot.data.length : null,
+          fetchedAt,
+          ageMs,
+          ttlMs,
+          stale: ageMs !== null && ttlMs ? ageMs > ttlMs : null,
+          circuitOpen: circuit.open,
+          circuitResumeInMs: circuit.resumeInMs,
+          circuitLastError: circuit.lastError || null,
+        });
+      }
+    }
+
+    // Ensure circuits without cache entries are still surfaced
+    for (const [key, state] of this.failureState.entries()) {
+      const [instanceId, feed] = key.split(':');
+      const alreadyRecorded = entries.some(
+        (e) => String(e.instanceId) === instanceId && e.feed === feed
+      );
+      if (alreadyRecorded) continue;
+      const resumeInMs = state.cooldownUntil ? Math.max(0, state.cooldownUntil - now) : null;
+      entries.push({
+        instanceId: Number.isNaN(Number(instanceId)) ? instanceId : Number(instanceId),
+        feed,
+        count: null,
+        fetchedAt: null,
+        ageMs: null,
+        ttlMs: null,
+        stale: null,
+        circuitOpen: resumeInMs !== null,
+        circuitResumeInMs: resumeInMs,
+        circuitLastError: state.lastErrorMessage || null,
+      });
+    }
+
+    return {
+      generatedAt: now,
+      entries,
+    };
   }
 }
 
