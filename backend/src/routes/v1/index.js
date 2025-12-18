@@ -57,6 +57,8 @@ router.get('/public-config', (req, res) => {
     data: {
       supabaseUrl: config.auth.supabaseUrl || '',
       supabaseAnonKey: config.auth.supabaseAnonKey || '',
+      wsGatewayEnabled: config.wsGateway?.enabled || false,
+      wsGatewayPath: config.wsGateway?.path || '/stream',
     },
   });
 });

@@ -54,6 +54,20 @@ class DashboardApp {
     this.lastSnapshotResyncAt = 0;
     this.isSnapshotResyncing = false;
     this.autoSnapshotResyncEnabled = this.loadSnapshotResyncPreference();
+    // WebSocket streaming (optional)
+    this.wsGatewayEnabled = false;
+    this.wsGatewayPath = '/stream';
+    this.wsTopics = ['quotes:update', 'positions:update', 'funds:update'];
+    this.useWsGateway = this.loadWsPreference();
+    this.ws = null;
+    this.wsLastSeq = 0;
+    this.wsReconnectDelay = 500;
+    this.wsReconnectTimer = null;
+    this.wsRefreshDashboard = Utils.debounce(() => this.renderDashboardView(), 1200);
+    this.wsRefreshPositions = Utils.debounce(() => this.renderPositionsView(), 1200);
+    this.wsRefreshWatchlists = Utils.debounce(() => this._throttledWatchlistRefresh({ showLoader: false }), 800);
+    // Theme (light-only)
+    this.theme = 'light';
     this.apiPlaygroundPresets = [
       // Root/health
       { label: 'GET /api/v1/health', method: 'GET', path: '/api/v1/health', headers: {}, description: 'Basic health probe for the service.' },
@@ -504,12 +518,22 @@ class DashboardApp {
    */
   async init() {
     try {
-      this.loadSidebarState();
-      this.applySidebarState();
+    this.loadSidebarState();
+    this.applySidebarState();
+    this.applyTheme();
       this.quickOrder = window.quickOrder || null;
 
       // Load current user
       await this.loadCurrentUser();
+      await this.loadPublicConfig();
+
+      if (this.useWsGateway) {
+        if (this.wsGatewayEnabled) {
+          this.startWsStream();
+        } else {
+          Utils.showToast('Live streaming disabled on server; using polling.', 'info');
+        }
+      }
 
       // Setup navigation and route listeners
       this.setupNavigation();
@@ -534,6 +558,41 @@ class DashboardApp {
   loadSidebarState() {
     const stored = localStorage.getItem('sidebarCollapsed');
     this.isSidebarCollapsed = stored === 'true';
+  }
+
+  applyTheme() {
+    const theme = 'light';
+    this.theme = theme;
+    document.documentElement.setAttribute('data-theme', theme);
+    this.updateThemeButtonUI();
+  }
+
+  toggleTheme() {
+    this.theme = 'light';
+    this.applyTheme();
+  }
+
+  updateThemeButtonUI() {
+    const btn = document.getElementById('theme-toggle-btn');
+    if (!btn) return;
+    btn.textContent = `Theme: light`;
+  }
+
+  loadWsPreference() {
+    try {
+      const stored = localStorage.getItem('useWsGateway');
+      return stored === 'true';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  saveWsPreference(enabled) {
+    try {
+      localStorage.setItem('useWsGateway', enabled ? 'true' : 'false');
+    } catch (_) {
+      // ignore
+    }
   }
 
   loadSnapshotResyncPreference() {
@@ -674,6 +733,17 @@ class DashboardApp {
     }
   }
 
+  async loadPublicConfig() {
+    try {
+      const res = await api.getPublicConfig();
+      const cfg = res?.data || {};
+      this.wsGatewayEnabled = Boolean(cfg.wsGatewayEnabled);
+      this.wsGatewayPath = cfg.wsGatewayPath || '/stream';
+    } catch (err) {
+      this.wsGatewayEnabled = false;
+    }
+  }
+
   isAdmin() {
     return (this.currentUser?.role || '').toUpperCase() === 'ADMIN' || this.currentUser?.is_admin === true;
   }
@@ -684,6 +754,134 @@ class DashboardApp {
     adminOnly.forEach((el) => {
       el.style.display = show ? '' : 'none';
     });
+  }
+
+  startWsStream() {
+    if (!this.wsGatewayEnabled) return;
+    this.useWsGateway = true;
+    this.saveWsPreference(true);
+    this.wsReconnectDelay = 500;
+    if (!this.ws) {
+      this.connectWsStream();
+    }
+  }
+
+  stopWsStream(reason = '') {
+    this.useWsGateway = false;
+    this.saveWsPreference(false);
+    if (this.wsReconnectTimer) {
+      clearTimeout(this.wsReconnectTimer);
+      this.wsReconnectTimer = null;
+    }
+    if (this.ws) {
+      try { this.ws.close(); } catch (_) {}
+      this.ws = null;
+    }
+    if (reason === 'user') {
+      Utils.showToast('Live streaming turned off. Using polling only.', 'info');
+    }
+  }
+
+  scheduleWsReconnect() {
+    if (!this.useWsGateway || !this.wsGatewayEnabled) return;
+    const delay = Math.min(this.wsReconnectDelay, 8000);
+    this.wsReconnectDelay = Math.min(delay * 2, 8000);
+    this.wsReconnectTimer = setTimeout(() => this.connectWsStream(), delay);
+  }
+
+  connectWsStream() {
+    if (!this.useWsGateway || !this.wsGatewayEnabled) return;
+    if (this.ws) return;
+    try {
+      const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+      const url = `${protocol}://${window.location.host}${this.wsGatewayPath}?topics=${this.wsTopics.join(',')}&last_seq=${this.wsLastSeq || 0}`;
+      const ws = new WebSocket(url);
+      this.ws = ws;
+
+      ws.onopen = () => {
+        this.wsReconnectDelay = 500;
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          this.handleWsMessage(message);
+        } catch (err) {
+          console.warn('WS message parse failed', err);
+        }
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+
+      ws.onclose = () => {
+        this.ws = null;
+        this.scheduleWsReconnect();
+      };
+    } catch (err) {
+      console.warn('WS connect failed', err);
+      this.scheduleWsReconnect();
+    }
+  }
+
+  handleWsMessage(msg) {
+    if (!msg) return;
+    if (typeof msg.seq === 'number') {
+      if (this.wsLastSeq > 0 && msg.seq > this.wsLastSeq + 1) {
+        this.triggerSnapshotResync();
+      }
+      this.wsLastSeq = Math.max(this.wsLastSeq, msg.seq);
+    }
+
+    switch (msg.topic) {
+      case 'quotes:update': {
+        if (this.currentView === 'watchlists') {
+          this.wsRefreshWatchlists();
+        }
+        break;
+      }
+      case 'positions:update': {
+        if (this.currentView === 'positions') {
+          this.wsRefreshPositions();
+        }
+        if (this.currentView === 'dashboard') {
+          this.wsRefreshDashboard();
+        }
+        break;
+      }
+      case 'funds:update': {
+        if (this.currentView === 'dashboard') {
+          this.wsRefreshDashboard();
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  toggleStreamPreference() {
+    if (this.useWsGateway) {
+      this.stopWsStream('user');
+    } else {
+      this.useWsGateway = true;
+      this.saveWsPreference(true);
+      if (this.wsGatewayEnabled) {
+        this.startWsStream();
+        Utils.showToast('Live streaming enabled (quotes/positions/funds)', 'success');
+      } else {
+        Utils.showToast('Server streaming is disabled. Continuing with polling.', 'warning');
+      }
+    }
+
+    if (this.currentView === 'settings') {
+      settings.renderSettingsView();
+    }
+  }
+
+  getStreamPreference() {
+    return this.useWsGateway;
   }
 
   /**
@@ -865,6 +1063,7 @@ class DashboardApp {
     // Show loading
     const contentArea = document.getElementById('content-area');
     Utils.showLoading(contentArea);
+    this.updateThemeButtonUI();
 
     // Load view content
     try {
@@ -1618,11 +1817,22 @@ class DashboardApp {
     return html;
   }
 
+  isBroadcastWatchlist(watchlist) {
+    if (!watchlist) return false;
+    const type = (watchlist.type || '').toLowerCase();
+    return Boolean(watchlist.is_broadcast || type === 'broadcast');
+  }
+
   /**
    * Render individual watchlist card with compact layout
    */
   async renderWatchlistCard(wl, isExpanded) {
     const statusColor = wl.is_active ? 'success' : 'neutral';
+    const isBroadcast = this.isBroadcastWatchlist(wl);
+    const typeBadge = isBroadcast ? '<span class="watchlist-card-compact__badge info">Broadcast</span>' : '';
+    const metaText = isBroadcast
+      ? `${wl.instance_count || 0} instances • TradingView webhook`
+      : `${wl.symbol_count || 0} symbols • ${wl.instance_count || 0} instances`;
 
     return `
       <article class="watchlist-card-compact" data-watchlist-id="${wl.id}">
@@ -1644,18 +1854,21 @@ class DashboardApp {
               <span class="watchlist-card-compact__badge ${statusColor}">
                 ${wl.is_active ? 'Active' : 'Paused'}
               </span>
+              ${typeBadge}
               <span class="watchlist-card-compact__meta">
-                ${wl.symbol_count || 0} symbols • ${wl.instance_count || 0} instances
+                ${metaText}
               </span>
             </div>
             ${wl.description ? `<p class="watchlist-card-compact__desc">${Utils.escapeHTML(wl.description)}</p>` : ''}
           </div>
           <div class="watchlist-card-compact__actions">
-            <button class="btn-icon-compact" onclick="app.showAddSymbolModal(${wl.id})" title="Add Symbol">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-              </svg>
-            </button>
+            ${isBroadcast ? '' : `
+              <button class="btn-icon-compact" onclick="app.showAddSymbolModal(${wl.id})" title="Add Symbol">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                </svg>
+              </button>
+            `}
             <button class="btn-icon-compact" onclick="app.showEditWatchlistModal(${wl.id})" title="Edit">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -1787,7 +2000,9 @@ class DashboardApp {
       }
 
       // Start polling after DOM is ready
-      this.startWatchlistPolling(watchlistId);
+      if (!this.isBroadcastWatchlist((this.watchlists || []).find((w) => w.id === watchlistId))) {
+        this.startWatchlistPolling(watchlistId);
+      }
     }
   }
 
@@ -1796,6 +2011,11 @@ class DashboardApp {
    */
   async renderWatchlistSymbols(watchlistId) {
     try {
+      const watchlist = (this.watchlists || []).find((w) => w.id === watchlistId);
+      if (this.isBroadcastWatchlist(watchlist)) {
+        return await this.renderBroadcastWatchlist(watchlistId);
+      }
+
       const response = await api.getWatchlistSymbols(watchlistId);
       const symbols = response.data;
 
@@ -1903,6 +2123,86 @@ class DashboardApp {
     }
   }
 
+  async renderBroadcastWatchlist(watchlistId) {
+    const { data: watchlist } = await api.getWatchlistById(watchlistId);
+    const instances = watchlist.instances || [];
+    const webhookUrl = watchlist.webhook_url || `${window.location.origin.replace(/\/$/, '')}/webhook/tradingview/broadcast/${watchlist.webhook_slug || ''}`;
+
+    const instanceList = instances.length
+      ? `
+        <ul class="list">
+          ${instances.map((inst) => `
+            <li class="list-item">
+              <div>
+                <div class="font-medium">${Utils.escapeHTML(inst.name || inst.host_url)}</div>
+                <div class="text-xs text-neutral-500">${Utils.escapeHTML(inst.host_url)}</div>
+              </div>
+              <span class="badge ${inst.is_active ? 'badge-success' : 'badge-neutral'}">
+                ${inst.is_active ? 'Active' : 'Paused'}
+              </span>
+            </li>
+          `).join('')}
+        </ul>
+      `
+      : '<p class="text-neutral-600 text-sm">No instances assigned yet.</p>';
+
+    const samplePayload = `{
+  "strategy": "tv-broadcast",
+  "exchange": "NFO",
+  "symbol": "NIFTY23DEC2525900CE",
+  "action": "BUY",
+  "position_size": 1,
+  "quantity": 1
+}`;
+
+    return `
+      <div class="card p-4 space-y-4">
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <p class="text-sm text-neutral-500">TradingView Broadcast Webhook</p>
+            <h4 class="text-lg font-semibold">Fan-out to ${instances.length} instance${instances.length === 1 ? '' : 's'}</h4>
+          </div>
+          <span class="badge badge-info">Broadcast</span>
+        </div>
+
+        <div class="border border-base-200 rounded-lg p-3 space-y-2 bg-base-100">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p class="text-xs text-neutral-500">Webhook URL</p>
+              <code class="code-inline">${Utils.escapeHTML(webhookUrl)}</code>
+            </div>
+            <button class="btn btn-neutral btn-sm" onclick="Utils.copyToClipboard('${webhookUrl}')">Copy URL</button>
+          </div>
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p class="text-xs text-neutral-500">Watchlist Slug</p>
+              <code class="code-inline">${Utils.escapeHTML(watchlist.webhook_slug || 'not-set')}</code>
+            </div>
+            ${watchlist.webhook_slug ? `<button class="btn btn-neutral btn-sm" onclick="Utils.copyToClipboard('${watchlist.webhook_slug}')">Copy Slug</button>` : ''}
+          </div>
+          <p class="text-xs text-neutral-500">Send TradingView alerts to this URL with header <code>X-Webhook-Token</code>.</p>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-4">
+          <div class="border border-base-200 rounded-lg p-3 space-y-2 bg-base-100">
+            <div class="flex items-center justify-between">
+              <h5 class="font-semibold">Assigned Instances</h5>
+              <button class="btn btn-outline btn-sm" onclick="app.manageWatchlistInstances(${watchlistId})">Manage</button>
+            </div>
+            ${instanceList}
+          </div>
+          <div class="border border-base-200 rounded-lg p-3 space-y-2 bg-base-100">
+            <div class="flex items-center justify-between">
+              <h5 class="font-semibold">Sample Payload</h5>
+              <button class="btn btn-neutral btn-sm" onclick="Utils.copyToClipboard('${samplePayload.replace(/\n/g, '\\n').replace(/\"/g, '\\\"')}')">Copy JSON</button>
+            </div>
+            <pre class="code-block" style="white-space: pre-wrap;">${samplePayload}</pre>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   /**
    * Get badge class for symbol type with pastel highlights
    */
@@ -1979,6 +2279,8 @@ class DashboardApp {
    * Start polling quotes for a watchlist
    */
   async startWatchlistPolling(watchlistId) {
+    const watchlist = (this.watchlists || []).find((w) => w.id === watchlistId);
+    if (this.isBroadcastWatchlist(watchlist)) return;
     if (this.isPaused) return;
     // Stop existing poller if any
     this.stopWatchlistPolling(watchlistId);
@@ -3227,6 +3529,17 @@ class DashboardApp {
             </div>
 
             <div class="form-group">
+              <label class="form-label">Broker WebSocket Quotes</label>
+              <label class="inline-flex items-center gap-2">
+                <input type="checkbox" name="use_ws_quotes" class="form-checkbox">
+                <span>Use broker WebSocket for quotes/LTP (only if this instance supports it)</span>
+              </label>
+              <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
+                Only enable if the broker/OpenAlgo instance provides WS quotes; otherwise leave off to stay on REST polling.
+              </small>
+            </div>
+
+            <div class="form-group">
               <label class="form-label">MultiQuotes (optional)</label>
               <label class="inline-flex items-center gap-2">
                 <input type="checkbox" name="supports_multiquotes" class="form-checkbox">
@@ -3300,6 +3613,7 @@ class DashboardApp {
     const data = Object.fromEntries(formData.entries());
 
     data.market_data_enabled = form.querySelector('input[name="market_data_enabled"]').checked;
+    data.use_ws_quotes = form.querySelector('input[name="use_ws_quotes"]').checked;
     data.supports_multiquotes = form.querySelector('input[name="supports_multiquotes"]').checked;
     data.supports_option_chain = form.querySelector('input[name="supports_option_chain"]').checked;
 
@@ -3458,6 +3772,20 @@ class DashboardApp {
             </div>
 
             <div class="form-group">
+              <label class="form-label">Type</label>
+              <div class="flex flex-col gap-2">
+                <label class="form-radio">
+                  <input type="radio" name="type" value="standard" checked>
+                  <span>Standard (symbols + quick orders)</span>
+                </label>
+                <label class="form-radio">
+                  <input type="radio" name="type" value="broadcast">
+                  <span>Broadcast (TradingView webhook fan-out; no symbols)</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="form-group">
               <label class="form-label">Description</label>
               <textarea name="description" class="form-input" rows="3"></textarea>
             </div>
@@ -3484,6 +3812,7 @@ class DashboardApp {
     const form = document.getElementById('add-watchlist-form');
     const formData = new FormData(form);
     const data = Object.fromEntries(formData.entries());
+    data.type = data.type || 'standard';
 
     try {
       await api.createWatchlist(data);
@@ -3664,6 +3993,12 @@ class DashboardApp {
    * Show add symbol modal with search
    */
   async showAddSymbolModal(watchlistId) {
+    const watchlist = (this.watchlists || []).find((w) => w.id === watchlistId);
+    if (this.isBroadcastWatchlist(watchlist)) {
+      Utils.showToast('Broadcast watchlists do not support symbols. Assign instances and use the webhook.', 'warning');
+      return;
+    }
+
     this.currentWatchlistId = watchlistId;
 
     const modal = document.createElement('div');
@@ -4799,6 +5134,7 @@ class DashboardApp {
     const confirmed = await Utils.confirm('Are you sure you want to logout?');
 
     if (confirmed) {
+      this.stopWsStream();
       await api.logout();
       window.location.href = '/login.html';
     }
@@ -4871,6 +5207,18 @@ class DashboardApp {
                 </label>
                 <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
                   Enabled instances are pooled and load-balanced for quotes/LTP/depth.
+                </small>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">Broker WebSocket Quotes</label>
+                <label class="inline-flex items-center gap-2">
+                  <input type="checkbox" name="use_ws_quotes" class="form-checkbox"
+                         ${instance.use_ws_quotes ? 'checked' : ''}>
+                  <span>Use broker WebSocket for quotes/LTP (only if supported)</span>
+                </label>
+                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
+                  Turn on only if the broker/OpenAlgo instance exposes WS quotes. Otherwise keep disabled.
                 </small>
               </div>
 
@@ -4977,6 +5325,7 @@ class DashboardApp {
     delete data.broker;
 
     data.market_data_enabled = form.querySelector('input[name="market_data_enabled"]').checked;
+    data.use_ws_quotes = form.querySelector('input[name="use_ws_quotes"]').checked;
     data.supports_multiquotes = form.querySelector('input[name="supports_multiquotes"]').checked;
     data.supports_option_chain = form.querySelector('input[name="supports_option_chain"]').checked;
 
@@ -5002,6 +5351,8 @@ class DashboardApp {
       // Fetch watchlist data
       const response = await api.getWatchlistById(id);
       const watchlist = response.data;
+      const isBroadcast = this.isBroadcastWatchlist(watchlist);
+      const webhookUrl = watchlist.webhook_url || `${window.location.origin.replace(/\/$/, '')}/webhook/tradingview/broadcast/${watchlist.webhook_slug || ''}`;
 
       const modal = document.createElement('div');
       modal.className = 'modal-overlay';
@@ -5021,6 +5372,20 @@ class DashboardApp {
               </div>
 
               <div class="form-group">
+                <label class="form-label">Type</label>
+                <div class="flex flex-col gap-2">
+                  <label class="form-radio">
+                    <input type="radio" name="type" value="standard" ${isBroadcast ? '' : 'checked'}>
+                    <span>Standard (symbols + quick orders)</span>
+                  </label>
+                  <label class="form-radio">
+                    <input type="radio" name="type" value="broadcast" ${isBroadcast ? 'checked' : ''}>
+                    <span>Broadcast (TradingView webhook fan-out)</span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="form-group">
                 <label class="form-label">Description</label>
                 <textarea name="description" class="form-input" rows="3">${Utils.escapeHTML(watchlist.description || '')}</textarea>
               </div>
@@ -5035,6 +5400,29 @@ class DashboardApp {
                   Inactive watchlists won't be used for trading
                 </small>
               </div>
+
+              ${isBroadcast ? `
+                <div class="form-group">
+                  <label class="form-label">Webhook</label>
+                  <div class="border border-base-200 rounded-lg p-3 space-y-2 bg-base-100">
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p class="text-xs text-neutral-500">Slug</p>
+                        <code class="code-inline">${Utils.escapeHTML(watchlist.webhook_slug || 'not-set')}</code>
+                      </div>
+                      ${watchlist.webhook_slug ? `<button class="btn btn-neutral btn-sm" type="button" onclick="Utils.copyToClipboard('${watchlist.webhook_slug}')">Copy</button>` : ''}
+                    </div>
+                    <div class="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p class="text-xs text-neutral-500">Webhook URL</p>
+                        <code class="code-inline">${Utils.escapeHTML(webhookUrl)}</code>
+                      </div>
+                      <button class="btn btn-neutral btn-sm" type="button" onclick="Utils.copyToClipboard('${webhookUrl}')">Copy URL</button>
+                    </div>
+                    <p class="text-xs text-neutral-500">Send TradingView alerts with header <code>X-Webhook-Token</code>. Targets are the instances assigned to this watchlist.</p>
+                  </div>
+                </div>
+              ` : ''}
             </form>
           </div>
           <div class="modal-footer">
@@ -5075,6 +5463,7 @@ class DashboardApp {
 
     // Convert checkbox to boolean
     data.is_active = form.querySelector('input[name="is_active"]').checked;
+    data.type = form.querySelector('input[name="type"]:checked')?.value || 'standard';
 
     try {
       await api.updateWatchlist(watchlistId, data);
@@ -5103,6 +5492,8 @@ class DashboardApp {
 
       const watchlist = watchlistResponse.data;
       const symbols = symbolsResponse.data || [];
+      const isBroadcast = this.isBroadcastWatchlist(watchlist);
+      const webhookUrl = watchlist.webhook_url || `${window.location.origin.replace(/\/$/, '')}/webhook/tradingview/broadcast/${watchlist.webhook_slug || ''}`;
 
       const modal = document.createElement('div');
       modal.className = 'modal-overlay';
@@ -5125,8 +5516,8 @@ class DashboardApp {
                   ${Utils.getStatusBadge(watchlist.is_active ? 'active' : 'inactive')}
                 </div>
                 <div>
-                  <span class="text-neutral-600">Total Symbols:</span>
-                  <strong>${symbols.length}</strong>
+                  <span class="text-neutral-600">Type:</span>
+                  <strong>${isBroadcast ? 'Broadcast' : 'Standard'}</strong>
                 </div>
                 <div>
                   <span class="text-neutral-600">Created:</span>
@@ -5136,47 +5527,97 @@ class DashboardApp {
                   <span class="text-neutral-600">Last Updated:</span>
                   ${Utils.formatRelativeTime(watchlist.updated_at)}
                 </div>
+                ${isBroadcast ? `
+                  <div>
+                    <span class="text-neutral-600">Instances:</span>
+                    <strong>${(watchlist.instances || []).length}</strong>
+                  </div>
+                  <div>
+                    <span class="text-neutral-600">Slug:</span>
+                    <code class="code-inline">${Utils.escapeHTML(watchlist.webhook_slug || 'not-set')}</code>
+                  </div>
+                ` : `
+                  <div>
+                    <span class="text-neutral-600">Total Symbols:</span>
+                    <strong>${symbols.length}</strong>
+                  </div>
+                  <div></div>
+                `}
               </div>
             </div>
 
-            <div class="mb-4">
-              <h4 class="font-semibold mb-2">Symbols (${symbols.length})</h4>
-              ${symbols.length === 0 ? `
-                <p class="text-center text-neutral-600" style="padding: 2rem;">
-                  No symbols in this watchlist
-                </p>
-              ` : `
-                <div class="table-container" style="max-height: 400px; overflow-y: auto;">
-                  <table class="table">
-                    <thead>
-                      <tr>
-                        <th>Exchange</th>
-                        <th>Symbol</th>
-                        <th>Quantity Type</th>
-                        <th>Quantity</th>
-                        <th>Product</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${symbols.map(s => `
-                        <tr>
-                          <td><span class="badge badge-neutral">${Utils.escapeHTML(s.exchange)}</span></td>
-                          <td class="font-medium">${Utils.escapeHTML(s.symbol)}</td>
-                          <td>${Utils.escapeHTML(s.qty_type || 'FIXED')}</td>
-                          <td>${s.qty_value || 1}</td>
-                          <td><span class="badge badge-info">${Utils.escapeHTML(s.product_type || 'MIS')}</span></td>
-                          <td>${s.is_enabled ?
-                            '<span class="badge badge-success">Enabled</span>' :
-                            '<span class="badge badge-neutral">Disabled</span>'
-                          }</td>
-                        </tr>
-                      `).join('')}
-                    </tbody>
-                  </table>
+            ${isBroadcast ? `
+              <div class="mb-4">
+                <h4 class="font-semibold mb-2">TradingView Webhook</h4>
+                <div class="broadcast-card compact">
+                  <div class="broadcast-card__row">
+                    <div>
+                      <p class="text-xs text-neutral-500">Webhook URL</p>
+                      <code class="code-inline">${Utils.escapeHTML(webhookUrl)}</code>
+                    </div>
+                    <button class="btn btn-neutral btn-sm" type="button" onclick="Utils.copyToClipboard('${webhookUrl}')">Copy URL</button>
+                  </div>
+                  <p class="text-xs text-neutral-500">Send TradingView alerts with header <code>X-Webhook-Token</code>. Targets are the active instances assigned to this watchlist.</p>
                 </div>
-              `}
-            </div>
+              </div>
+              <div class="mb-4">
+                <h4 class="font-semibold mb-2">Assigned Instances (${(watchlist.instances || []).length})</h4>
+                ${(watchlist.instances || []).length === 0 ? '<p class="text-neutral-600 text-sm">No instances assigned.</p>' : `
+                  <ul class="list">
+                    ${(watchlist.instances || []).map(inst => `
+                      <li class="list-item">
+                        <div>
+                          <div class="font-medium">${Utils.escapeHTML(inst.name || inst.host_url)}</div>
+                          <div class="text-xs text-neutral-500">${Utils.escapeHTML(inst.host_url)}</div>
+                        </div>
+                        <span class="badge ${inst.is_active ? 'badge-success' : 'badge-neutral'}">
+                          ${inst.is_active ? 'Active' : 'Paused'}
+                        </span>
+                      </li>
+                    `).join('')}
+                  </ul>
+                `}
+              </div>
+            ` : `
+              <div class="mb-4">
+                <h4 class="font-semibold mb-2">Symbols (${symbols.length})</h4>
+                ${symbols.length === 0 ? `
+                  <p class="text-center text-neutral-600" style="padding: 2rem;">
+                    No symbols in this watchlist
+                  </p>
+                ` : `
+                  <div class="table-container" style="max-height: 400px; overflow-y: auto;">
+                    <table class="table">
+                      <thead>
+                        <tr>
+                          <th>Exchange</th>
+                          <th>Symbol</th>
+                          <th>Quantity Type</th>
+                          <th>Quantity</th>
+                          <th>Product</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${symbols.map(s => `
+                          <tr>
+                            <td><span class="badge badge-neutral">${Utils.escapeHTML(s.exchange)}</span></td>
+                            <td class="font-medium">${Utils.escapeHTML(s.symbol)}</td>
+                            <td>${Utils.escapeHTML(s.qty_type || 'FIXED')}</td>
+                            <td>${s.qty_value || 1}</td>
+                            <td><span class="badge badge-info">${Utils.escapeHTML(s.product_type || 'MIS')}</span></td>
+                            <td>${s.is_enabled ?
+                              '<span class="badge badge-success">Enabled</span>' :
+                              '<span class="badge badge-neutral">Disabled</span>'
+                            }</td>
+                          </tr>
+                        `).join('')}
+                      </tbody>
+                    </table>
+                  </div>
+                `}
+              </div>
+            `}
           </div>
           <div class="modal-footer">
             <button class="btn btn-neutral btn-outline" onclick="this.closest('.modal-overlay').remove()">

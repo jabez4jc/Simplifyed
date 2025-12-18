@@ -12,6 +12,7 @@ import orderService from './order.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import { parseFloatSafe } from '../utils/sanitizers.js';
+import { ExternalAPIError } from '../core/errors.js';
 
 class PollingService {
   constructor() {
@@ -213,7 +214,8 @@ class PollingService {
       return updated;
     } catch (error) {
       log.error('Failed to refresh instance', error, { instance_id: instanceId });
-      throw error;
+      const message = `Refresh failed for instance ${instanceId}: ${error.message || 'OpenAlgo call failed. Verify host URL and API key.'}`;
+      throw new ExternalAPIError(message);
     }
   }
 

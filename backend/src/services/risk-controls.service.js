@@ -4,10 +4,12 @@
  */
 
 import { log } from '../core/logger.js';
+import db from '../core/database.js';
 
 class RiskControlsService {
   constructor() {
     this.trailingState = new Map();
+    this.hydrated = false;
   }
 
   evaluateExit({ key, side, currentPrice, entryPrice, configEntry, symbol }) {
@@ -58,11 +60,13 @@ class RiskControlsService {
   clearTrailingState(key) {
     if (key) {
       this.trailingState.delete(key);
+      this._deletePersistedState(key).catch(() => {});
     }
   }
 
   reset() {
     this.trailingState.clear();
+    this.hydrated = false;
   }
 
   _evaluateTrailing(key, side, currentPrice, entryPrice, trailingPoints, activationPoints) {
@@ -105,6 +109,91 @@ class RiskControlsService {
     const trigger = state.lowest + trailingPoints;
     this.trailingState.set(key, state);
     return currentPrice >= trigger;
+  }
+
+  async hydrateFromDb() {
+    if (this.hydrated) return;
+    try {
+      const rows = await db.all('SELECT instance_id, exchange, symbol, side, highest, lowest, activated, last_seen_ts, entry_price, entry_source FROM trailing_state');
+      for (const row of rows) {
+        const key = this._key(row.instance_id, row.exchange, row.symbol, row.side);
+        this.trailingState.set(key, {
+          highest: row.highest ?? null,
+          lowest: row.lowest ?? null,
+          activated: Boolean(row.activated),
+          lastSeen: row.last_seen_ts ?? Date.now(),
+          entryPrice: row.entry_price ?? null,
+          entrySource: row.entry_source ?? null,
+        });
+      }
+      this.hydrated = true;
+      log.info('Hydrated trailing state from DB', { count: rows.length });
+    } catch (err) {
+      log.warn('Failed to hydrate trailing state', { error: err.message });
+    }
+  }
+
+  async persistState(key, state) {
+    try {
+      const parsed = this._parseKey(key);
+      if (!parsed) return;
+      const { instanceId, exchange, symbol, side } = parsed;
+      const now = Date.now();
+      await db.run(
+        `
+          INSERT INTO trailing_state (instance_id, exchange, symbol, side, highest, lowest, activated, last_seen_ts, entry_price, entry_source, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(instance_id, exchange, symbol, side) DO UPDATE SET
+            highest=excluded.highest,
+            lowest=excluded.lowest,
+            activated=excluded.activated,
+            last_seen_ts=excluded.last_seen_ts,
+            entry_price=excluded.entry_price,
+            entry_source=excluded.entry_source,
+            updated_at=excluded.updated_at
+        `,
+        [
+          instanceId,
+          exchange,
+          symbol,
+          side,
+          state.highest ?? null,
+          state.lowest ?? null,
+          state.activated ? 1 : 0,
+          state.lastSeen ?? now,
+          state.entryPrice ?? null,
+          state.entrySource ?? null,
+          now,
+        ]
+      );
+    } catch (err) {
+      log.warn('Failed to persist trailing state', { key, error: err.message });
+    }
+  }
+
+  async _deletePersistedState(key) {
+    const parsed = this._parseKey(key);
+    if (!parsed) return;
+    const { instanceId, exchange, symbol, side } = parsed;
+    try {
+      await db.run(
+        'DELETE FROM trailing_state WHERE instance_id = ? AND exchange = ? AND symbol = ? AND side = ?',
+        [instanceId, exchange, symbol, side]
+      );
+    } catch (err) {
+      log.warn('Failed to delete trailing state', { key, error: err.message });
+    }
+  }
+
+  _key(instanceId, exchange, symbol, side) {
+    return `${instanceId}|${(exchange || '').toUpperCase()}|${(symbol || '').toUpperCase()}|${(side || '').toUpperCase()}`;
+  }
+
+  _parseKey(key) {
+    const parts = String(key).split('|');
+    if (parts.length !== 4) return null;
+    const [instanceId, exchange, symbol, side] = parts;
+    return { instanceId, exchange, symbol, side };
   }
 
   _getThresholds(entry, mode) {

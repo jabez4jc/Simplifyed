@@ -86,6 +86,10 @@ class APIClient {
     }
   }
 
+  async getPublicConfig() {
+    return this.request('/public-config');
+  }
+
   // Instance APIs
   async getInstances(filters = {}) {
     const params = new URLSearchParams(filters);

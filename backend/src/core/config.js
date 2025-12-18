@@ -20,6 +20,18 @@ let settingsCache = null;
 let cacheTimestamp = 0;
 const CACHE_DURATION = 5000; // 5 seconds cache
 
+function parseTargetsConfig(rawValue) {
+  if (!rawValue) return [];
+  try {
+    const parsed = typeof rawValue === 'string' ? JSON.parse(rawValue) : rawValue;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((t) => t && typeof t === 'object');
+  } catch (err) {
+    log.warn('Invalid OPENALGO_TARGETS JSON, ignoring', { error: err.message });
+    return [];
+  }
+}
+
 /**
  * Get setting from database or environment variable
  * Priority: Database settings > Environment variables > Default value
@@ -202,6 +214,11 @@ class Config {
       marketDataInterval: getEnvInt('MARKET_DATA_POLL_INTERVAL_MS', 5000),
     };
 
+    this.wsGateway = {
+      enabled: getEnvBool('WS_GATEWAY_ENABLED', false),
+      path: getEnv('WS_GATEWAY_PATH', '/stream'),
+    };
+
     this.autoExit = {
       monitorIntervalMs: getEnvInt('AUTO_EXIT_MONITOR_INTERVAL_MS', 5000),
       pendingExitCooldownMs: getEnvInt('AUTO_EXIT_PENDING_COOLDOWN_MS', 30000),
@@ -238,6 +255,18 @@ class Config {
       windowMs: getEnvInt('RATE_LIMIT_WINDOW_MS', 60000),
       maxRequests: getEnvInt('RATE_LIMIT_MAX_REQUESTS', 100),
     };
+
+    this.webhooks = {
+      tradingviewBroadcast: {
+        token: getEnv('WEBHOOK_TOKEN', ''),
+        rawTargets: getEnv('OPENALGO_TARGETS', '[]'),
+        timeoutMs: getEnvInt('TRADINGVIEW_BROADCAST_TIMEOUT_MS', 3000),
+        retries: getEnvInt('TRADINGVIEW_BROADCAST_RETRIES', 2),
+        retryDelayMs: getEnvInt('TRADINGVIEW_BROADCAST_RETRY_DELAY_MS', 250),
+        defaultRps: getEnvInt('TRADINGVIEW_BROADCAST_DEFAULT_RPS', 2),
+      },
+    };
+    this.webhooks.tradingviewBroadcast.targets = parseTargetsConfig(this.webhooks.tradingviewBroadcast.rawTargets);
   }
 
   /**
@@ -249,30 +278,30 @@ class Config {
       const dbSettings = await settingsService.getAllSettings();
 
       // Apply database settings with fallback to current values
-      this.env = getSetting('server.node_env', this.env);
+      this.env = await getSetting('server.node_env', this.env);
       this.isDev = this.env === 'development';
       this.isProd = this.env === 'production';
       this.isTest = this.env === 'test';
 
       this.port = await getSettingInt('server.port', this.port);
-      this.baseUrl = getSetting('server.node_env', this.baseUrl);
+      this.baseUrl = await getSetting('server.base_url', this.baseUrl);
 
-      this.database.path = getSetting('database.path', this.database.path);
-      this.session.secret = getSetting('session.secret', this.session.secret);
+      this.database.path = await getSetting('database.path', this.database.path);
+      this.session.secret = await getSetting('session.secret', this.session.secret);
       this.session.maxAge = await getSettingInt('session.max_age_ms', this.session.maxAge);
 
-      this.google.clientId = getSetting('oauth.google.client_id', this.google.clientId);
-      this.google.clientSecret = getSetting('oauth.google.client_secret', this.google.clientSecret);
-      this.google.callbackUrl = getSetting('oauth.google.callback_url', this.google.callbackUrl);
+      this.google.clientId = await getSetting('oauth.google.client_id', this.google.clientId);
+      this.google.clientSecret = await getSetting('oauth.google.client_secret', this.google.clientSecret);
+      this.google.callbackUrl = await getSetting('oauth.google.callback_url', this.google.callbackUrl);
 
       this.auth.googleClientId = this.google.clientId;
       this.auth.googleClientSecret = this.google.clientSecret;
 
-      this.cors.origin = getSetting('cors.origin', this.cors.origin);
+      this.cors.origin = await getSetting('cors.origin', this.cors.origin);
       this.cors.credentials = await getSettingBool('cors.credentials', this.cors.credentials);
 
       this.testMode.enabled = await getSettingBool('test_mode.enabled', this.testMode.enabled);
-      this.testMode.userEmail = getSetting('test_mode.user_email', this.testMode.userEmail);
+      this.testMode.userEmail = await getSetting('test_mode.user_email', this.testMode.userEmail);
 
       this.polling.instanceInterval = await getSettingInt('polling.instance_interval_ms', this.polling.instanceInterval);
       this.polling.marketDataInterval = await getSettingInt('polling.market_data_interval_ms', this.polling.marketDataInterval);
@@ -297,6 +326,16 @@ class Config {
 
       this.rateLimit.windowMs = await getSettingInt('rate_limit.window_ms', this.rateLimit.windowMs);
       this.rateLimit.maxRequests = await getSettingInt('rate_limit.max_requests', this.rateLimit.maxRequests);
+
+      this.webhooks.tradingviewBroadcast.token = getSetting(
+        'webhooks.tradingview.token',
+        this.webhooks.tradingviewBroadcast.token
+      );
+      const targetsFromDb = getSetting(
+        'webhooks.tradingview.targets',
+        this.webhooks.tradingviewBroadcast.rawTargets || null
+      );
+      this.webhooks.tradingviewBroadcast.targets = parseTargetsConfig(targetsFromDb);
 
       log.info('Configuration loaded from database');
     } catch (error) {

@@ -7,9 +7,15 @@
 process.env.TZ = 'Asia/Kolkata';
 
 import express from 'express';
+import fs from 'fs';
+import path from 'path';
 import helmet from 'helmet';
 import cors from 'cors';
 import compression from 'compression';
+import http from 'http';
+import session from 'express-session';
+import connectSqlite3 from 'connect-sqlite3';
+import signature from 'cookie-signature';
 import { config } from './src/core/config.js';
 import { log } from './src/core/logger.js';
 import db from './src/core/database.js';
@@ -23,6 +29,9 @@ import openalgoClient from './src/integrations/openalgo/client.js';
 import settingsService from './src/services/settings.service.js';
 import instanceHealthService, { isBlackout } from './src/services/instance-health.service.js';
 import authLocalService from './src/services/auth-local.service.js';
+import wsGatewayService from './src/services/ws-gateway.service.js';
+import instanceService from './src/services/instance.service.js';
+import tradingviewWebhookRoutes from './src/routes/tradingview-webhook.js';
 
 // Middleware
 import { configureSession, requireAuth, optionalAuth, getUserWithRole } from './src/middleware/auth.js';
@@ -65,8 +74,69 @@ function stopBackgroundServices() {
   servicesStarted = false;
 }
 
+// Session-backed WS auth helpers
+const SQLiteStore = connectSqlite3(session);
+let wsSessionStore = null;
+
+function getWsSessionStore() {
+  if (wsSessionStore) return wsSessionStore;
+
+  const dataDir = path.join(process.cwd(), 'data');
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+
+  wsSessionStore = new SQLiteStore({
+    db: 'sessions.db',
+    dir: dataDir,
+    table: 'sessions',
+    concurrentDB: true,
+  });
+
+  return wsSessionStore;
+}
+
+function parseCookies(cookieHeader = '') {
+  return cookieHeader.split(';').reduce((acc, part) => {
+    const [key, ...rest] = part.trim().split('=');
+    if (!key) return acc;
+    acc[key] = decodeURIComponent(rest.join('=') || '');
+    return acc;
+  }, {});
+}
+
+async function validateWsSessionFromRequest(req) {
+  try {
+    const cookies = parseCookies(req.headers?.cookie || '');
+    const raw = cookies['connect.sid'];
+    if (!raw) return false;
+
+    // Express-session cookies are signed: s:<value>.signature
+    const unsigned = signature.unsign(raw.startsWith('s:') ? raw.slice(2) : raw, config.session.secret);
+    if (!unsigned) return false;
+
+    const store = getWsSessionStore();
+    return await new Promise((resolve) => {
+      store.get(unsigned, (err, sess) => {
+        if (err) {
+          log.warn('WS session lookup failed', { error: err.message });
+          return resolve(false);
+        }
+        if (!sess) return resolve(false);
+        const expires = sess.cookie?.expires ? new Date(sess.cookie.expires).getTime() : null;
+        if (expires && expires < Date.now()) return resolve(false);
+        return resolve(true);
+      });
+    });
+  } catch (err) {
+    log.warn('WS session validation error', { error: err.message });
+    return false;
+  }
+}
+
 // Create Express app
 const app = express();
+const server = http.createServer(app);
 app.locals.startServices = startBackgroundServices;
 
 /**
@@ -109,6 +179,9 @@ app.use(checkInstrumentsRefresh);
 /**
  * Routes
  */
+
+// TradingView broadcast webhook (public token auth)
+app.use('/webhook/tradingview', tradingviewWebhookRoutes);
 
 // API v1
 app.use('/api/v1', apiV1Routes);
@@ -240,13 +313,32 @@ async function startServer() {
 
     // Do not start background services until user logs in (lazy start)
 
+    // Resolve WS-capable instances once at boot (safe fallback)
+    let websocketCapableInstanceIds = [];
+    if (config.wsGateway?.enabled) {
+      try {
+        websocketCapableInstanceIds = await instanceService.getWebsocketCapableInstanceIds();
+      } catch (err) {
+        log.warn('Failed to resolve websocket-capable instances', { error: err.message });
+      }
+    }
+
+    // Start WebSocket gateway (opt-in, session-authenticated)
+    wsGatewayService.start(server, {
+      enabled: config.wsGateway?.enabled,
+      path: config.wsGateway?.path,
+      tokenValidator: async (_token, req) => validateWsSessionFromRequest(req),
+      instanceFilter: () => websocketCapableInstanceIds,
+    });
+
     // Start HTTP server
-    app.listen(config.port, () => {
+    server.listen(config.port, () => {
       log.info('Server started', {
         port: config.port,
         env: config.env,
         baseUrl: config.baseUrl,
         testMode: !config.auth.googleClientId,
+        wsGateway: config.wsGateway?.enabled ? config.wsGateway?.path : 'disabled',
       });
 
       console.log('');

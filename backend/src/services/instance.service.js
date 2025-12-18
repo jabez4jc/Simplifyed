@@ -121,6 +121,7 @@ class InstanceService {
       // Validate and sanitize input
       const normalized = this._normalizeInstanceData(data);
       const hasOptionChain = await this._hasColumn('supports_option_chain');
+      const hasUseWsQuotes = await this._hasColumn('use_ws_quotes');
 
       // Check for duplicate host_url
       const existing = await db.get(
@@ -172,6 +173,10 @@ class InstanceService {
       if (hasOptionChain) {
         columns.push('supports_option_chain');
         values.push(normalized.supports_option_chain ?? 0);
+      }
+      if (hasUseWsQuotes) {
+        columns.push('use_ws_quotes');
+        values.push(normalized.use_ws_quotes ?? 0);
       }
 
       const placeholders = columns.map(() => '?').join(', ');
@@ -241,6 +246,9 @@ class InstanceService {
 
       for (const [key, value] of Object.entries(normalized)) {
         if (key === 'supports_option_chain' && !hasOptionChain) {
+          continue;
+        }
+        if (key === 'use_ws_quotes' && !(await this._hasColumn('use_ws_quotes'))) {
           continue;
         }
         fields.push(`${key} = ?`);
@@ -1003,6 +1011,11 @@ class InstanceService {
       normalized.supports_multiquotes = parseBooleanSafe(data.supports_multiquotes, false) ? 1 : 0;
     }
 
+    // Broker WebSocket quotes opt-in
+    if (data.use_ws_quotes !== undefined) {
+      normalized.use_ws_quotes = parseBooleanSafe(data.use_ws_quotes, false) ? 1 : 0;
+    }
+
     // Option chain API support flag
     if (data.supports_option_chain !== undefined) {
       normalized.supports_option_chain = parseBooleanSafe(data.supports_option_chain, false) ? 1 : 0;
@@ -1056,6 +1069,20 @@ class InstanceService {
         limit_metrics: metric || null,
       };
     });
+  }
+
+  async getWebsocketCapableInstanceIds() {
+    try {
+      const rows = await db.all(`
+        SELECT id FROM instances
+        WHERE is_active = 1
+          AND use_ws_quotes = 1
+      `);
+      return rows.map((r) => r.id);
+    } catch (err) {
+      log.warn('Failed to resolve websocket-capable instances', { error: err.message });
+      return [];
+    }
   }
 
   async _safeDeleteByInstanceId(tableName, instanceId) {

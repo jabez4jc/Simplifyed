@@ -93,6 +93,8 @@ class OpenAlgoClient extends EventEmitter {
     this.rpmLimitPerInstance = 300;
     this.rpmLimitGlobal = Number.POSITIVE_INFINITY; // optional global cap (disabled)
     this.ordersPerSecondLimit = 10;
+    // Endpoint-specific token buckets (per instance)
+    this.endpointBuckets = new Map(); // key: instKey -> { orders, critical, background, rest_quotes }
     this.errorCounters = new Map(); // instKey -> { day, count404, countInvalid, backoffUntil }
     this.instanceMeta = new Map();
 
@@ -887,7 +889,7 @@ class OpenAlgoClient extends EventEmitter {
 
   async _executeWithConcurrency(instance, endpoint, method, url, payload, isOrderPlacement, timeoutOverride = null) {
     const instKey = this._instanceKey(instance);
-    await this._waitForConcurrency(instKey, endpoint);
+    await this._waitForConcurrency(instKey, endpoint, isOrderPlacement);
 
     // Record timestamps for rate tracking
     const now = Date.now();
@@ -907,7 +909,7 @@ class OpenAlgoClient extends EventEmitter {
     }
   }
 
-  async _waitForConcurrency(instKey, endpoint) {
+  async _waitForConcurrency(instKey, endpoint, isOrderPlacement = false) {
     while (this.currentTasks >= this.maxConcurrentTasks) {
       const delay = 50;
       log.warn('Throttling due to concurrent task limit', {
@@ -918,6 +920,30 @@ class OpenAlgoClient extends EventEmitter {
       await sleep(delay);
     }
     this.currentTasks += 1;
+
+    // Token bucket by endpoint class
+    const bucketKind = this._bucketKindForEndpoint(endpoint, isOrderPlacement);
+    if (bucketKind) {
+      const bucket = this._getBucket(instKey, bucketKind);
+      let retries = 0;
+      while (!this._allowBucket(bucket)) {
+        await sleep(25);
+        retries += 1;
+        if (retries > 100) {
+          const error = new OpenAlgoError(`Rate bucket throttle for ${bucketKind}`, endpoint);
+          error.statusCode = 429;
+          throw error;
+        }
+      }
+    }
+  }
+
+  _bucketKindForEndpoint(endpoint, isOrderPlacement) {
+    const ep = (endpoint || '').toLowerCase();
+    if (isOrderPlacement || ep.includes('order')) return 'orders';
+    if (ep.includes('position') || ep.includes('fund') || ep.includes('tradebook') || ep.includes('orderbook')) return 'critical';
+    if (ep.includes('rest_quotes')) return 'rest_quotes';
+    return 'background';
   }
 
   _getRateState(instKey) {
@@ -964,6 +990,31 @@ class OpenAlgoClient extends EventEmitter {
     while (list.length && now - list[0] >= windowMs) {
       list.shift();
     }
+  }
+
+  _getBucket(instKey, kind) {
+    if (!this.endpointBuckets.has(instKey)) {
+      this.endpointBuckets.set(instKey, {
+        orders: this._makeBucket(this.ordersPerSecondLimit, 1000),
+        critical: this._makeBucket(this.rpsLimitPerInstance, 1000),
+        background: this._makeBucket(Math.max(1, Math.floor(this.rpsLimitPerInstance / 2)), 1000),
+        rest_quotes: this._makeBucket(Math.max(1, Math.floor(this.rpsLimitPerInstance / 4)), 1000),
+      });
+    }
+    const buckets = this.endpointBuckets.get(instKey);
+    return buckets[kind];
+  }
+
+  _makeBucket(cap, windowMs) {
+    return { cap, windowMs, timestamps: [] };
+  }
+
+  _allowBucket(bucket) {
+    const now = Date.now();
+    this._prune(bucket.timestamps, bucket.windowMs, now);
+    if (bucket.timestamps.length >= bucket.cap) return false;
+    bucket.timestamps.push(now);
+    return true;
   }
 
   _loadInstanceTimeoutOverrides() {

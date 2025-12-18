@@ -3,6 +3,7 @@
  * Handles watchlist CRUD, symbol management, and instance assignments
  */
 
+import crypto from 'crypto';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import {
@@ -10,8 +11,9 @@ import {
   ConflictError,
   ValidationError,
 } from '../core/errors.js';
-import { sanitizeString, parseBooleanSafe } from '../utils/sanitizers.js';
+import { sanitizeString, parseBooleanSafe, normalizeUrl } from '../utils/sanitizers.js';
 import watchlistSymbolService from './watchlist-symbol.service.js';
+import config from '../core/config.js';
 
 class WatchlistService {
   /**
@@ -41,7 +43,13 @@ class WatchlistService {
       query += ' GROUP BY w.id ORDER BY w.created_at DESC';
 
       const watchlists = await db.all(query, params);
-      return watchlists;
+
+      const hydrated = [];
+      for (const wl of watchlists) {
+        hydrated.push(await this._hydrateWebhook(wl));
+      }
+
+      return hydrated;
     } catch (error) {
       log.error('Failed to get watchlists', error);
       throw error;
@@ -72,15 +80,17 @@ class WatchlistService {
         `SELECT i.*
          FROM instances i
          JOIN watchlist_instances wi ON i.id = wi.instance_id
-         WHERE wi.watchlist_id = ? AND i.is_active = 1`,
+        WHERE wi.watchlist_id = ? AND i.is_active = 1`,
         [id]
       );
 
-      return {
+      const hydrated = await this._hydrateWebhook({
         ...watchlist,
         symbols,
         instances,
-      };
+      });
+
+      return hydrated;
     } catch (error) {
       if (error instanceof NotFoundError) throw error;
       log.error('Failed to get watchlist', error, { id });
@@ -109,9 +119,16 @@ class WatchlistService {
 
       // Create watchlist
       const result = await db.run(
-        `INSERT INTO watchlists (name, description, is_active)
-         VALUES (?, ?, ?)`,
-        [normalized.name, normalized.description, normalized.is_active ? 1 : 0]
+        `INSERT INTO watchlists (name, description, is_active, type, is_broadcast, webhook_slug)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          normalized.name,
+          normalized.description,
+          normalized.is_active ? 1 : 0,
+          normalized.type || 'standard',
+          normalized.is_broadcast ? 1 : 0,
+          normalized.webhook_slug || null,
+        ]
       );
 
       const watchlist = await this.getWatchlistById(result.lastID);
@@ -223,11 +240,15 @@ class WatchlistService {
           ? `${source.description} (cloned)`
           : 'Cloned watchlist',
         is_active: false, // Start inactive
+        type: source.type || (this._isBroadcast(source) ? 'broadcast' : 'standard'),
+        is_broadcast: this._isBroadcast(source),
       });
 
       // Clone symbols
-      for (const symbol of source.symbols) {
-        await watchlistSymbolService.addSymbol(cloned.id, { ...symbol });
+      if (!this._isBroadcast(source)) {
+        for (const symbol of source.symbols) {
+          await watchlistSymbolService.addSymbol(cloned.id, { ...symbol });
+        }
       }
 
       // Clone instance assignments
@@ -259,7 +280,10 @@ class WatchlistService {
    */
   async addSymbol(watchlistId, symbolData) {
     try {
-      await this.getWatchlistById(watchlistId);
+      const watchlist = await this.getWatchlistById(watchlistId);
+      if (this._isBroadcast(watchlist)) {
+        throw new ValidationError('Broadcast watchlists do not support symbols');
+      }
       return await watchlistSymbolService.addSymbol(watchlistId, symbolData);
     } catch (error) {
       if (
@@ -282,6 +306,10 @@ class WatchlistService {
    */
   async updateSymbol(symbolId, updates) {
     try {
+      const watchlist = await this._getWatchlistForSymbol(symbolId);
+      if (this._isBroadcast(watchlist)) {
+        throw new ValidationError('Broadcast watchlists do not support symbols');
+      }
       return await watchlistSymbolService.updateSymbol(symbolId, updates);
     } catch (error) {
       if (error instanceof NotFoundError || error instanceof ValidationError) {
@@ -298,6 +326,10 @@ class WatchlistService {
    */
   async removeSymbol(symbolId) {
     try {
+      const watchlist = await this._getWatchlistForSymbol(symbolId);
+      if (this._isBroadcast(watchlist)) {
+        throw new ValidationError('Broadcast watchlists do not support symbols');
+      }
       await watchlistSymbolService.removeSymbol(symbolId);
     } catch (error) {
       if (error instanceof NotFoundError) throw error;
@@ -514,6 +546,87 @@ class WatchlistService {
   }
 
   /**
+   * Get broadcast targets (instances) for a watchlist by ID or slug
+   * @param {Object} params
+   * @param {number} [params.watchlistId]
+   * @param {string} [params.watchlistSlug]
+   * @returns {Promise<{watchlist: Object, targets: Array}>}
+   */
+  async getBroadcastTargets({ watchlistId = null, watchlistSlug = null } = {}) {
+    const lookupField = watchlistId ? 'id' : 'webhook_slug';
+    const lookupValue = watchlistId || watchlistSlug;
+
+    if (!lookupValue) {
+      throw new ValidationError('watchlistId or watchlistSlug is required');
+    }
+
+    const watchlist = await db.get(
+      `SELECT * FROM watchlists WHERE ${lookupField} = ? LIMIT 1`,
+      [lookupValue]
+    );
+
+    if (!watchlist) {
+      throw new NotFoundError('Watchlist');
+    }
+
+    if (!this._isBroadcast(watchlist)) {
+      throw new ValidationError('Watchlist is not broadcast-enabled');
+    }
+
+    const enriched = await this._hydrateWebhook(watchlist);
+
+    const instances = await db.all(
+      `SELECT i.*
+       FROM instances i
+       JOIN watchlist_instances wi ON i.id = wi.instance_id
+       WHERE wi.watchlist_id = ? AND i.is_active = 1`,
+      [enriched.id]
+    );
+
+    const targets = instances
+      .map((instance) => {
+        const url = normalizeUrl(instance.host_url);
+        const apikey = typeof instance.api_key === 'string' ? instance.api_key.trim() : '';
+        if (!url || !apikey) return null;
+        return {
+          key: `wl-${enriched.id}-inst-${instance.id}`,
+          name: instance.name || url,
+          url,
+          endpoint: `${url.replace(/\/+$/, '')}/api/v1/placesmartorder`,
+          apikey,
+          rateLimit: null,
+          instance_id: instance.id,
+        };
+      })
+      .filter(Boolean);
+
+    return { watchlist: enriched, targets };
+  }
+
+  /**
+   * Increment alert counters for a broadcast watchlist
+   * @param {number} watchlistId
+   * @param {Object} counts
+   * @param {number} counts.received - count to add to alert_received_count
+   * @param {number} counts.success - count to add to alert_success_count
+   */
+  async recordBroadcast(watchlistId, { received = 0, success = 0 } = {}) {
+    if (!watchlistId) return;
+    const incReceived = Number(received) || 0;
+    const incSuccess = Number(success) || 0;
+    if (incReceived === 0 && incSuccess === 0) return;
+
+    await db.run(
+      `UPDATE watchlists
+       SET alert_received_count = alert_received_count + ?,
+           alert_success_count = alert_success_count + ?,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [incReceived, incSuccess, watchlistId]
+    );
+  }
+
+  /**
    * Normalize and validate watchlist data
    * @private
    */
@@ -541,6 +654,45 @@ class WatchlistService {
       normalized.is_active = parseBooleanSafe(data.is_active, true);
     }
 
+    // Type (standard|broadcast)
+    if (data.type !== undefined) {
+      const type = sanitizeString(data.type).toLowerCase();
+      const allowed = ['standard', 'broadcast'];
+      if (!allowed.includes(type)) {
+        errors.push({ field: 'type', message: `type must be one of: ${allowed.join(', ')}` });
+      } else {
+        normalized.type = type;
+        normalized.is_broadcast = type === 'broadcast';
+      }
+    }
+
+    // is_broadcast flag (kept for backward compatibility)
+    if (data.is_broadcast !== undefined) {
+      const flag = parseBooleanSafe(data.is_broadcast, false);
+      normalized.is_broadcast = flag;
+      if (!normalized.type) {
+        normalized.type = flag ? 'broadcast' : 'standard';
+      }
+    }
+
+    // Webhook slug (optional override, mainly system-managed)
+    if (data.webhook_slug !== undefined) {
+      const slug = sanitizeString(data.webhook_slug);
+      normalized.webhook_slug = slug || null;
+    }
+
+    if (!isUpdate) {
+      if (normalized.type === undefined) normalized.type = 'standard';
+      if (normalized.is_broadcast === undefined) normalized.is_broadcast = normalized.type === 'broadcast';
+    } else {
+      if (normalized.type && normalized.is_broadcast === undefined) {
+        normalized.is_broadcast = normalized.type === 'broadcast';
+      }
+      if (normalized.is_broadcast !== undefined && !normalized.type) {
+        normalized.type = normalized.is_broadcast ? 'broadcast' : 'standard';
+      }
+    }
+
     if (errors.length > 0) {
       throw new ValidationError('Watchlist validation failed', errors);
     }
@@ -548,6 +700,71 @@ class WatchlistService {
     return normalized;
   }
 
+  _isBroadcast(watchlist) {
+    if (!watchlist) return false;
+    return Boolean(
+      watchlist.is_broadcast ||
+      (typeof watchlist.type === 'string' && watchlist.type.toLowerCase() === 'broadcast')
+    );
+  }
+
+  _generateSlug() {
+    const rand = crypto.randomBytes(6).toString('hex');
+    return `tv-${rand}`;
+  }
+
+  _buildWebhookUrl(slug) {
+    if (!slug) return null;
+    const base = (config.baseUrl || '').toString().replace(/\/+$/, '') || '';
+    return `${base}/webhook/tradingview/broadcast/${slug}`;
+  }
+
+  async _ensureWebhookSlug(watchlist) {
+    if (!this._isBroadcast(watchlist)) return watchlist;
+    if (watchlist.webhook_slug) return watchlist;
+
+    let slug = this._generateSlug();
+    // Ensure uniqueness
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const existing = await db.get(
+        'SELECT id FROM watchlists WHERE webhook_slug = ? LIMIT 1',
+        [slug]
+      );
+      if (!existing) break;
+      slug = this._generateSlug();
+    }
+
+    await db.run(
+      'UPDATE watchlists SET webhook_slug = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [slug, watchlist.id]
+    );
+
+    return { ...watchlist, webhook_slug: slug };
+  }
+
+  async _hydrateWebhook(watchlist) {
+    if (!watchlist) return watchlist;
+    let hydrated = watchlist;
+    if (this._isBroadcast(watchlist) && !watchlist.webhook_slug) {
+      hydrated = await this._ensureWebhookSlug(watchlist);
+    }
+    if (this._isBroadcast(hydrated)) {
+      hydrated.webhook_url = this._buildWebhookUrl(hydrated.webhook_slug);
+    }
+    return hydrated;
+  }
+
+  async _getWatchlistForSymbol(symbolId) {
+    const link = await db.get(
+      'SELECT watchlist_id FROM watchlist_symbols WHERE id = ? LIMIT 1',
+      [symbolId]
+    );
+    if (!link) {
+      throw new NotFoundError('Symbol');
+    }
+    return this.getWatchlistById(link.watchlist_id);
+  }
 }
 
 // Export singleton instance

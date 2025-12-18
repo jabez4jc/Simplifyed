@@ -274,12 +274,41 @@ class SettingsHandler {
     }
 
     return `
+      <div class="space-y-4">
+        ${this.renderStreamingPreferenceCard()}
+        <div class="card">
+          <div class="card-header">
+            <h3 class="card-title">⚙️ Application Settings</h3>
+          </div>
+          <div class="p-6">
+            ${this.renderApplicationSettings()}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  renderStreamingPreferenceCard() {
+    const enabled = typeof window !== 'undefined' && window.app ? window.app.getStreamPreference() : false;
+    const serverEnabled = typeof window !== 'undefined' && window.app ? window.app.wsGatewayEnabled : false;
+    return `
       <div class="card">
         <div class="card-header">
-          <h3 class="card-title">⚙️ Application Settings</h3>
+          <h3 class="card-title">📡 Live Streaming (beta)</h3>
+          <p class="text-sm text-neutral-600 mt-1">
+            Use WebSocket streaming for quotes/positions/funds when available. Falls back to polling automatically.
+          </p>
         </div>
-        <div class="p-6">
-          ${this.renderApplicationSettings()}
+        <div class="p-6 flex items-center justify-between gap-4">
+          <div>
+            <p class="font-semibold">${enabled && serverEnabled ? 'Enabled' : 'Disabled'}</p>
+            <p class="text-sm text-neutral-600">
+              ${serverEnabled ? 'Session-authenticated stream; respects per-instance websocket capability.' : 'Server streaming disabled. Polling only.'}
+            </p>
+          </div>
+          <button class="btn ${enabled ? 'btn-neutral' : 'btn-primary'}" onclick="app.toggleStreamPreference()">
+            ${enabled ? 'Disable Streaming' : 'Enable Streaming'}
+          </button>
         </div>
       </div>
     `;

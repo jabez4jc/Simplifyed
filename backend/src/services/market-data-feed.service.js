@@ -20,6 +20,7 @@ import config from '../core/config.js';
 import { log } from '../core/logger.js';
 import db from '../core/database.js';
 import { extractAveragePrice, extractLtp } from '../utils/price-extraction.js';
+import openalgoWsService from './openalgo-ws.service.js';
 
 const DEFAULT_QUOTE_INTERVAL = 5000;               // 5 seconds for quote refresh
 // Align with implementation plan (Phase 1): 5s active, 10s idle via dynamic scheduler
@@ -77,6 +78,7 @@ class MarketDataFeedService extends EventEmitter {
     this.symbolQuoteCache = new Map(); // key: EXCHANGE|SYMBOL -> { quote, fetchedAt }
     this.multiQuoteTimestamps = new Map();
     this._sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    this.lastGlobalSymbolList = [];
 
     // Track whether there are open positions for dynamic refresh interval
     this.hasOpenPositions = false;
@@ -95,6 +97,16 @@ class MarketDataFeedService extends EventEmitter {
 
     // Warm in-memory cache from persisted snapshots before live refreshes
     await this._hydrateQuoteSnapshotsFromDb();
+
+    // Start WS quotes (best-effort; falls back to HTTP polling)
+    await this._startWsQuotes();
+    openalgoWsService.on('quote', ({ instanceId, quote }) => {
+      try {
+        this.setQuoteSnapshot(instanceId, [quote]);
+      } catch (err) {
+        log.warn('Failed to cache WS quote', { error: err.message });
+      }
+    });
 
     // Fire-and-forget warmup to avoid blocking startup
     setTimeout(() => this.refreshQuotes({ force: true }).catch(() => {}), 0);
@@ -134,6 +146,37 @@ class MarketDataFeedService extends EventEmitter {
     this.isRunning = false;
   }
 
+  async _startWsQuotes() {
+    try {
+      const instances = await instanceService.getAllInstances({ is_active: true });
+      const wsInstances = instances.filter((i) => i.use_ws_quotes);
+      if (wsInstances.length === 0) return;
+      openalgoWsService.start(wsInstances.map((i) => ({
+        id: i.id,
+        name: i.name,
+        host_url: i.host_url,
+        api_key: i.api_key,
+        websocket_url: i.websocket_url,
+      })));
+      // Prime subscriptions immediately with current symbols
+      const symbols = await this._buildGlobalSymbolList();
+      this.lastGlobalSymbolList = this._dedupeSymbols(symbols);
+      openalgoWsService.syncAll(this.lastGlobalSymbolList);
+      log.info('OpenAlgo WS quotes started', { instances: wsInstances.length });
+    } catch (err) {
+      log.warn('OpenAlgo WS quotes init failed', { error: err.message });
+    }
+  }
+
+  _syncWsSubscriptions() {
+    try {
+      const symbolList = this._dedupeSymbols(this.lastGlobalSymbolList || []);
+      openalgoWsService.syncAll(symbolList);
+    } catch (err) {
+      // non-blocking
+    }
+  }
+
   /**
    * Quotes (per market-data instance)
    */
@@ -150,9 +193,13 @@ class MarketDataFeedService extends EventEmitter {
     this.lastQuoteRefreshAt = now;
 
     try {
+      // Sync WS subscriptions (if enabled)
+      this._syncWsSubscriptions();
+
       const marketDataInstances = (await marketDataInstanceService.getPoolForEndpoint('multiquotes'))
         .filter(inst => !this._isInstanceUnhealthy(inst.id));
       const symbolList = this._dedupeSymbols(await this._buildGlobalSymbolList());
+      this.lastGlobalSymbolList = symbolList;
 
       if (symbolList.length === 0 || marketDataInstances.length === 0) {
         log.debug('No tracked symbols or no market data instances. Skipping quote refresh.');
