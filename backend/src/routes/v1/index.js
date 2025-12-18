@@ -59,6 +59,7 @@ router.get('/public-config', (req, res) => {
       supabaseAnonKey: config.auth.supabaseAnonKey || '',
       wsGatewayEnabled: config.wsGateway?.enabled || false,
       wsGatewayPath: config.wsGateway?.path || '/stream',
+      webhookToken: config.webhooks?.tradingviewBroadcast?.token || null,
     },
   });
 });

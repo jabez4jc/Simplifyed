@@ -739,6 +739,10 @@ class DashboardApp {
       const cfg = res?.data || {};
       this.wsGatewayEnabled = Boolean(cfg.wsGatewayEnabled);
       this.wsGatewayPath = cfg.wsGatewayPath || '/stream';
+      if (cfg.webhookToken) {
+        window.WEBHOOK_TOKEN = cfg.webhookToken;
+        window.appConfig = { ...(window.appConfig || {}), webhookToken: cfg.webhookToken };
+      }
     } catch (err) {
       this.wsGatewayEnabled = false;
     }
@@ -2126,7 +2130,10 @@ class DashboardApp {
   async renderBroadcastWatchlist(watchlistId) {
     const { data: watchlist } = await api.getWatchlistById(watchlistId);
     const instances = watchlist.instances || [];
-    const webhookUrl = watchlist.webhook_url || `${window.location.origin.replace(/\/$/, '')}/webhook/tradingview/broadcast/${watchlist.webhook_slug || ''}`;
+    const token = (window.WEBHOOK_TOKEN || '') || (window.appConfig?.webhookToken || '');
+    const baseUrl = window.location.origin.replace(/\/$/, '');
+    const cleanUrl = watchlist.webhook_url || `${baseUrl}/webhook/tradingview/broadcast/${watchlist.webhook_slug || ''}`;
+    const webhookUrl = token ? `${cleanUrl}?token=${encodeURIComponent(token)}` : cleanUrl;
 
     const instanceList = instances.length
       ? `
@@ -2161,14 +2168,14 @@ class DashboardApp {
           <div>
             <p class="text-sm text-neutral-500">TradingView Broadcast Webhook</p>
             <h4 class="text-lg font-semibold">Fan-out to ${instances.length} instance${instances.length === 1 ? '' : 's'}</h4>
-          </div>
-          <span class="badge badge-info">Broadcast</span>
+         </div>
+         <span class="badge badge-info">Broadcast</span>
         </div>
 
         <div class="border border-base-200 rounded-lg p-3 space-y-2 bg-base-100">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p class="text-xs text-neutral-500">Webhook URL</p>
+              <p class="text-xs text-neutral-500">Webhook URL${token ? ' (token included via query)' : ''}</p>
               <code class="code-inline">${Utils.escapeHTML(webhookUrl)}</code>
             </div>
             <button class="btn btn-neutral btn-sm" onclick="Utils.copyToClipboard('${webhookUrl}')">Copy URL</button>
@@ -2180,7 +2187,7 @@ class DashboardApp {
             </div>
             ${watchlist.webhook_slug ? `<button class="btn btn-neutral btn-sm" onclick="Utils.copyToClipboard('${watchlist.webhook_slug}')">Copy Slug</button>` : ''}
           </div>
-          <p class="text-xs text-neutral-500">Send TradingView alerts to this URL with header <code>X-Webhook-Token</code>.</p>
+          <p class="text-xs text-neutral-500">Send TradingView alerts to this URL${token ? ' (token query included)' : ' and include header X-Webhook-Token'}.</p>
         </div>
 
         <div class="grid md:grid-cols-2 gap-4">
