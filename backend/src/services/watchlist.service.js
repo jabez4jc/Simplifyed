@@ -483,7 +483,8 @@ class WatchlistService {
       let query = `
         SELECT DISTINCT
           UPPER(ws.exchange) as exchange,
-          UPPER(ws.symbol) as symbol
+          UPPER(ws.symbol) as symbol,
+          UPPER(ws.trading_symbol) as trading_symbol
         FROM watchlist_symbols ws
         JOIN watchlists w ON ws.watchlist_id = w.id
       `;

@@ -7,6 +7,7 @@ import express from 'express';
 import { requireAuth } from '../../middleware/auth.js';
 import openalgoClient from '../../integrations/openalgo/client.js';
 import marketDataFeedService from '../../services/market-data-feed.service.js';
+import openalgoWsService from '../../services/openalgo-ws.service.js';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -43,6 +44,18 @@ router.get('/cache-status', (req, res) => {
   res.json({
     status: 'success',
     data: status,
+  });
+});
+
+/**
+ * GET /api/v1/telemetry/ws-subscriptions
+ * Lists current WebSocket quote subscriptions per instance
+ */
+router.get('/ws-subscriptions', (req, res) => {
+  const subs = openalgoWsService.getSubscriptions();
+  res.json({
+    status: 'success',
+    data: subs,
   });
 });
 

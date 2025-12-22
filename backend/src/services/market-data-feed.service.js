@@ -171,7 +171,8 @@ class MarketDataFeedService extends EventEmitter {
   _syncWsSubscriptions() {
     try {
       const symbolList = this._dedupeSymbols(this.lastGlobalSymbolList || []);
-      openalgoWsService.syncAll(symbolList);
+      const preferred = this._buildPreferredInstanceMap(symbolList);
+      openalgoWsService.syncAll(symbolList, preferred);
     } catch (err) {
       // non-blocking
     }
@@ -809,6 +810,15 @@ class MarketDataFeedService extends EventEmitter {
         exchange: symbol.exchange,
         symbol: symbol.symbol,
       }));
+      // Include explicit trading_symbol if provided (e.g., resolved options/futures)
+      trackedSymbols.forEach((symbol) => {
+        if (symbol.trading_symbol && symbol.trading_symbol !== symbol.symbol) {
+          symbolList.push({
+            exchange: symbol.exchange,
+            symbol: symbol.trading_symbol,
+          });
+        }
+      });
 
       // Add open position symbols so live P&L views also get covered
       this.positionCache.forEach((snapshot) => {
@@ -1154,6 +1164,37 @@ class MarketDataFeedService extends EventEmitter {
       }
     });
     return result;
+  }
+
+  /**
+   * Prefer instances that recently provided a non-zero LTP for a symbol.
+   */
+  _buildPreferredInstanceMap(symbols = []) {
+    const preferred = new Map(); // key -> instanceId
+    const now = Date.now();
+    this.quoteCache.forEach((snapshot, instanceId) => {
+      const data = snapshot?.data || [];
+      data.forEach((q) => {
+        const ltp = Number(q.ltp ?? q.LastTradedPrice ?? q.last_price ?? q.last);
+        if (!ltp || ltp <= 0) return;
+        const key = this._symbolKey(q.exchange, q.symbol);
+        // prefer freshest
+        if (!preferred.has(key) || (snapshot.fetchedAt && snapshot.fetchedAt >= (preferred.get(`${key}_ts`) || 0))) {
+          preferred.set(key, instanceId);
+          if (snapshot.fetchedAt) {
+            preferred.set(`${key}_ts`, snapshot.fetchedAt);
+          }
+        }
+      });
+    });
+
+    // Clean timestamp helper keys before return
+    const clean = new Map();
+    preferred.forEach((val, key) => {
+      if (key.endsWith('_ts')) return;
+      clean.set(key, val);
+    });
+    return clean;
   }
 
   _getStatefulTtlMs(feed, instanceId = null) {

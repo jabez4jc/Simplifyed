@@ -1338,6 +1338,10 @@ class QuickOrderHandler {
     const underlyingLtp = preview.underlying?.ltp != null
       ? `₹${Utils.formatNumber(preview.underlying.ltp)}`
       : '—';
+    const underlyingKey = this.buildQuoteKey(
+      preview.underlying?.exchange,
+      preview.underlying?.symbol || preview.underlying?.trading_symbol || preview.underlying?.tradingsymbol
+    );
     const atmStrike = preview.atmStrike != null ? preview.atmStrike : '—';
     const updatedAt = preview.updatedAt ? new Date(preview.updatedAt) : null;
     const updatedLabel = updatedAt
@@ -1347,7 +1351,7 @@ class QuickOrderHandler {
     container.innerHTML = `
       <div class="flex items-center justify-between gap-2 text-xs mb-2">
         <div class="font-semibold text-base-content">
-          Option Symbols (${preview.strikeOffset}) | Expiry <span class="text-neutral-700">${expiryLabel}</span> • ${Utils.escapeHTML(underlyingSymbol)} <span class="text-neutral-700">${underlyingLtp}</span> • ATM <span class="text-neutral-700">${atmStrike}</span>
+          Option Symbols (${preview.strikeOffset}) | Expiry <span class="text-neutral-700">${expiryLabel}</span> • ${Utils.escapeHTML(underlyingSymbol)} <span class="text-neutral-700" ${underlyingKey ? `data-quote-key="${Utils.escapeHTML(underlyingKey)}" data-quote-role="ltp"` : ''}>${underlyingLtp}</span> • ATM <span class="text-neutral-700">${atmStrike}</span>
         </div>
         <span class="text-neutral-500 whitespace-nowrap">${updatedLabel}</span>
       </div>
@@ -1367,14 +1371,20 @@ class QuickOrderHandler {
       `;
     }
 
-    const ltpDefined = typeof leg.ltp === 'number' && !Number.isNaN(leg.ltp);
-    const ltpText = ltpDefined ? `₹${Utils.formatNumber(leg.ltp)}` : '—';
-    const changeDefined = typeof leg.changePercent === 'number' && !Number.isNaN(leg.changePercent);
+    const quoteKey = this.buildQuoteKey(
+      leg.exchange || leg.exch || leg.exchangeSegment,
+      leg.symbol || leg.trading_symbol || leg.tradingsymbol
+    );
+    const legLtp = leg.ltp ?? leg.lastPrice ?? leg.last_price ?? leg.price;
+    const ltpDefined = typeof legLtp === 'number' && !Number.isNaN(legLtp);
+    const ltpText = ltpDefined ? `₹${Utils.formatNumber(legLtp)}` : '—';
+    const legChange = leg.changePercent ?? leg.change_percent;
+    const changeDefined = typeof legChange === 'number' && !Number.isNaN(legChange);
     const changeText = changeDefined
-      ? `${leg.changePercent >= 0 ? '+' : ''}${leg.changePercent.toFixed(2)}%`
+      ? `${legChange >= 0 ? '+' : ''}${legChange.toFixed(2)}%`
       : '—';
     const changeClass = changeDefined
-      ? (leg.changePercent > 0 ? 'text-profit' : (leg.changePercent < 0 ? 'text-loss' : 'text-neutral-500'))
+      ? (legChange > 0 ? 'text-profit' : (legChange < 0 ? 'text-loss' : 'text-neutral-500'))
       : 'text-neutral-500';
 
     return `
@@ -1383,7 +1393,7 @@ class QuickOrderHandler {
           ${label} • <span class="font-mono">${Utils.escapeHTML(leg.symbol || '')}</span> • Strike ${leg.strike ?? '—'} • Lot ${leg.lotSize ?? '—'}
         </div>
         <div class="flex items-baseline gap-2">
-          <span class="text-base font-semibold">${ltpText}</span>
+          <span class="text-base font-semibold" ${quoteKey ? `data-quote-key="${Utils.escapeHTML(quoteKey)}" data-quote-role="ltp"` : ''}>${ltpText}</span>
         </div>
       </div>
     `;
@@ -1417,6 +1427,72 @@ class QuickOrderHandler {
     this.futuresPreviewTimers.forEach(intervalId => clearInterval(intervalId));
     this.futuresPreviewTimers.clear();
     this.futuresPreviewRequestIds.clear();
+  }
+
+  buildQuoteKey(exchange, symbol) {
+    const segmentMap = {
+      1: 'NSE',
+      2: 'NFO',
+      3: 'BSE',
+      4: 'BFO',
+      5: 'MCX',
+    };
+    let exchInput = exchange;
+    if (typeof exchInput === 'number') {
+      exchInput = segmentMap[exchInput] || String(exchInput);
+    }
+    const exch = (exchInput || '').trim().toUpperCase().replace(/_INDEX$/, '');
+    if (!symbol || !exch) return null;
+    let sym = (symbol || '').toUpperCase();
+    if (sym.includes(':')) {
+      sym = sym.split(':').pop();
+    }
+    return sym ? `${exch}|${sym}` : null;
+  }
+
+  computeChangePercent(quote) {
+    if (quote?.ltp !== undefined && quote?.prev_close !== undefined && quote.prev_close > 0) {
+      return ((quote.ltp - quote.prev_close) / quote.prev_close) * 100;
+    }
+    if (quote?.change_percent !== undefined) {
+      return quote.change_percent;
+    }
+    if (quote?.changePercent !== undefined) {
+      return quote.changePercent;
+    }
+    return null;
+  }
+
+  applyQuoteUpdate(quote) {
+    if (!quote) return;
+    const exchange = quote.exchange || quote.exch || quote.exchange_segment || quote.exchangeSegment;
+    const keys = new Set();
+    [quote.symbol, quote.trading_symbol, quote.tradingSymbol, quote.tradingsymbol].forEach((sym) => {
+      const key = this.buildQuoteKey(exchange, sym);
+      if (key) keys.add(key);
+    });
+
+    if (!keys.size) return;
+
+    const changePercent = this.computeChangePercent(quote);
+    keys.forEach((key) => {
+      const ltpNodes = document.querySelectorAll(`[data-quote-key="${key}"][data-quote-role="ltp"]`);
+      ltpNodes.forEach((node) => {
+        if (quote.ltp !== undefined) {
+          node.textContent = `₹${Utils.formatNumber(quote.ltp)}`;
+        }
+      });
+
+      if (changePercent !== null) {
+        const changeNodes = document.querySelectorAll(`[data-quote-key="${key}"][data-quote-role="change"]`);
+        changeNodes.forEach((node) => {
+          const changeText = `${changePercent >= 0 ? '+' : ''}${changePercent.toFixed(2)}%`;
+          node.textContent = changeText;
+          node.classList.remove('text-profit', 'text-loss', 'text-neutral-500');
+          node.classList.add(changePercent > 0 ? 'text-profit' : (changePercent < 0 ? 'text-loss' : 'text-neutral-500'));
+        });
+      }
+    });
   }
 
   async refreshFuturesPreview(symbolId) {
@@ -1473,14 +1549,19 @@ class QuickOrderHandler {
     }
 
     const expiryLabel = preview.expiry ? this.formatExpiryDate(preview.expiry) : 'N/A';
-    const ltp = preview.quote?.ltp != null ? `₹${Utils.formatNumber(preview.quote.ltp)}` : '—';
-    const changePercent = preview.quote?.changePercent;
+    const futLtp = preview.quote?.ltp ?? preview.quote?.lastPrice ?? preview.quote?.last_price ?? preview.quote?.price;
+    const ltp = futLtp != null ? `₹${Utils.formatNumber(futLtp)}` : '—';
+    const changePercent = preview.quote?.changePercent ?? preview.quote?.change_percent;
     const changeText = typeof changePercent === 'number'
       ? `${changePercent >= 0 ? '+' : ''}${changePercent.toFixed(2)}%`
       : '—';
     const changeClass = typeof changePercent === 'number'
       ? (changePercent > 0 ? 'text-profit' : (changePercent < 0 ? 'text-loss' : 'text-neutral-500'))
       : 'text-neutral-500';
+    const quoteKey = this.buildQuoteKey(
+      preview.quote?.exchange || preview.exchange,
+      preview.quote?.symbol || preview.tradingSymbol || preview.futuresSymbol
+    );
     const refreshedLabel = preview.quote?.fetchedAt
       ? `Refreshed ${Utils.formatDateTime(new Date(preview.quote.fetchedAt).toISOString(), true)}`
       : preview.updatedAt
@@ -1495,7 +1576,7 @@ class QuickOrderHandler {
         ${refreshedLabel ? `<span class="text-neutral-500 whitespace-nowrap">${Utils.escapeHTML(refreshedLabel)}</span>` : ''}
       </div>
       <div class="flex items-baseline gap-2">
-        <span class="text-lg font-semibold ${changeClass}">${ltp}</span>
+        <span class="text-lg font-semibold ${changeClass}" ${quoteKey ? `data-quote-key="${Utils.escapeHTML(quoteKey)}" data-quote-role="ltp"` : ''}>${ltp}</span>
       </div>
     `;
   }

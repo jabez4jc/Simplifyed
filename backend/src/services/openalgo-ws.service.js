@@ -143,7 +143,7 @@ class OpenAlgoWsService extends EventEmitter {
    * Sync subscriptions across instances. Distributes symbols evenly (up to 500 per instance).
    * @param {Array<{symbol:string, exchange:string}>} symbols
    */
-  syncAll(symbols = []) {
+  syncAll(symbols = [], preferredInstances = new Map()) {
     if (this.connections.size === 0) return;
     const symbolsUpper = symbols.map((s) => ({
       symbol: (s.symbol || '').toUpperCase(),
@@ -155,17 +155,50 @@ class OpenAlgoWsService extends EventEmitter {
     conns.forEach((c) => c.setSubscriptions([])); // reset
 
     for (const sym of symbolsUpper) {
-      const conn = conns[idx % conns.length];
-      const current = Array.from(conn.desired).map((k) => k.split('|')[1]);
-      if (current.length >= MAX_SYMBOLS_PER_INSTANCE) {
+      const key = `${sym.exchange}|${sym.symbol}`;
+      // Prefer instance with non-zero LTP if provided
+      let targetConn = null;
+      const preferredId = preferredInstances.get(key);
+      if (preferredId && this.connections.has(preferredId)) {
+        const candidate = this.connections.get(preferredId);
+        if ((candidate.desired.size || 0) < MAX_SYMBOLS_PER_INSTANCE) {
+          targetConn = candidate;
+        }
+      }
+      if (!targetConn) {
+        // Round-robin fallback
+        targetConn = conns[idx % conns.length];
         idx += 1;
+      }
+      if ((targetConn.desired.size || 0) >= MAX_SYMBOLS_PER_INSTANCE) {
         continue;
       }
-      conn.desired.add(`${sym.exchange}|${sym.symbol}`);
-      idx += 1;
+      targetConn.desired.add(key);
     }
 
     conns.forEach((c) => c._syncSubscriptions());
+  }
+
+  /**
+   * Introspection: current subscriptions per instance
+   */
+  getSubscriptions() {
+    const subs = [];
+    for (const [instanceId, conn] of this.connections.entries()) {
+      const items = Array.from(conn.desired).map((k) => {
+        const [exchange, symbol] = k.split('|');
+        return { exchange, symbol };
+      });
+      subs.push({
+        instanceId,
+        instanceName: conn.instance?.name || null,
+        websocketUrl: buildWsUrl(conn.instance),
+        connected: conn.connected === true,
+        subscriptionCount: items.length,
+        symbols: items,
+      });
+    }
+    return subs;
   }
 }
 

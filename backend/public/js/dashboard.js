@@ -54,6 +54,9 @@ class DashboardApp {
     this.lastSnapshotResyncAt = 0;
     this.isSnapshotResyncing = false;
     this.autoSnapshotResyncEnabled = this.loadSnapshotResyncPreference();
+    // Symbol lookup for streaming updates
+    this.watchlistSymbolIndex = new Map(); // exchange|symbol -> [{ watchlistId, symbolId }]
+    this.watchlistSymbolIndexByWatchlist = new Map(); // watchlistId -> [{ key, symbolId }]
     // WebSocket streaming (optional)
     this.wsGatewayEnabled = false;
     this.wsGatewayPath = '/stream';
@@ -841,6 +844,8 @@ class DashboardApp {
     switch (msg.topic) {
       case 'quotes:update': {
         if (this.currentView === 'watchlists') {
+          this.handleQuoteStreamPayload(msg.payload || {});
+        } else {
           this.wsRefreshWatchlists();
         }
         break;
@@ -1677,6 +1682,7 @@ class DashboardApp {
         api.getInstances(),
       ]);
       this.watchlists = watchlistsRes.data;
+      this.resetWatchlistSymbolIndex();
       // Default to collapsed watchlists; user opt-in to load quotes/expansions
       this.expandedWatchlists = new Set();
       this.instances = instancesRes.data;
@@ -1712,6 +1718,9 @@ class DashboardApp {
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 12A7.5 7.5 0 116 6.75M6 6.75V3m0 3.75h3.75" />
               </svg>
+            </button>
+            <button class="btn btn-neutral btn-sm" onclick="app.showWsSubscriptions()" title="View WebSocket subscriptions">
+              WS Subs
             </button>
             <button class="btn btn-outline btn-sm" onclick="app.toggleSnapshotResync()" title="Toggle auto snapshot resync">
               Auto Resync: ${this.autoSnapshotResyncEnabled ? 'On' : 'Off'}
@@ -2022,6 +2031,7 @@ class DashboardApp {
 
       const response = await api.getWatchlistSymbols(watchlistId);
       const symbols = response.data;
+      this.registerWatchlistSymbols(watchlistId, symbols);
 
       if (symbols.length === 0) {
         return '<p class="text-neutral-600 text-sm">No symbols added yet</p>';
@@ -2058,6 +2068,7 @@ class DashboardApp {
                     data-symbol="${Utils.escapeHTML(sym.symbol)}"
                     data-exchange="${Utils.escapeHTML(sym.exchange)}"
                     data-symbol-type="${Utils.escapeHTML(sym.symbol_type || 'UNKNOWN')}"
+                    data-trading-symbol="${Utils.escapeHTML(sym.trading_symbol || sym.tradingsymbol || '')}"
                     data-tradable-equity="${sym.tradable_equity ? 1 : 0}"
                     data-tradable-futures="${sym.tradable_futures ? 1 : 0}"
                     data-tradable-options="${sym.tradable_options ? 1 : 0}"
@@ -2124,6 +2135,53 @@ class DashboardApp {
     } catch (error) {
       const message = Utils.escapeHTML(error?.message || 'Unknown error');
       return `<p class="text-error">Failed to load symbols: ${message}</p>`;
+    }
+  }
+
+  async showWsSubscriptions() {
+    try {
+      const res = await api.request('/telemetry/ws-subscriptions');
+      const subs = res?.data || [];
+      const modal = document.createElement('div');
+      modal.className = 'modal-overlay';
+      const content = subs.map((s) => `
+        <details class="border border-base-200 rounded-lg p-3 bg-base-100">
+          <summary class="flex items-center justify-between gap-2 cursor-pointer">
+            <div>
+              <div class="font-semibold">${Utils.escapeHTML(s.instanceName || `Instance ${s.instanceId}`)}</div>
+              <div class="text-xs text-neutral-500">${Utils.escapeHTML(s.websocketUrl || 'ws unavailable')}</div>
+            </div>
+            <div class="text-xs text-neutral-500">${s.subscriptionCount || 0} symbols · ${s.connected ? 'Connected' : 'Disconnected'}</div>
+          </summary>
+          ${s.symbols && s.symbols.length ? `
+            <div class="mt-2 grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
+              ${s.symbols.slice(0, 200).map(sym => `<span class="badge badge-neutral">${Utils.escapeHTML(sym.exchange || '')}:${Utils.escapeHTML(sym.symbol || '')}</span>`).join('')}
+            </div>
+            ${s.symbols.length > 200 ? `<p class="text-xs text-neutral-500 mt-2">+${s.symbols.length - 200} more…</p>` : ''}
+          ` : '<p class="text-xs text-neutral-500 mt-2">No symbols subscribed</p>'}
+        </details>
+      `).join('');
+
+      modal.innerHTML = `
+        <div class="modal-content" style="max-width: 800px;">
+          <div class="modal-header">
+            <h3>WebSocket Subscriptions</h3>
+          </div>
+          <div class="modal-body space-y-3" style="max-height: 70vh; overflow-y: auto;">
+            ${content || '<p class="text-neutral-600 text-sm">No WebSocket subscriptions found.</p>'}
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-neutral btn-outline" onclick="this.closest('.modal-overlay').remove()">Close</button>
+          </div>
+        </div>
+      `;
+
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) modal.remove();
+      });
+      document.body.appendChild(modal);
+    } catch (err) {
+      Utils.showToast(err?.message || 'Failed to load WS subscriptions', 'error');
     }
   }
 
@@ -2484,6 +2542,63 @@ class DashboardApp {
     return normalized;
   }
 
+  buildWatchlistSymbolKey(exchange, symbol) {
+    const segmentMap = {
+      1: 'NSE',
+      2: 'NFO',
+      3: 'BSE',
+      4: 'BFO',
+      5: 'MCX',
+    };
+    let exchInput = exchange;
+    if (typeof exchInput === 'number') {
+      exchInput = segmentMap[exchInput] || String(exchInput);
+    }
+    const exch = this.normalizeExchange(exchInput);
+    const sym = this.normalizeQuoteSymbol(symbol);
+    if (!exch || !sym) return null;
+    return `${exch}|${sym}`;
+  }
+
+  resetWatchlistSymbolIndex() {
+    this.watchlistSymbolIndex = new Map();
+    this.watchlistSymbolIndexByWatchlist = new Map();
+  }
+
+  registerWatchlistSymbols(watchlistId, symbols = []) {
+    if (!watchlistId) return;
+    const previousEntries = this.watchlistSymbolIndexByWatchlist.get(watchlistId) || [];
+    previousEntries.forEach(({ key, symbolId }) => {
+      const list = this.watchlistSymbolIndex.get(key);
+      if (!list) return;
+      const filtered = list.filter((entry) => entry.watchlistId !== watchlistId || entry.symbolId !== symbolId);
+      if (filtered.length) {
+        this.watchlistSymbolIndex.set(key, filtered);
+      } else {
+        this.watchlistSymbolIndex.delete(key);
+      }
+    });
+
+    const newEntries = [];
+    symbols.forEach((sym) => {
+      const candidates = [
+        this.buildWatchlistSymbolKey(sym.exchange, sym.symbol),
+        this.buildWatchlistSymbolKey(sym.exchange, sym.trading_symbol || sym.tradingsymbol),
+      ].filter(Boolean);
+
+      candidates.forEach((key) => {
+        const existing = this.watchlistSymbolIndex.get(key) || [];
+        if (!existing.find((e) => e.watchlistId === watchlistId && e.symbolId === sym.id)) {
+          existing.push({ watchlistId, symbolId: sym.id });
+          this.watchlistSymbolIndex.set(key, existing);
+          newEntries.push({ key, symbolId: sym.id });
+        }
+      });
+    });
+
+    this.watchlistSymbolIndexByWatchlist.set(watchlistId, newEntries);
+  }
+
   chunkArray(arr = [], size = 5) {
     const chunks = [];
     for (let i = 0; i < arr.length; i += size) {
@@ -2594,6 +2709,50 @@ class DashboardApp {
 
     // Update cache
     this.quoteCache.set(cacheKey, cached);
+  }
+
+  handleQuoteStreamPayload(payload = {}) {
+    const quotes = Array.isArray(payload.data) ? payload.data : [];
+    if (!quotes.length) return;
+
+    const updatedWatchlists = new Set();
+    const ts = Date.now();
+
+    quotes.forEach((quote) => {
+      const exchange = quote.exchange || quote.exch || quote.exchange_segment || quote.exchangeSegment;
+      const candidateSymbols = [
+        quote.symbol,
+        quote.trading_symbol,
+        quote.tradingSymbol,
+        quote.tradingsymbol,
+      ];
+
+      const keys = new Set();
+      candidateSymbols.forEach((sym) => {
+        const key = this.buildWatchlistSymbolKey(exchange, sym);
+        if (key) keys.add(key);
+      });
+
+      keys.forEach((key) => {
+        const mappings = this.watchlistSymbolIndex.get(key);
+        if (!mappings || !mappings.length) return;
+        mappings.forEach(({ watchlistId, symbolId }) => {
+          this.updateSymbolQuote(watchlistId, symbolId, quote);
+          updatedWatchlists.add(watchlistId);
+        });
+      });
+
+      if (this.quickOrder && typeof this.quickOrder.applyQuoteUpdate === 'function') {
+        this.quickOrder.applyQuoteUpdate(quote);
+      }
+    });
+
+    updatedWatchlists.forEach((watchlistId) => {
+      this.updateWatchlistQuoteMeta(watchlistId, {
+        timestamp: ts,
+        source: 'stream',
+      });
+    });
   }
 
   updateWatchlistQuoteMeta(
