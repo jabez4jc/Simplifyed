@@ -27,3 +27,6 @@ backend/logs/*.log
 # Testing
 test-results/
 playwright-report/
+
+# Auto Claude data directory
+.auto-claude/

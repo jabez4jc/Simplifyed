@@ -18,6 +18,9 @@ class DashboardApp {
     // Cache for quote data to prevent unnecessary DOM updates
     // Structure: { watchlistId_symbolId: { ltp, changePercent, volume } }
     this.quoteCache = new Map();
+    // Shared LTP cache (exchange|symbol -> { ltp, ts })
+    this.latestLtpByKey = new Map();
+    this.ltpCacheTtlMs = 10000;
     // Track latest quote snapshot timestamp per watchlist
     this.watchlistQuoteSnapshots = new Map();
     this.isSidebarCollapsed = false;
@@ -2503,17 +2506,18 @@ class DashboardApp {
 
       // Update UI for each symbol
       allQuotes.forEach(quote => {
-        const normalizedQuoteSymbol = this.normalizeQuoteSymbol(quote.symbol);
+        const hydratedQuote = this.hydrateQuoteWithLtp(quote, snapshotTimestamp);
+        const normalizedQuoteSymbol = this.normalizeQuoteSymbol(hydratedQuote.symbol);
         const symbol = symbols.find(s => {
-          const exactMatch = s.exchange === quote.exchange;
+          const exactMatch = s.exchange === hydratedQuote.exchange;
           const normalizedMatch =
-            this.normalizeExchange(s.exchange) === this.normalizeExchange(quote.exchange);
+            this.normalizeExchange(s.exchange) === this.normalizeExchange(hydratedQuote.exchange);
 
           return (exactMatch || normalizedMatch) && s.symbol === normalizedQuoteSymbol;
         });
 
         if (symbol) {
-          this.updateSymbolQuote(watchlistId, symbol.id, quote);
+          this.updateSymbolQuote(watchlistId, symbol.id, hydratedQuote);
         }
       });
     } catch (error) {
@@ -2558,6 +2562,65 @@ class DashboardApp {
     const sym = this.normalizeQuoteSymbol(symbol);
     if (!exch || !sym) return null;
     return `${exch}|${sym}`;
+  }
+
+  extractQuoteKeys(quote = {}) {
+    const exchange = quote.exchange || quote.exch || quote.exchange_segment || quote.exchangeSegment;
+    const candidateSymbols = [
+      quote.symbol,
+      quote.trading_symbol,
+      quote.tradingSymbol,
+      quote.tradingsymbol,
+    ];
+    const keys = new Set();
+    candidateSymbols.forEach((sym) => {
+      const key = this.buildWatchlistSymbolKey(exchange, sym);
+      if (key) keys.add(key);
+    });
+    return Array.from(keys);
+  }
+
+  cacheQuoteLtp(keys = [], ltp, ts = Date.now()) {
+    if (typeof ltp !== 'number' || Number.isNaN(ltp)) return;
+    keys.forEach((key) => {
+      this.latestLtpByKey.set(key, { ltp, ts });
+    });
+  }
+
+  resolveFreshLtp(keys = [], now = Date.now()) {
+    for (const key of keys) {
+      const entry = this.latestLtpByKey.get(key);
+      if (!entry) continue;
+      const isNumber = typeof entry.ltp === 'number' && !Number.isNaN(entry.ltp);
+      const isFresh = entry.ts && now - entry.ts <= this.ltpCacheTtlMs;
+      if (isNumber && isFresh) {
+        return entry;
+      }
+      if (!isFresh) {
+        this.latestLtpByKey.delete(key);
+      }
+    }
+    return null;
+  }
+
+  hydrateQuoteWithLtp(quote = {}, receivedAt = Date.now()) {
+    const hydrated = { ...quote };
+    const keys = this.extractQuoteKeys(quote);
+    if (!keys.length) return hydrated;
+
+    const hasLtp = typeof hydrated.ltp === 'number' && !Number.isNaN(hydrated.ltp);
+    if (hasLtp) {
+      this.cacheQuoteLtp(keys, hydrated.ltp, receivedAt);
+      hydrated.ltpTs = receivedAt;
+      return hydrated;
+    }
+
+    const fallback = this.resolveFreshLtp(keys, receivedAt);
+    if (fallback) {
+      hydrated.ltp = fallback.ltp;
+      hydrated.ltpTs = fallback.ts;
+    }
+    return hydrated;
   }
 
   resetWatchlistSymbolIndex() {
@@ -2628,6 +2691,7 @@ class DashboardApp {
     // Create cache key
     const cacheKey = `${watchlistId}_${symbolId}`;
     const cached = this.quoteCache.get(cacheKey) || {};
+    const now = Date.now();
 
     // Calculate change percent
     let changePercent = null;
@@ -2638,7 +2702,7 @@ class DashboardApp {
     // Helper to check if cell has placeholder or is empty
     const hasPlaceholder = (cell) => {
       const text = cell.textContent.trim();
-      return text === '-' || text === '';
+      return text === '-' || text === '' || text === '—';
     };
 
     // Helper to add highlight animation
@@ -2661,18 +2725,39 @@ class DashboardApp {
       return span;
     };
 
+    const ltpIsNumber = typeof quote.ltp === 'number' && !Number.isNaN(quote.ltp);
+    let resolvedLtp = ltpIsNumber ? quote.ltp : null;
+    let resolvedLtpTs = typeof quote.ltpTs === 'number' ? quote.ltpTs : now;
+
+    if (resolvedLtp === null) {
+      const cachedFresh = cached.ltpTs && now - cached.ltpTs <= this.ltpCacheTtlMs;
+      const cachedIsNumber = typeof cached.ltp === 'number' && !Number.isNaN(cached.ltp);
+      if (cachedFresh && cachedIsNumber) {
+        resolvedLtp = cached.ltp;
+        resolvedLtpTs = cached.ltpTs;
+      } else if (cached.ltpTs && now - cached.ltpTs > this.ltpCacheTtlMs) {
+        cached.ltp = undefined;
+        cached.ltpTs = undefined;
+      }
+    }
+
     // Update LTP if changed OR cell is empty/placeholder
-    if (quote.ltp !== undefined && (cached.ltp !== quote.ltp || hasPlaceholder(ltpCell))) {
-      const valueChanged = cached.ltp !== quote.ltp && !hasPlaceholder(ltpCell);
+    if (resolvedLtp !== null && resolvedLtp !== undefined && (cached.ltp !== resolvedLtp || hasPlaceholder(ltpCell))) {
+      const valueChanged = cached.ltp !== resolvedLtp && !hasPlaceholder(ltpCell);
       const span = getOrCreateSpan(ltpCell, 'font-medium');
-      span.textContent = `₹${Utils.formatNumber(quote.ltp)}`;
+      span.textContent = `₹${Utils.formatNumber(resolvedLtp)}`;
 
       // Add highlight animation if value actually changed
       if (valueChanged) {
         addHighlight(ltpCell, 'value-updated');
       }
 
-      cached.ltp = quote.ltp;
+      cached.ltp = resolvedLtp;
+      cached.ltpTs = resolvedLtpTs;
+    } else if (resolvedLtp === null || resolvedLtp === undefined) {
+      ltpCell.textContent = '-';
+      cached.ltp = undefined;
+      cached.ltpTs = undefined;
     }
 
     // Update % change if changed OR cell is empty/placeholder
@@ -2719,12 +2804,13 @@ class DashboardApp {
     const ts = Date.now();
 
     quotes.forEach((quote) => {
-      const exchange = quote.exchange || quote.exch || quote.exchange_segment || quote.exchangeSegment;
+      const hydratedQuote = this.hydrateQuoteWithLtp(quote, ts);
+      const exchange = hydratedQuote.exchange || hydratedQuote.exch || hydratedQuote.exchange_segment || hydratedQuote.exchangeSegment;
       const candidateSymbols = [
-        quote.symbol,
-        quote.trading_symbol,
-        quote.tradingSymbol,
-        quote.tradingsymbol,
+        hydratedQuote.symbol,
+        hydratedQuote.trading_symbol,
+        hydratedQuote.tradingSymbol,
+        hydratedQuote.tradingsymbol,
       ];
 
       const keys = new Set();
@@ -2737,13 +2823,13 @@ class DashboardApp {
         const mappings = this.watchlistSymbolIndex.get(key);
         if (!mappings || !mappings.length) return;
         mappings.forEach(({ watchlistId, symbolId }) => {
-          this.updateSymbolQuote(watchlistId, symbolId, quote);
+          this.updateSymbolQuote(watchlistId, symbolId, hydratedQuote);
           updatedWatchlists.add(watchlistId);
         });
       });
 
       if (this.quickOrder && typeof this.quickOrder.applyQuoteUpdate === 'function') {
-        this.quickOrder.applyQuoteUpdate(quote);
+        this.quickOrder.applyQuoteUpdate(hydratedQuote);
       }
     });
 
