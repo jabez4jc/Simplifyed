@@ -113,6 +113,7 @@ export function errorHandler(err, req, res, next) {
       status: 'error',
       message: err.message,
       code: 'EXTERNAL_API_ERROR',
+      ...(err.details ? { details: err.details } : {}),
     });
   }
 

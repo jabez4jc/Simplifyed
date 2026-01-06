@@ -215,7 +215,15 @@ class PollingService {
     } catch (error) {
       log.error('Failed to refresh instance', error, { instance_id: instanceId });
       const message = `Refresh failed for instance ${instanceId}: ${error.message || 'OpenAlgo call failed. Verify host URL and API key.'}`;
-      throw new ExternalAPIError(message);
+      const details = {
+        instance_id: instanceId,
+        endpoint: error?.endpoint,
+        status_code: error?.statusCode,
+        is_html_response: !!error?.isHtmlResponse,
+        is_dns_error: !!error?.isDnsError,
+      };
+      const statusCode = error?.statusCode || 502;
+      throw new ExternalAPIError('OpenAlgo', message, statusCode, details);
     }
   }
 

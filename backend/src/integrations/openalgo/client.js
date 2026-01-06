@@ -771,13 +771,17 @@ class OpenAlgoClient extends EventEmitter {
 
         // Log 5xx server errors that will be retried
         if (error.statusCode >= 500) {
+          const rawPreview = typeof error.rawBody === 'string' ? error.rawBody.slice(0, 200) : undefined;
           log.warn('OpenAlgo API Server Error (5xx) - will retry', {
             endpoint,
             statusCode: error.statusCode,
             attempt: attempt + 1,
             maxRetries,
             isCritical,
-            error: error.message
+            error: error.message,
+            isHtmlResponse: !!error.isHtmlResponse,
+            isDnsError: !!error.isDnsError,
+            responsePreview: rawPreview,
           });
         }
 
@@ -882,6 +886,10 @@ class OpenAlgoClient extends EventEmitter {
       endpoint,
       maxRetries,
       isCritical,
+      statusCode: lastError?.statusCode,
+      error: lastError?.message,
+      isHtmlResponse: !!lastError?.isHtmlResponse,
+      isDnsError: !!lastError?.isDnsError,
     });
 
     throw lastError;
@@ -1289,10 +1297,17 @@ class OpenAlgoClient extends EventEmitter {
           trimmed.startsWith('<!DOCTYPE html') ||
           trimmed.startsWith('<html');
 
+        const details = {
+          status_code: response.status,
+          content_type: contentType,
+          is_html: looksHtml,
+          body_preview: trimmed.substring(0, 200),
+        };
         const jsonError = new OpenAlgoError(
           `Invalid JSON response: ${responseText.substring(0, 200)}`,
           url,
-          response.status
+          response.status,
+          details
         );
         jsonError.statusCode = response.status;
 
@@ -1306,19 +1321,30 @@ class OpenAlgoClient extends EventEmitter {
 
       // Check if request was successful
       if (!response.ok) {
+        const details = {
+          status_code: response.status,
+          response_status: responseData?.status,
+          response_message: responseData?.message,
+        };
         throw new OpenAlgoError(
           responseData.message || `HTTP ${response.status}: ${response.statusText}`,
           url,
-          response.status
+          response.status,
+          details
         );
       }
 
       // Check OpenAlgo response status
       if (responseData.status === 'error') {
+        const details = {
+          response_status: responseData?.status,
+          response_message: responseData?.message,
+        };
         throw new OpenAlgoError(
           responseData.message || 'OpenAlgo API returned error status',
           url,
-          response.status
+          response.status,
+          details
         );
       }
 
@@ -1328,8 +1354,10 @@ class OpenAlgoClient extends EventEmitter {
 
       if (error.name === 'AbortError') {
         throw new OpenAlgoError(
-          `Request timeout after ${this.timeout}ms`,
-          url
+          `Request timeout after ${effectiveTimeout}ms`,
+          url,
+          504,
+          { timeout_ms: effectiveTimeout }
         );
       }
 
@@ -1348,7 +1376,9 @@ class OpenAlgoClient extends EventEmitter {
 
       const networkError = new OpenAlgoError(
         `Network error: ${error.message}`,
-        url
+        url,
+        502,
+        { network_error: error.message }
       );
 
       // Mark DNS errors so circuit breaker can handle them appropriately

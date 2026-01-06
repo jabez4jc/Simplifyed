@@ -113,9 +113,12 @@ export class DatabaseError extends AppError {
  * External API Error (for OpenAlgo)
  */
 export class ExternalAPIError extends AppError {
-  constructor(service, message = 'External API call failed', statusCode = 502) {
+  constructor(service, message = 'External API call failed', statusCode = 502, details = null) {
     super(`${service}: ${message}`, statusCode);
     this.service = service;
+    if (details) {
+      this.details = details;
+    }
   }
 }
 
@@ -123,9 +126,12 @@ export class ExternalAPIError extends AppError {
  * OpenAlgo specific error
  */
 export class OpenAlgoError extends ExternalAPIError {
-  constructor(message, endpoint = null, statusCode = 502) {
-    super('OpenAlgo', message, statusCode);
+  constructor(message, endpoint = null, statusCode = 502, details = null) {
+    super('OpenAlgo', message, statusCode, details);
     this.endpoint = endpoint;
+    if (details) {
+      this.details = details;
+    }
   }
 
   toJSON() {
@@ -135,6 +141,7 @@ export class OpenAlgoError extends ExternalAPIError {
       service: 'OpenAlgo',
       endpoint: this.endpoint,
       statusCode: this.statusCode,
+      ...(this.details ? { details: this.details } : {}),
     };
   }
 }
