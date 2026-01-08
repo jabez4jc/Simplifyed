@@ -195,6 +195,9 @@ install_system_packages() {
         wget \
         git \
         build-essential \
+        python3 \
+        python3-dev \
+        python3-setuptools \
         sqlite3 \
         nginx \
         certbot \
@@ -204,6 +207,10 @@ install_system_packages() {
         rsync \
         dnsutils \
         software-properties-common
+
+    if apt-cache show python3-distutils >/dev/null 2>&1; then
+        apt-get install -y -qq python3-distutils
+    fi
 
     print_success "System packages installed"
 }

@@ -3299,12 +3299,18 @@ body {
   gap: var(--space-4);
 }
 
+.positions-summary-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
 .positions-summary-divider {
   display: inline-block;
   width: 1px;
   height: 14px;
   background-color: var(--color-neutral-300);
-  margin: 0 var(--space-3);
+  margin: 0 var(--space-1);
 }
 
 .positions-panel-actions {

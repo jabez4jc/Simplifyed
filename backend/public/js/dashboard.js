@@ -5032,17 +5032,17 @@ class DashboardApp {
     const livePnl = this.latestWatchlistPositionsData?.livePnl ?? 0;
     const analyzerPnl = this.latestWatchlistPositionsData?.analyzerPnl ?? 0;
     summaryEl.innerHTML = `
-      <div class="flex items-center gap-6 flex-wrap">
-        <div class="flex items-center gap-3">
+      <div class="flex items-center gap-4 flex-wrap">
+        <div class="positions-summary-group">
           <span class="text-[0.65rem] uppercase tracking-[0.25em] text-neutral-500">Live Open:</span>
           <span class="text-sm font-semibold text-neutral-900">${liveOpen}</span>
           <span class="text-[0.65rem] uppercase tracking-[0.25em] text-neutral-500">Live P&amp;L:</span>
           <span class="text-sm font-semibold ${Utils.getPnLColorClass(livePnl)}">
             ${Utils.formatCurrency(livePnl)}
           </span>
-          <span class="positions-summary-divider"></span>
         </div>
-        <div class="flex items-center gap-3">
+        <span class="positions-summary-divider"></span>
+        <div class="positions-summary-group">
           <span class="text-[0.65rem] uppercase tracking-[0.25em] text-neutral-500">Analyzer Open:</span>
           <span class="text-sm font-semibold text-neutral-900">${analyzerOpen}</span>
           <span class="text-[0.65rem] uppercase tracking-[0.25em] text-neutral-500">Analyzer P&amp;L:</span>
