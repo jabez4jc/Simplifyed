@@ -28,7 +28,10 @@ class QuickOrderService {
     this.symbolResolutionCacheTtl = 5 * 60 * 1000; // 5 minutes
     this.symbolResolutionCacheMaxSize = 2000; // bounded cache
     this.optionChainQuoteCache = new Map(); // key: inst|exch|underlying|expiry -> { map, fetchedAt }
-    this.optionChainQuoteTtlMs = 10000; // retain option chain quotes for 10s to avoid blanks
+    this.optionChainQuoteTtlMs = 20000; // retain option chain quotes for 20s to avoid blanks
+    this.optionPreviewQuoteCache = new Map(); // key: exch::symbol -> { ltp, changePercent, fetchedAt }
+    this.optionPreviewQuoteTtlMs = 60000; // keep last-good preview quotes for 60s
+    this.optionPreviewStaleMs = 15000; // mark UI as stale after 15s
   }
   /**
    * Place quick order from watchlist
@@ -3041,7 +3044,45 @@ class QuickOrderService {
 
     const chainHasAll = this._hasAllQuotes(optionChainQuotes, requestedKeys, true);
     const fallbackQuotes = chainHasAll ? null : await this._getQuotesFromCache(marketDataInstance, quoteRequests);
-    const quotesMap = this._mergeQuoteMaps(optionChainQuotes, fallbackQuotes);
+    let quotesMap = this._mergeQuoteMaps(optionChainQuotes, fallbackQuotes);
+    const now = Date.now();
+
+    // Use a longer-lived symbol cache to reduce blanks when live fetches miss.
+    const staleEntries = marketDataFeedService.getCachedQuoteEntriesForSymbols(
+      quoteRequests,
+      { ttlMs: this.optionPreviewQuoteTtlMs }
+    );
+    if (staleEntries?.cached?.length) {
+      const staleMap = new Map();
+      staleEntries.cached.forEach((entry) => {
+        const key = this._buildQuoteMatchKey(
+          entry.quote?.exchange || entry.quote?.exch,
+          entry.quote?.symbol || entry.quote?.trading_symbol || entry.quote?.tradingsymbol
+        );
+        if (key) {
+          staleMap.set(key, { ...entry.quote, fetchedAt: entry.fetchedAt });
+        }
+      });
+      quotesMap = this._mergeQuoteMaps(quotesMap, staleMap);
+    }
+
+    // Refresh last-good preview quotes and trim expired entries.
+    this.optionPreviewQuoteCache.forEach((entry, key) => {
+      if (!entry?.fetchedAt || now - entry.fetchedAt > this.optionPreviewQuoteTtlMs) {
+        this.optionPreviewQuoteCache.delete(key);
+      }
+    });
+    requestedKeys.forEach((key) => {
+      const quote = quotesMap.get(key);
+      if (!quote) return;
+      const ltpValue = this._extractLtpFromQuote(quote);
+      if (ltpValue === null) return;
+      this.optionPreviewQuoteCache.set(key, {
+        ltp: ltpValue,
+        changePercent: this._extractChangePercentFromQuote(quote),
+        fetchedAt: quote.fetchedAt || now,
+      });
+    });
 
     const buildLegResponse = (resolution) => {
       if (!resolution?.symbol) {
@@ -3049,9 +3090,21 @@ class QuickOrderService {
       }
 
       const quoteKey = this._buildQuoteMatchKey(derivativeExchange, resolution.symbol);
-      const quote = quoteKey ? quotesMap.get(quoteKey) : null;
-      const ltp = quote ? this._extractLtpFromQuote(quote) : null;
-      const changePercent = quote ? this._extractChangePercentFromQuote(quote) : null;
+      let quote = quoteKey ? quotesMap.get(quoteKey) : null;
+      let ltp = quote ? this._extractLtpFromQuote(quote) : null;
+      let changePercent = quote ? this._extractChangePercentFromQuote(quote) : null;
+      let fetchedAt = quote?.fetchedAt || null;
+
+      if (ltp === null && quoteKey) {
+        const cached = this.optionPreviewQuoteCache.get(quoteKey);
+        if (cached && cached.fetchedAt && now - cached.fetchedAt <= this.optionPreviewQuoteTtlMs) {
+          ltp = cached.ltp;
+          changePercent = cached.changePercent ?? null;
+          fetchedAt = cached.fetchedAt;
+          quote = cached;
+        }
+      }
+      const quoteStale = fetchedAt ? now - fetchedAt > this.optionPreviewStaleMs : false;
 
       return {
         symbol: resolution.symbol,
@@ -3063,6 +3116,7 @@ class QuickOrderService {
         token: resolution.token || null,
         ltp,
         changePercent,
+        quoteStale,
       };
     };
 

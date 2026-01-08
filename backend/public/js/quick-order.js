@@ -1378,6 +1378,9 @@ class QuickOrderHandler {
     const legLtp = leg.ltp ?? leg.lastPrice ?? leg.last_price ?? leg.price;
     const ltpDefined = typeof legLtp === 'number' && !Number.isNaN(legLtp);
     const ltpText = ltpDefined ? `₹${Utils.formatNumber(legLtp)}` : '—';
+    const ltpClass = leg.quoteStale || !ltpDefined
+      ? 'text-base font-semibold text-neutral-400'
+      : 'text-base font-semibold';
     const legChange = leg.changePercent ?? leg.change_percent;
     const changeDefined = typeof legChange === 'number' && !Number.isNaN(legChange);
     const changeText = changeDefined
@@ -1393,7 +1396,7 @@ class QuickOrderHandler {
           ${label} • <span class="font-mono">${Utils.escapeHTML(leg.symbol || '')}</span> • Strike ${leg.strike ?? '—'} • Lot ${leg.lotSize ?? '—'}
         </div>
         <div class="flex items-baseline gap-2">
-          <span class="text-base font-semibold" ${quoteKey ? `data-quote-key="${Utils.escapeHTML(quoteKey)}" data-quote-role="ltp"` : ''}>${ltpText}</span>
+          <span class="${ltpClass}" ${quoteKey ? `data-quote-key="${Utils.escapeHTML(quoteKey)}" data-quote-role="ltp"` : ''}>${ltpText}</span>
         </div>
       </div>
     `;
@@ -1480,6 +1483,7 @@ class QuickOrderHandler {
       ltpNodes.forEach((node) => {
         if (quote.ltp !== undefined) {
           node.textContent = `₹${Utils.formatNumber(quote.ltp)}`;
+          node.classList.remove('text-neutral-400');
         }
       });
 

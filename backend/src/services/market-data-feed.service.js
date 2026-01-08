@@ -420,6 +420,34 @@ class MarketDataFeedService extends EventEmitter {
     return { cached, missing };
   }
 
+  /**
+   * Retrieve cached quotes with timestamps for symbols if fresh, and return missing symbols
+   * @param {Array} symbols - Array of {exchange, symbol}
+   * @param {Object} options - Options
+   * @param {number} options.ttlMs - Custom TTL in milliseconds (default: QUOTE_TTL_MS for display)
+   * @param {boolean} options.orderCritical - Use aggressive TTL for order-critical operations
+   * @returns {{ cached: Array<{quote: Object, fetchedAt: number}>, missing: Array }}
+   */
+  getCachedQuoteEntriesForSymbols(symbols = [], options = {}) {
+    const opts = typeof options === 'number' ? { ttlMs: options } : options;
+    const { orderCritical = false } = opts;
+    const ttlMs = opts.ttlMs ?? (orderCritical ? this.QUOTE_TTL_ORDER_MS : this._getQuoteTtlMs());
+
+    const now = Date.now();
+    const cached = [];
+    const missing = [];
+    symbols.forEach((s) => {
+      const key = this._symbolKey(s.exchange, s.symbol);
+      const entry = this.symbolQuoteCache.get(key);
+      if (entry && entry.fetchedAt && now - entry.fetchedAt <= ttlMs) {
+        cached.push({ quote: entry.quote, fetchedAt: entry.fetchedAt });
+      } else {
+        missing.push(s);
+      }
+    });
+    return { cached, missing };
+  }
+
   _getQuoteTtlMs() {
     return this.hasOpenPositions ? this.quoteTtlActiveMs : this.quoteTtlIdleMs;
   }
