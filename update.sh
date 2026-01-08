@@ -141,9 +141,28 @@ if [[ -f "$ENV_FILE" && -f "$ENV_EXAMPLE" ]]; then
   missing_keys=$(comm -13 <(grep -o '^[A-Za-z0-9_]\+=' "$ENV_FILE" | sed 's/=.*//' | sort -u) \
                         <(grep -o '^[A-Za-z0-9_]\+=' "$ENV_EXAMPLE" | sed 's/=.*//' | sort -u))
   if [[ -n "$missing_keys" ]]; then
-    echo "⚠️  The following keys are in .env.example but missing from your .env:"
-    echo "$missing_keys"
-    echo "    Please open $ENV_FILE and add any required values before restarting if needed."
+    optional_env_keys=(
+      OPENALGO_TARGETS
+      TRADINGVIEW_BROADCAST_DEFAULT_RPS
+      TRADINGVIEW_BROADCAST_RETRIES
+      TRADINGVIEW_BROADCAST_RETRY_DELAY_MS
+      TRADINGVIEW_BROADCAST_TIMEOUT_MS
+      WEBHOOK_TOKEN
+      WS_GATEWAY_ENABLED
+      WS_GATEWAY_PATH
+    )
+    optional_regex="$(printf "|%s" "${optional_env_keys[@]}")"
+    optional_regex="${optional_regex#|}"
+    missing_required_keys=$(echo "$missing_keys" | grep -v -E "^(${optional_regex})$" || true)
+    if [[ -n "$missing_required_keys" ]]; then
+      echo "⚠️  The following required keys are in .env.example but missing from your .env:"
+      echo "$missing_required_keys"
+      echo "    Please open $ENV_FILE and add any required values before restarting if needed."
+    else
+      echo "ℹ Only optional keys are missing from .env:"
+      echo "$missing_keys"
+      echo "  You can ignore these unless you use TradingView broadcast or WS gateway."
+    fi
   else
     echo "✓ .env is up to date with .env.example keys."
   fi
