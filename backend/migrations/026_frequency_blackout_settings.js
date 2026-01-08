@@ -29,6 +29,7 @@ export const up = async (db) => {
       ('market_data_feed.multiquote_cooldown_idle_ms', '15000', 'MultiQuotes cooldown when idle (ms)', 'market_data_feed', 'number'),
       ('market_data_feed.multiquote_cooldown_active_ms', '10000', 'MultiQuotes cooldown when positions exist (ms)', 'market_data_feed', 'number'),
       ('market_data_feed.funds_interval_ms', '180000', 'Funds refresh interval (ms)', 'market_data_feed', 'number')
+    ;
   `);
 };
 
