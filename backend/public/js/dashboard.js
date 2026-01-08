@@ -13,14 +13,19 @@ class DashboardApp {
     this.pollingInterval = null;
     // Track watchlist quote polling intervals
     this.watchlistPollers = new Map();
-    // Track positions polling interval (10 seconds)
+    // Track positions polling interval (dynamic based on open positions)
     this.positionsPollingInterval = null;
+    this.positionsPollingMs = 30000;
+    this.positionsPollingIdleMs = 30000;
+    this.positionsPollingActiveMs = 8000;
+    this.ltpCacheTtlIdleMs = 15000;
+    this.ltpCacheTtlActiveMs = 10000;
     // Cache for quote data to prevent unnecessary DOM updates
     // Structure: { watchlistId_symbolId: { ltp, changePercent, volume } }
     this.quoteCache = new Map();
     // Shared LTP cache (exchange|symbol -> { ltp, ts })
     this.latestLtpByKey = new Map();
-    this.ltpCacheTtlMs = 10000;
+    this.ltpCacheTtlMs = 15000;
     // Track latest quote snapshot timestamp per watchlist
     this.watchlistQuoteSnapshots = new Map();
     this.isSidebarCollapsed = false;
@@ -745,6 +750,7 @@ class DashboardApp {
       const cfg = res?.data || {};
       this.wsGatewayEnabled = Boolean(cfg.wsGatewayEnabled);
       this.wsGatewayPath = cfg.wsGatewayPath || '/stream';
+      this.applyMarketDataConfig(cfg.marketData || {});
       if (cfg.webhookToken) {
         window.WEBHOOK_TOKEN = cfg.webhookToken;
         window.appConfig = { ...(window.appConfig || {}), webhookToken: cfg.webhookToken };
@@ -752,6 +758,24 @@ class DashboardApp {
     } catch (err) {
       this.wsGatewayEnabled = false;
     }
+  }
+
+  applyMarketDataConfig(md = {}) {
+    if (typeof md.positionsPollIdleMs === 'number') {
+      this.positionsPollingIdleMs = md.positionsPollIdleMs;
+    }
+    if (typeof md.positionsPollActiveMs === 'number') {
+      this.positionsPollingActiveMs = md.positionsPollActiveMs;
+    }
+    if (typeof md.ltpCacheIdleMs === 'number') {
+      this.ltpCacheTtlIdleMs = md.ltpCacheIdleMs;
+    }
+    if (typeof md.ltpCacheActiveMs === 'number') {
+      this.ltpCacheTtlActiveMs = md.ltpCacheActiveMs;
+    }
+
+    const hasOpenPositions = (this.latestWatchlistPositionsData?.overallOpen || 0) > 0;
+    this._updatePositionsPollingInterval(hasOpenPositions);
   }
 
   isAdmin() {
@@ -1749,7 +1773,7 @@ class DashboardApp {
 
         <!-- Collapsible Positions Panel -->
         <div id="positions-panel-compact" class="positions-panel-compact collapsed">
-          <div class="positions-panel-header">
+          <div class="positions-panel-header" onclick="app.togglePositionsPanel()">
             <div class="positions-panel-title">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2-2v2m8 0V6a2 2 0 012 2v6a2 2 0 01-2 2H8a2 2 0 01-2-2V8a2 2 0 012-2h8z" />
@@ -1760,12 +1784,12 @@ class DashboardApp {
               <span class="text-neutral-500 text-xs">Loading…</span>
             </div>
             <div class="positions-panel-actions">
-              <button class="btn-icon btn-sm" onclick="app.requestWatchlistRefresh({ showLoader: true, force: true })" title="Refresh">
+              <button class="btn-icon btn-sm" onclick="event.stopPropagation(); app.requestWatchlistRefresh({ showLoader: true, force: true })" title="Refresh">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h4M20 20v-5h-4M5 9a7 7 0 0112-4M19 15a7 7 0 01-12 4" />
                 </svg>
               </button>
-              <button class="btn btn-exit btn-sm btn-icon-only" onclick="app.closeAllOpenPositions()" title="Close All">
+              <button class="btn btn-exit btn-sm btn-icon-only" onclick="event.stopPropagation(); app.closeAllOpenPositions()" title="Close All">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                 </svg>
@@ -2098,7 +2122,7 @@ class DashboardApp {
                   </td>
                   <td class="col-expiry">${sym.expiry ? Utils.escapeHTML(sym.expiry) : '-'}</td>
                   <td class="col-strike">${sym.strike ? sym.strike : '-'}</td>
-                  <td class="col-lot">${sym.lot_size || 1}</td>
+                  <td class="col-lot">${sym.lot_size || sym.lotsize || 1}</td>
                   <td class="col-ltp ltp-cell" data-symbol-id="${sym.id}">
                     <span class="text-neutral-500">-</span>
                   </td>
@@ -2412,13 +2436,32 @@ class DashboardApp {
     }
     this.positionsPollingInterval = setInterval(() => {
       this.requestWatchlistRefresh();
-    }, 10000);
+    }, this.positionsPollingMs);
   }
 
   stopPositionsPolling() {
     if (this.positionsPollingInterval) {
       clearInterval(this.positionsPollingInterval);
       this.positionsPollingInterval = null;
+    }
+  }
+
+  _updatePositionsPollingInterval(hasOpenPositions) {
+    const desiredInterval = hasOpenPositions ? this.positionsPollingActiveMs : this.positionsPollingIdleMs;
+    const desiredLtpTtl = hasOpenPositions ? this.ltpCacheTtlActiveMs : this.ltpCacheTtlIdleMs;
+
+    this.ltpCacheTtlMs = desiredLtpTtl;
+
+    if (this.positionsPollingMs === desiredInterval) {
+      return;
+    }
+    this.positionsPollingMs = desiredInterval;
+
+    if (this.positionsPollingInterval) {
+      clearInterval(this.positionsPollingInterval);
+      this.positionsPollingInterval = setInterval(() => {
+        this.requestWatchlistRefresh();
+      }, this.positionsPollingMs);
     }
   }
 
@@ -4953,6 +4996,7 @@ class DashboardApp {
         normalizedAnalyzer: normalized.analyzerInstances.length,
         rawSample: response.data?.instances?.slice?.(0, 2) || [],
       });
+      this._updatePositionsPollingInterval(normalized.overallOpen > 0);
       this.latestWatchlistPositionsData = normalized;
       this.updateWatchlistPositionsSummary(normalized);
       positionsPanel.innerHTML = this.renderWatchlistPositionsMarkup(normalized);
@@ -4983,19 +5027,27 @@ class DashboardApp {
     if (!summaryEl) return;
 
     const relativeText = refreshedAt ? `Updated ${Utils.formatRelativeTime(refreshedAt)}` : 'Updated just now';
+    const liveOpen = this.latestWatchlistPositionsData?.liveOpen ?? 0;
+    const analyzerOpen = this.latestWatchlistPositionsData?.analyzerOpen ?? 0;
+    const livePnl = this.latestWatchlistPositionsData?.livePnl ?? 0;
+    const analyzerPnl = this.latestWatchlistPositionsData?.analyzerPnl ?? 0;
     summaryEl.innerHTML = `
-      <div class="flex items-center">
+      <div class="flex items-center gap-6 flex-wrap">
         <div class="flex items-center gap-3">
-          <span class="text-[0.65rem] uppercase tracking-[0.25em] text-neutral-500">Total Open:</span>
-          <span class="text-sm font-semibold text-neutral-900">${overallOpen}</span>
+          <span class="text-[0.65rem] uppercase tracking-[0.25em] text-neutral-500">Live Open:</span>
+          <span class="text-sm font-semibold text-neutral-900">${liveOpen}</span>
+          <span class="text-[0.65rem] uppercase tracking-[0.25em] text-neutral-500">Live P&amp;L:</span>
+          <span class="text-sm font-semibold ${Utils.getPnLColorClass(livePnl)}">
+            ${Utils.formatCurrency(livePnl)}
+          </span>
+          <span class="positions-summary-divider"></span>
         </div>
-        <div style="width: 4rem;"></div>
-        <div class="w-px h-4 bg-neutral-300"></div>
-        <div style="width: 4rem;"></div>
         <div class="flex items-center gap-3">
-          <span class="text-[0.65rem] uppercase tracking-[0.25em] text-neutral-500">Overall P&L:</span>
-          <span class="text-sm font-semibold ${Utils.getPnLColorClass(overallPnl)}">
-            ${Utils.formatCurrency(overallPnl)}
+          <span class="text-[0.65rem] uppercase tracking-[0.25em] text-neutral-500">Analyzer Open:</span>
+          <span class="text-sm font-semibold text-neutral-900">${analyzerOpen}</span>
+          <span class="text-[0.65rem] uppercase tracking-[0.25em] text-neutral-500">Analyzer P&amp;L:</span>
+          <span class="text-sm font-semibold ${Utils.getPnLColorClass(analyzerPnl)}">
+            ${Utils.formatCurrency(analyzerPnl)}
           </span>
         </div>
       </div>
@@ -5161,6 +5213,22 @@ class DashboardApp {
     const analyzerInstances = instances
       .filter(inst => inst.is_analyzer_mode && inst.positions.length > 0);
 
+    const sumOpen = (list) => list.reduce(
+      (sum, inst) => sum + (typeof inst.open_positions_count === 'number'
+        ? inst.open_positions_count
+        : (inst.positions || []).length),
+      0
+    );
+    const sumPnl = (list) => list.reduce(
+      (sum, inst) => sum + (typeof inst.total_pnl === 'number' ? inst.total_pnl : 0),
+      0
+    );
+
+    const liveOpen = sumOpen(liveInstances);
+    const analyzerOpen = sumOpen(analyzerInstances);
+    const livePnl = sumPnl(liveInstances);
+    const analyzerPnl = sumPnl(analyzerInstances);
+
     const totalOpen = typeof data.overall_open_positions === 'number'
       ? data.overall_open_positions
       : instances.reduce(
@@ -5171,6 +5239,10 @@ class DashboardApp {
     return {
       overallOpen: totalOpen,
       overallPnl: data.overall_total_pnl ?? 0,
+      liveOpen,
+      analyzerOpen,
+      livePnl,
+      analyzerPnl,
       liveInstances,
       analyzerInstances,
       refreshedAt: data.refreshed_at || new Date().toISOString(),

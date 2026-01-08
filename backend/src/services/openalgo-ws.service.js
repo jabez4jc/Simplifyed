@@ -1,9 +1,22 @@
 import EventEmitter from 'events';
 import WebSocket from 'ws';
 import { log } from '../core/logger.js';
+import { isQuoteEndpointBlackout } from './instance-health.service.js';
+import { toISTDate } from '../utils/time.js';
 
 const MAX_SYMBOLS_PER_INSTANCE = 500;
 const RETRY_MS = 3000;
+const QUOTE_BLACKOUT_END = { hour: 8, minute: 45 };
+
+function msUntilQuoteBlackoutEnds() {
+  const ist = toISTDate();
+  const nowMinutes = ist.getHours() * 60 + ist.getMinutes();
+  const endMinutes = QUOTE_BLACKOUT_END.hour * 60 + QUOTE_BLACKOUT_END.minute;
+  if (nowMinutes >= endMinutes) return 0;
+  const msUntil = (endMinutes - nowMinutes) * 60 * 1000;
+  const extraMs = (60 - ist.getSeconds()) * 1000 - ist.getMilliseconds();
+  return Math.max(0, msUntil + extraMs);
+}
 
 function serializeSubscribe(symbols) {
   return symbols.map((s) => ({
@@ -42,6 +55,15 @@ class OpenAlgoWsConnection {
 
   _connect() {
     try {
+      if (isQuoteEndpointBlackout()) {
+        const delay = msUntilQuoteBlackoutEnds() || 5 * 60 * 1000;
+        log.info('OpenAlgo WS connect skipped during quote blackout', {
+          instance: this.instance.name || this.instance.id,
+          retryInMs: delay,
+        });
+        setTimeout(() => this._connect(), delay);
+        return;
+      }
       const wsUrl = buildWsUrl(this.instance);
       if (!wsUrl) {
         log.warn('OpenAlgo WS missing URL', { instance: this.instance.name || this.instance.id });
@@ -101,6 +123,13 @@ class OpenAlgoWsConnection {
     this.ws.send(JSON.stringify(payload));
   }
 
+  close() {
+    if (this.ws) {
+      try { this.ws.terminate(); } catch (_) {}
+    }
+    this.connected = false;
+  }
+
   setSubscriptions(symbols) {
     this.desired = new Set(symbols.map((s) => `${s.exchange}|${s.symbol}`));
     this._syncSubscriptions();
@@ -144,6 +173,13 @@ class OpenAlgoWsService extends EventEmitter {
    * @param {Array<{symbol:string, exchange:string}>} symbols
    */
   syncAll(symbols = [], preferredInstances = new Map()) {
+    if (isQuoteEndpointBlackout()) {
+      this.stop();
+      return;
+    }
+    if (this.connections.size === 0 && this.instances.length > 0) {
+      this.start(this.instances);
+    }
     if (this.connections.size === 0) return;
     const symbolsUpper = symbols.map((s) => ({
       symbol: (s.symbol || '').toUpperCase(),
@@ -199,6 +235,13 @@ class OpenAlgoWsService extends EventEmitter {
       });
     }
     return subs;
+  }
+
+  stop() {
+    for (const [, conn] of this.connections.entries()) {
+      conn.close();
+    }
+    this.connections.clear();
   }
 }
 

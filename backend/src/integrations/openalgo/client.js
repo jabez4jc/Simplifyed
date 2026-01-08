@@ -11,7 +11,7 @@ import config from '../../core/config.js';
 import { toISTISOString } from '../../utils/time.js';
 import { maskApiKey } from '../../utils/sanitizers.js';
 import settingsService from '../../services/settings.service.js';
-import { isBlackout } from '../../services/instance-health.service.js';
+import { isGeneralEndpointBlackout, isQuoteEndpointBlackout } from '../../services/instance-health.service.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -651,8 +651,15 @@ class OpenAlgoClient extends EventEmitter {
    * @returns {Promise<Object>} - API response
    */
   async request(instance, endpoint, data = {}, method = 'POST', options = {}) {
-    if (isBlackout()) {
-      const err = new Error('Market closed (OpenAlgo calls paused 01:00-08:00 IST)');
+    const endpointKey = (endpoint || '').toLowerCase();
+    const isQuoteEndpoint = endpointKey.includes('quotes') || endpointKey.includes('optionchain');
+    const inBlackout = isQuoteEndpoint ? isQuoteEndpointBlackout() : isGeneralEndpointBlackout();
+    if (inBlackout) {
+      const err = new Error(
+        isQuoteEndpoint
+          ? 'Market closed (Quotes/MultiQuotes/OptionChain/WebSocket calls paused 02:00-08:45 IST)'
+          : 'Market closed (OpenAlgo calls paused 03:00-08:00 IST)'
+      );
       err.code = 'MARKET_CLOSED';
       throw err;
     }

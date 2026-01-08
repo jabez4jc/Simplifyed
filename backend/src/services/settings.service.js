@@ -10,9 +10,195 @@ import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { ValidationError } from '../core/errors.js';
 
+const ESSENTIAL_SETTINGS = [
+  {
+    key: 'market_hours.quote_blackout_start',
+    value: '02:00',
+    description: 'Block quote endpoints (Quotes/MultiQuotes/OptionChain) starting this time (IST).',
+    category: 'market_hours',
+    dataType: 'string',
+  },
+  {
+    key: 'market_hours.quote_blackout_end',
+    value: '08:45',
+    description: 'Resume quote endpoints after this time (IST).',
+    category: 'market_hours',
+    dataType: 'string',
+  },
+  {
+    key: 'market_hours.general_blackout_start',
+    value: '03:00',
+    description: 'Block other OpenAlgo endpoints starting this time (IST).',
+    category: 'market_hours',
+    dataType: 'string',
+  },
+  {
+    key: 'market_hours.general_blackout_end',
+    value: '08:00',
+    description: 'Resume other OpenAlgo endpoints after this time (IST).',
+    category: 'market_hours',
+    dataType: 'string',
+  },
+  {
+    key: 'instance_health.ping_healthy_interval_ms',
+    value: '300000',
+    description: 'How often healthy instances are pinged (ms).',
+    category: 'instance_health',
+    dataType: 'number',
+  },
+  {
+    key: 'instance_health.ping_unhealthy_interval_ms',
+    value: '180000',
+    description: 'How often unhealthy instances are pinged before pausing (ms).',
+    category: 'instance_health',
+    dataType: 'number',
+  },
+  {
+    key: 'instance_health.ping_unhealthy_max_attempts',
+    value: '5',
+    description: 'Stop auto-pinging after this many failures; requires manual refresh.',
+    category: 'instance_health',
+    dataType: 'number',
+  },
+  {
+    key: 'instance_health.analyzer_check_interval_ms',
+    value: '15000',
+    description: 'How often analyzer status is refreshed (ms).',
+    category: 'instance_health',
+    dataType: 'number',
+  },
+  {
+    key: 'market_data_feed.quote_ttl_idle_ms',
+    value: '15000',
+    description: 'Quote cache TTL when no open positions (ms).',
+    category: 'market_data_feed',
+    dataType: 'number',
+  },
+  {
+    key: 'market_data_feed.quote_ttl_active_ms',
+    value: '10000',
+    description: 'Quote cache TTL when open positions exist (ms).',
+    category: 'market_data_feed',
+    dataType: 'number',
+  },
+  {
+    key: 'market_data_feed.position_interval_idle_ms',
+    value: '30000',
+    description: 'Positionbook refresh cadence when idle (ms).',
+    category: 'market_data_feed',
+    dataType: 'number',
+  },
+  {
+    key: 'market_data_feed.position_interval_active_ms',
+    value: '8000',
+    description: 'Positionbook refresh cadence when positions exist (ms).',
+    category: 'market_data_feed',
+    dataType: 'number',
+  },
+  {
+    key: 'market_data_feed.tradebook_interval_idle_ms',
+    value: '30000',
+    description: 'Tradebook refresh cadence when idle (ms).',
+    category: 'market_data_feed',
+    dataType: 'number',
+  },
+  {
+    key: 'market_data_feed.tradebook_interval_active_ms',
+    value: '8000',
+    description: 'Tradebook refresh cadence when positions exist (ms).',
+    category: 'market_data_feed',
+    dataType: 'number',
+  },
+  {
+    key: 'market_data_feed.orderbook_interval_ms',
+    value: '30000',
+    description: 'Orderbook refresh cadence (ms).',
+    category: 'market_data_feed',
+    dataType: 'number',
+  },
+  {
+    key: 'market_data_feed.multiquote_cooldown_idle_ms',
+    value: '15000',
+    description: 'Minimum delay between MultiQuotes calls when idle (ms).',
+    category: 'market_data_feed',
+    dataType: 'number',
+  },
+  {
+    key: 'market_data_feed.multiquote_cooldown_active_ms',
+    value: '10000',
+    description: 'Minimum delay between MultiQuotes calls when positions exist (ms).',
+    category: 'market_data_feed',
+    dataType: 'number',
+  },
+  {
+    key: 'market_data_feed.funds_interval_ms',
+    value: '180000',
+    description: 'Funds refresh cadence (ms).',
+    category: 'market_data_feed',
+    dataType: 'number',
+  },
+  {
+    key: 'trading_sessions',
+    value: JSON.stringify([
+      { label: 'Session 1', start: '09:00', end: '11:30' },
+      { label: 'Session 2', start: '12:30', end: '15:10' },
+      { label: 'Session 3', start: '15:45', end: '19:00' },
+      { label: 'Session 4', start: '20:30', end: '22:45' },
+    ]),
+    description: 'Session windows in IST used for session P&L baselines and auto cutoffs.',
+    category: 'trading',
+    dataType: 'json',
+  },
+];
+
 class SettingsService extends EventEmitter {
   constructor() {
     super();
+  }
+
+  async ensureEssentialSettings() {
+    const keys = ESSENTIAL_SETTINGS.map((setting) => setting.key);
+    if (keys.length === 0) return;
+
+    const placeholders = keys.map(() => '?').join(', ');
+    const rows = await db.all(
+      `SELECT key, description, category, data_type FROM application_settings WHERE key IN (${placeholders})`,
+      keys
+    );
+    const existing = new Map(rows.map((row) => [row.key, row]));
+    const missing = ESSENTIAL_SETTINGS.filter((setting) => !existing.has(setting.key));
+
+    for (const setting of ESSENTIAL_SETTINGS) {
+      const row = existing.get(setting.key);
+      if (!row) continue;
+      const needsUpdate =
+        row.description !== setting.description ||
+        row.category !== setting.category ||
+        row.data_type !== setting.dataType;
+      if (!needsUpdate) continue;
+      await db.run(
+        `
+          UPDATE application_settings
+          SET description = ?, category = ?, data_type = ?
+          WHERE key = ?
+        `,
+        [setting.description, setting.category, setting.dataType, setting.key]
+      );
+    }
+
+    if (missing.length === 0) return;
+
+    for (const setting of missing) {
+      const defaultValue = this.getDefaultValue(setting.key);
+      const value = defaultValue !== '' ? defaultValue : setting.value;
+      await db.run(
+        `
+          INSERT INTO application_settings (key, value, description, category, data_type)
+          VALUES (?, ?, ?, ?, ?)
+        `,
+        [setting.key, value, setting.description, setting.category, setting.dataType]
+      );
+    }
   }
   /**
    * Get all settings grouped by category
@@ -20,6 +206,7 @@ class SettingsService extends EventEmitter {
    */
   async getAllSettings() {
     try {
+      await this.ensureEssentialSettings();
       const rows = await db.all(`
         SELECT key, value, description, category, data_type, is_sensitive
         FROM application_settings
@@ -74,6 +261,7 @@ class SettingsService extends EventEmitter {
    */
   async getSettingsByCategory(category) {
     try {
+      await this.ensureEssentialSettings();
       const rows = await db.all(`
         SELECT key, value, description, category, data_type, is_sensitive
         FROM application_settings
@@ -293,6 +481,7 @@ class SettingsService extends EventEmitter {
    */
   async getCategories() {
     try {
+      await this.ensureEssentialSettings();
       const rows = await db.all(`
         SELECT category, COUNT(*) as count
         FROM application_settings
@@ -356,12 +545,36 @@ class SettingsService extends EventEmitter {
       'server.node_env': 'development',
       'polling.instance_interval_ms': '15000',
       'polling.market_data_interval_ms': '5000',
-      'polling.health_check_interval_ms': '300000',
+      'polling.health_check_interval_ms': '60000',
+      'instance_health.ping_healthy_interval_ms': '300000',
+      'instance_health.ping_unhealthy_interval_ms': '180000',
+      'instance_health.ping_unhealthy_max_attempts': '5',
+      'instance_health.analyzer_check_interval_ms': '15000',
       'openalgo.request_timeout_ms': '15000',
       'openalgo.critical.max_retries': '5',
       'openalgo.critical.retry_delay_ms': '1000',
       'openalgo.non_critical.max_retries': '3',
       'openalgo.non_critical.retry_delay_ms': '1000',
+      'market_hours.quote_blackout_start': '02:00',
+      'market_hours.quote_blackout_end': '08:45',
+      'market_hours.general_blackout_start': '03:00',
+      'market_hours.general_blackout_end': '08:00',
+      'market_data_feed.quote_ttl_idle_ms': '15000',
+      'market_data_feed.quote_ttl_active_ms': '10000',
+      'market_data_feed.position_interval_idle_ms': '30000',
+      'market_data_feed.position_interval_active_ms': '8000',
+      'market_data_feed.tradebook_interval_idle_ms': '30000',
+      'market_data_feed.tradebook_interval_active_ms': '8000',
+      'market_data_feed.orderbook_interval_ms': '30000',
+      'market_data_feed.multiquote_cooldown_idle_ms': '15000',
+      'market_data_feed.multiquote_cooldown_active_ms': '10000',
+      'market_data_feed.funds_interval_ms': '180000',
+      'trading_sessions': JSON.stringify([
+        { label: 'Session 1', start: '09:00', end: '11:30' },
+        { label: 'Session 2', start: '12:30', end: '15:10' },
+        { label: 'Session 3', start: '15:45', end: '19:00' },
+        { label: 'Session 4', start: '20:30', end: '22:45' },
+      ]),
       'database.path': './database/simplifyed.db',
       'session.secret': 'CHANGE_THIS_IN_PRODUCTION',
       'session.max_age_ms': '604800000',

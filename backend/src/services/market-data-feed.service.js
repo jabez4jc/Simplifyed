@@ -21,19 +21,24 @@ import { log } from '../core/logger.js';
 import db from '../core/database.js';
 import { extractAveragePrice, extractLtp } from '../utils/price-extraction.js';
 import openalgoWsService from './openalgo-ws.service.js';
+import { isGeneralEndpointBlackout, isQuoteEndpointBlackout } from './instance-health.service.js';
 
-const DEFAULT_QUOTE_INTERVAL = 5000;               // 5 seconds for quote refresh
-// Align with implementation plan (Phase 1): 5s active, 10s idle via dynamic scheduler
-const DEFAULT_POSITION_INTERVAL_IDLE = 10000;      // 10 seconds when no open positions
-const DEFAULT_POSITION_INTERVAL_ACTIVE = 5000;     // 5 seconds when positions open (for SL/target tracking)
-const DEFAULT_FUNDS_INTERVAL = 30 * 60 * 1000;      // 30 minutes for funds refresh (sequential)
+const DEFAULT_QUOTE_INTERVAL = 5000;               // 5 seconds for quote refresh (WS primary; REST uses TTL)
+const DEFAULT_QUOTE_TTL_IDLE_MS = 15000;
+const DEFAULT_QUOTE_TTL_ACTIVE_MS = 10000;
+const DEFAULT_POSITION_INTERVAL_IDLE = 30000;      // 30 seconds when no open positions
+const DEFAULT_POSITION_INTERVAL_ACTIVE = 8000;     // 8 seconds when positions open
+const DEFAULT_TRADEBOOK_INTERVAL_IDLE = 30000;
+const DEFAULT_TRADEBOOK_INTERVAL_ACTIVE = 8000;
+const DEFAULT_ORDERBOOK_INTERVAL = 30000;
+const DEFAULT_FUNDS_INTERVAL = 3 * 60 * 1000;      // 3 minutes for funds refresh (sequential)
 
 // TTL configurations
 const TTL_DISPLAY = 5000;      // 5s TTL for watchlist display (relaxed)
 const TTL_ORDER_CRITICAL = 3000; // 3s TTL for order-critical operations (aligned with default)
 
-const MULTI_QUOTE_COOLDOWN_ACTIVE_MS = 3000;
-const MULTI_QUOTE_COOLDOWN_IDLE_MS = 10000;
+const MULTI_QUOTE_COOLDOWN_ACTIVE_MS = 10000;
+const MULTI_QUOTE_COOLDOWN_IDLE_MS = 15000;
 const MULTI_QUOTE_SYMBOL_LIMIT = 50;
 const FEED_STAGGER_MS = 2000;
 
@@ -54,15 +59,26 @@ class MarketDataFeedService extends EventEmitter {
     this.fundsRefreshTimestamps = new Map();
 
     // Consolidated TTL settings
-    // Base quote TTL from config (used for display, defaults to 5s)
-    this.QUOTE_TTL_MS = Math.max(config.marketDataFeed.quoteTtlMs || 5000, TTL_DISPLAY);
-    // Order-critical TTL (always aggressive, 2s)
+    this.QUOTE_TTL_MS = DEFAULT_QUOTE_TTL_IDLE_MS;
     this.QUOTE_TTL_ORDER_MS = TTL_ORDER_CRITICAL;
-
-    this.POSITION_TTL_MS = config.marketDataFeed.positionTtlMs || DEFAULT_POSITION_INTERVAL_IDLE;
-    this.FUNDS_TTL_MS = config.marketDataFeed.fundsTtlMs || DEFAULT_FUNDS_INTERVAL;
-    this.ORDERBOOK_TTL_MS = config.marketDataFeed.orderbookTtlMs || DEFAULT_POSITION_INTERVAL_IDLE;
-    this.TRADEBOOK_TTL_MS = config.marketDataFeed.tradebookTtlMs || DEFAULT_POSITION_INTERVAL_IDLE;
+    this.POSITION_TTL_MS = DEFAULT_POSITION_INTERVAL_IDLE;
+    this.FUNDS_TTL_MS = DEFAULT_FUNDS_INTERVAL;
+    this.ORDERBOOK_TTL_MS = DEFAULT_ORDERBOOK_INTERVAL;
+    this.TRADEBOOK_TTL_MS = DEFAULT_TRADEBOOK_INTERVAL_IDLE;
+    this.quoteTtlIdleMs = DEFAULT_QUOTE_TTL_IDLE_MS;
+    this.quoteTtlActiveMs = DEFAULT_QUOTE_TTL_ACTIVE_MS;
+    this.positionIntervalIdleMs = DEFAULT_POSITION_INTERVAL_IDLE;
+    this.positionIntervalActiveMs = DEFAULT_POSITION_INTERVAL_ACTIVE;
+    this.tradebookIntervalIdleMs = DEFAULT_TRADEBOOK_INTERVAL_IDLE;
+    this.tradebookIntervalActiveMs = DEFAULT_TRADEBOOK_INTERVAL_ACTIVE;
+    this.orderbookIntervalMs = DEFAULT_ORDERBOOK_INTERVAL;
+    this.fundsIntervalMs = DEFAULT_FUNDS_INTERVAL;
+    this.quoteIntervalMs = DEFAULT_QUOTE_INTERVAL;
+    this.multiQuoteCooldownIdleMs = MULTI_QUOTE_COOLDOWN_IDLE_MS;
+    this.multiQuoteCooldownActiveMs = MULTI_QUOTE_COOLDOWN_ACTIVE_MS;
+    this.healthPingHealthyMs = config.instanceHealth?.pingHealthyIntervalMs || 5 * 60 * 1000;
+    this.healthPingUnhealthyMs = config.instanceHealth?.pingUnhealthyIntervalMs || 3 * 60 * 1000;
+    this.healthPingUnhealthyMaxAttempts = config.instanceHealth?.pingUnhealthyMaxAttempts || 5;
     this.orderbookCache = new Map();
     this.orderbookRefreshTimestamps = new Map();
     this.tradebookCache = new Map();
@@ -88,12 +104,17 @@ class MarketDataFeedService extends EventEmitter {
     this.positionIntervalHandle = null;
   }
 
-  async start(config = {}) {
+  async start(options = {}) {
     if (this.isRunning) return;
     this.isRunning = true;
 
-    const quoteInterval = config.quoteInterval ?? DEFAULT_QUOTE_INTERVAL;
-    const fundsInterval = config.fundsInterval ?? DEFAULT_FUNDS_INTERVAL;
+    this.applyConfig(options.configOverride || config);
+    if (options.quoteInterval) {
+      this.quoteIntervalMs = options.quoteInterval;
+    }
+    if (options.fundsInterval) {
+      this.fundsIntervalMs = options.fundsInterval;
+    }
 
     // Warm in-memory cache from persisted snapshots before live refreshes
     await this._hydrateQuoteSnapshotsFromDb();
@@ -114,19 +135,19 @@ class MarketDataFeedService extends EventEmitter {
     setTimeout(() => this.refreshFunds({ force: true }).catch(() => {}), FEED_STAGGER_MS * 2);
 
     // Quotes interval
-    this.intervals.push(setInterval(() => this.refreshQuotes(), quoteInterval));
+    this.intervals.push(setInterval(() => this.refreshQuotes(), this.quoteIntervalMs));
     // Position refresh uses dynamic interval based on open positions
     this._startDynamicPositionRefresh(FEED_STAGGER_MS);
     // Funds interval (already slow)
-    this.intervals.push(setInterval(() => this.refreshFunds(), fundsInterval));
-    // Health pings (5m healthy, 10s unhealthy)
-    this.healthPingIntervalHandle = setInterval(() => this._pingInstancesHeartbeat(), 10000);
+    this.intervals.push(setInterval(() => this.refreshFunds(), this.fundsIntervalMs));
+    // Health pings (5m healthy, 3m unhealthy with retry cap)
+    this.healthPingIntervalHandle = setInterval(() => this._pingInstancesHeartbeat(), 30000);
 
     log.info('MarketDataFeedService started', {
-      quoteInterval,
-      positionIntervalIdle: DEFAULT_POSITION_INTERVAL_IDLE,
-      positionIntervalActive: DEFAULT_POSITION_INTERVAL_ACTIVE,
-      fundsInterval,
+      quoteInterval: this.quoteIntervalMs,
+      positionIntervalIdle: this.positionIntervalIdleMs,
+      positionIntervalActive: this.positionIntervalActiveMs,
+      fundsInterval: this.fundsIntervalMs,
     });
   }
 
@@ -144,6 +165,56 @@ class MarketDataFeedService extends EventEmitter {
     }
     this.multiQuoteTimestamps.clear();
     this.isRunning = false;
+  }
+
+  applyConfig(nextConfig = config) {
+    const cfg = nextConfig || config;
+    const md = cfg.marketDataFeed || {};
+
+    this.quoteIntervalMs = cfg.polling?.marketDataInterval || DEFAULT_QUOTE_INTERVAL;
+    this.fundsIntervalMs = md.fundsIntervalMs || md.fundsTtlMs || DEFAULT_FUNDS_INTERVAL;
+
+    this.quoteTtlIdleMs = md.quoteTtlIdleMs || md.quoteTtlMs || DEFAULT_QUOTE_TTL_IDLE_MS;
+    this.quoteTtlActiveMs = md.quoteTtlActiveMs || Math.min(this.quoteTtlIdleMs, DEFAULT_QUOTE_TTL_ACTIVE_MS);
+    this.positionIntervalIdleMs = md.positionIntervalIdleMs || md.positionTtlMs || DEFAULT_POSITION_INTERVAL_IDLE;
+    this.positionIntervalActiveMs = md.positionIntervalActiveMs || DEFAULT_POSITION_INTERVAL_ACTIVE;
+    this.tradebookIntervalIdleMs = md.tradebookIntervalIdleMs || md.tradebookTtlMs || DEFAULT_TRADEBOOK_INTERVAL_IDLE;
+    this.tradebookIntervalActiveMs = md.tradebookIntervalActiveMs || DEFAULT_TRADEBOOK_INTERVAL_ACTIVE;
+    this.orderbookIntervalMs = md.orderbookIntervalMs || md.orderbookTtlMs || DEFAULT_ORDERBOOK_INTERVAL;
+
+    this.multiQuoteCooldownIdleMs = md.multiquoteCooldownIdleMs || MULTI_QUOTE_COOLDOWN_IDLE_MS;
+    this.multiQuoteCooldownActiveMs = md.multiquoteCooldownActiveMs || MULTI_QUOTE_COOLDOWN_ACTIVE_MS;
+
+    this.healthPingHealthyMs = cfg.instanceHealth?.pingHealthyIntervalMs || 5 * 60 * 1000;
+    this.healthPingUnhealthyMs = cfg.instanceHealth?.pingUnhealthyIntervalMs || 3 * 60 * 1000;
+    this.healthPingUnhealthyMaxAttempts = cfg.instanceHealth?.pingUnhealthyMaxAttempts || 5;
+
+    this.QUOTE_TTL_MS = Math.max(this.quoteTtlIdleMs, TTL_DISPLAY);
+    this.QUOTE_TTL_ORDER_MS = TTL_ORDER_CRITICAL;
+    this.POSITION_TTL_MS = this.positionIntervalIdleMs;
+    this.FUNDS_TTL_MS = this.fundsIntervalMs;
+    this.ORDERBOOK_TTL_MS = this.orderbookIntervalMs;
+    this.TRADEBOOK_TTL_MS = this.tradebookIntervalIdleMs;
+
+    if (this.isRunning) {
+      this._restartIntervals();
+    }
+  }
+
+  _restartIntervals() {
+    this.intervals.forEach(clearInterval);
+    this.intervals = [];
+
+    this.intervals.push(setInterval(() => this.refreshQuotes(), this.quoteIntervalMs));
+    this.intervals.push(setInterval(() => this.refreshFunds(), this.fundsIntervalMs));
+
+    if (this.healthPingIntervalHandle) {
+      clearInterval(this.healthPingIntervalHandle);
+      this.healthPingIntervalHandle = null;
+    }
+    this.healthPingIntervalHandle = setInterval(() => this._pingInstancesHeartbeat(), 30000);
+
+    this._startDynamicPositionRefresh(0);
   }
 
   async _startWsQuotes() {
@@ -182,8 +253,11 @@ class MarketDataFeedService extends EventEmitter {
    * Quotes (per market-data instance)
    */
   async refreshQuotes({ force = false } = {}) {
+    if (isQuoteEndpointBlackout()) {
+      return;
+    }
     const now = Date.now();
-    const targetInterval = this.hasOpenPositions ? 3000 : 10000;
+    const targetInterval = this._getQuoteTtlMs();
     if (!force && now - this.lastQuoteRefreshAt < targetInterval) {
       log.debug('Skipping quote refresh - TTL not expired', {
         lastRefreshMs: now - this.lastQuoteRefreshAt,
@@ -328,8 +402,8 @@ class MarketDataFeedService extends EventEmitter {
     const opts = typeof options === 'number' ? { ttlMs: options } : options;
     const { orderCritical = false } = opts;
 
-    // Determine TTL: orderCritical uses aggressive TTL, otherwise use custom or display TTL
-    const ttlMs = opts.ttlMs ?? (orderCritical ? this.QUOTE_TTL_ORDER_MS : this.QUOTE_TTL_MS);
+    // Determine TTL: orderCritical uses aggressive TTL, otherwise use custom or stateful TTL
+    const ttlMs = opts.ttlMs ?? (orderCritical ? this.QUOTE_TTL_ORDER_MS : this._getQuoteTtlMs());
 
     const now = Date.now();
     const cached = [];
@@ -344,6 +418,10 @@ class MarketDataFeedService extends EventEmitter {
       }
     });
     return { cached, missing };
+  }
+
+  _getQuoteTtlMs() {
+    return this.hasOpenPositions ? this.quoteTtlActiveMs : this.quoteTtlIdleMs;
   }
 
   /**
@@ -361,6 +439,11 @@ class MarketDataFeedService extends EventEmitter {
 
     const unique = this._dedupeSymbols(symbols);
     if (unique.length === 0) return [];
+
+    if (isQuoteEndpointBlackout()) {
+      const { cached } = this.getCachedQuotesForSymbols(unique, { ttlMs, orderCritical });
+      return cached;
+    }
 
     // Check cache first with appropriate TTL
     const { cached, missing } = this.getCachedQuotesForSymbols(unique, { ttlMs, orderCritical });
@@ -474,6 +557,9 @@ class MarketDataFeedService extends EventEmitter {
 
   async refreshPositionsForInstance(instanceId, { force = false } = {}) {
     try {
+      if (isGeneralEndpointBlackout()) {
+        return;
+      }
       if (this._isInstanceUnhealthy(instanceId)) {
         log.warn('Skipping positions refresh - instance unhealthy', { instanceId });
         return;
@@ -615,13 +701,21 @@ class MarketDataFeedService extends EventEmitter {
       if (!forceLive) {
         const cached = this.positionCache.get(instanceId);
         const last = this.positionRefreshTimestamps.get(instanceId) || 0;
-        if (cached && now - last < this.POSITION_TTL_MS) {
+        const ttlMs = this._getStatefulTtlMs('positions', instanceId);
+        if (cached && now - last < ttlMs) {
           return { instanceId, positions: cached.data, success: true, fromCache: true };
         }
       }
 
       // Fetch live
       try {
+        if (isGeneralEndpointBlackout()) {
+          const cached = this.positionCache.get(instanceId);
+          if (cached?.data) {
+            return { instanceId, positions: cached.data, success: true, fromCache: true, skipped: true };
+          }
+          return { instanceId, positions: [], success: false, fromCache: false, skipped: true, error: 'Blackout window' };
+        }
         const circuitKey = this._getCircuitKey(instanceId, 'positions');
         if (this._shouldSkipPolling(circuitKey)) {
           const cached = this.positionCache.get(instanceId);
@@ -747,6 +841,9 @@ class MarketDataFeedService extends EventEmitter {
       log.debug('Skipping funds refresh for instance - non-critical polling paused', { instanceId });
       return;
     }
+    if (isGeneralEndpointBlackout()) {
+      return;
+    }
     if (this._isInstanceUnhealthy(instanceId)) {
       log.warn('Skipping funds refresh - instance unhealthy', { instanceId });
       return;
@@ -859,6 +956,9 @@ class MarketDataFeedService extends EventEmitter {
     if (ttlMs === Number.POSITIVE_INFINITY) {
       return cache || null;
     }
+    if (isGeneralEndpointBlackout()) {
+      return cache || null;
+    }
     if (this._isInstanceUnhealthy(instanceId)) {
       log.warn('Skipping orderbook refresh - instance unhealthy', { instanceId });
       return cache || null;
@@ -894,6 +994,9 @@ class MarketDataFeedService extends EventEmitter {
     if (ttlMs === Number.POSITIVE_INFINITY) {
       return cache || null;
     }
+    if (isGeneralEndpointBlackout()) {
+      return cache || null;
+    }
     if (this._isInstanceUnhealthy(instanceId)) {
       log.warn('Skipping tradebook refresh - instance unhealthy', { instanceId });
       return cache || null;
@@ -927,16 +1030,34 @@ class MarketDataFeedService extends EventEmitter {
 
   _isInstanceUnhealthy(instanceId) {
     const state = this.instanceHealth.get(instanceId);
-    return state?.healthy === false;
+    return state?.healthy === false || state?.requiresManualRefresh === true;
   }
 
   async _pingInstancesHeartbeat() {
     try {
+      if (isGeneralEndpointBlackout()) {
+        return;
+      }
       const instances = await instanceService.getAllInstances({ is_active: true });
       const now = Date.now();
       for (const inst of instances) {
-        const state = this.instanceHealth.get(inst.id) || { healthy: true, lastPing: 0, nextPing: 0, notified: false };
-        const interval = state.healthy !== false ? 5 * 60 * 1000 : 10 * 1000;
+        const state = this.instanceHealth.get(inst.id) || {
+          healthy: true,
+          lastPing: 0,
+          nextPing: 0,
+          notified: false,
+          unhealthyAttempts: 0,
+          requiresManualRefresh: false,
+        };
+        if (state.requiresManualRefresh) {
+          this.instanceHealth.set(inst.id, state);
+          continue;
+        }
+        if (state.healthy === false && state.unhealthyAttempts >= this.healthPingUnhealthyMaxAttempts) {
+          this.instanceHealth.set(inst.id, { ...state, requiresManualRefresh: true });
+          continue;
+        }
+        const interval = state.healthy !== false ? this.healthPingHealthyMs : this.healthPingUnhealthyMs;
         if (now >= state.nextPing || now - state.lastPing >= interval) {
           await this._maybePingInstance(inst);
         }
@@ -961,18 +1082,24 @@ class MarketDataFeedService extends EventEmitter {
     this.instanceHealth.set(instanceId, {
       healthy: true,
       lastPing: Date.now(),
-      nextPing: Date.now() + 5 * 60 * 1000,
+      nextPing: Date.now() + this.healthPingHealthyMs,
       notified: false,
+      unhealthyAttempts: 0,
+      requiresManualRefresh: false,
     });
   }
 
   async _markInstanceUnhealthy(instanceId, reason = null) {
     const prev = this.instanceHealth.get(instanceId) || {};
+    const attempts = (prev.unhealthyAttempts || 0) + 1;
+    const requiresManualRefresh = attempts >= this.healthPingUnhealthyMaxAttempts;
     this.instanceHealth.set(instanceId, {
       healthy: false,
       lastPing: Date.now(),
-      nextPing: Date.now() + 10 * 1000,
+      nextPing: requiresManualRefresh ? null : Date.now() + this.healthPingUnhealthyMs,
       notified: prev.notified || false,
+      unhealthyAttempts: attempts,
+      requiresManualRefresh,
     });
 
     if (this.openPositionInstances.has(instanceId) && !prev.notified) {
@@ -984,13 +1111,19 @@ class MarketDataFeedService extends EventEmitter {
         this.instanceHealth.set(instanceId, {
           healthy: false,
           lastPing: Date.now(),
-          nextPing: Date.now() + 10 * 1000,
+          nextPing: requiresManualRefresh ? null : Date.now() + this.healthPingUnhealthyMs,
           notified: true,
+          unhealthyAttempts: attempts,
+          requiresManualRefresh,
         });
       } catch (err) {
         log.warn('Failed to notify unhealthy instance', { instanceId, error: err.message });
       }
     }
+  }
+
+  resetInstanceHealth(instanceId) {
+    this.instanceHealth.delete(instanceId);
   }
 
   getCircuitState(instanceId, feed) {
@@ -1039,7 +1172,7 @@ class MarketDataFeedService extends EventEmitter {
         continue;
       }
 
-      const cooldown = this.hasOpenPositions ? MULTI_QUOTE_COOLDOWN_ACTIVE_MS : MULTI_QUOTE_COOLDOWN_IDLE_MS;
+      const cooldown = this.hasOpenPositions ? this.multiQuoteCooldownActiveMs : this.multiQuoteCooldownIdleMs;
       const lastMultiAt = this.multiQuoteTimestamps.get(inst.id) || 0;
       if (now - lastMultiAt < cooldown) {
         log.debug('Skipping MultiQuotes due to cooldown', {
@@ -1120,7 +1253,7 @@ class MarketDataFeedService extends EventEmitter {
         log.warn('Skipping multi-symbol quote fetch on instance without multiquotes support', { instance_id: instance.id });
         return [];
       }
-      const cooldown = this.hasOpenPositions ? MULTI_QUOTE_COOLDOWN_ACTIVE_MS : MULTI_QUOTE_COOLDOWN_IDLE_MS;
+      const cooldown = this.hasOpenPositions ? this.multiQuoteCooldownActiveMs : this.multiQuoteCooldownIdleMs;
       const lastMultiAt = this.multiQuoteTimestamps.get(instance.id) || 0;
       if (now - lastMultiAt < cooldown) {
         log.debug('Skipping MultiQuotes fetch due to cooldown', {
@@ -1200,13 +1333,13 @@ class MarketDataFeedService extends EventEmitter {
   _getStatefulTtlMs(feed, instanceId = null) {
     const hasOpenForInstance = instanceId ? this.openPositionInstances.has(instanceId) : this.hasOpenPositions;
     if (feed === 'positions') {
-      return hasOpenForInstance ? 3000 : 10000;
+      return hasOpenForInstance ? this.positionIntervalActiveMs : this.positionIntervalIdleMs;
     }
     if (feed === 'orderbook') {
-      return hasOpenForInstance ? 10000 : Number.POSITIVE_INFINITY;
+      return this.orderbookIntervalMs;
     }
     if (feed === 'tradebook') {
-      return hasOpenForInstance ? 5000 : Number.POSITIVE_INFINITY;
+      return hasOpenForInstance ? this.tradebookIntervalActiveMs : this.tradebookIntervalIdleMs;
     }
     return this.QUOTE_TTL_MS;
   }
@@ -1356,6 +1489,10 @@ class MarketDataFeedService extends EventEmitter {
       }
     }
 
+    if (isQuoteEndpointBlackout()) {
+      throw new Error('Market closed for quotes (02:00-08:45 IST)');
+    }
+
     // Get market data pool for retry/failover
     const pool = await marketDataInstanceService.getMarketDataPool();
     if (pool.length === 0) {
@@ -1434,7 +1571,7 @@ class MarketDataFeedService extends EventEmitter {
   /**
    * Start dynamic position refresh with adaptive intervals
    * - 30 seconds when no open positions (idle)
-   * - 5 seconds when positions are open (for SL/target tracking)
+   * - 8 seconds when positions are open
    * @private
    */
   _startDynamicPositionRefresh(initialDelayMs = 0) {
@@ -1656,11 +1793,11 @@ class MarketDataFeedService extends EventEmitter {
   getCacheStatus() {
     const now = Date.now();
     const feeds = [
-      { name: 'quotes', cache: this.quoteCache, ttlMs: this.QUOTE_TTL_MS },
-      { name: 'positions', cache: this.positionCache, ttlMs: this.POSITION_TTL_MS },
+      { name: 'quotes', cache: this.quoteCache, ttlMs: this._getQuoteTtlMs() },
+      { name: 'positions', cache: this.positionCache, ttlMs: this._getStatefulTtlMs('positions') },
       { name: 'funds', cache: this.fundsCache, ttlMs: this.FUNDS_TTL_MS },
-      { name: 'orderbook', cache: this.orderbookCache, ttlMs: this.ORDERBOOK_TTL_MS },
-      { name: 'tradebook', cache: this.tradebookCache, ttlMs: this.TRADEBOOK_TTL_MS },
+      { name: 'orderbook', cache: this.orderbookCache, ttlMs: this._getStatefulTtlMs('orderbook') },
+      { name: 'tradebook', cache: this.tradebookCache, ttlMs: this._getStatefulTtlMs('tradebook') },
     ];
 
     const entries = [];

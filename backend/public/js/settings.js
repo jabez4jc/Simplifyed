@@ -17,6 +17,48 @@ class SettingsHandler {
     this.users = [];
     this.permissions = [];
     this.instanceHealthTests = null;
+    this.activeRoleTab = null;
+    this.allowedCategories = ['polling', 'streaming', 'market_data_feed', 'instance_health', 'instance_health_tests', 'market_hours', 'trading'];
+    this.allowedSettings = {
+      polling: [
+        'polling.instance_interval_ms',
+        'polling.market_data_interval_ms',
+        'polling.health_check_interval_ms',
+      ],
+      streaming: [
+        'streaming.enabled',
+      ],
+      market_data_feed: [
+        'market_data_feed.quote_ttl_idle_ms',
+        'market_data_feed.quote_ttl_active_ms',
+        'market_data_feed.position_interval_idle_ms',
+        'market_data_feed.position_interval_active_ms',
+        'market_data_feed.tradebook_interval_idle_ms',
+        'market_data_feed.tradebook_interval_active_ms',
+        'market_data_feed.orderbook_interval_ms',
+        'market_data_feed.funds_interval_ms',
+        'market_data_feed.multiquote_cooldown_idle_ms',
+        'market_data_feed.multiquote_cooldown_active_ms',
+      ],
+      instance_health: [
+        'instance_health.ping_healthy_interval_ms',
+        'instance_health.ping_unhealthy_interval_ms',
+        'instance_health.ping_unhealthy_max_attempts',
+        'instance_health.analyzer_check_interval_ms',
+      ],
+      instance_health_tests: [],
+      market_hours: [
+        'market_hours.quote_blackout_start',
+        'market_hours.quote_blackout_end',
+        'market_hours.general_blackout_start',
+        'market_hours.general_blackout_end',
+      ],
+      trading: [
+        'trading_sessions',
+      ],
+    };
+    this.displaySettings = {};
+    this.displayCategories = [];
 
     // Category metadata with icons and descriptions
     this.categoryMeta = {
@@ -27,6 +69,10 @@ class SettingsHandler {
       'polling': {
         icon: '🔄',
         description: 'Polling intervals for data refresh'
+      },
+      'streaming': {
+        icon: '📡',
+        description: 'WebSocket streaming for live data updates'
       },
       'openalgo': {
         icon: '📡',
@@ -75,6 +121,22 @@ class SettingsHandler {
       'market_data_feed': {
         icon: '📈',
         description: 'Market data caching and TTL settings'
+      },
+      'instance_health': {
+        icon: '🫀',
+        description: 'Instance health checks, pings, and analyzer cadence'
+      },
+      'instance_health_tests': {
+        icon: '🧪',
+        description: 'Symbols used for endpoint capability tests'
+      },
+      'market_hours': {
+        icon: '🕒',
+        description: 'Blackout windows for OpenAlgo endpoints'
+      },
+      'trading': {
+        icon: '🗓️',
+        description: 'Session windows used for intraday risk resets'
       }
     };
   }
@@ -137,6 +199,7 @@ class SettingsHandler {
 
       this.categories = categories;
       this.settings = allSettings;
+      this.applySettingsFilter();
 
       // Load instance health test config
       if (this.isAdmin()) {
@@ -179,6 +242,94 @@ class SettingsHandler {
       `;
       console.error('[Settings] Error rendering settings view:', error);
     }
+  }
+
+  applySettingsFilter() {
+    const allowedCategories = Array.isArray(this.allowedCategories)
+      ? new Set(this.allowedCategories)
+      : null;
+    const filteredSettings = {};
+
+    Object.entries(this.settings || {}).forEach(([category, categorySettings]) => {
+      if (allowedCategories && !allowedCategories.has(category)) {
+        return;
+      }
+
+      const allowedKeys = this.allowedSettings?.[category];
+      const filteredCategorySettings = {};
+
+      Object.entries(categorySettings || {}).forEach(([key, setting]) => {
+        if (Array.isArray(allowedKeys) && !allowedKeys.includes(key)) {
+          return;
+        }
+        filteredCategorySettings[key] = setting;
+      });
+
+      if (Object.keys(filteredCategorySettings).length > 0) {
+        filteredSettings[category] = filteredCategorySettings;
+      }
+    });
+
+    if (!allowedCategories || allowedCategories.has('streaming')) {
+      const streamingSetting = this.getStreamingSetting();
+      if (!this.settings.streaming) {
+        this.settings.streaming = {};
+      }
+      this.settings.streaming['streaming.enabled'] = streamingSetting;
+      filteredSettings.streaming = this.settings.streaming;
+    }
+
+    if (!allowedCategories || allowedCategories.has('instance_health_tests')) {
+      filteredSettings.instance_health_tests = {};
+    }
+
+    this.displaySettings = filteredSettings;
+    this.displayCategories = Object.keys(filteredSettings).map((category) => ({
+      category,
+      count: Object.keys(filteredSettings[category] || {}).length,
+    }));
+
+    if (Array.isArray(this.allowedCategories)) {
+      this.displayCategories.sort(
+        (a, b) =>
+          this.allowedCategories.indexOf(a.category) -
+          this.allowedCategories.indexOf(b.category)
+      );
+    }
+
+    if (!this.displaySettings[this.activeCategory]) {
+      this.activeCategory = this.displayCategories[0]?.category || this.activeCategory;
+    }
+  }
+
+  getStreamingSetting() {
+    const existing = this.settings?.streaming?.['streaming.enabled'];
+    const preference = this.getStreamPreference();
+    const value = typeof preference === 'boolean' ? preference : false;
+
+    if (existing) {
+      if (existing.pendingValue === undefined) {
+        existing.value = value;
+        existing.rawValue = value ? 'true' : 'false';
+      }
+      return existing;
+    }
+
+    return {
+      value,
+      rawValue: value ? 'true' : 'false',
+      description: 'Use WebSocket streaming for quotes/positions/funds when available.',
+      dataType: 'boolean',
+      isSensitive: false,
+    };
+  }
+
+  getStreamPreference() {
+    if (typeof window === 'undefined') return false;
+    if (!window.app || typeof window.app.getStreamPreference !== 'function') {
+      return false;
+    }
+    return window.app.getStreamPreference();
   }
 
   /**
@@ -275,7 +426,6 @@ class SettingsHandler {
 
     return `
       <div class="space-y-4">
-        ${this.renderStreamingPreferenceCard()}
         <div class="card">
           <div class="card-header">
             <h3 class="card-title">⚙️ Application Settings</h3>
@@ -408,21 +558,6 @@ class SettingsHandler {
             ${await this.renderMonitorStatusSection()}
           </div>
         </div>
-
-        ${this.isAdmin() ? `
-        <!-- Instance Health Tests Section -->
-        <div class="card">
-          <div class="card-header">
-            <h3 class="card-title">🩺 Instance Health Tests</h3>
-            <p class="text-sm text-neutral-600 mt-1">
-              Configure test symbols for quotes, multiquotes, and option chains. Cron runs every 3h from 08:00 IST.
-            </p>
-          </div>
-          <div class="p-6 space-y-4">
-            ${this.renderInstanceHealthTests()}
-          </div>
-        </div>
-        ` : ''}
       </div>
     `;
   }
@@ -475,7 +610,7 @@ class SettingsHandler {
                 <span class="text-xs font-semibold uppercase tracking-wider text-neutral-500">Categories</span>
               </div>
               <nav class="settings-nav">
-                ${this.categories.map(cat => {
+                ${this.displayCategories.map(cat => {
                   const meta = this.categoryMeta[cat.category] || { icon: '⚙️', description: '' };
                   return `
                     <button
@@ -535,6 +670,13 @@ class SettingsHandler {
   }
 
   renderInstanceHealthTests() {
+    if (!this.isAdmin()) {
+      return `
+        <div class="settings-empty">
+          <p class="text-neutral-500">Admin access required to edit instance health tests.</p>
+        </div>
+      `;
+    }
     const cfg = this.instanceHealthTests || {};
     const quotes = cfg.quotes || [];
     const multiquotes = cfg.multiquotes || [];
@@ -628,7 +770,7 @@ class SettingsHandler {
   renderSearchResults() {
     const results = [];
 
-    Object.entries(this.settings).forEach(([category, categorySettings]) => {
+    Object.entries(this.displaySettings).forEach(([category, categorySettings]) => {
       Object.entries(categorySettings).forEach(([key, setting]) => {
         const settingName = this.formatSettingName(key).toLowerCase();
         const description = (setting.description || '').toLowerCase();
@@ -668,6 +810,7 @@ class SettingsHandler {
             const inputId = `setting-${result.key.replace(/\./g, '-')}`;
             const inputValue = result.setting.pendingValue ?? result.setting.rawValue ?? result.setting.value;
             const meta = this.categoryMeta[result.category] || { icon: '⚙️' };
+            const helpText = this.getSettingHelpText(result.key);
 
             return `
               <div class="settings-field settings-field-search">
@@ -681,6 +824,7 @@ class SettingsHandler {
                     <span>${result.categoryName}</span>
                   </span>
                   ${result.setting.description ? `<span class="text-sm text-neutral-500 block mt-1">${result.setting.description}</span>` : ''}
+                  ${helpText ? `<span class="text-xs text-neutral-500 block mt-1">${helpText}</span>` : ''}
                 </label>
                 <div class="settings-field-input">
                   ${this.renderInputField(inputId, result.key, result.setting.dataType, inputValue, result.setting.isSensitive)}
@@ -697,12 +841,16 @@ class SettingsHandler {
    * Render settings form for a category
    */
   renderSettingsForm(category) {
-    const categorySettings = this.settings[category] || {};
+    if (category === 'instance_health_tests') {
+      return this.renderInstanceHealthTests();
+    }
+    const categorySettings = this.displaySettings[category] || {};
 
     const inputs = Object.entries(categorySettings).map(([key, setting]) => {
       const inputId = `setting-${key.replace(/\./g, '-')}`;
       const isSensitive = setting.isSensitive;
       const inputValue = setting.pendingValue ?? setting.rawValue ?? setting.value;
+      const helpText = this.getSettingHelpText(key);
 
       return `
         <div class="settings-field ${isSensitive ? 'settings-field-sensitive' : ''}">
@@ -712,6 +860,7 @@ class SettingsHandler {
               ${isSensitive ? '<span class="settings-sensitive-badge">🔒 Sensitive</span>' : ''}
             </div>
             ${setting.description ? `<span class="text-sm text-neutral-500 block mt-1">${setting.description}</span>` : ''}
+            ${helpText ? `<span class="text-xs text-neutral-500 block mt-1">${helpText}</span>` : ''}
             <span class="settings-field-key">${key}</span>
           </label>
           <div class="settings-field-input">
@@ -884,6 +1033,20 @@ class SettingsHandler {
     });
     document.querySelector(`[data-category="${category}"]`).classList.add('active');
 
+    const meta = this.categoryMeta[category] || { icon: '⚙️', description: '' };
+    const headerTitle = document.querySelector('.settings-category-title h3');
+    const headerDesc = document.querySelector('.settings-category-title p');
+    const headerIcon = document.querySelector('.settings-category-icon');
+    if (headerTitle) {
+      headerTitle.textContent = this.formatCategoryName(category);
+    }
+    if (headerDesc) {
+      headerDesc.textContent = meta.description || '';
+    }
+    if (headerIcon) {
+      headerIcon.textContent = meta.icon || '⚙️';
+    }
+
     // Update content
     document.getElementById('settings-content').innerHTML = this.renderSettingsForm(category);
 
@@ -980,40 +1143,57 @@ class SettingsHandler {
         });
       });
 
-      if (Object.keys(settingsToUpdate).length === 0) {
+      let streamingChange = null;
+      if (Object.prototype.hasOwnProperty.call(settingsToUpdate, 'streaming.enabled')) {
+        streamingChange = settingsToUpdate['streaming.enabled'];
+        delete settingsToUpdate['streaming.enabled'];
+      }
+
+      if (Object.keys(settingsToUpdate).length === 0 && streamingChange === null) {
         Utils.showToast('No changes to save', 'info');
         return;
       }
 
-      // Send update request
-      const response = await this.authFetch('/api/v1/settings', {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(settingsToUpdate),
-      });
+      if (Object.keys(settingsToUpdate).length > 0) {
+        // Send update request
+        const response = await this.authFetch('/api/v1/settings', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(settingsToUpdate),
+        });
 
-      const data = await response.json();
+        const data = await response.json();
 
-      if (!response.ok) {
-        throw new Error(data.message || 'Failed to update settings');
+        if (!response.ok) {
+          throw new Error(data.message || 'Failed to update settings');
+        }
+
+        // Show success message
+        const summary = data.data.summary;
+        Utils.showToast(
+          `Successfully updated ${summary.successful} of ${summary.total} settings`,
+          'success'
+        );
+
+        // Log errors if any
+        if (data.data.errors && data.data.errors.length > 0) {
+          console.error('[Settings] Some settings failed to update:', data.data.errors);
+        }
+
+        // Refresh the view to get updated values
+        await this.refreshSettings();
+
+        if (window.app && typeof window.app.loadPublicConfig === 'function') {
+          await window.app.loadPublicConfig();
+        }
       }
 
-      // Show success message
-      const summary = data.data.summary;
-      Utils.showToast(
-        `Successfully updated ${summary.successful} of ${summary.total} settings`,
-        'success'
-      );
-
-      // Log errors if any
-      if (data.data.errors && data.data.errors.length > 0) {
-        console.error('[Settings] Some settings failed to update:', data.data.errors);
+      if (streamingChange !== null) {
+        this.applyStreamingPreference(Boolean(streamingChange));
+        Utils.showToast('Streaming preference updated', 'success');
       }
-
-      // Refresh the view to get updated values
-      await this.refreshSettings();
     } catch (error) {
       console.error('[Settings] Error saving settings:', error);
       Utils.showToast(`Failed to save settings: ${error.message}`, 'error');
@@ -1023,12 +1203,54 @@ class SettingsHandler {
     }
   }
 
+  applyStreamingPreference(enabled) {
+    if (typeof window === 'undefined' || !window.app) {
+      return;
+    }
+
+    const current = typeof window.app.getStreamPreference === 'function'
+      ? window.app.getStreamPreference()
+      : false;
+    if (enabled === current) {
+      this.applySettingsFilter();
+      return;
+    }
+
+    if (enabled) {
+      window.app.useWsGateway = true;
+      if (typeof window.app.saveWsPreference === 'function') {
+        window.app.saveWsPreference(true);
+      }
+      if (typeof window.app.startWsStream === 'function') {
+        window.app.startWsStream();
+      }
+    } else if (typeof window.app.stopWsStream === 'function') {
+      window.app.stopWsStream('user');
+    } else if (typeof window.app.saveWsPreference === 'function') {
+      window.app.saveWsPreference(false);
+    }
+
+    if (this.settings?.streaming?.['streaming.enabled']) {
+      this.settings.streaming['streaming.enabled'].value = enabled;
+      this.settings.streaming['streaming.enabled'].rawValue = enabled ? 'true' : 'false';
+      delete this.settings.streaming['streaming.enabled'].pendingValue;
+    }
+    this.applySettingsFilter();
+  }
+
   /**
    * Reset settings to defaults
    */
   async resetSettings() {
     if (!this.canViewApplicationSettings()) {
       Utils.showToast('You do not have permission to modify application settings', 'error');
+      return;
+    }
+
+    if (this.activeCategory === 'streaming') {
+      this.applyStreamingPreference(false);
+      Utils.showToast('Streaming preference reset', 'success');
+      await this.refreshSettings();
       return;
     }
 
@@ -1072,6 +1294,7 @@ class SettingsHandler {
 
     this.categories = await this.fetchCategories();
     this.settings = await this.fetchAllSettings();
+    this.applySettingsFilter();
 
     // Re-render the current category
     document.getElementById('settings-content').innerHTML = this.renderSettingsForm(this.activeCategory);
@@ -1141,6 +1364,9 @@ class SettingsHandler {
     if (!this.roles || !this.users) {
       return '<p class="text-sm text-neutral-600">Loading...</p>';
     }
+    if (!this.activeRoleTab && this.roles.length > 0) {
+      this.activeRoleTab = this.roles[0].name;
+    }
     const roleOptions = this.roles.map(r => `<option value="${r.name}">${r.name}</option>`).join('');
     const userRows = this.users.map(u => {
       const options = this.roles.map(r => `<option value="${r.name}" ${r.name === u.role ? 'selected' : ''}>${r.name}</option>`).join('');
@@ -1156,50 +1382,87 @@ class SettingsHandler {
       </tr>`;
     }).join('');
 
-    const permissionGrid = this.roles.map(role => {
-      const currentPerms = new Set(role.permissions || []);
-      const checkboxes = this.permissions.map(p => `
-        <label class="flex items-center gap-2 text-xs">
-          <input type="checkbox" class="checkbox checkbox-xs rbac-perm-checkbox"
-            data-role="${role.name}" data-perm="${p.key}"
-            ${currentPerms.has(p.key) ? 'checked' : ''}>
-          <span>${p.key}</span>
-        </label>
-      `).join('');
-      return `
-        <div class="border rounded p-3 space-y-2">
-          <div class="flex items-center justify-between">
-            <div class="font-semibold">${role.name}</div>
-            <button class="btn btn-xs btn-primary rbac-save-perms" data-role="${role.name}">Save</button>
-          </div>
-          <div class="text-xs text-neutral-600">Assign permissions for ${role.name}</div>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-64 overflow-auto">
-            ${checkboxes}
-          </div>
-        </div>
-      `;
-    }).join('');
+    const roleTabs = this.roles.map(role => `
+      <button
+        class="rbac-role-tab ${role.name === this.activeRoleTab ? 'active' : ''}"
+        data-role="${role.name}"
+        onclick="settings.switchRoleTab('${role.name}')"
+      >
+        ${role.name}
+      </button>
+    `).join('');
+
+    const activeRolePanel = this.renderRolePermissionsPanel(this.activeRoleTab);
 
     return `
-      <div class="overflow-x-auto">
-        <table class="table table-sm">
-          <thead>
-            <tr>
-              <th>Email</th>
-              <th>Current Role</th>
-              <th>Assign Role</th>
-            </tr>
-          </thead>
-          <tbody>${userRows}</tbody>
-        </table>
-      </div>
-      <div class="mt-4">
-        <h4 class="font-semibold mb-2">Permissions by Role</h4>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-          ${permissionGrid}
+      <div class="rbac-section">
+        <div class="rbac-tabs-header">
+          <h4 class="font-semibold">Permissions by Role</h4>
+          <div class="rbac-role-tabs">
+            ${roleTabs}
+          </div>
+        </div>
+        <div class="rbac-role-panel" id="rbac-role-panel">
+          ${activeRolePanel}
+        </div>
+        <div class="rbac-users">
+          <h4 class="font-semibold mb-2">Users</h4>
+          <div class="overflow-x-auto">
+            <table class="table table-sm">
+              <thead>
+                <tr>
+                  <th>Email</th>
+                  <th>Current Role</th>
+                  <th>Assign Role</th>
+                </tr>
+              </thead>
+              <tbody>${userRows}</tbody>
+            </table>
+          </div>
         </div>
       </div>
     `;
+  }
+
+  renderRolePermissionsPanel(roleName) {
+    const role = this.roles.find(r => r.name === roleName);
+    if (!role) {
+      return '<p class="text-sm text-neutral-600">Select a role to manage permissions.</p>';
+    }
+    const currentPerms = new Set(role.permissions || []);
+    const checkboxes = this.permissions.map(p => `
+      <label class="flex items-center gap-2 text-xs">
+        <input type="checkbox" class="checkbox checkbox-xs rbac-perm-checkbox"
+          data-role="${role.name}" data-perm="${p.key}"
+          ${currentPerms.has(p.key) ? 'checked' : ''}>
+        <span>${p.key}</span>
+      </label>
+    `).join('');
+
+    return `
+      <div class="border rounded p-3 space-y-2">
+        <div class="flex items-center justify-between">
+          <div class="font-semibold">${role.name}</div>
+          <button class="btn btn-xs btn-primary rbac-save-perms" data-role="${role.name}">Save</button>
+        </div>
+        <div class="text-xs text-neutral-600">Assign permissions for ${role.name}</div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-64 overflow-auto">
+          ${checkboxes}
+        </div>
+      </div>
+    `;
+  }
+
+  switchRoleTab(roleName) {
+    this.activeRoleTab = roleName;
+    const panel = document.getElementById('rbac-role-panel');
+    if (panel) {
+      panel.innerHTML = this.renderRolePermissionsPanel(roleName);
+    }
+    document.querySelectorAll('.rbac-role-tab').forEach((tab) => {
+      tab.classList.toggle('active', tab.getAttribute('data-role') === roleName);
+    });
+    this.initRbacListeners();
   }
 
   initRbacListeners() {
@@ -1293,7 +1556,12 @@ class SettingsHandler {
       'test': 'Test Mode',
       'proxy': 'Proxy',
       'options': 'Options Trading',
-      'market_data_feed': 'Market Data Feed'
+      'market_data_feed': 'Market Data Feed',
+      'instance_health': 'Instance Health',
+      'instance_health_tests': 'Instance Health Tests',
+      'market_hours': 'Market Hours',
+      'trading': 'Trading Sessions',
+      'streaming': 'Streaming'
     };
     return names[category] || category.charAt(0).toUpperCase() + category.slice(1);
   }
@@ -1317,6 +1585,7 @@ class SettingsHandler {
       'logging.level': 'Logging Level',
       'test_mode.enabled': 'Test Mode Enabled',
       'polling.market_data_interval_ms': 'Market Data Interval (ms)',
+      'streaming.enabled': 'Live Streaming (WebSocket)',
     };
 
     if (overrides[key]) {
@@ -1324,6 +1593,36 @@ class SettingsHandler {
     }
 
     return key.split('.').pop().replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+  }
+
+  getSettingHelpText(key) {
+    const help = {
+      'polling.instance_interval_ms': 'Controls how often instance P&L is refreshed. Lower values increase load.',
+      'polling.market_data_interval_ms': 'Used for non-streaming market data refresh cadence.',
+      'streaming.enabled': 'Streams quotes/positions/funds via WebSocket when supported; stored per browser.',
+      'polling.health_check_interval_ms': 'Interval for OpenAlgo endpoint capability/health checks.',
+      'instance_health.ping_healthy_interval_ms': 'Ping cadence while instances are healthy.',
+      'instance_health.ping_unhealthy_interval_ms': 'Ping cadence while unhealthy; stops after the max attempts.',
+      'instance_health.ping_unhealthy_max_attempts': 'After this many failed pings, auto checks pause until manual refresh.',
+      'instance_health.analyzer_check_interval_ms': 'How often analyzer mode health is verified.',
+      'market_data_feed.quote_ttl_idle_ms': 'Fallback quote cache TTL when no open positions.',
+      'market_data_feed.quote_ttl_active_ms': 'Fallback quote cache TTL when open positions exist.',
+      'market_data_feed.position_interval_idle_ms': 'Positionbook refresh cadence when idle.',
+      'market_data_feed.position_interval_active_ms': 'Positionbook refresh cadence when positions exist.',
+      'market_data_feed.tradebook_interval_idle_ms': 'Tradebook refresh cadence when idle.',
+      'market_data_feed.tradebook_interval_active_ms': 'Tradebook refresh cadence when positions exist.',
+      'market_data_feed.orderbook_interval_ms': 'Orderbook refresh cadence.',
+      'market_data_feed.multiquote_cooldown_idle_ms': 'Minimum delay between MultiQuotes calls when idle.',
+      'market_data_feed.multiquote_cooldown_active_ms': 'Minimum delay between MultiQuotes calls when positions exist.',
+      'market_data_feed.funds_interval_ms': 'Funds refresh cadence.',
+      'market_hours.quote_blackout_start': 'Quotes/MultiQuotes/OptionChain are blocked starting this time (IST).',
+      'market_hours.quote_blackout_end': 'Quotes/MultiQuotes/OptionChain resume after this time (IST).',
+      'market_hours.general_blackout_start': 'Other OpenAlgo endpoints are blocked starting this time (IST).',
+      'market_hours.general_blackout_end': 'Other OpenAlgo endpoints resume after this time (IST).',
+      'trading_sessions': 'Defines session windows in IST used for session P&L baselines and auto cutoffs.',
+    };
+
+    return help[key] || '';
   }
 
   /**
@@ -1337,6 +1636,12 @@ class SettingsHandler {
 
       return `
         <div class="space-y-4">
+          <div class="p-4 bg-neutral-50 rounded-lg border border-neutral-200">
+            <p class="text-sm text-neutral-700">
+              The Order Monitor tracks targets for live and analyzer instances when they have open positions. It checks on a fixed
+              interval and uses the latest position/quote data to evaluate targets. Live instances emit alerts; analyzer instances simulate exits.
+            </p>
+          </div>
           <div class="grid grid-cols-3 gap-4">
             <div class="p-4 bg-neutral-50 rounded-lg border border-neutral-200">
               <p class="text-sm text-neutral-600">Monitoring Status</p>
@@ -1351,17 +1656,17 @@ class SettingsHandler {
               </p>
             </div>
             <div class="p-4 bg-neutral-50 rounded-lg border border-neutral-200">
-              <p class="text-sm text-neutral-600">Analyzer Instances</p>
+              <p class="text-sm text-neutral-600">Active Instances</p>
               <p class="text-lg font-semibold text-neutral-800">
-                ${status.analyzer_instances_count || 0}
+                ${status.eligible_instances_count ?? status.analyzer_instances_count ?? 0}
               </p>
             </div>
           </div>
 
           <div class="p-4 bg-info-50 rounded-lg border border-info-200">
             <p class="text-sm text-info-800">
-              ℹ️ The order monitor checks analyzer mode positions every ${status.interval_ms / 1000} seconds.
-              Configure targets on watchlist symbols to enable monitoring.
+              ℹ️ The order monitor checks live and analyzer positions every ${status.interval_ms / 1000} seconds,
+              but only evaluates instances that have open positions.
             </p>
           </div>
         </div>
@@ -1954,4 +2259,7 @@ class SettingsHandler {
 }
 
 // Export singleton instance
-const settings = new SettingsHandler();
+var settings = new SettingsHandler();
+if (typeof window !== 'undefined') {
+  window.settings = settings;
+}

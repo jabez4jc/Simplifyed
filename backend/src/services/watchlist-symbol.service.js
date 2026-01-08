@@ -215,7 +215,8 @@ class WatchlistSymbolService {
     applyOrNull('brsymbol', data.brsymbol || null);
     applyOrNull('brexchange', data.brexchange || null);
 
-    normalized.lot_size = parseIntSafe(data.lot_size, 1);
+    const lotSizeInput = data.lot_size ?? data.lotsize ?? data.lotSize;
+    normalized.lot_size = parseIntSafe(lotSizeInput, 1);
     normalized.qty_type = data.qty_type || 'LOTS';
     normalized.qty_value = parseFloatSafe(data.qty_value, null);
     normalized.product_type = data.product_type || 'MIS';

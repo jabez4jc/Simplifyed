@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { log } from '../core/logger.js';
 import settingsService from './settings.service.js';
+import config from '../core/config.js';
 import instanceService from './instance.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import db from '../core/database.js';
@@ -37,10 +38,34 @@ function getIstDate() {
   return toISTDate();
 }
 
-function isBlackout() {
+function _isWithinWindow(istDate, startHour, startMinute, endHour, endMinute) {
+  const minutes = istDate.getHours() * 60 + istDate.getMinutes();
+  const start = startHour * 60 + startMinute;
+  const end = endHour * 60 + endMinute;
+  return minutes >= start && minutes < end;
+}
+
+function _parseTimeWindow(value, fallback) {
+  if (!value || typeof value !== 'string') return fallback;
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return fallback;
+  const hour = Math.min(23, Math.max(0, parseInt(match[1], 10)));
+  const minute = Math.min(59, Math.max(0, parseInt(match[2], 10)));
+  return { hour, minute };
+}
+
+function isQuoteEndpointBlackout() {
   const ist = getIstDate();
-  const hour = ist.getHours();
-  return hour >= 1 && hour < 8;
+  const start = _parseTimeWindow(config.marketHours?.quoteBlackoutStart, { hour: 2, minute: 0 });
+  const end = _parseTimeWindow(config.marketHours?.quoteBlackoutEnd, { hour: 8, minute: 45 });
+  return _isWithinWindow(ist, start.hour, start.minute, end.hour, end.minute);
+}
+
+function isGeneralEndpointBlackout() {
+  const ist = getIstDate();
+  const start = _parseTimeWindow(config.marketHours?.generalBlackoutStart, { hour: 3, minute: 0 });
+  const end = _parseTimeWindow(config.marketHours?.generalBlackoutEnd, { hour: 8, minute: 0 });
+  return _isWithinWindow(ist, start.hour, start.minute, end.hour, end.minute);
 }
 
 async function getTestConfig() {
@@ -141,11 +166,11 @@ class InstanceHealthService {
   }
 
   start() {
-    // Every 3 hours from 08:00 IST: minute 0, second 0
-    this.cron = cron.schedule('0 0 8-23/3 * * *', () => this.runHealthChecks(), {
+    // Every 3 hours (skips blackout window inside runHealthChecks)
+    this.cron = cron.schedule('0 0 */3 * * *', () => this.runHealthChecks(), {
       timezone: 'Asia/Kolkata',
     });
-    log.info('Instance health check cron scheduled (every 3h from 08:00 IST)');
+    log.info('Instance health check cron scheduled (every 3 hours)');
   }
 
   stop() {
@@ -153,8 +178,8 @@ class InstanceHealthService {
   }
 
   async runHealthChecks() {
-    if (isBlackout()) {
-      log.warn('Health checks skipped during blackout (01:00-08:00 IST)');
+    if (isQuoteEndpointBlackout()) {
+      log.warn('Health checks skipped during quote blackout (02:00-08:45 IST)');
       return;
     }
 
@@ -187,4 +212,4 @@ class InstanceHealthService {
 }
 
 export default new InstanceHealthService();
-export { isBlackout };
+export { isQuoteEndpointBlackout, isGeneralEndpointBlackout };

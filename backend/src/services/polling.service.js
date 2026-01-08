@@ -13,6 +13,7 @@ import openalgoClient from '../integrations/openalgo/client.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import { parseFloatSafe } from '../utils/sanitizers.js';
 import { ExternalAPIError } from '../core/errors.js';
+import { isGeneralEndpointBlackout } from './instance-health.service.js';
 
 class PollingService {
   constructor() {
@@ -23,6 +24,8 @@ class PollingService {
     this.isMarketDataPolling = false;
     this.watchlistPageActive = false;
     this.activeWatchlistId = null;
+    this.instanceIntervalMs = config.polling.instanceInterval;
+    this.healthCheckIntervalMs = config.polling.healthCheckInterval || 60000;
   }
 
   /**
@@ -39,13 +42,13 @@ class PollingService {
     // Start instance polling (every 15 seconds)
     this.instancePollInterval = setInterval(
       () => this.pollAllInstances(),
-      config.polling.instanceInterval
+      this.instanceIntervalMs
     );
 
-    // Start health check polling (every 5 minutes)
+    // Start health check polling (interval respects per-instance ping schedule)
     this.healthCheckInterval = setInterval(
       () => this.pollHealthChecks(),
-      5 * 60 * 1000 // 5 minutes
+      this.healthCheckIntervalMs
     );
 
     // Initial poll
@@ -53,7 +56,7 @@ class PollingService {
     await this.pollHealthChecks();
 
     log.info('Polling service started', {
-      instance_interval: config.polling.instanceInterval,
+      instance_interval: this.instanceIntervalMs,
       market_data_interval: config.polling.marketDataInterval,
     });
   }
@@ -89,6 +92,9 @@ class PollingService {
    */
   async pollAllInstances() {
     try {
+      if (isGeneralEndpointBlackout()) {
+        return;
+      }
       const startTime = Date.now();
 
       // Get all active instances
@@ -145,6 +151,9 @@ class PollingService {
         return { skipped: true, reason: 'unhealthy' };
       }
 
+      // Update analyzer status (15s cadence)
+      await instanceService.refreshAnalyzerStatus(instanceId);
+
       // Update P&L
       await instanceService.updatePnLData(instanceId);
 
@@ -177,6 +186,8 @@ class PollingService {
       // This clears any requiresManualRefresh flag and allows retries
       openalgoClient.forceResetInstanceHealth(instanceId);
       openalgoClient.forceClearBackoff(instanceId);
+      marketDataFeedService.resetInstanceHealth(instanceId);
+      instanceService.resetHealthCheckState(instanceId);
 
       log.info('Manual refresh triggered', {
         instance_id: instanceId,
@@ -195,7 +206,7 @@ class PollingService {
       await instanceService.updatePnLData(instanceId);
 
       // Update health status
-      await instanceService.updateHealthStatus(instanceId);
+      await instanceService.updateHealthStatus(instanceId, { force: true });
 
       // Sync order status
       await orderService.syncOrderStatus(instanceId);
@@ -233,6 +244,9 @@ class PollingService {
    */
   async pollHealthChecks() {
     try {
+      if (isGeneralEndpointBlackout()) {
+        return;
+      }
       const startTime = Date.now();
 
       // Get all instances (including inactive)
@@ -334,11 +348,36 @@ class PollingService {
       isMarketDataPolling: this.isMarketDataPolling,
       activeWatchlistId: this.activeWatchlistId,
       intervals: {
-        instance: config.polling.instanceInterval,
+        instance: this.instanceIntervalMs,
         marketData: config.polling.marketDataInterval,
-        healthCheck: 5 * 60 * 1000,
+        healthCheck: this.healthCheckIntervalMs,
       },
     };
+  }
+
+  applyConfig(nextConfig = config) {
+    this.instanceIntervalMs = nextConfig.polling.instanceInterval;
+    this.healthCheckIntervalMs = nextConfig.polling.healthCheckInterval || 60000;
+
+    if (!this.isPolling) {
+      return;
+    }
+
+    if (this.instancePollInterval) {
+      clearInterval(this.instancePollInterval);
+    }
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+    }
+
+    this.instancePollInterval = setInterval(
+      () => this.pollAllInstances(),
+      this.instanceIntervalMs
+    );
+    this.healthCheckInterval = setInterval(
+      () => this.pollHealthChecks(),
+      this.healthCheckIntervalMs
+    );
   }
 }
 

@@ -17,7 +17,11 @@ router.get('/status', async (req, res) => {
   try {
     const status = orderMonitorService.getStatus();
 
-    // Get count of analyzer instances being monitored
+    const eligibleInstances = await db.all(`
+      SELECT COUNT(*) as count
+      FROM instances
+      WHERE is_active = 1
+    `);
     const analyzerInstances = await db.all(`
       SELECT COUNT(*) as count
       FROM instances
@@ -28,6 +32,7 @@ router.get('/status', async (req, res) => {
       status: 'success',
       data: {
         ...status,
+        eligible_instances_count: eligibleInstances[0]?.count || 0,
         analyzer_instances_count: analyzerInstances[0]?.count || 0,
       },
     });

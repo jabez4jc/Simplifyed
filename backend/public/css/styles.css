@@ -2409,7 +2409,7 @@ body {
 .settings-container {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-3);
 }
 
 /* Settings Header */
@@ -2417,7 +2417,7 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-3);
   flex-wrap: wrap;
 }
 
@@ -2447,8 +2447,8 @@ body {
 }
 
 .settings-search-input {
-  padding: 10px 40px 10px 40px;
-  width: 280px;
+  padding: 8px 36px 8px 36px;
+  width: 240px;
   border: 1px solid var(--color-neutral-200);
   border-radius: var(--radius-lg);
   font-size: var(--font-size-sm);
@@ -2494,13 +2494,13 @@ body {
 /* Settings Layout - Sidebar + Main */
 .settings-layout {
   display: grid;
-  grid-template-columns: 240px 1fr;
-  gap: var(--space-8);
-  min-height: 500px;
+  grid-template-columns: 220px 1fr;
+  gap: var(--space-5);
+  min-height: 0;
 }
 
 .settings-main {
-  padding-left: var(--space-3);
+  padding-left: var(--space-2);
 }
 
 /* Settings Sidebar */
@@ -2508,15 +2508,15 @@ body {
   background-color: var(--color-neutral-50);
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-neutral-200);
-  padding: var(--space-3);
+  padding: var(--space-2);
   height: fit-content;
   position: sticky;
-  top: var(--space-4);
+  top: var(--space-3);
 }
 
 .settings-sidebar-header {
-  padding: var(--space-2) var(--space-3);
-  margin-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-2);
+  margin-bottom: var(--space-1);
 }
 
 .settings-nav {
@@ -2529,7 +2529,7 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-3);
+  padding: var(--space-2) var(--space-2);
   border: none;
   background: none;
   border-radius: var(--radius-md);
@@ -2582,11 +2582,11 @@ body {
 .settings-main {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .settings-category-header {
-  padding-bottom: var(--space-4);
+  padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--color-neutral-200);
 }
 
@@ -2617,8 +2617,8 @@ body {
 .settings-field {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: var(--space-4);
-  padding: var(--space-4) var(--space-5);
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--color-neutral-100);
   transition: background-color 0.15s ease;
 }
@@ -2785,7 +2785,7 @@ body {
 .settings-actions {
   display: flex;
   gap: var(--space-3);
-  padding-top: var(--space-4);
+  padding-top: var(--space-3);
   border-top: 1px solid var(--color-neutral-200);
 }
 
@@ -2799,7 +2799,7 @@ body {
 .settings-search-results {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .settings-search-results-header {
@@ -2811,7 +2811,7 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: var(--space-12);
+  padding: var(--space-8);
   text-align: center;
 }
 
@@ -2921,7 +2921,7 @@ body {
 
 /* Main Tabs Header */
 .settings-main-tabs-header {
-  padding: var(--space-6) var(--space-6) var(--space-4);
+  padding: var(--space-4) var(--space-5) var(--space-3);
   border-bottom: 1px solid var(--color-neutral-100);
 }
 
@@ -2929,7 +2929,7 @@ body {
 .settings-main-tabs-nav {
   display: flex;
   gap: 0;
-  padding: 0 var(--space-6);
+  padding: 0 var(--space-5);
   overflow-x: auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
@@ -2944,7 +2944,7 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-4) var(--space-6);
+  padding: var(--space-3) var(--space-5);
   border: none;
   background: transparent;
   color: var(--color-neutral-600);
@@ -3000,7 +3000,7 @@ body {
 .settings-tab-content {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-6);
+  padding: var(--space-4);
 }
 
 /* Responsive Design for Tabs */
@@ -3063,7 +3063,7 @@ body {
 }
 
 .settings-tab-content .card-header {
-  padding: var(--space-5) var(--space-6);
+  padding: var(--space-4) var(--space-5);
   border-bottom: 1px solid var(--color-neutral-100);
   background-color: var(--color-neutral-50);
 }
@@ -3077,14 +3077,60 @@ body {
 
 /* Space between cards in tabs */
 .settings-tab-content .space-y-6 > * + * {
-  margin-top: var(--space-6);
+  margin-top: var(--space-4);
 }
 
 /* Improved visual hierarchy */
 .settings-tab-content .space-y-6 {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
+  gap: var(--space-4);
+}
+
+/* ========== RBAC Tabs ========== */
+.rbac-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.rbac-tabs-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.rbac-role-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.rbac-role-tab {
+  border: 1px solid var(--color-neutral-200);
+  background: white;
+  color: var(--color-neutral-700);
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.rbac-role-tab:hover {
+  border-color: var(--color-neutral-300);
+  background-color: var(--color-neutral-50);
+}
+
+.rbac-role-tab.active {
+  border-color: var(--color-info);
+  color: var(--color-info);
+  background-color: var(--color-info-bg);
+}
+
+.rbac-users {
+  margin-top: var(--space-2);
 }
 
 /* ========== Watchlist Page Redesign - Compact Layout ========== */
@@ -3251,6 +3297,14 @@ body {
   justify-content: center;
   align-items: center;
   gap: var(--space-4);
+}
+
+.positions-summary-divider {
+  display: inline-block;
+  width: 1px;
+  height: 14px;
+  background-color: var(--color-neutral-300);
+  margin: 0 var(--space-3);
 }
 
 .positions-panel-actions {

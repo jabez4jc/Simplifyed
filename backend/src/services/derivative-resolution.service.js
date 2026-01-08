@@ -72,8 +72,57 @@ class DerivativeResolutionService {
     return expiry;
   }
 
+  expandExpiryFormats(expiry) {
+    if (!expiry) return [];
+    const variants = new Set();
+    const upper = String(expiry).toUpperCase().trim();
+    variants.add(upper);
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(upper)) {
+      const d = new Date(upper);
+      const day = String(d.getDate()).padStart(2, '0');
+      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+        'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+      const mon = monthNames[d.getMonth()];
+      const yy = String(d.getFullYear()).slice(-2);
+      variants.add(`${day}-${mon}-${yy}`);
+      variants.add(`${day}${mon}${yy}`);
+    }
+
+    if (/^\d{2}-[A-Z]{3}-\d{2}$/.test(upper)) {
+      const [day, mon, yy] = upper.split('-');
+      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+        'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+      const idx = monthNames.indexOf(mon);
+      if (idx >= 0) {
+        const yyyy = `20${yy}`;
+        const month = String(idx + 1).padStart(2, '0');
+        variants.add(`${yyyy}-${month}-${day}`);
+        variants.add(`${day}${mon}${yy}`);
+      }
+    }
+
+    if (/^\d{2}[A-Z]{3}\d{2}$/.test(upper)) {
+      const day = upper.slice(0, 2);
+      const mon = upper.slice(2, 5);
+      const yy = upper.slice(5, 7);
+      variants.add(`${day}-${mon}-${yy}`);
+      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+        'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+      const idx = monthNames.indexOf(mon);
+      if (idx >= 0) {
+        const yyyy = `20${yy}`;
+        const month = String(idx + 1).padStart(2, '0');
+        variants.add(`${yyyy}-${month}-${day}`);
+      }
+    }
+
+    return Array.from(variants);
+  }
+
   async resolveFuturesSymbol(instance, underlying, exchange, expiry) {
     try {
+      const expiryVariants = this.expandExpiryFormats(expiry);
       const openalgoExpiry = this.convertExpiryToOpenAlgoFormat(expiry);
       log.debug('Searching for futures symbol', { underlying, exchange, expiry: openalgoExpiry });
 
@@ -89,7 +138,10 @@ class DerivativeResolutionService {
           result.name
         );
         const matchesUnderlying = resultKey === normalizedUnderlying;
-        const matchesExpiry = result.expiry === openalgoExpiry;
+        const resultExpiryVariants = this._resolveExpiryVariants(result);
+        const matchesExpiry = expiryVariants.length === 0
+          ? true
+          : resultExpiryVariants.some((variant) => expiryVariants.includes(variant));
         const matchesExchange = (result.exchange || '').toUpperCase() === (exchange || '').toUpperCase();
         return isFutures && matchesUnderlying && matchesExpiry && matchesExchange;
       });
@@ -143,6 +195,26 @@ class DerivativeResolutionService {
       return nm.replace(/[^A-Z0-9]/g, '').replace(/\d+$/, '');
     }
     return cleaned;
+  }
+
+  _resolveExpiryVariants(result = {}) {
+    const variants = new Set();
+    if (result.expiry) {
+      this.expandExpiryFormats(result.expiry).forEach((value) => variants.add(value));
+    }
+
+    const extracted = this._extractExpiryFromSymbol(result.symbol);
+    if (extracted) {
+      this.expandExpiryFormats(extracted).forEach((value) => variants.add(value));
+    }
+
+    return Array.from(variants);
+  }
+
+  _extractExpiryFromSymbol(symbol) {
+    const normalized = (symbol || '').toUpperCase().replace(/\s+/g, '');
+    const match = normalized.match(/\d{2}[A-Z]{3}\d{2}(?=FUT$)/);
+    return match ? match[0] : null;
   }
 }
 

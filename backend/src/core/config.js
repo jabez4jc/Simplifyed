@@ -212,6 +212,7 @@ class Config {
     this.polling = {
       instanceInterval: getEnvInt('INSTANCE_POLL_INTERVAL_MS', 15000),
       marketDataInterval: getEnvInt('MARKET_DATA_POLL_INTERVAL_MS', 5000),
+      healthCheckInterval: getEnvInt('HEALTH_CHECK_INTERVAL_MS', 60000),
     };
 
     this.wsGateway = {
@@ -227,11 +228,35 @@ class Config {
     };
 
     this.marketDataFeed = {
-      quoteTtlMs: getEnvInt('MARKET_DATA_QUOTE_TTL_MS', 2500),
-      positionTtlMs: getEnvInt('MARKET_DATA_POSITION_TTL_MS', 5000),   // plan: 8s -> 5s
-      fundsTtlMs: getEnvInt('MARKET_DATA_FUNDS_TTL_MS', 20000),
-      orderbookTtlMs: getEnvInt('MARKET_DATA_ORDERBOOK_TTL_MS', 3000), // plan: 5s -> 3s
-      tradebookTtlMs: getEnvInt('MARKET_DATA_TRADEBOOK_TTL_MS', 3000), // plan: 5s -> 3s
+      quoteTtlMs: getEnvInt('MARKET_DATA_QUOTE_TTL_MS', 15000),
+      quoteTtlIdleMs: getEnvInt('MARKET_DATA_QUOTE_TTL_IDLE_MS', 15000),
+      quoteTtlActiveMs: getEnvInt('MARKET_DATA_QUOTE_TTL_ACTIVE_MS', 10000),
+      positionTtlMs: getEnvInt('MARKET_DATA_POSITION_TTL_MS', 30000),
+      positionIntervalIdleMs: getEnvInt('MARKET_DATA_POSITION_INTERVAL_IDLE_MS', 30000),
+      positionIntervalActiveMs: getEnvInt('MARKET_DATA_POSITION_INTERVAL_ACTIVE_MS', 8000),
+      fundsTtlMs: getEnvInt('MARKET_DATA_FUNDS_TTL_MS', 180000),
+      fundsIntervalMs: getEnvInt('MARKET_DATA_FUNDS_INTERVAL_MS', 180000),
+      orderbookTtlMs: getEnvInt('MARKET_DATA_ORDERBOOK_TTL_MS', 30000),
+      orderbookIntervalMs: getEnvInt('MARKET_DATA_ORDERBOOK_INTERVAL_MS', 30000),
+      tradebookTtlMs: getEnvInt('MARKET_DATA_TRADEBOOK_TTL_MS', 30000),
+      tradebookIntervalIdleMs: getEnvInt('MARKET_DATA_TRADEBOOK_INTERVAL_IDLE_MS', 30000),
+      tradebookIntervalActiveMs: getEnvInt('MARKET_DATA_TRADEBOOK_INTERVAL_ACTIVE_MS', 8000),
+      multiquoteCooldownIdleMs: getEnvInt('MARKET_DATA_MULTIQ_COOLDOWN_IDLE_MS', 15000),
+      multiquoteCooldownActiveMs: getEnvInt('MARKET_DATA_MULTIQ_COOLDOWN_ACTIVE_MS', 10000),
+    };
+
+    this.instanceHealth = {
+      pingHealthyIntervalMs: getEnvInt('INSTANCE_HEALTH_PING_HEALTHY_MS', 300000),
+      pingUnhealthyIntervalMs: getEnvInt('INSTANCE_HEALTH_PING_UNHEALTHY_MS', 180000),
+      pingUnhealthyMaxAttempts: getEnvInt('INSTANCE_HEALTH_PING_UNHEALTHY_MAX', 5),
+      analyzerCheckIntervalMs: getEnvInt('INSTANCE_HEALTH_ANALYZER_CHECK_MS', 15000),
+    };
+
+    this.marketHours = {
+      quoteBlackoutStart: getEnv('MARKET_BLACKOUT_QUOTES_START', '02:00'),
+      quoteBlackoutEnd: getEnv('MARKET_BLACKOUT_QUOTES_END', '08:45'),
+      generalBlackoutStart: getEnv('MARKET_BLACKOUT_GENERAL_START', '03:00'),
+      generalBlackoutEnd: getEnv('MARKET_BLACKOUT_GENERAL_END', '08:00'),
     };
 
     this.openalgo = {
@@ -305,11 +330,32 @@ class Config {
 
       this.polling.instanceInterval = await getSettingInt('polling.instance_interval_ms', this.polling.instanceInterval);
       this.polling.marketDataInterval = await getSettingInt('polling.market_data_interval_ms', this.polling.marketDataInterval);
+      this.polling.healthCheckInterval = await getSettingInt('polling.health_check_interval_ms', this.polling.healthCheckInterval);
       this.marketDataFeed.quoteTtlMs = await getSettingInt('market_data_feed.quote_ttl_ms', this.marketDataFeed.quoteTtlMs);
+      this.marketDataFeed.quoteTtlIdleMs = await getSettingInt('market_data_feed.quote_ttl_idle_ms', this.marketDataFeed.quoteTtlIdleMs);
+      this.marketDataFeed.quoteTtlActiveMs = await getSettingInt('market_data_feed.quote_ttl_active_ms', this.marketDataFeed.quoteTtlActiveMs);
       this.marketDataFeed.positionTtlMs = await getSettingInt('market_data_feed.position_ttl_ms', this.marketDataFeed.positionTtlMs);
+      this.marketDataFeed.positionIntervalIdleMs = await getSettingInt('market_data_feed.position_interval_idle_ms', this.marketDataFeed.positionIntervalIdleMs);
+      this.marketDataFeed.positionIntervalActiveMs = await getSettingInt('market_data_feed.position_interval_active_ms', this.marketDataFeed.positionIntervalActiveMs);
       this.marketDataFeed.fundsTtlMs = await getSettingInt('market_data_feed.funds_ttl_ms', this.marketDataFeed.fundsTtlMs);
+      this.marketDataFeed.fundsIntervalMs = await getSettingInt('market_data_feed.funds_interval_ms', this.marketDataFeed.fundsIntervalMs);
       this.marketDataFeed.orderbookTtlMs = await getSettingInt('market_data_feed.orderbook_ttl_ms', this.marketDataFeed.orderbookTtlMs);
+      this.marketDataFeed.orderbookIntervalMs = await getSettingInt('market_data_feed.orderbook_interval_ms', this.marketDataFeed.orderbookIntervalMs);
       this.marketDataFeed.tradebookTtlMs = await getSettingInt('market_data_feed.tradebook_ttl_ms', this.marketDataFeed.tradebookTtlMs);
+      this.marketDataFeed.tradebookIntervalIdleMs = await getSettingInt('market_data_feed.tradebook_interval_idle_ms', this.marketDataFeed.tradebookIntervalIdleMs);
+      this.marketDataFeed.tradebookIntervalActiveMs = await getSettingInt('market_data_feed.tradebook_interval_active_ms', this.marketDataFeed.tradebookIntervalActiveMs);
+      this.marketDataFeed.multiquoteCooldownIdleMs = await getSettingInt('market_data_feed.multiquote_cooldown_idle_ms', this.marketDataFeed.multiquoteCooldownIdleMs);
+      this.marketDataFeed.multiquoteCooldownActiveMs = await getSettingInt('market_data_feed.multiquote_cooldown_active_ms', this.marketDataFeed.multiquoteCooldownActiveMs);
+
+      this.instanceHealth.pingHealthyIntervalMs = await getSettingInt('instance_health.ping_healthy_interval_ms', this.instanceHealth.pingHealthyIntervalMs);
+      this.instanceHealth.pingUnhealthyIntervalMs = await getSettingInt('instance_health.ping_unhealthy_interval_ms', this.instanceHealth.pingUnhealthyIntervalMs);
+      this.instanceHealth.pingUnhealthyMaxAttempts = await getSettingInt('instance_health.ping_unhealthy_max_attempts', this.instanceHealth.pingUnhealthyMaxAttempts);
+      this.instanceHealth.analyzerCheckIntervalMs = await getSettingInt('instance_health.analyzer_check_interval_ms', this.instanceHealth.analyzerCheckIntervalMs);
+
+      this.marketHours.quoteBlackoutStart = await getSetting('market_hours.quote_blackout_start', this.marketHours.quoteBlackoutStart);
+      this.marketHours.quoteBlackoutEnd = await getSetting('market_hours.quote_blackout_end', this.marketHours.quoteBlackoutEnd);
+      this.marketHours.generalBlackoutStart = await getSetting('market_hours.general_blackout_start', this.marketHours.generalBlackoutStart);
+      this.marketHours.generalBlackoutEnd = await getSetting('market_hours.general_blackout_end', this.marketHours.generalBlackoutEnd);
       this.autoExit.monitorIntervalMs = await getSettingInt('auto_exit.monitor_interval_ms', this.autoExit.monitorIntervalMs);
       this.autoExit.pendingExitCooldownMs = await getSettingInt('auto_exit.pending_cooldown_ms', this.autoExit.pendingExitCooldownMs);
       this.autoExit.provisionalEntryGraceMs = await getSettingInt('auto_exit.provisional_entry_grace_ms', this.autoExit.provisionalEntryGraceMs);

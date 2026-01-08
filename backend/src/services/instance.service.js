@@ -22,8 +22,13 @@ import {
 } from '../utils/sanitizers.js';
 import settingsService from './settings.service.js';
 import { toISTDate, toISTISOString } from '../utils/time.js';
+import config from '../core/config.js';
 
 const INSTANCE_REQUEST_DELAY_MS = 300;
+const DEFAULT_ANALYZER_TTL_MS = 15 * 1000;
+const DEFAULT_PING_HEALTHY_MS = 5 * 60 * 1000;
+const DEFAULT_PING_UNHEALTHY_MS = 3 * 60 * 1000;
+const DEFAULT_MAX_UNHEALTHY_PINGS = 5;
 const instanceRequestTimestamps = new Map();
 
 async function _staggeredInstanceRequest(instanceId, fn) {
@@ -44,7 +49,20 @@ async function _staggeredInstanceRequest(instanceId, fn) {
 class InstanceService {
   constructor() {
     this.healthCache = new Map();
+    this.analyzerStatusCache = new Map();
     this.instanceColumns = null;
+  }
+
+  _getCachedAnalyzerStatus(instanceId) {
+    const entry = this.analyzerStatusCache.get(instanceId);
+    if (!entry) return null;
+    const ttl = config.instanceHealth?.analyzerCheckIntervalMs ?? DEFAULT_ANALYZER_TTL_MS;
+    if (Date.now() - entry.checkedAt > ttl) return null;
+    return entry.mode;
+  }
+
+  _setCachedAnalyzerStatus(instanceId, mode) {
+    this.analyzerStatusCache.set(instanceId, { mode: !!mode, checkedAt: Date.now() });
   }
 
   async _hasColumn(columnName) {
@@ -399,12 +417,29 @@ class InstanceService {
    * @param {number} id - Instance ID
    * @returns {Promise<Object>} - Updated instance with health info
    */
-  async updateHealthStatus(id) {
+  async updateHealthStatus(id, { force = false } = {}) {
     try {
       const instance = await this.getInstanceById(id);
+      const now = Date.now();
+      const state = this.healthCache.get(id) || {
+        nextPingAt: 0,
+        unhealthyAttempts: 0,
+        requiresManualRefresh: false,
+      };
+
+      if (!force) {
+        if (state.requiresManualRefresh) {
+          return instance;
+        }
+        if (state.nextPingAt && now < state.nextPingAt) {
+          return instance;
+        }
+      }
 
       let healthStatus = 'unknown';
       let analyzerMode = instance.is_analyzer_mode;
+      let analyzerCheckPerformed = false;
+      const hasAnalyzerCheckColumn = await this._hasColumn('last_analyzer_check_at');
 
       try {
         // Test connection
@@ -417,12 +452,32 @@ class InstanceService {
           [id]
         );
 
-        // Get analyzer status (do not block health on failure)
-        try {
-          const analyzerStatus = await _staggeredInstanceRequest(id, () => openalgoClient.getAnalyzerStatus(instance));
-          analyzerMode = analyzerStatus.analyze_mode || false;
-        } catch (error) {
-          log.warn('Failed to get analyzer status', { id, error: error.message });
+        // Get analyzer status at most once per TTL (do not block health on failure)
+        let shouldCheckAnalyzer = true;
+        if (hasAnalyzerCheckColumn && instance.last_analyzer_check_at) {
+          const lastCheck = Date.parse(instance.last_analyzer_check_at);
+          const ttl = config.instanceHealth?.analyzerCheckIntervalMs ?? DEFAULT_ANALYZER_TTL_MS;
+          if (!Number.isNaN(lastCheck)) {
+            shouldCheckAnalyzer = Date.now() - lastCheck >= ttl;
+          }
+        } else if (!hasAnalyzerCheckColumn) {
+          const cachedAnalyzerMode = this._getCachedAnalyzerStatus(id);
+          if (cachedAnalyzerMode !== null) {
+            analyzerMode = cachedAnalyzerMode;
+            shouldCheckAnalyzer = false;
+          }
+        }
+
+        if (shouldCheckAnalyzer) {
+          try {
+            const analyzerStatus = await _staggeredInstanceRequest(id, () => openalgoClient.getAnalyzerStatus(instance));
+            analyzerMode = analyzerStatus.analyze_mode || false;
+            analyzerCheckPerformed = true;
+            this._setCachedAnalyzerStatus(id, analyzerMode);
+          } catch (error) {
+            log.warn('Failed to get analyzer status', { id, error: error.message });
+            analyzerCheckPerformed = true;
+          }
         }
       } catch (error) {
         healthStatus = 'unhealthy';
@@ -430,20 +485,47 @@ class InstanceService {
       }
 
       // Update health status in database
-      await db.run(
-        `UPDATE instances SET
+      let updateSql = `UPDATE instances SET
           health_status = ?,
           is_analyzer_mode = ?,
-          last_health_check = CURRENT_TIMESTAMP
-        WHERE id = ?`,
-        [healthStatus, analyzerMode ? 1 : 0, id]
-      );
+          last_health_check = CURRENT_TIMESTAMP`;
+      const updateParams = [healthStatus, analyzerMode ? 1 : 0];
+      if (hasAnalyzerCheckColumn && analyzerCheckPerformed) {
+        updateSql += ', last_analyzer_check_at = CURRENT_TIMESTAMP';
+      }
+      updateSql += ' WHERE id = ?';
+      updateParams.push(id);
+      await db.run(updateSql, updateParams);
+
+      const pingHealthyMs = config.instanceHealth?.pingHealthyIntervalMs ?? DEFAULT_PING_HEALTHY_MS;
+      const pingUnhealthyMs = config.instanceHealth?.pingUnhealthyIntervalMs ?? DEFAULT_PING_UNHEALTHY_MS;
+      const maxUnhealthy = config.instanceHealth?.pingUnhealthyMaxAttempts ?? DEFAULT_MAX_UNHEALTHY_PINGS;
+
+      if (healthStatus === 'healthy') {
+        this.healthCache.set(id, {
+          nextPingAt: Date.now() + pingHealthyMs,
+          unhealthyAttempts: 0,
+          requiresManualRefresh: false,
+        });
+      } else {
+        const attempts = (state.unhealthyAttempts || 0) + 1;
+        const requiresManualRefresh = attempts >= maxUnhealthy;
+        this.healthCache.set(id, {
+          nextPingAt: requiresManualRefresh ? null : Date.now() + pingUnhealthyMs,
+          unhealthyAttempts: attempts,
+          requiresManualRefresh,
+        });
+      }
 
       return await this.getInstanceById(id);
     } catch (error) {
       log.error('Failed to update health status', error, { id });
       throw error;
     }
+  }
+
+  resetHealthCheckState(id) {
+    this.healthCache.delete(id);
   }
 
   /**
@@ -456,10 +538,14 @@ class InstanceService {
       const instance = await this.getInstanceById(id);
 
       try {
-        // Fetch data from OpenAlgo (staggered to avoid simultaneous hits)
-        const funds = await _staggeredInstanceRequest(id, () => openalgoClient.getFunds(instance));
-        const tradebook = await _staggeredInstanceRequest(id, () => openalgoClient.getTradeBook(instance));
-        const positionbook = await _staggeredInstanceRequest(id, () => openalgoClient.getPositionBook(instance));
+        const marketDataFeedService = (await import('./market-data-feed.service.js')).default;
+        await marketDataFeedService.refreshFundsForInstance(id, { force: false });
+        await marketDataFeedService.refreshPositionsForInstance(id, { force: false });
+        const tradeSnap = await marketDataFeedService.getTradebookSnapshot(id, { force: false });
+
+        const funds = marketDataFeedService.getFundsSnapshot(id)?.data || {};
+        const positionbook = marketDataFeedService.getPositionSnapshot(id)?.data || [];
+        const tradebook = tradeSnap?.data || [];
 
         // Calculate P&L
         const currentBalance = parseFloat(funds.availablecash || 0);
@@ -631,6 +717,51 @@ class InstanceService {
   }
 
   /**
+   * Refresh analyzer mode status on a fixed cadence
+   * @param {number} id - Instance ID
+   * @param {Object} options
+   * @param {boolean} options.force - Bypass TTL checks
+   */
+  async refreshAnalyzerStatus(id, { force = false } = {}) {
+    const instance = await this.getInstanceById(id);
+    const hasAnalyzerCheckColumn = await this._hasColumn('last_analyzer_check_at');
+
+    if (!force) {
+      if (hasAnalyzerCheckColumn && instance.last_analyzer_check_at) {
+        const lastCheck = Date.parse(instance.last_analyzer_check_at);
+        const ttl = config.instanceHealth?.analyzerCheckIntervalMs ?? DEFAULT_ANALYZER_TTL_MS;
+        if (!Number.isNaN(lastCheck) && Date.now() - lastCheck < ttl) {
+          return instance;
+        }
+      } else if (!hasAnalyzerCheckColumn) {
+        const cachedAnalyzerMode = this._getCachedAnalyzerStatus(id);
+        if (cachedAnalyzerMode !== null) {
+          return instance;
+        }
+      }
+    }
+
+    try {
+      const analyzerStatus = await _staggeredInstanceRequest(id, () => openalgoClient.getAnalyzerStatus(instance));
+      const analyzerMode = analyzerStatus.analyze_mode || false;
+      this._setCachedAnalyzerStatus(id, analyzerMode);
+
+      let sql = 'UPDATE instances SET is_analyzer_mode = ?';
+      const params = [analyzerMode ? 1 : 0];
+      if (hasAnalyzerCheckColumn) {
+        sql += ', last_analyzer_check_at = CURRENT_TIMESTAMP';
+      }
+      sql += ' WHERE id = ?';
+      params.push(id);
+      await db.run(sql, params);
+    } catch (error) {
+      log.warn('Failed to refresh analyzer status', { id, error: error.message });
+    }
+
+    return await this.getInstanceById(id);
+  }
+
+  /**
    * Toggle analyzer mode
    * @param {number} id - Instance ID
    * @param {boolean} mode - true for analyze, false for live
@@ -694,12 +825,18 @@ class InstanceService {
 
       // Toggle analyzer mode
       await openalgoClient.toggleAnalyzer(instance, mode);
+      this._setCachedAnalyzerStatus(id, mode);
 
       // Update database
-      await db.run(
-        'UPDATE instances SET is_analyzer_mode = ?, last_updated = CURRENT_TIMESTAMP WHERE id = ?',
-        [mode ? 1 : 0, id]
-      );
+      const hasAnalyzerCheckColumn = await this._hasColumn('last_analyzer_check_at');
+      let sql = 'UPDATE instances SET is_analyzer_mode = ?, last_updated = CURRENT_TIMESTAMP';
+      const params = [mode ? 1 : 0];
+      if (hasAnalyzerCheckColumn) {
+        sql += ', last_analyzer_check_at = CURRENT_TIMESTAMP';
+      }
+      sql += ' WHERE id = ?';
+      params.push(id);
+      await db.run(sql, params);
 
       log.info('Analyzer mode toggled', { id, mode });
 

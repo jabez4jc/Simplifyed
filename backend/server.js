@@ -27,7 +27,7 @@ import autoExitService from './src/services/auto-exit.service.js';
 import telegramService from './src/services/telegram.service.js';
 import openalgoClient from './src/integrations/openalgo/client.js';
 import settingsService from './src/services/settings.service.js';
-import instanceHealthService, { isBlackout } from './src/services/instance-health.service.js';
+import instanceHealthService, { isGeneralEndpointBlackout, isQuoteEndpointBlackout } from './src/services/instance-health.service.js';
 import authLocalService from './src/services/auth-local.service.js';
 import wsGatewayService from './src/services/ws-gateway.service.js';
 import instanceService from './src/services/instance.service.js';
@@ -248,13 +248,28 @@ app.get('/api/user', requireAuth, (req, res) => {
 // Static files (frontend)
 app.use(express.static('public'));
 
-// Blackout guard for API requests (01:00-08:00 IST)
+// Blackout guard for API requests (quote vs general windows)
 app.use((req, res, next) => {
-  if (req.path.startsWith('/api') && isBlackout()) {
+  if (!req.path.startsWith('/api')) {
+    return next();
+  }
+
+  const path = req.path.toLowerCase();
+  const isQuoteRequest = path.includes('quotes') || path.includes('optionchain') || path.includes('ltp');
+
+  if (isQuoteRequest && isQuoteEndpointBlackout()) {
     return res.status(503).json({
       status: 'error',
       code: 'MARKET_CLOSED',
-      message: 'Market is closed (01:00-08:00 IST). Broker instances are paused.',
+      message: 'Market is closed for quotes (02:00-08:45 IST). Broker instances are paused.',
+    });
+  }
+
+  if (!isQuoteRequest && isGeneralEndpointBlackout()) {
+    return res.status(503).json({
+      status: 'error',
+      code: 'MARKET_CLOSED',
+      message: 'Market is closed (03:00-08:00 IST). Broker instances are paused.',
     });
   }
   next();
@@ -288,6 +303,13 @@ async function startServer() {
       if (data.category === 'rate_limits') {
         log.info('Rate limit settings changed, reloading...');
         await openalgoClient.reloadRateLimits();
+      }
+
+      const needsReload = ['polling', 'market_data_feed', 'instance_health', 'market_hours'].includes(data.category);
+      if (needsReload) {
+        await config.loadFromDatabase();
+        marketDataFeedService.applyConfig(config);
+        pollingService.applyConfig(config);
       }
     });
 

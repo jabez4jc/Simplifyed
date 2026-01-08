@@ -60,6 +60,12 @@ router.get('/public-config', (req, res) => {
       wsGatewayEnabled: config.wsGateway?.enabled || false,
       wsGatewayPath: config.wsGateway?.path || '/stream',
       webhookToken: config.webhooks?.tradingviewBroadcast?.token || null,
+      marketData: {
+        positionsPollIdleMs: config.marketDataFeed?.positionIntervalIdleMs || 30000,
+        positionsPollActiveMs: config.marketDataFeed?.positionIntervalActiveMs || 8000,
+        ltpCacheIdleMs: config.marketDataFeed?.quoteTtlIdleMs || 15000,
+        ltpCacheActiveMs: config.marketDataFeed?.quoteTtlActiveMs || 10000,
+      },
     },
   });
 });

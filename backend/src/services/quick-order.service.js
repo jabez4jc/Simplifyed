@@ -643,43 +643,52 @@ class QuickOrderService {
     // Determine final symbol based on trade mode
     let finalSymbol = symbol.symbol;
     let finalExchange = symbol.exchange;
-    let resolvedLotSize = symbol.lot_size;
+    let resolvedLotSize = symbol.lot_size || symbol.lotsize;
 
     if (tradeMode === 'FUTURES') {
       const derivativeExchange = symbol.symbol_type === 'FUTURES'
         ? symbol.exchange
         : derivativeResolutionService.getDerivativeExchange(symbol.exchange);
-      const underlying = derivativeResolutionService.getDerivativeUnderlying(symbol);
+      const underlying = this._getFuturesUnderlying(symbol);
 
       if (expiry) {
-        if (!underlying) {
-          throw new ValidationError(
-            'Underlying symbol is required to resolve futures contracts. Set it in the watchlist symbol settings.'
+        const matchesWatchlistExpiry = symbol.symbol_type === 'FUTURES'
+          && this._expiryMatchesSymbol(expiry, symbol);
+
+        if (matchesWatchlistExpiry) {
+          finalSymbol = symbol.symbol;
+          finalExchange = symbol.exchange;
+          resolvedLotSize = symbol.lot_size || symbol.lotsize || symbol.lotSize;
+        } else {
+          if (!underlying) {
+            throw new ValidationError(
+              'Underlying symbol is required to resolve futures contracts. Set it in the watchlist symbol settings.'
+            );
+          }
+
+          log.info('Resolving futures symbol for selected expiry', {
+            underlying,
+            expiry,
+            derivativeExchange,
+          });
+
+          const futuresSymbol = await derivativeResolutionService.resolveFuturesSymbol(
+            instance,
+            underlying,
+            derivativeExchange,
+            expiry
           );
+
+          finalSymbol = futuresSymbol.symbol;
+          finalExchange = derivativeExchange;
+          resolvedLotSize = futuresSymbol.lot_size || symbol.lot_size;
+
+          log.info('Futures symbol resolved', {
+            symbol: finalSymbol,
+            exchange: finalExchange,
+            lotSize: resolvedLotSize,
+          });
         }
-
-        log.info('Resolving futures symbol for selected expiry', {
-          underlying,
-          expiry,
-          derivativeExchange,
-        });
-
-        const futuresSymbol = await derivativeResolutionService.resolveFuturesSymbol(
-          instance,
-          underlying,
-          derivativeExchange,
-          expiry
-        );
-
-        finalSymbol = futuresSymbol.symbol;
-        finalExchange = derivativeExchange;
-        resolvedLotSize = futuresSymbol.lot_size || symbol.lot_size;
-
-        log.info('Futures symbol resolved', {
-          symbol: finalSymbol,
-          exchange: finalExchange,
-          lotSize: resolvedLotSize,
-        });
       } else if (symbol.symbol_type === 'FUTURES') {
         // Fall back to the watchlist contract if no expiry was picked
         finalSymbol = symbol.symbol;
@@ -2638,6 +2647,35 @@ class QuickOrderService {
     return { underlying, expiry };
   }
 
+  _getFuturesUnderlying(symbol = {}) {
+    const parsed = this._parseFuturesSymbol(symbol.symbol || symbol.trading_symbol || symbol.name);
+    return parsed.underlying || derivativeResolutionService.getDerivativeUnderlying(symbol);
+  }
+
+  _getSymbolExpiryVariants(symbol = {}) {
+    const variants = new Set();
+    const direct = symbol.expiry;
+    if (direct) {
+      derivativeResolutionService.expandExpiryFormats(direct)
+        .forEach((value) => variants.add(value));
+    }
+    const parsed = this._parseFuturesSymbol(symbol.symbol || symbol.trading_symbol || symbol.name);
+    if (parsed.expiry) {
+      derivativeResolutionService.expandExpiryFormats(parsed.expiry)
+        .forEach((value) => variants.add(value));
+    }
+    return variants;
+  }
+
+  _expiryMatchesSymbol(expiry, symbol = {}) {
+    const selected = derivativeResolutionService.expandExpiryFormats(expiry);
+    if (!selected.length) {
+      return false;
+    }
+    const symbolVariants = this._getSymbolExpiryVariants(symbol);
+    return selected.some((value) => symbolVariants.has(value));
+  }
+
   /**
    * Get market data instance from list of instances
    * Uses round-robin across enabled market data instances
@@ -3077,13 +3115,6 @@ class QuickOrderService {
       ? symbol.exchange
       : derivativeResolutionService.getDerivativeExchange(symbol.exchange);
 
-    const underlying = derivativeResolutionService.getDerivativeUnderlying(symbol);
-    if (!underlying) {
-      throw new ValidationError(
-        'Underlying symbol is required to preview futures contracts. Please set it in the watchlist symbol settings.'
-      );
-    }
-
     const marketDataInstanceService = (await import('./market-data-instance.service.js')).default;
     const marketDataInstance = await marketDataInstanceService.getMarketDataInstance();
 
@@ -3093,16 +3124,43 @@ class QuickOrderService {
       const pad = (n) => String(n).padStart(2, '0');
       return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     })();
-    const chosenExpiry = (normalizedExpiry && normalizedExpiry < todayIso)
-      ? await expiryManagementService.getNearestExpiry(underlying, derivativeExchange, marketDataInstance, true)
+    const fallbackUnderlying = this._getFuturesUnderlying(symbol);
+    const chosenExpiry = (normalizedExpiry && normalizedExpiry < todayIso && fallbackUnderlying)
+      ? await expiryManagementService.getNearestExpiry(
+        fallbackUnderlying,
+        derivativeExchange,
+        marketDataInstance,
+        true
+      )
       : normalizedExpiry;
 
-    const futuresResolution = await derivativeResolutionService.resolveFuturesSymbol(
-      marketDataInstance,
-      underlying,
-      derivativeExchange,
-      chosenExpiry
-    );
+    let futuresResolution;
+    const matchesWatchlistExpiry = symbol.symbol_type === 'FUTURES'
+      && this._expiryMatchesSymbol(chosenExpiry, symbol);
+
+    if (matchesWatchlistExpiry) {
+      futuresResolution = {
+        symbol: symbol.symbol,
+        trading_symbol: symbol.trading_symbol || symbol.symbol,
+        lot_size: symbol.lot_size || symbol.lotsize || 1,
+        tick_size: symbol.tick_size || 0.05,
+        expiry: symbol.expiry || chosenExpiry,
+      };
+    } else {
+      const underlying = fallbackUnderlying;
+      if (!underlying) {
+        throw new ValidationError(
+          'Underlying symbol is required to preview futures contracts. Please set it in the watchlist symbol settings.'
+        );
+      }
+
+      futuresResolution = await derivativeResolutionService.resolveFuturesSymbol(
+        marketDataInstance,
+        underlying,
+        derivativeExchange,
+        chosenExpiry
+      );
+    }
 
     const quotesMap = await this._getQuotesFromCache(marketDataInstance, [
       {

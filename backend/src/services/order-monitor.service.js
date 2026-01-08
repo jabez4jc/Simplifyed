@@ -1,7 +1,7 @@
 /**
  * Order Monitor Service
- * Monitors positions and triggers exits when targets/SL/TSL are hit
- * Phase 1: Analyzer mode only, single target monitoring
+ * Monitors positions and triggers alerts when targets are hit
+ * Applies to live and analyzer instances with open positions
  */
 
 import db from '../core/database.js';
@@ -72,18 +72,18 @@ class OrderMonitorService {
     try {
       const startTime = Date.now();
 
-      // Phase 1: Only monitor ANALYZER mode instances
+      // Monitor active instances (live + analyzer); only open positions are evaluated
       const instances = await db.all(`
         SELECT * FROM instances
-        WHERE is_active = 1 AND is_analyzer_mode = 1
+        WHERE is_active = 1
       `);
 
       if (instances.length === 0) {
-        log.debug('No analyzer instances to monitor');
+        log.debug('No active instances to monitor');
         return;
       }
 
-      log.debug('Monitoring analyzer instances', { count: instances.length });
+      log.debug('Monitoring active instances', { count: instances.length });
 
       // Monitor each instance
       for (const instance of instances) {
@@ -280,7 +280,8 @@ class OrderMonitorService {
         // Mark as checked
         this.checkedPositions.set(positionKey, Date.now());
 
-        // Execute simulated exit
+      if (instance.is_analyzer_mode) {
+        // Simulate exit in analyzer mode
         await this.simulateExit(
           instance,
           position,
@@ -289,6 +290,16 @@ class OrderMonitorService {
           side,
           entryPrice
         );
+      } else {
+        await this.recordLiveAlert(
+          instance,
+          position,
+          watchlistSymbol,
+          currentPrice,
+          side,
+          entryPrice
+        );
+      }
 
         // Clean up old checked positions
         this.cleanupCheckedPositions();
@@ -414,6 +425,73 @@ class OrderMonitorService {
     });
 
     log.info('Target hit - simulated exit', {
+      instance: instance.id,
+      symbol,
+      exchange,
+      side,
+      entry: entryPrice,
+      exit: exitPrice,
+      quantity,
+      pnl: pnl.toFixed(2),
+    });
+  }
+
+  /**
+   * Record target hit for live instances (alert only)
+   */
+  async recordLiveAlert(instance, position, watchlistSymbol, exitPrice, side, resolvedEntryPrice) {
+    const symbol = position.symbol || position.tradingsymbol;
+    const exchange = position.exchange;
+    const quantity = Math.abs(this._getPositionQuantity(position));
+    const entryPrice =
+      resolvedEntryPrice ??
+      parseFloat(position.average_price || position.avgprice || position.avg_price || 0);
+
+    const pnl =
+      side === 'LONG'
+        ? (exitPrice - entryPrice) * quantity
+        : (entryPrice - exitPrice) * quantity;
+
+    await db.run(
+      `
+      INSERT INTO order_monitor_log
+      (instance_id, symbol, exchange, trigger_type, entry_price, trigger_price,
+       target_value, exit_quantity, is_analyzer_mode, simulated_pnl, exit_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      [
+        instance.id,
+        symbol,
+        exchange,
+        'TARGET',
+        entryPrice,
+        exitPrice,
+        watchlistSymbol.target_value,
+        quantity,
+        0,
+        null,
+        'ALERT_ONLY',
+      ]
+    );
+
+    await this.sendTelegramAlert(instance, {
+      type: 'TARGET_HIT (LIVE)',
+      position: {
+        symbol,
+        exchange,
+        side,
+        quantity,
+        entry_price: entryPrice,
+        instance_name: instance.name,
+      },
+      trigger: {
+        exit_price: exitPrice,
+        exit_quantity: quantity,
+      },
+      pnl,
+    });
+
+    log.info('Target hit - live alert', {
       instance: instance.id,
       symbol,
       exchange,
