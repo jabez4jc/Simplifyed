@@ -208,8 +208,15 @@ install_system_packages() {
         dnsutils \
         software-properties-common
 
-    if apt-cache show python3-distutils >/dev/null 2>&1; then
-        apt-get install -y -qq python3-distutils
+    distutils_policy="$(apt-cache policy python3-distutils 2>/dev/null || true)"
+    if echo "$distutils_policy" | grep -q "Candidate:"; then
+        if echo "$distutils_policy" | grep -q "Candidate: (none)"; then
+            print_info "python3-distutils not available on this Ubuntu release; skipping"
+        else
+            apt-get install -y -qq python3-distutils
+        fi
+    else
+        print_info "python3-distutils not available in apt sources; skipping"
     fi
 
     print_success "System packages installed"
