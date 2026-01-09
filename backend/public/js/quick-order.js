@@ -1898,14 +1898,20 @@ class QuickOrderHandler {
       }
 
       if (response && response.data && response.data.summary) {
-        const { successful, failed, total } = response.data.summary;
+        const { successful, failed, total, uncertain = 0 } = response.data.summary;
         const instanceCount = Array.isArray(response.data.results)
           ? new Set(response.data.results.map(r => r.instance_name || r.instance_id || 'inst')).size
           : null;
         if (successful > 0) {
+          const unknownSuffix = uncertain > 0 ? `, ${uncertain} unknown` : '';
           Utils.showToast(
-            `Order placed: ${successful}/${total} successful${instanceCount ? ` across ${instanceCount} instance(s)` : ''}`,
+            `Order placed: ${successful}/${total} successful${unknownSuffix}${instanceCount ? ` across ${instanceCount} instance(s)` : ''}`,
             failed > 0 ? 'warning' : 'success'
+          );
+        } else if (uncertain > 0) {
+          Utils.showToast(
+            `Order status unknown for ${uncertain} instance(s). Check orderbook.`,
+            'warning'
           );
         } else {
           Utils.showToast('All orders failed', 'error');

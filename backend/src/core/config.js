@@ -18,7 +18,7 @@ loadEnv({ path: join(__dirname, '../../.env') });
 // Cache for database settings
 let settingsCache = null;
 let cacheTimestamp = 0;
-const CACHE_DURATION = 5000; // 5 seconds cache
+let settingsCacheDurationMs = getEnvInt('SETTINGS_CACHE_DURATION_MS', 5000); // 5 seconds cache
 
 function parseStrategyBufferConfig(rawValue) {
   if (!rawValue) return {};
@@ -46,7 +46,7 @@ async function getSetting(key, defaultValue = undefined, required = false) {
   try {
     // Check cache
     const now = Date.now();
-    if (!settingsCache || (now - cacheTimestamp) > CACHE_DURATION) {
+    if (!settingsCache || (now - cacheTimestamp) > settingsCacheDurationMs) {
       settingsCache = await settingsService.getAllSettings();
       cacheTimestamp = now;
     }
@@ -355,6 +355,10 @@ class Config {
       this.database.path = await getSetting('database.path', this.database.path);
       this.session.secret = await getSetting('session.secret', this.session.secret);
       this.session.maxAge = await getSettingInt('session.max_age_ms', this.session.maxAge);
+      settingsCacheDurationMs = await getSettingInt(
+        'settings.cache_duration_ms',
+        settingsCacheDurationMs
+      );
 
       this.google.clientId = await getSetting('oauth.google.client_id', this.google.clientId);
       this.google.clientSecret = await getSetting('oauth.google.client_secret', this.google.clientSecret);

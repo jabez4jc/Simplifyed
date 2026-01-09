@@ -150,7 +150,8 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
     // Determine overall success
     const totalOrders = result.results.length;
     const successfulOrders = result.results.filter(r => r.success).length;
-    const failedOrders = totalOrders - successfulOrders;
+    const uncertainOrders = result.results.filter(r => r.uncertain).length;
+    const failedOrders = totalOrders - successfulOrders - uncertainOrders;
 
     if ((req.user?.role || '').toUpperCase() !== 'ADMIN') {
       logAudit(req, 'quickorder.place', { symbolId: parsedSymbolId, action, tradeMode });
@@ -158,13 +159,14 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
 
     res.status(201).json({
       status: 'success',
-      message: `Quick order placed: ${successfulOrders} successful, ${failedOrders} failed`,
+      message: `Quick order placed: ${successfulOrders} successful, ${failedOrders} failed${uncertainOrders ? `, ${uncertainOrders} unknown` : ''}`,
       data: {
         ...result,
         summary: {
           total: totalOrders,
           successful: successfulOrders,
           failed: failedOrders,
+          uncertain: uncertainOrders,
         },
       },
     });

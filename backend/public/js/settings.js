@@ -18,7 +18,7 @@ class SettingsHandler {
     this.permissions = [];
     this.instanceHealthTests = null;
     this.activeRoleTab = null;
-    this.allowedCategories = ['polling', 'market_data_feed', 'instance_health', 'instance_health_tests', 'market_hours', 'trading'];
+    this.allowedCategories = ['polling', 'market_data_feed', 'instance_health', 'instance_health_tests', 'market_hours', 'trading', 'system'];
     this.allowedSettings = {
       polling: [
         'polling.instance_interval_ms',
@@ -39,6 +39,7 @@ class SettingsHandler {
         'market_data_feed.funds_interval_ms',
         'market_data_feed.multiquote_cooldown_idle_ms',
         'market_data_feed.multiquote_cooldown_active_ms',
+        'market_data_feed.max_order_spread_pct',
       ],
       instance_health: [
         'instance_health.ping_healthy_interval_ms',
@@ -55,6 +56,9 @@ class SettingsHandler {
       ],
       trading: [
         'trading_sessions',
+      ],
+      system: [
+        'settings.cache_duration_ms',
       ],
     };
     this.displaySettings = {};
@@ -73,6 +77,10 @@ class SettingsHandler {
       'streaming': {
         icon: '📡',
         description: 'WebSocket streaming for live data updates'
+      },
+      'system': {
+        icon: '🧠',
+        description: 'Runtime cache and internal configuration'
       },
       'openalgo': {
         icon: '📡',
@@ -1561,7 +1569,8 @@ class SettingsHandler {
       'instance_health_tests': 'Instance Health Tests',
       'market_hours': 'Market Hours',
       'trading': 'Trading Sessions',
-      'streaming': 'Streaming'
+      'streaming': 'Streaming',
+      'system': 'System'
     };
     return names[category] || category.charAt(0).toUpperCase() + category.slice(1);
   }
@@ -1615,11 +1624,13 @@ class SettingsHandler {
       'market_data_feed.multiquote_cooldown_idle_ms': 'Minimum delay between MultiQuotes calls when idle.',
       'market_data_feed.multiquote_cooldown_active_ms': 'Minimum delay between MultiQuotes calls when positions exist.',
       'market_data_feed.funds_interval_ms': 'Funds refresh cadence.',
+      'market_data_feed.max_order_spread_pct': 'Maximum bid/ask spread (decimal) allowed for limit pricing.',
       'market_hours.quote_blackout_start': 'Quotes/MultiQuotes/OptionChain are blocked starting this time (IST).',
       'market_hours.quote_blackout_end': 'Quotes/MultiQuotes/OptionChain resume after this time (IST).',
       'market_hours.general_blackout_start': 'Other OpenAlgo endpoints are blocked starting this time (IST).',
       'market_hours.general_blackout_end': 'Other OpenAlgo endpoints resume after this time (IST).',
       'trading_sessions': 'Defines session windows in IST used for session P&L baselines and auto cutoffs.',
+      'settings.cache_duration_ms': 'Cache duration for settings reads in config (ms).',
     };
 
     return help[key] || '';

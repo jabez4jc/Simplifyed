@@ -148,7 +148,8 @@ class QuickOrderService {
 
     // Send a single Telegram summary for the broadcast
     const successCount = results.filter(r => r.success).length;
-    const failureCount = results.filter(r => !r.success).length;
+    const uncertainCount = results.filter(r => r.uncertain).length;
+    const failureCount = results.length - successCount - uncertainCount;
     const instanceNames = instances.map(i => i.name).filter(Boolean);
     const triggerType = params.triggerType || 'Manual';
     const buttonLabel = params.button_label || action;
@@ -200,8 +201,9 @@ class QuickOrderService {
       duration_ms: durationMs,
       instances: instances.map(i => i.name),
       total_orders: results.length,
-      success_count: results.filter(r => r.success).length,
-      failure_count: results.filter(r => !r.success).length,
+      success_count: successCount,
+      failure_count: failureCount,
+      unknown_count: uncertainCount,
     });
 
     return {
@@ -209,8 +211,9 @@ class QuickOrderService {
       results,
       summary: {
         total: results.length,
-        successful: results.filter(r => r.success).length,
-        failed: results.filter(r => !r.success).length,
+        successful: successCount,
+        failed: failureCount,
+        uncertain: uncertainCount,
       },
     };
   }
@@ -486,12 +489,19 @@ class QuickOrderService {
           ...result,
         };
       } catch (error) {
+        const statusCode = Number.isFinite(error?.statusCode) ? error.statusCode : null;
+        const isServerFailure =
+          (statusCode !== null && statusCode >= 500) ||
+          (statusCode === null && (error?.name === 'OpenAlgoError' || error?.name === 'ExternalAPIError'));
         log.error('Failed to execute order on instance', error, {
           instance_id: instance.id,
           symbol_id: symbol.id,
         });
 
         instanceResult.success = false;
+        if (isServerFailure) {
+          instanceResult.uncertain = true;
+        }
         instanceResult.error = error.message;
         instanceResult.completedAt = Date.now();
         instanceResult.durationMs = instanceResult.completedAt - instanceResult.startedAt;
@@ -499,6 +509,7 @@ class QuickOrderService {
 
         return {
           success: false,
+          uncertain: isServerFailure,
           instance_id: instance.id,
           instance_name: instance.name,
           error: error.message,
@@ -509,12 +520,20 @@ class QuickOrderService {
     // CRITICAL FIX: Use Promise.allSettled to capture partial results
     // If any instance fails, we still need to record which orders succeeded
     const settledResults = await Promise.allSettled(perInstanceTasks);
-    const results = settledResults.map(result =>
-      result.status === 'fulfilled' ? result.value : {
-        success: false,
-        error: result.reason?.message || 'Unknown error'
+    const results = settledResults.map(result => {
+      if (result.status === 'fulfilled') {
+        return result.value;
       }
-    );
+      const statusCode = Number.isFinite(result.reason?.statusCode) ? result.reason.statusCode : null;
+      const uncertain =
+        (statusCode !== null && statusCode >= 500) ||
+        (statusCode === null && (result.reason?.name === 'OpenAlgoError' || result.reason?.name === 'ExternalAPIError'));
+      return {
+        success: false,
+        uncertain,
+        error: result.reason?.message || 'Unknown error',
+      };
+    });
 
     // Log broadcast transaction for reconciliation
     broadcastTransaction.completedAt = Date.now();
@@ -1754,6 +1773,8 @@ class QuickOrderService {
             side: closeAction,
             bufferPoints,
             tickSize: symbol.tick_size,
+            bypassSpreadCheck: true,
+            forceLtp: true,
           })).price,
         });
         const orderResult = await orderPlacementService.placeSmartOrder(instance, orderPayload, {
@@ -1876,6 +1897,8 @@ class QuickOrderService {
             side: closeAction,
             bufferPoints,
             tickSize: null,
+            bypassSpreadCheck: true,
+            forceLtp: true,
           })).price,
         });
         const orderResult = await orderPlacementService.placeSmartOrder(instance, orderPayload, {

@@ -7,6 +7,7 @@ import { ValidationError } from '../core/errors.js';
 import { extractLtp } from '../utils/price-extraction.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import config from '../core/config.js';
+import settingsService from './settings.service.js';
 
 const DEFAULT_MAX_SPREAD_PCT = 0.005;
 
@@ -18,6 +19,8 @@ class LimitPriceService {
     bufferPoints = 0,
     tickSize = null,
     quoteStaleMs = null,
+    bypassSpreadCheck = false,
+    forceLtp = false,
   }) {
     const normalizedSide = (side || '').toUpperCase();
     if (!['BUY', 'SELL'].includes(normalizedSide)) {
@@ -34,9 +37,18 @@ class LimitPriceService {
       quoteStaleMs ??
       config.marketDataFeed?.orderQuoteStaleMs ??
       2000;
-    const maxSpreadPct =
+    let maxSpreadPct =
       config.marketDataFeed?.maxOrderSpreadPct ??
       DEFAULT_MAX_SPREAD_PCT;
+    try {
+      const setting = await settingsService.getSetting('market_data_feed.max_order_spread_pct');
+      const parsed = parseFloat(setting?.rawValue ?? setting?.value);
+      if (Number.isFinite(parsed)) {
+        maxSpreadPct = parsed;
+      }
+    } catch {
+      // Fall back to config/env defaults if setting is missing.
+    }
 
     const { quote, fetchedAt } = await this._getFreshQuote(
       normalizedExchange,
@@ -56,13 +68,13 @@ class LimitPriceService {
     let priceSource = null;
     let spreadPct = null;
 
-    if (bid && ask) {
+    if (!forceLtp && bid && ask) {
       const spread = ask - bid;
       const mid = (ask + bid) / 2;
       if (mid > 0) {
         spreadPct = spread / mid;
       }
-      if (spreadPct !== null && spreadPct > maxSpreadPct) {
+      if (!bypassSpreadCheck && spreadPct !== null && spreadPct > maxSpreadPct) {
         throw new ValidationError(`Bid/ask spread too wide for ${normalizedExchange}:${normalizedSymbol}`);
       }
       basePrice = normalizedSide === 'BUY' ? ask : bid;
@@ -73,7 +85,7 @@ class LimitPriceService {
         throw new ValidationError(`No usable price for ${normalizedExchange}:${normalizedSymbol}`);
       }
       basePrice = ltp;
-      priceSource = 'ltp';
+      priceSource = forceLtp ? 'ltp_forced' : 'ltp';
     }
 
     const bufferValue = this._parseBuffer(bufferPoints);

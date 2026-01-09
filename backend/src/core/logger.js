@@ -79,7 +79,7 @@ function pushNotification(level, message, meta = {}) {
 const allowedMetaKeys = new Set([
   'trace_id', 'user_id', 'instance_id', 'instance_name', 'order_id', 'event', 'status',
   'duration_ms', 'endpoint', 'method', 'path', 'symbol', 'exchange',
-  'error_code', 'reason', 'count', 'size', 'host', 'port', 'chat_id'
+  'error_code', 'error_message', 'reason', 'count', 'size', 'host', 'port', 'chat_id'
 ]);
 
 const kvFormatter = winston.format.printf(({ timestamp, level, message, ...rest }) => {
@@ -186,9 +186,9 @@ export const log = {
   error: (message, error = null, meta = {}) => {
     const payload = sanitizeMeta(meta);
     if (error instanceof Error) {
-      payload.error = { message: error.message };
+      payload.error_message = error.message;
     } else if (error) {
-      payload.error = error;
+      payload.error_message = String(error);
     }
     logger.error(message, payload);
     pushNotification('error', message, payload);
