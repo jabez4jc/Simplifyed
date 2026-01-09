@@ -650,6 +650,17 @@ class WatchlistService {
       normalized.description = sanitizeString(data.description) || null;
     }
 
+    if (data.limit_buffer_pct !== undefined) {
+      const parsed = parseFloat(String(data.limit_buffer_pct));
+      if (!Number.isNaN(parsed) && parsed >= 0) {
+        normalized.limit_buffer_pct = parsed;
+      } else if (data.limit_buffer_pct === null || data.limit_buffer_pct === '') {
+        normalized.limit_buffer_pct = null;
+      } else {
+        errors.push({ field: 'limit_buffer_pct', message: 'limit_buffer_pct must be a non-negative number' });
+      }
+    }
+
     // Is Active
     if (data.is_active !== undefined) {
       normalized.is_active = parseBooleanSafe(data.is_active, true);

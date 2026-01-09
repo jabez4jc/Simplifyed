@@ -20,6 +20,19 @@ The order placement system experiences **5+ second delays** primarily due to:
 - OPTIONS (single strike): 1.5-3 seconds
 - Multi-instance (3 instances): 2-4 seconds
 
+## Limit-Order Enforcement (SEBI)
+
+All order paths now enforce LIMIT pricing server-side. Prices are computed from the freshest
+quotes (WS cache → REST fallback) using the watchlist symbol’s `limit_buffer_points` and
+side-aware logic:
+
+- BUY: `ask + buffer` (fallback to `ltp + buffer`)
+- SELL: `bid - buffer` (fallback to `ltp - buffer`)
+- Quotes older than `market_data_feed.order_quote_stale_ms` are rejected.
+- Orders are blocked if bid/ask spread exceeds `market_data_feed.max_order_spread_pct`.
+
+These safeguards ensure compliance and prevent stale/illiquid pricing.
+
 ---
 
 ## Table of Contents

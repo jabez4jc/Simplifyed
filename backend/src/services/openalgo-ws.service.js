@@ -237,6 +237,18 @@ class OpenAlgoWsService extends EventEmitter {
     return subs;
   }
 
+  getActiveConnectionCount() {
+    let count = 0;
+    for (const [, conn] of this.connections.entries()) {
+      if (conn.connected) count += 1;
+    }
+    return count;
+  }
+
+  hasActiveConnections() {
+    return this.getActiveConnectionCount() > 0;
+  }
+
   stop() {
     for (const [, conn] of this.connections.entries()) {
       conn.close();

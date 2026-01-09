@@ -1238,10 +1238,11 @@ class QuickOrderHandler {
 
   startOptionPreviewPolling(symbolId) {
     this.stopOptionPreviewPolling(symbolId);
-
-    const execute = () => this.refreshOptionPreview(symbolId);
-    execute();
-    const intervalId = setInterval(execute, 20000);
+    this.refreshOptionPreview(symbolId);
+    if (window.app && typeof window.app.isWsStreamingActive === 'function' && window.app.isWsStreamingActive()) {
+      return;
+    }
+    const intervalId = setInterval(() => this.refreshOptionPreview(symbolId), 20000);
     this.optionPreviewTimers.set(symbolId, intervalId);
   }
 
@@ -1412,9 +1413,11 @@ class QuickOrderHandler {
 
   startFuturesPreviewPolling(symbolId) {
     this.stopFuturesPreviewPolling(symbolId);
-    const execute = () => this.refreshFuturesPreview(symbolId);
-    execute();
-    const intervalId = setInterval(execute, 20000);
+    this.refreshFuturesPreview(symbolId);
+    if (window.app && typeof window.app.isWsStreamingActive === 'function' && window.app.isWsStreamingActive()) {
+      return;
+    }
+    const intervalId = setInterval(() => this.refreshFuturesPreview(symbolId), 20000);
     this.futuresPreviewTimers.set(symbolId, intervalId);
   }
 
@@ -1430,6 +1433,36 @@ class QuickOrderHandler {
     this.futuresPreviewTimers.forEach(intervalId => clearInterval(intervalId));
     this.futuresPreviewTimers.clear();
     this.futuresPreviewRequestIds.clear();
+  }
+
+  syncPreviewPollingWithStreaming() {
+    const wsActive = window.app && typeof window.app.isWsStreamingActive === 'function'
+      ? window.app.isWsStreamingActive()
+      : false;
+    const rows = Array.from(this.expandedRows || []);
+    rows.forEach((rowKey) => {
+      const parts = rowKey.split('_');
+      const symbolId = parseInt(parts[1], 10);
+      if (!Number.isFinite(symbolId)) return;
+
+      if (wsActive) {
+        this.stopOptionPreviewPolling(symbolId);
+        this.stopFuturesPreviewPolling(symbolId);
+        this.refreshOptionPreview(symbolId);
+        this.refreshFuturesPreview(symbolId);
+        return;
+      }
+
+      const tradeMode = this.selectedTradeModes.get(symbolId);
+      if (tradeMode === 'OPTIONS') {
+        this.startOptionPreviewPolling(symbolId);
+      } else if (tradeMode === 'FUTURES') {
+        this.startFuturesPreviewPolling(symbolId);
+      } else {
+        this.stopOptionPreviewPolling(symbolId);
+        this.stopFuturesPreviewPolling(symbolId);
+      }
+    });
   }
 
   buildQuoteKey(exchange, symbol) {

@@ -3,7 +3,10 @@ import { log } from '../core/logger.js';
 import { UnauthorizedError, ValidationError } from '../core/errors.js';
 import { ORDER_PARAMS } from '../integrations/openalgo/endpoints.js';
 import { maskApiKey, normalizeUrl } from '../utils/sanitizers.js';
+import { extractLtp } from '../utils/price-extraction.js';
 import watchlistService from './watchlist.service.js';
+import marketDataFeedService from './market-data-feed.service.js';
+import instrumentsService from './instruments.service.js';
 
 const DEFAULT_PAYLOAD = {
   pricetype: 'MARKET',
@@ -247,17 +250,19 @@ class TradingviewBroadcastService {
       throw new ValidationError('No downstream OpenAlgo targets configured');
     }
 
+    const payloadToSend = await this._ensureLimitPricing(normalizedPayload, watchlist);
+
     log.info('[TV Webhook] Broadcasting signal', {
-      strategy: normalizedPayload.strategy,
-      action: normalizedPayload.action,
-      exchange: normalizedPayload.exchange,
-      symbol: normalizedPayload.symbol,
+      strategy: payloadToSend.strategy,
+      action: payloadToSend.action,
+      exchange: payloadToSend.exchange,
+      symbol: payloadToSend.symbol,
       targets: targets.length,
       watchlist: watchlist ? watchlist.id : null,
     });
 
     const results = await Promise.allSettled(
-      targets.map((target) => this._dispatchToTarget(target, normalizedPayload))
+      targets.map((target) => this._dispatchToTarget(target, payloadToSend))
     );
 
     const summary = results.map((result, idx) => {
@@ -305,6 +310,97 @@ class TradingviewBroadcastService {
           }
         : null,
     };
+  }
+
+  async _ensureLimitPricing(payload, watchlist = null) {
+    if (!payload || payload.pricetype !== 'MARKET') {
+      return payload;
+    }
+
+    const exchange = payload.exchange;
+    const symbol = payload.symbol;
+    const action = payload.action;
+    const bufferPct = this._resolveBufferPct(payload.strategy, watchlist);
+    const ltpResult = await marketDataFeedService.fetchLtpForSymbol(exchange, symbol, {
+      orderCritical: true,
+    });
+    const ltp = ltpResult?.ltp || extractLtp(ltpResult?.quote);
+
+    if (!ltp || ltp <= 0) {
+      throw new ValidationError(`Unable to resolve LTP for ${exchange}:${symbol}`);
+    }
+
+    const buffer = ltp * (bufferPct / 100);
+    const side = this._isBuyAction(action) ? 'BUY' : 'SELL';
+    const rawPrice = side === 'BUY' ? ltp + buffer : ltp - buffer;
+    if (!Number.isFinite(rawPrice) || rawPrice <= 0) {
+      throw new ValidationError(`Invalid LIMIT price for ${exchange}:${symbol}`);
+    }
+
+    const tickSize = await this._resolveTickSize(exchange, symbol);
+    const price = this._roundToTick(rawPrice, tickSize, side);
+
+    return {
+      ...payload,
+      pricetype: 'LIMIT',
+      price,
+    };
+  }
+
+  _resolveBufferPct(strategy, watchlist) {
+    const watchlistPct = watchlist?.limit_buffer_pct;
+    if (Number.isFinite(watchlistPct) && watchlistPct >= 0) {
+      return watchlistPct;
+    }
+
+    const map = config.webhooks?.tradingviewBroadcast?.bufferPctByStrategy || {};
+    if (strategy && map && Object.prototype.hasOwnProperty.call(map, strategy)) {
+      const pct = parseFloat(map[strategy]);
+      if (Number.isFinite(pct) && pct >= 0) {
+        return pct;
+      }
+    }
+
+    const fallback = config.webhooks?.tradingviewBroadcast?.bufferPctDefault;
+    if (Number.isFinite(fallback) && fallback >= 0) {
+      return fallback;
+    }
+    return 0.5;
+  }
+
+  _isBuyAction(action) {
+    const normalized = (action || '').toUpperCase();
+    return ['BUY', 'COVER'].includes(normalized);
+  }
+
+  async _resolveTickSize(exchange, symbol) {
+    try {
+      const instrument = await instrumentsService.findInstrument(symbol, exchange);
+      const tick = instrument?.tick_size || instrument?.tickSize;
+      return Number.isFinite(tick) && tick > 0 ? tick : null;
+    } catch {
+      return null;
+    }
+  }
+
+  _roundToTick(price, tickSize, side) {
+    const tick = typeof tickSize === 'string' ? parseFloat(tickSize) : tickSize;
+    if (!Number.isFinite(tick) || tick <= 0) {
+      return Number(price.toFixed(2));
+    }
+
+    const ticks = price / tick;
+    const roundedTicks = side === 'BUY'
+      ? Math.ceil(ticks - 1e-9)
+      : Math.floor(ticks + 1e-9);
+    const rounded = roundedTicks * tick;
+    return Number(rounded.toFixed(this._countDecimals(tick)));
+  }
+
+  _countDecimals(value) {
+    const text = value.toString();
+    const idx = text.indexOf('.');
+    return idx === -1 ? 0 : Math.min(6, text.length - idx - 1);
   }
 
   async _dispatchToTarget(target, payload) {

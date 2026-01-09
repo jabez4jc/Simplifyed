@@ -10,6 +10,7 @@ import orderPlacementService from './order-placement.service.js';
 import orderPayloadFactory from './order-payload.factory.js';
 import orderRepository from './order-repository.js';
 import telegramService from './telegram.service.js';
+import limitPriceService from './limit-price.service.js';
 import {
   NotFoundError,
   ValidationError,
@@ -67,6 +68,36 @@ class OrderService {
 
       // Validate required fields
       const normalized = this._normalizeOrderData(params);
+
+      let bufferPoints = parseFloatSafe(params.limit_buffer_points, null);
+      let tickSize = null;
+      if (symbolId) {
+        const symbolRow = await db.get(
+          'SELECT tick_size, limit_buffer_points FROM watchlist_symbols WHERE id = ?',
+          [symbolId]
+        );
+        if (symbolRow) {
+          if (bufferPoints === null || bufferPoints === undefined) {
+            bufferPoints = parseFloatSafe(symbolRow.limit_buffer_points, 0);
+          }
+          tickSize = symbolRow.tick_size;
+        }
+      }
+
+      if (!Number.isFinite(bufferPoints)) {
+        bufferPoints = 0;
+      }
+
+      const limitResult = await limitPriceService.resolveLimitPrice({
+        exchange: normalized.exchange,
+        symbol: normalized.symbol,
+        side: normalized.action,
+        bufferPoints,
+        tickSize,
+      });
+
+      normalized.pricetype = 'LIMIT';
+      normalized.price = limitResult.price;
 
       // Build order data for OpenAlgo
       const orderData = orderPayloadFactory.buildEquityOrder({

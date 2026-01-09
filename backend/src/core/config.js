@@ -32,6 +32,24 @@ function parseTargetsConfig(rawValue) {
   }
 }
 
+function parseStrategyBufferConfig(rawValue) {
+  if (!rawValue) return {};
+  try {
+    const parsed = typeof rawValue === 'string' ? JSON.parse(rawValue) : rawValue;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.entries(parsed).reduce((acc, [key, value]) => {
+      const pct = parseFloat(value);
+      if (Number.isFinite(pct) && pct >= 0) {
+        acc[String(key)] = pct;
+      }
+      return acc;
+    }, {});
+  } catch (err) {
+    log.warn('Invalid TRADINGVIEW_BUFFER_BY_STRATEGY JSON, ignoring', { error: err.message });
+    return {};
+  }
+}
+
 /**
  * Get setting from database or environment variable
  * Priority: Database settings > Environment variables > Default value
@@ -99,6 +117,21 @@ async function getSettingInt(key, defaultValue) {
 }
 
 /**
+ * Get float setting
+ */
+async function getSettingFloat(key, defaultValue) {
+  const value = await getSetting(key, defaultValue);
+  if (value === null || value === undefined) return defaultValue;
+
+  const parsed = parseFloat(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Setting ${key} must be a valid number`);
+  }
+
+  return parsed;
+}
+
+/**
  * Get boolean setting
  */
 async function getSettingBool(key, defaultValue) {
@@ -140,6 +173,21 @@ function getEnvInt(key, defaultValue) {
   const parsed = parseInt(value, 10);
   if (isNaN(parsed)) {
     throw new Error(`Environment variable ${key} must be a valid integer`);
+  }
+
+  return parsed;
+}
+
+/**
+ * Parse float from environment (legacy support)
+ */
+function getEnvFloat(key, defaultValue) {
+  const value = process.env[key];
+  if (!value) return defaultValue;
+
+  const parsed = parseFloat(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Environment variable ${key} must be a valid number`);
   }
 
   return parsed;
@@ -216,7 +264,7 @@ class Config {
     };
 
     this.wsGateway = {
-      enabled: getEnvBool('WS_GATEWAY_ENABLED', false),
+      enabled: getEnvBool('WS_GATEWAY_ENABLED', true),
       path: getEnv('WS_GATEWAY_PATH', '/stream'),
     };
 
@@ -243,6 +291,8 @@ class Config {
       tradebookIntervalActiveMs: getEnvInt('MARKET_DATA_TRADEBOOK_INTERVAL_ACTIVE_MS', 8000),
       multiquoteCooldownIdleMs: getEnvInt('MARKET_DATA_MULTIQ_COOLDOWN_IDLE_MS', 15000),
       multiquoteCooldownActiveMs: getEnvInt('MARKET_DATA_MULTIQ_COOLDOWN_ACTIVE_MS', 10000),
+      orderQuoteStaleMs: getEnvInt('MARKET_DATA_ORDER_QUOTE_STALE_MS', 2000),
+      maxOrderSpreadPct: getEnvFloat('MARKET_DATA_MAX_ORDER_SPREAD_PCT', 0.005),
     };
 
     this.instanceHealth = {
@@ -289,9 +339,14 @@ class Config {
         retries: getEnvInt('TRADINGVIEW_BROADCAST_RETRIES', 2),
         retryDelayMs: getEnvInt('TRADINGVIEW_BROADCAST_RETRY_DELAY_MS', 250),
         defaultRps: getEnvInt('TRADINGVIEW_BROADCAST_DEFAULT_RPS', 2),
+        bufferPctDefault: getEnvFloat('TRADINGVIEW_BUFFER_PCT_DEFAULT', 0.5),
+        bufferPctByStrategyRaw: getEnv('TRADINGVIEW_BUFFER_BY_STRATEGY', '{}'),
       },
     };
     this.webhooks.tradingviewBroadcast.targets = parseTargetsConfig(this.webhooks.tradingviewBroadcast.rawTargets);
+    this.webhooks.tradingviewBroadcast.bufferPctByStrategy = parseStrategyBufferConfig(
+      this.webhooks.tradingviewBroadcast.bufferPctByStrategyRaw
+    );
   }
 
   /**
@@ -346,6 +401,8 @@ class Config {
       this.marketDataFeed.tradebookIntervalActiveMs = await getSettingInt('market_data_feed.tradebook_interval_active_ms', this.marketDataFeed.tradebookIntervalActiveMs);
       this.marketDataFeed.multiquoteCooldownIdleMs = await getSettingInt('market_data_feed.multiquote_cooldown_idle_ms', this.marketDataFeed.multiquoteCooldownIdleMs);
       this.marketDataFeed.multiquoteCooldownActiveMs = await getSettingInt('market_data_feed.multiquote_cooldown_active_ms', this.marketDataFeed.multiquoteCooldownActiveMs);
+      this.marketDataFeed.orderQuoteStaleMs = await getSettingInt('market_data_feed.order_quote_stale_ms', this.marketDataFeed.orderQuoteStaleMs);
+      this.marketDataFeed.maxOrderSpreadPct = await getSettingFloat('market_data_feed.max_order_spread_pct', this.marketDataFeed.maxOrderSpreadPct);
 
       this.instanceHealth.pingHealthyIntervalMs = await getSettingInt('instance_health.ping_healthy_interval_ms', this.instanceHealth.pingHealthyIntervalMs);
       this.instanceHealth.pingUnhealthyIntervalMs = await getSettingInt('instance_health.ping_unhealthy_interval_ms', this.instanceHealth.pingUnhealthyIntervalMs);
@@ -382,6 +439,17 @@ class Config {
         this.webhooks.tradingviewBroadcast.rawTargets || null
       );
       this.webhooks.tradingviewBroadcast.targets = parseTargetsConfig(targetsFromDb);
+      const bufferDefault = await getSettingFloat(
+        'webhooks.tradingview.buffer_pct_default',
+        this.webhooks.tradingviewBroadcast.bufferPctDefault
+      );
+      this.webhooks.tradingviewBroadcast.bufferPctDefault = bufferDefault;
+      const bufferByStrategyRaw = await getSetting(
+        'webhooks.tradingview.buffer_pct_by_strategy',
+        this.webhooks.tradingviewBroadcast.bufferPctByStrategyRaw
+      );
+      this.webhooks.tradingviewBroadcast.bufferPctByStrategyRaw = bufferByStrategyRaw;
+      this.webhooks.tradingviewBroadcast.bufferPctByStrategy = parseStrategyBufferConfig(bufferByStrategyRaw);
 
       log.info('Configuration loaded from database');
     } catch (error) {

@@ -71,6 +71,7 @@ class DashboardApp {
     this.wsTopics = ['quotes:update', 'positions:update', 'funds:update'];
     this.useWsGateway = this.loadWsPreference();
     this.ws = null;
+    this.wsConnected = false;
     this.wsLastSeq = 0;
     this.wsReconnectDelay = 500;
     this.wsReconnectTimer = null;
@@ -140,7 +141,7 @@ class DashboardApp {
       { label: 'POST /api/v1/positions/:instanceId/close/position', method: 'POST', path: '/api/v1/positions/1/close/position', headers: { 'Content-Type': 'application/json' }, body: '{\n  "symbol": "NIFTY23DEC24000CE",\n  "quantity": 50\n}', description: 'Close a specific position.' },
 
       // Quick Orders
-      { label: 'POST /api/v1/quickorders', method: 'POST', path: '/api/v1/quickorders', headers: { 'Content-Type': 'application/json' }, body: '{\n  "symbolId": 1,\n  "instanceId": "ALL",\n  "action": "BUY",\n  "tradeMode": "EQUITY",\n  "quantity": 1,\n  "orderType": "MARKET"\n}', description: 'Place a quick order (auto-resolved symbols).' },
+      { label: 'POST /api/v1/quickorders', method: 'POST', path: '/api/v1/quickorders', headers: { 'Content-Type': 'application/json' }, body: '{\n  "symbolId": 1,\n  "instanceId": "ALL",\n  "action": "BUY",\n  "tradeMode": "EQUITY",\n  "quantity": 1,\n  "orderType": "LIMIT"\n}', description: 'Place a quick order (auto-resolved symbols).' },
       { label: 'GET /api/v1/quickorders/options/preview', method: 'GET', path: '/api/v1/quickorders/options/preview?symbolId=1&expiry=YYYY-MM-DD&optionsLeg=ATM', headers: {}, description: 'Preview CE/PE symbols + quotes for a watchlist symbol.' },
       { label: 'GET /api/v1/quickorders/futures/preview', method: 'GET', path: '/api/v1/quickorders/futures/preview?symbolId=1&expiry=YYYY-MM-DD', headers: {}, description: 'Preview futures contract + quote for a watchlist symbol.' },
       { label: 'GET /api/v1/quickorders', method: 'GET', path: '/api/v1/quickorders?limit=20', headers: {}, description: 'List quick order history.' },
@@ -542,7 +543,7 @@ class DashboardApp {
         if (this.wsGatewayEnabled) {
           this.startWsStream();
         } else {
-          Utils.showToast('Live streaming disabled on server; using polling.', 'info');
+          Utils.showToast('Live streaming is required. Polling is disabled.', 'warning');
         }
       }
 
@@ -592,9 +593,12 @@ class DashboardApp {
   loadWsPreference() {
     try {
       const stored = localStorage.getItem('useWsGateway');
+      if (stored === null) {
+        return true;
+      }
       return stored === 'true';
     } catch (_) {
-      return false;
+      return true;
     }
   }
 
@@ -778,6 +782,10 @@ class DashboardApp {
     this._updatePositionsPollingInterval(hasOpenPositions);
   }
 
+  isWsStreamingActive() {
+    return Boolean(this.useWsGateway && this.wsGatewayEnabled && this.wsConnected);
+  }
+
   isAdmin() {
     return (this.currentUser?.role || '').toUpperCase() === 'ADMIN' || this.currentUser?.is_admin === true;
   }
@@ -811,6 +819,7 @@ class DashboardApp {
       try { this.ws.close(); } catch (_) {}
       this.ws = null;
     }
+    this.wsConnected = false;
     if (reason === 'user') {
       Utils.showToast('Live streaming turned off. Using polling only.', 'info');
     }
@@ -834,6 +843,11 @@ class DashboardApp {
 
       ws.onopen = () => {
         this.wsReconnectDelay = 500;
+        this.wsConnected = true;
+        this.stopAllWatchlistPolling();
+        if (window.quickOrder && typeof window.quickOrder.syncPreviewPollingWithStreaming === 'function') {
+          window.quickOrder.syncPreviewPollingWithStreaming();
+        }
       };
 
       ws.onmessage = (event) => {
@@ -851,6 +865,8 @@ class DashboardApp {
 
       ws.onclose = () => {
         this.ws = null;
+        this.wsConnected = false;
+        this._resumePollingIfWsInactive();
         this.scheduleWsReconnect();
       };
     } catch (err) {
@@ -898,26 +914,31 @@ class DashboardApp {
   }
 
   toggleStreamPreference() {
-    if (this.useWsGateway) {
-      this.stopWsStream('user');
+    this.useWsGateway = true;
+    this.saveWsPreference(true);
+    if (this.wsGatewayEnabled) {
+      this.startWsStream();
+      Utils.showToast('Live streaming locked on', 'success');
     } else {
-      this.useWsGateway = true;
-      this.saveWsPreference(true);
-      if (this.wsGatewayEnabled) {
-        this.startWsStream();
-        Utils.showToast('Live streaming enabled (quotes/positions/funds)', 'success');
-      } else {
-        Utils.showToast('Server streaming is disabled. Continuing with polling.', 'warning');
-      }
-    }
-
-    if (this.currentView === 'settings') {
-      settings.renderSettingsView();
+      Utils.showToast('Server streaming is disabled. Polling is not available.', 'warning');
     }
   }
 
   getStreamPreference() {
     return this.useWsGateway;
+  }
+
+  _resumePollingIfWsInactive() {
+    if (this.isWsStreamingActive()) {
+      return;
+    }
+    const expandedIds = Array.from(this.expandedWatchlists || []);
+    expandedIds.forEach((wlId) => {
+      this.startWatchlistPolling(wlId);
+    });
+    if (window.quickOrder && typeof window.quickOrder.syncPreviewPollingWithStreaming === 'function') {
+      window.quickOrder.syncPreviewPollingWithStreaming();
+    }
   }
 
   /**
@@ -2376,6 +2397,10 @@ class DashboardApp {
     if (this.isPaused) return;
     // Stop existing poller if any
     this.stopWatchlistPolling(watchlistId);
+    if (this.isWsStreamingActive()) {
+      this.updateWatchlistQuoteMeta(watchlistId, { statusText: 'Streaming active' });
+      return;
+    }
 
     // Fetch quotes immediately
     await this.updateWatchlistQuotes(watchlistId, { force: true });
@@ -2479,6 +2504,9 @@ class DashboardApp {
 
   async updateWatchlistQuotes(watchlistId, { force = false } = {}) {
     if (this.isPaused && !force) return;
+    if (this.isWsStreamingActive()) {
+      return;
+    }
     try {
       // Check if watchlist table exists in DOM (view might be re-rendering)
       const table = document.getElementById(`watchlist-table-${watchlistId}`);
@@ -3826,7 +3854,7 @@ class DashboardApp {
             <div class="form-group">
               <label class="form-label">Broker WebSocket Quotes</label>
               <label class="inline-flex items-center gap-2">
-                <input type="checkbox" name="use_ws_quotes" class="form-checkbox">
+                <input type="checkbox" name="use_ws_quotes" class="form-checkbox" checked>
                 <span>Use broker WebSocket for quotes/LTP (only if this instance supports it)</span>
               </label>
               <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
@@ -4084,6 +4112,12 @@ class DashboardApp {
               <label class="form-label">Description</label>
               <textarea name="description" class="form-input" rows="3"></textarea>
             </div>
+
+            <div class="form-group">
+              <label class="form-label">TradingView buffer (%)</label>
+              <input type="number" name="limit_buffer_pct" class="form-input" step="0.01" min="0" placeholder="e.g., 0.5">
+              <p class="text-xs text-neutral-500 mt-1">Used only for TradingView MARKET alerts on this watchlist.</p>
+            </div>
           </form>
         </div>
         <div class="modal-footer">
@@ -4108,6 +4142,9 @@ class DashboardApp {
     const formData = new FormData(form);
     const data = Object.fromEntries(formData.entries());
     data.type = data.type || 'standard';
+    if (data.limit_buffer_pct === '') {
+      delete data.limit_buffer_pct;
+    }
 
     try {
       await api.createWatchlist(data);
@@ -4468,6 +4505,11 @@ class DashboardApp {
       if (raw === '') return '';
       return Utils.escapeHTML(String(raw));
     };
+    const limitBufferRaw = symbolData.limit_buffer_points;
+    const limitBufferValue =
+      limitBufferRaw !== undefined && limitBufferRaw !== null
+        ? Utils.escapeHTML(String(limitBufferRaw))
+        : '';
 
     const autoExitFieldsHtml = this.autoExitModes
       .map((modeConfig) => `
@@ -4565,6 +4607,15 @@ class DashboardApp {
                 Used to resolve futures/options via the instruments cache or option-chain API.
               </p>
             </div>
+            <div class="form-group">
+              <label class="form-label">Limit buffer (points)</label>
+              <input type="number" name="limit_buffer_points" class="form-input"
+                     step="0.01" min="0" value="${limitBufferValue}"
+                     placeholder="e.g., 1.5">
+              <p class="text-xs text-neutral-500 mt-1">
+                Added/subtracted from bid/ask or LTP when placing LIMIT orders.
+              </p>
+            </div>
             <div class="border rounded-lg bg-neutral-50 p-4 space-y-3">
               <p class="text-sm font-semibold text-neutral-600">
                 Optional auto-exit thresholds (points)
@@ -4646,6 +4697,8 @@ class DashboardApp {
       const parsed = parseFloat(value);
       return Number.isFinite(parsed) ? parsed : null;
     };
+    const limitBufferRaw = form.limit_buffer_points?.value.trim();
+    const limitBufferPoints = limitBufferRaw ? parseFloat(limitBufferRaw) : 0;
 
     const autoExitData = {};
     this.autoExitModes.forEach((mode) => {
@@ -4683,6 +4736,7 @@ class DashboardApp {
         tradable_futures: tradableFutures,
         tradable_options: tradableOptions,
         underlying_symbol: underlyingSymbol,
+        limit_buffer_points: Number.isFinite(limitBufferPoints) ? limitBufferPoints : 0,
         ...autoExitData,
       };
 
@@ -5715,6 +5769,13 @@ class DashboardApp {
               </div>
 
               <div class="form-group">
+                <label class="form-label">TradingView buffer (%)</label>
+                <input type="number" name="limit_buffer_pct" class="form-input" step="0.01" min="0"
+                       value="${watchlist.limit_buffer_pct ?? ''}">
+                <p class="text-xs text-neutral-500 mt-1">Used only for TradingView MARKET alerts on this watchlist.</p>
+              </div>
+
+              <div class="form-group">
                 <label class="form-label">
                   <input type="checkbox" name="is_active"
                          ${watchlist.is_active ? 'checked' : ''}>
@@ -5788,6 +5849,9 @@ class DashboardApp {
     // Convert checkbox to boolean
     data.is_active = form.querySelector('input[name="is_active"]').checked;
     data.type = form.querySelector('input[name="type"]:checked')?.value || 'standard';
+    if (data.limit_buffer_pct === '') {
+      data.limit_buffer_pct = null;
+    }
 
     try {
       await api.updateWatchlist(watchlistId, data);

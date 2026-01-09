@@ -268,13 +268,17 @@ class MarketDataFeedService extends EventEmitter {
     this.lastQuoteRefreshAt = now;
 
     try {
+      const symbolList = this._dedupeSymbols(await this._buildGlobalSymbolList());
+      this.lastGlobalSymbolList = symbolList;
       // Sync WS subscriptions (if enabled)
       this._syncWsSubscriptions();
 
+      if (openalgoWsService.hasActiveConnections()) {
+        return;
+      }
+
       const marketDataInstances = (await marketDataInstanceService.getPoolForEndpoint('multiquotes'))
         .filter(inst => !this._isInstanceUnhealthy(inst.id));
-      const symbolList = this._dedupeSymbols(await this._buildGlobalSymbolList());
-      this.lastGlobalSymbolList = symbolList;
 
       if (symbolList.length === 0 || marketDataInstances.length === 0) {
         log.debug('No tracked symbols or no market data instances. Skipping quote refresh.');

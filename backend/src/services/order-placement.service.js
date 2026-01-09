@@ -7,6 +7,7 @@
 import openalgoClient from '../integrations/openalgo/client.js';
 import { log } from '../core/logger.js';
 import * as orderValidation from '../utils/order-validation.js';
+import { ValidationError } from '../core/errors.js';
 
 class OrderPlacementService {
   /**
@@ -33,6 +34,10 @@ class OrderPlacementService {
       // Validate price based on order type
       // Default to MARKET if pricetype is undefined (per order-payload.factory.js defaults)
       const effectivePriceType = payload.pricetype || 'MARKET';
+
+      if (effectivePriceType === 'MARKET') {
+        throw new ValidationError('MARKET orders are disabled; LIMIT price is required');
+      }
 
       if (effectivePriceType !== 'MARKET') {
         // For LIMIT, SL, SL-M orders, price validation is required

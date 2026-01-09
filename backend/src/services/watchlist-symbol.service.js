@@ -257,6 +257,7 @@ class WatchlistSymbolService {
       'stoploss_points_options',
       'trailing_stoploss_points_options',
       'trailing_activation_points_options',
+      'limit_buffer_points',
     ];
 
     for (const field of numericalFields) {

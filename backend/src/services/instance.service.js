@@ -1151,6 +1151,8 @@ class InstanceService {
     // Broker WebSocket quotes opt-in
     if (data.use_ws_quotes !== undefined) {
       normalized.use_ws_quotes = parseBooleanSafe(data.use_ws_quotes, false) ? 1 : 0;
+    } else if (!isUpdate) {
+      normalized.use_ws_quotes = 1;
     }
 
     // Option chain API support flag

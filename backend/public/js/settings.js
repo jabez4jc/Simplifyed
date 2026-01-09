@@ -18,7 +18,7 @@ class SettingsHandler {
     this.permissions = [];
     this.instanceHealthTests = null;
     this.activeRoleTab = null;
-    this.allowedCategories = ['polling', 'streaming', 'market_data_feed', 'instance_health', 'instance_health_tests', 'market_hours', 'trading'];
+    this.allowedCategories = ['polling', 'market_data_feed', 'instance_health', 'instance_health_tests', 'market_hours', 'trading'];
     this.allowedSettings = {
       polling: [
         'polling.instance_interval_ms',
