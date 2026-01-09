@@ -68,6 +68,14 @@ class OrderService {
 
       // Validate required fields
       const normalized = this._normalizeOrderData(params);
+      const instanceMultiplier = Math.min(
+        Math.max(parseIntSafe(instance.multiplier, 1), 1),
+        999
+      );
+      if (instanceMultiplier !== 1) {
+        normalized.quantity = normalized.quantity * instanceMultiplier;
+        normalized.position_size = normalized.position_size * instanceMultiplier;
+      }
 
       let bufferPoints = parseFloatSafe(params.limit_buffer_points, null);
       let tickSize = null;

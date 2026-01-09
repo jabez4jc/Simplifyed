@@ -597,6 +597,7 @@ class WatchlistService {
           apikey,
           rateLimit: null,
           instance_id: instance.id,
+          multiplier: instance.multiplier,
         };
       })
       .filter(Boolean);

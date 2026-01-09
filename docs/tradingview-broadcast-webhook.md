@@ -43,7 +43,7 @@ This document describes a standalone webhook service that receives TradingView a
 ## Configuration
 - **Environment variables**:
   - `WEBHOOK_TOKEN`: shared secret for ingress auth.
-  - `OPENALGO_TARGETS`: JSON array of downstream instances, e.g.:
+  - Broadcast targets are resolved from the assigned instances of a broadcast watchlist.
     ```json
     [
       { "name": "nyc", "url": "https://nyc.example.com", "apikey": "abc" },
@@ -58,7 +58,7 @@ This document describes a standalone webhook service that receives TradingView a
   - Optional per-target throttle (tokens/sec) to honor OpenAlgo smart-order defaults (commonly 2/s).
 - **Targets**:
   - If you call `/webhook/tradingview/broadcast/:slug` (or query `?watchlistId=123`), targets are derived from the assigned instances on that broadcast watchlist (only active instances with API keys and host URLs).
-  - Without slug/ID, targets fall back to `OPENALGO_TARGETS` env JSON.
+- The webhook requires a watchlist id/slug so targets can be resolved from that watchlist.
 - **Runtime**: Node.js (Express) or similar; HTTPS termination in front.
 
 ## Core Flow
@@ -94,7 +94,7 @@ This document describes a standalone webhook service that receives TradingView a
 import express from 'express';
 import axios from 'axios';
 
-const targets = JSON.parse(process.env.OPENALGO_TARGETS || '[]');
+// Targets are derived from the broadcast watchlist's assigned instances.
 const router = express.Router();
 const tryJson = (s) => { try { return JSON.parse(s); } catch { return null; } };
 
@@ -183,7 +183,7 @@ The following assumes Simplifyed already manages instances and watchlists.
 1) **Config model**  
    - Add a watchlist flag/type for broadcast (no symbols required).  
    - Ensure each instance record has `name`, `baseUrl`, `apiKey`.  
-   - Store `WEBHOOK_TOKEN` and `OPENALGO_TARGETS` in Simplifyed’s config/env; `OPENALGO_TARGETS` can be derived from the instance list or stored separately.
+   - Store `WEBHOOK_TOKEN` in Simplifyed’s config/env.
 
 2) **Server wiring**  
    - Add the `POST /webhook/tradingview/broadcast` route (Express code above) to the Simplifyed API server.  
@@ -192,7 +192,7 @@ The following assumes Simplifyed already manages instances and watchlists.
 
 3) **Instance selection**  
    - For the broadcast watchlist, resolve the list of target instances (all, or those attached to that watchlist).  
-   - Build `OPENALGO_TARGETS` dynamically at request time if you store instances in DB, e.g.:
+   - Build broadcast targets dynamically from the watchlist's assigned instances.
      ```js
      const targets = instances.map(i => ({
        name: i.name,
@@ -228,4 +228,4 @@ The following assumes Simplifyed already manages instances and watchlists.
 - Create: `POST /api/v1/watchlists` with body `{ "name": "TV Broadcast", "type": "broadcast" }`.
 - Assign instances: `POST /api/v1/watchlists/:id/instances` for each downstream OpenAlgo instance.
 - Use the webhook: `POST /webhook/tradingview/broadcast/:slug` (slug returned with the watchlist) or `POST /webhook/tradingview/broadcast?watchlistId=:id`.
-- The webhook will fan out to all active instances assigned to that broadcast watchlist; when no slug/ID is provided, it falls back to `OPENALGO_TARGETS`.
+- The webhook fans out to all active instances assigned to the broadcast watchlist.

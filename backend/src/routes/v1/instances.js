@@ -272,15 +272,15 @@ router.post('/test/apikey', async (req, res, next) => {
  */
 router.post('/bulk-update', async (req, res, next) => {
   try {
-    const { instance_ids, is_active, is_analyzer_mode } = req.body;
+    const { instance_ids, is_active, is_analyzer_mode, multiplier } = req.body;
 
     if (!instance_ids || !Array.isArray(instance_ids) || instance_ids.length === 0) {
       throw new ValidationError('instance_ids must be a non-empty array');
     }
 
     // At least one field must be provided
-    if (is_active === undefined && is_analyzer_mode === undefined) {
-      throw new ValidationError('At least one of is_active or is_analyzer_mode must be provided');
+    if (is_active === undefined && is_analyzer_mode === undefined && multiplier === undefined) {
+      throw new ValidationError('At least one of is_active, is_analyzer_mode, or multiplier must be provided');
     }
 
     // If analyzer mode is being changed, use Safe-Switch workflow
@@ -312,9 +312,10 @@ router.post('/bulk-update', async (req, res, next) => {
       }
 
       // Update is_active separately if provided
-      if (is_active !== undefined) {
+      if (is_active !== undefined || multiplier !== undefined) {
         const updateData = {
-          is_active: parseBooleanSafe(is_active, true),
+          ...(is_active !== undefined ? { is_active: parseBooleanSafe(is_active, true) } : {}),
+          ...(multiplier !== undefined ? { multiplier } : {}),
         };
 
         // Only update instances that successfully toggled analyzer mode
@@ -337,10 +338,13 @@ router.post('/bulk-update', async (req, res, next) => {
         data: results,
       });
     } else {
-      // Only updating is_active - safe to use bulk update
+      // Only updating non-mode fields - safe to use bulk update
       const updateData = {};
       if (is_active !== undefined) {
         updateData.is_active = parseBooleanSafe(is_active, true);
+      }
+      if (multiplier !== undefined) {
+        updateData.multiplier = multiplier;
       }
 
       const results = await instanceService.bulkUpdateInstances(instance_ids, updateData);

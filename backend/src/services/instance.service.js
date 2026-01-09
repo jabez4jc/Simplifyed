@@ -140,6 +140,7 @@ class InstanceService {
       const normalized = this._normalizeInstanceData(data);
       const hasOptionChain = await this._hasColumn('supports_option_chain');
       const hasUseWsQuotes = await this._hasColumn('use_ws_quotes');
+      const hasMultiplier = await this._hasColumn('multiplier');
 
       // Check for duplicate host_url
       const existing = await db.get(
@@ -196,6 +197,10 @@ class InstanceService {
         columns.push('use_ws_quotes');
         values.push(normalized.use_ws_quotes ?? 0);
       }
+      if (hasMultiplier) {
+        columns.push('multiplier');
+        values.push(normalized.multiplier ?? 1);
+      }
 
       const placeholders = columns.map(() => '?').join(', ');
       const result = await db.run(
@@ -228,6 +233,7 @@ class InstanceService {
       // Load existing instance (throws if not found)
       const existing = await this.getInstanceById(id);
       const hasOptionChain = await this._hasColumn('supports_option_chain');
+      const hasMultiplier = await this._hasColumn('multiplier');
 
       // Normalize updates
       const normalized = this._normalizeInstanceData(updates, true);
@@ -267,6 +273,9 @@ class InstanceService {
           continue;
         }
         if (key === 'use_ws_quotes' && !(await this._hasColumn('use_ws_quotes'))) {
+          continue;
+        }
+        if (key === 'multiplier' && !hasMultiplier) {
           continue;
         }
         fields.push(`${key} = ?`);
@@ -375,6 +384,18 @@ class InstanceService {
       if (updates.is_analyzer_mode !== undefined) {
         setClauses.push('is_analyzer_mode = ?');
         params.push(updates.is_analyzer_mode ? 1 : 0);
+      }
+
+      if (updates.multiplier !== undefined) {
+        if (!(await this._hasColumn('multiplier'))) {
+          throw new ValidationError('Multiplier is not supported in this database');
+        }
+        const multiplier = parseIntSafe(updates.multiplier, null);
+        if (multiplier === null || multiplier < 1 || multiplier > 999) {
+          throw new ValidationError('Multiplier must be an integer between 1 and 999');
+        }
+        setClauses.push('multiplier = ?');
+        params.push(multiplier);
       }
 
       if (setClauses.length === 0) {
@@ -1107,6 +1128,18 @@ class InstanceService {
     // Strategy Tag
     if (data.strategy_tag !== undefined) {
       normalized.strategy_tag = sanitizeStrategyTag(data.strategy_tag);
+    }
+
+    // Instance multiplier
+    if (data.multiplier !== undefined) {
+      const multiplier = parseIntSafe(data.multiplier, null);
+      if (multiplier === null || multiplier < 1 || multiplier > 999) {
+        errors.push({ field: 'multiplier', message: 'Multiplier must be an integer between 1 and 999' });
+      } else {
+        normalized.multiplier = multiplier;
+      }
+    } else if (!isUpdate) {
+      normalized.multiplier = 1;
     }
 
     // Session-level risk controls

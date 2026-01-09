@@ -754,20 +754,29 @@ class QuickOrderService {
     }
 
     const currentPosition = rawPosition;
-    const tradeQuantity = quantity * lotSize;
+    const instanceMultiplier = Math.min(
+      Math.max(parseIntSafe(instance.multiplier, 1), 1),
+      999
+    );
+    const baseLots = quantity;
+    const tradeLots = baseLots * instanceMultiplier;
+    const baseQuantity = baseLots * lotSize;
+    const tradeQuantity = tradeLots * lotSize;
     const currentLots = lotSize > 0 ? currentPosition / lotSize : currentPosition;
-    const tradeLots = quantity;
 
     log.info('Calculated trade quantity', {
       symbolType: symbol.symbol_type,
       tradeMode,
-      inputQuantity: quantity,
+      inputQuantity: baseLots,
       lotSize,
+      baseQuantity,
+      instanceMultiplier,
       tradeQuantity,
       rawPosition,
       normalizedPosition: currentPosition,
       instance_id: instance.id,
       instance_name: instance.name,
+      instance_multiplier: instanceMultiplier,
       exchange: finalExchange,
       symbol: finalSymbol,
     });
@@ -966,6 +975,10 @@ class QuickOrderService {
     } = orderParams;
     const { preloadedPositions } = options;
     const bufferPoints = Number.isFinite(symbol.limit_buffer_points) ? symbol.limit_buffer_points : 0;
+    const instanceMultiplier = Math.min(
+      Math.max(parseIntSafe(instance.multiplier, 1), 1),
+      999
+    );
 
     // Get writer guard from symbol configuration (optional)
     const writerGuard = symbol.writer_guard_enabled !== 0;  // Default true
@@ -1085,12 +1098,15 @@ class QuickOrderService {
         throw new ValidationError(`No open ${optionType} positions found to ${action.split('_')[0].toLowerCase()}`);
       }
 
-      // Calculate Qstep = step_lots × lotsize
+      // Calculate Qstep = step_lots × lotsize × multiplier
       const lotSize = optionSymbol.lot_size || symbol.lot_size || 1;
-      const Qstep = stepLots * lotSize;
+      const baseQstep = stepLots * lotSize;
+      const Qstep = baseQstep * instanceMultiplier;
 
       log.info('FLOAT_OFS REDUCE/INCREASE: Calculating per-position reductions', {
         Qstep,
+        baseQstep,
+        instanceMultiplier,
         stepLots,
         lotSize,
         openPositionCount: allOpenPositions.length,
@@ -1359,13 +1375,16 @@ class QuickOrderService {
       });
     }
 
-    // Calculate Qstep = step_lots × lotsize
+    // Calculate Qstep = step_lots × lotsize × multiplier
     const lotSize = optionSymbol.lot_size || symbol.lot_size || 1;
-    const Qstep = stepLots * lotSize;
+    const baseQstep = stepLots * lotSize;
+    const Qstep = baseQstep * instanceMultiplier;
 
     log.info('Calculated Qstep', {
       stepLots,
       lotSize,
+      baseQstep,
+      instanceMultiplier,
       Qstep,
     });
 

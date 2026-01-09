@@ -1567,9 +1567,9 @@ class DashboardApp {
       return '<p class="text-center text-neutral-600">No instances found</p>';
     }
 
-    // Fixed widths for consistent alignment (15 cols without bulk checkbox)
-    // [Name, Broker, Status, Health, Mode, Limits, Live P&L, Analyzer P&L, Balance, Total P&L, Realized, Unrealized, Session Limits, Cutoff Reason, Actions]
-    const baseColWidths = ['170px','120px','90px','90px','100px','100px','110px','110px','110px','110px','110px','110px','190px','110px','140px'];
+    // Fixed widths for consistent alignment (16 cols without bulk checkbox)
+    // [Name, Broker, Multiplier, Status, Health, Mode, Limits, Live P&L, Analyzer P&L, Balance, Total P&L, Realized, Unrealized, Session Limits, Cutoff Reason, Actions]
+    const baseColWidths = ['170px','120px','90px','90px','90px','100px','100px','110px','110px','110px','110px','110px','110px','190px','110px','140px'];
     const colWidths = showBulkActions ? ['40px', ...baseColWidths] : baseColWidths;
 
     return `
@@ -1582,6 +1582,7 @@ class DashboardApp {
               ${showBulkActions ? '<th><input type="checkbox" id="select-all-instances" onchange="app.toggleSelectAllInstances(this.checked)"></th>' : ''}
               <th>Name</th>
               <th>Broker</th>
+              <th class="text-right">Multiplier</th>
               <th>Status</th>
               <th>Health</th>
               <th>Mode</th>
@@ -1603,6 +1604,7 @@ class DashboardApp {
               ${showBulkActions ? `<td><input type="checkbox" class="instances-bulk-checkbox" data-instance-id="${instance.id}" onchange="app.updateBulkActionsState()"></td>` : ''}
               <td class="font-medium">${Utils.escapeHTML(instance.name)}</td>
               <td>${Utils.escapeHTML(instance.broker || 'N/A')}</td>
+              <td class="text-right">${instance.multiplier != null ? Utils.formatNumber(instance.multiplier, 0) : '1'}</td>
               <td>
                 ${instance.is_active
                   ? '<span class="badge badge-success">Active</span>'
@@ -3885,6 +3887,14 @@ class DashboardApp {
             </div>
 
             <div class="form-group">
+              <label class="form-label">Instance Multiplier</label>
+              <input type="number" name="multiplier" class="form-input" min="1" max="999" step="1" value="1">
+              <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
+                Scales order quantities for this instance (1-999).
+              </small>
+            </div>
+
+            <div class="form-group">
               <label class="form-label">Strategy Tag</label>
               <input type="text" name="strategy_tag" class="form-input" value="default">
             </div>
@@ -5621,6 +5631,15 @@ class DashboardApp {
                 </label>
                 <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
                   When enabled, options resolution fetches up to 15 strikes with live quotes directly from the broker.
+                </small>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">Instance Multiplier</label>
+                <input type="number" name="multiplier" class="form-input" min="1" max="999" step="1"
+                       value="${instance.multiplier ?? 1}">
+                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
+                  Scales order quantities for this instance (1-999).
                 </small>
               </div>
 

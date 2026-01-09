@@ -20,18 +20,6 @@ let settingsCache = null;
 let cacheTimestamp = 0;
 const CACHE_DURATION = 5000; // 5 seconds cache
 
-function parseTargetsConfig(rawValue) {
-  if (!rawValue) return [];
-  try {
-    const parsed = typeof rawValue === 'string' ? JSON.parse(rawValue) : rawValue;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((t) => t && typeof t === 'object');
-  } catch (err) {
-    log.warn('Invalid OPENALGO_TARGETS JSON, ignoring', { error: err.message });
-    return [];
-  }
-}
-
 function parseStrategyBufferConfig(rawValue) {
   if (!rawValue) return {};
   try {
@@ -334,7 +322,6 @@ class Config {
     this.webhooks = {
       tradingviewBroadcast: {
         token: getEnv('WEBHOOK_TOKEN', ''),
-        rawTargets: getEnv('OPENALGO_TARGETS', '[]'),
         timeoutMs: getEnvInt('TRADINGVIEW_BROADCAST_TIMEOUT_MS', 3000),
         retries: getEnvInt('TRADINGVIEW_BROADCAST_RETRIES', 2),
         retryDelayMs: getEnvInt('TRADINGVIEW_BROADCAST_RETRY_DELAY_MS', 250),
@@ -343,7 +330,6 @@ class Config {
         bufferPctByStrategyRaw: getEnv('TRADINGVIEW_BUFFER_BY_STRATEGY', '{}'),
       },
     };
-    this.webhooks.tradingviewBroadcast.targets = parseTargetsConfig(this.webhooks.tradingviewBroadcast.rawTargets);
     this.webhooks.tradingviewBroadcast.bufferPctByStrategy = parseStrategyBufferConfig(
       this.webhooks.tradingviewBroadcast.bufferPctByStrategyRaw
     );
@@ -434,11 +420,6 @@ class Config {
         'webhooks.tradingview.token',
         this.webhooks.tradingviewBroadcast.token
       );
-      const targetsFromDb = getSetting(
-        'webhooks.tradingview.targets',
-        this.webhooks.tradingviewBroadcast.rawTargets || null
-      );
-      this.webhooks.tradingviewBroadcast.targets = parseTargetsConfig(targetsFromDb);
       const bufferDefault = await getSettingFloat(
         'webhooks.tradingview.buffer_pct_default',
         this.webhooks.tradingviewBroadcast.bufferPctDefault

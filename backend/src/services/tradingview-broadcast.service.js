@@ -2,7 +2,7 @@ import config from '../core/config.js';
 import { log } from '../core/logger.js';
 import { UnauthorizedError, ValidationError } from '../core/errors.js';
 import { ORDER_PARAMS } from '../integrations/openalgo/endpoints.js';
-import { maskApiKey, normalizeUrl } from '../utils/sanitizers.js';
+import { maskApiKey, parseIntSafe } from '../utils/sanitizers.js';
 import { extractLtp } from '../utils/price-extraction.js';
 import watchlistService from './watchlist.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
@@ -65,58 +65,7 @@ class TradingviewBroadcastService {
     this.retries = Number(config.webhooks?.tradingviewBroadcast?.retries ?? 2);
     this.retryDelayMs = Number(config.webhooks?.tradingviewBroadcast?.retryDelayMs ?? 250);
     this.defaultRps = Number(config.webhooks?.tradingviewBroadcast?.defaultRps || 0);
-    this.sourceTargets = config.webhooks?.tradingviewBroadcast?.targets || [];
-    this.targets = this._normalizeTargets(this.sourceTargets);
     this.tokenBuckets = new Map();
-  }
-
-  _normalizeTargets(rawTargets = []) {
-    const normalized = [];
-    rawTargets.forEach((target) => {
-      const url = normalizeUrl(target?.url || target?.host_url || '');
-      const apikey = typeof target?.apikey === 'string' ? target.apikey.trim() : '';
-
-      if (!url || !apikey) {
-        log.warn('[TV Webhook] Skipping invalid target (missing url/apikey)');
-        return;
-      }
-
-      const name = (target?.name || url).toString();
-      let baseUrl = url.replace(/\/+$/, '');
-      baseUrl = baseUrl.replace(/\/api\/v1$/, '').replace(/\/api$/, '');
-      const rpsCandidate = Number(
-        target?.rps ?? target?.rate ?? target?.tokensPerSecond ?? target?.throttle ?? this.defaultRps
-      );
-      const rateLimit = Number.isFinite(rpsCandidate) && rpsCandidate > 0 ? rpsCandidate : null;
-
-      normalized.push({
-        key: name,
-        name,
-        url: baseUrl,
-        endpoint: `${baseUrl}/api/v1/placesmartorder`,
-        apikey,
-        rateLimit,
-      });
-    });
-
-    if (!normalized.length) {
-      log.warn('[TV Webhook] No OpenAlgo targets configured for broadcast');
-    } else {
-      log.info('[TV Webhook] Broadcast targets loaded', {
-        count: normalized.length,
-        targets: normalized.map((t) => t.name),
-      });
-    }
-
-    return normalized;
-  }
-
-  _ensureTargetsFresh() {
-    const latest = config.webhooks?.tradingviewBroadcast?.targets || [];
-    if (latest !== this.sourceTargets) {
-      this.sourceTargets = latest;
-      this.targets = this._normalizeTargets(latest);
-    }
   }
 
   async _resolveTargets({ watchlistId = null, watchlistSlug = null } = {}) {
@@ -128,8 +77,7 @@ class TradingviewBroadcastService {
       return { targets, watchlist };
     }
 
-    this._ensureTargetsFresh();
-    return { targets: this.targets, watchlist: null };
+    throw new ValidationError('Broadcast watchlist id or slug is required');
   }
 
   _getBucket(targetKey, rateLimit) {
@@ -247,7 +195,7 @@ class TradingviewBroadcastService {
     const { targets, watchlist } = await this._resolveTargets({ watchlistId, watchlistSlug });
 
     if (!targets.length) {
-      throw new ValidationError('No downstream OpenAlgo targets configured');
+      throw new ValidationError('No broadcast targets configured for this watchlist');
     }
 
     const payloadToSend = await this._ensureLimitPricing(normalizedPayload, watchlist);
@@ -257,12 +205,23 @@ class TradingviewBroadcastService {
       action: payloadToSend.action,
       exchange: payloadToSend.exchange,
       symbol: payloadToSend.symbol,
+      quantity: payloadToSend.quantity,
+      position_size: payloadToSend.position_size,
       targets: targets.length,
       watchlist: watchlist ? watchlist.id : null,
     });
 
     const results = await Promise.allSettled(
-      targets.map((target) => this._dispatchToTarget(target, payloadToSend))
+      targets.map((target) => {
+        const rawMultiplier = parseIntSafe(target.multiplier, 1);
+        const instanceMultiplier = Math.min(Math.max(rawMultiplier, 1), 999);
+        const targetPayload = {
+          ...payloadToSend,
+          quantity: payloadToSend.quantity * instanceMultiplier,
+          position_size: payloadToSend.position_size * instanceMultiplier,
+        };
+        return this._dispatchToTarget(target, targetPayload, instanceMultiplier);
+      })
     );
 
     const summary = results.map((result, idx) => {
@@ -403,7 +362,7 @@ class TradingviewBroadcastService {
     return idx === -1 ? 0 : Math.min(6, text.length - idx - 1);
   }
 
-  async _dispatchToTarget(target, payload) {
+  async _dispatchToTarget(target, payload, instanceMultiplier = 1) {
     const rateLimit = target.rateLimit ?? (this.defaultRps > 0 ? this.defaultRps : null);
     const bucket = this._getBucket(target.key, rateLimit);
     if (bucket) {
@@ -420,12 +379,14 @@ class TradingviewBroadcastService {
     if (response.ok) {
       log.info('[TV Webhook] Downstream success', {
         target: target.name,
+        instance_multiplier: instanceMultiplier,
         status: response.status,
         duration_ms: response.durationMs,
       });
     } else {
       log.warn('[TV Webhook] Downstream failure', {
         target: target.name,
+        instance_multiplier: instanceMultiplier,
         status: response.status,
         error: response.error,
         attempts: response.attempts,
