@@ -18,7 +18,7 @@ class PositionsService {
    * @returns {Promise<Object>} - Grouped positions with totals
    */
   async getAllPositions(options = {}) {
-    const { onlyOpen = false } = options;
+    const { onlyOpen = false, refresh = true } = options;
 
     try {
       // Get all active instances
@@ -37,7 +37,7 @@ class PositionsService {
 
       // Fetch positions from all instances in parallel
       const positionsPromises = instances.map(instance =>
-        this._fetchInstancePositions(instance, onlyOpen)
+        this._fetchInstancePositions(instance, onlyOpen, refresh)
       );
 
       const instancePositions = await Promise.allSettled(positionsPromises);
@@ -213,7 +213,7 @@ class PositionsService {
    * @param {boolean} onlyOpen - Only return open positions
    * @returns {Promise<Object>} - Positions data with totals
    */
-  async _fetchInstancePositions(instance, onlyOpen = false) {
+  async _fetchInstancePositions(instance, onlyOpen = false, refresh = true) {
     try {
       log.debug('Fetching positions from instance', {
         instance_id: instance.id,
@@ -221,8 +221,17 @@ class PositionsService {
       });
 
       const cache = marketDataFeedService.getPositionSnapshot(instance.id);
+      if (!cache && !refresh) {
+        return {
+          positions: [],
+          total_pnl: 0,
+          open_positions_count: 0,
+          closed_positions_count: 0,
+        };
+      }
+
       const positionBook = cache?.data || await openalgoClient.getPositionBook(instance);
-      if (!cache) {
+      if (!cache && refresh) {
         marketDataFeedService.setPositionSnapshot(instance.id, positionBook);
       }
 

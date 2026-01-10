@@ -18,7 +18,7 @@ class SettingsHandler {
     this.permissions = [];
     this.instanceHealthTests = null;
     this.activeRoleTab = null;
-    this.allowedCategories = ['polling', 'market_data_feed', 'instance_health', 'instance_health_tests', 'market_hours', 'trading', 'system'];
+    this.allowedCategories = ['polling', 'market_data_feed', 'instance_health', 'instance_health_tests', 'market_hours', 'trading', 'brokerage', 'system'];
     this.allowedSettings = {
       polling: [
         'polling.instance_interval_ms',
@@ -56,6 +56,10 @@ class SettingsHandler {
       ],
       trading: [
         'trading_sessions',
+      ],
+      brokerage: [
+        'brokerage.default',
+        'brokerage.by_broker',
       ],
       system: [
         'settings.cache_duration_ms',
@@ -145,6 +149,10 @@ class SettingsHandler {
       'trading': {
         icon: '🗓️',
         description: 'Session windows used for intraday risk resets'
+      },
+      'brokerage': {
+        icon: '💸',
+        description: 'Brokerage per trade for P&L calculations'
       }
     };
   }
@@ -898,6 +906,9 @@ class SettingsHandler {
     if (key === 'trading_sessions') {
       return this.renderTradingSessionsField(key, value);
     }
+    if (key === 'brokerage.by_broker') {
+      return this.renderBrokerageTable(key, value);
+    }
 
     switch (dataType) {
       case 'boolean':
@@ -993,6 +1004,68 @@ class SettingsHandler {
       <div class="space-y-3" data-session-key="${key}">
         ${rows}
         <small class="text-neutral-500 block">Configure up to 4 session windows in IST. These control auto cutoffs.</small>
+      </div>
+    `;
+  }
+
+  renderBrokerageTable(key, value) {
+    let brokers = {};
+    try {
+      brokers = typeof value === 'string' ? JSON.parse(value) : value;
+      if (!brokers || typeof brokers !== 'object') brokers = {};
+    } catch (e) {
+      brokers = {};
+    }
+
+    const rows = Object.entries(brokers)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([broker, rate]) => `
+        <tr>
+          <td class="text-sm font-medium">${Utils.escapeHTML(broker)}</td>
+          <td>
+            <input
+              type="number"
+              class="form-input settings-number-input"
+              data-key="${key}"
+              data-type="json"
+              data-broker="${Utils.escapeHTML(broker)}"
+              value="${rate}"
+              oninput="settings.handleBrokerageChange(this)"
+            />
+          </td>
+        </tr>
+      `)
+      .join('');
+
+    return `
+      <div class="settings-brokerage-table">
+        <div class="flex flex-wrap gap-2 items-end mb-3">
+          <div class="flex-1 min-w-[180px]">
+            <label class="form-label text-xs mb-1">Broker key</label>
+            <input type="text" class="form-input" id="brokerage-new-key" placeholder="e.g. fivepaisa">
+          </div>
+          <div class="w-[160px]">
+            <label class="form-label text-xs mb-1">Brokerage</label>
+            <input type="number" class="form-input" id="brokerage-new-rate" placeholder="20">
+          </div>
+          <button type="button" class="btn btn-neutral btn-outline btn-sm" onclick="settings.addBrokerageEntry()">
+            Add Broker
+          </button>
+        </div>
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Broker</th>
+              <th>Brokerage (per trade)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows || '<tr><td colspan="2" class="text-neutral-500">No brokers configured.</td></tr>'}
+          </tbody>
+        </table>
+        <div class="text-xs text-neutral-500 mt-2">
+          Add new brokers by editing JSON in this setting via the API if needed.
+        </div>
       </div>
     `;
   }
@@ -1123,6 +1196,91 @@ class SettingsHandler {
     }
     this.settings[category][key].pendingValue = JSON.stringify(sessions);
     // console.log('[Settings] trading_sessions updated', sessions);
+  }
+
+  handleBrokerageChange(input) {
+    const key = input.dataset.key;
+    const broker = input.dataset.broker || '';
+    const category = this.getSettingCategory(key);
+    const setting = this.settings[category]?.[key] || {};
+    let brokers = {};
+    try {
+      const source = setting.pendingValue ?? setting.rawValue ?? setting.value;
+      brokers = typeof source === 'string' ? JSON.parse(source) : source;
+      if (!brokers || typeof brokers !== 'object') brokers = {};
+    } catch (e) {
+      brokers = {};
+    }
+
+    const parsed = input.value === '' ? null : Number(input.value);
+    if (broker) {
+      if (Number.isFinite(parsed)) {
+        brokers[broker] = parsed;
+      }
+    }
+
+    if (!this.settings[category]) {
+      this.settings[category] = {};
+    }
+    if (!this.settings[category][key]) {
+      this.settings[category][key] = { dataType: 'json', isSensitive: false };
+    }
+    this.settings[category][key].pendingValue = JSON.stringify(brokers);
+  }
+
+  addBrokerageEntry() {
+    const key = 'brokerage.by_broker';
+    const category = this.getSettingCategory(key);
+    const nameInput = document.getElementById('brokerage-new-key');
+    const rateInput = document.getElementById('brokerage-new-rate');
+    if (!nameInput || !rateInput) return;
+
+    const rawName = nameInput.value.trim();
+    const rawRate = rateInput.value.trim();
+    if (!rawName) {
+      Utils.showToast('Broker key is required', 'error');
+      return;
+    }
+    const parsedRate = Number(rawRate);
+    if (!Number.isFinite(parsedRate)) {
+      Utils.showToast('Brokerage must be a number', 'error');
+      return;
+    }
+
+    let brokers = {};
+    const setting = this.settings[category]?.[key] || {};
+    try {
+      const source = setting.pendingValue ?? setting.rawValue ?? setting.value;
+      brokers = typeof source === 'string' ? JSON.parse(source) : source;
+      if (!brokers || typeof brokers !== 'object') brokers = {};
+    } catch (e) {
+      brokers = {};
+    }
+
+    const normalizedKey = rawName
+      .toLowerCase()
+      .replace(/[\s-]+/g, '_')
+      .replace(/[^a-z0-9_]/g, '');
+
+    if (!normalizedKey) {
+      Utils.showToast('Broker key must contain letters or numbers', 'error');
+      return;
+    }
+
+    brokers[normalizedKey] = parsedRate;
+
+    if (!this.settings[category]) {
+      this.settings[category] = {};
+    }
+    if (!this.settings[category][key]) {
+      this.settings[category][key] = { dataType: 'json', isSensitive: false };
+    }
+    this.settings[category][key].pendingValue = JSON.stringify(brokers);
+
+    nameInput.value = '';
+    rateInput.value = '';
+    this.refreshApplicationSettings();
+    Utils.showToast(`Added broker ${normalizedKey}`, 'success');
   }
 
   /**

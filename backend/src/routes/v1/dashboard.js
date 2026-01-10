@@ -14,7 +14,8 @@ const router = express.Router();
  */
 router.get('/metrics', async (req, res, next) => {
   try {
-    const metrics = await dashboardService.getDashboardMetrics();
+    const refresh = req.query.refresh === 'true';
+    const metrics = await dashboardService.getDashboardMetrics({ refresh });
 
     res.json({
       status: 'success',

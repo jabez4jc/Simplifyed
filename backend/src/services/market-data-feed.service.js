@@ -1056,6 +1056,10 @@ class MarketDataFeedService extends EventEmitter {
     this.tradebookCache.delete(instanceId);
   }
 
+  getTradebookSnapshotCached(instanceId) {
+    return this.tradebookCache.get(instanceId) || null;
+  }
+
   _getCircuitKey(instanceId, feed) {
     return `${instanceId}:${feed}`;
   }

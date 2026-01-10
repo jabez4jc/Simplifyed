@@ -117,6 +117,14 @@
               <span class="nav-label">Positions</span>
             </a>
           </li>
+          <li data-permission="monitor.view">
+            <a data-view="daily-pnl-snapshots" data-label="Daily P&L" class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200" onclick="app.switchView('daily-pnl-snapshots')">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3M4 11h16M5 5h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z" />
+              </svg>
+              <span class="nav-label">Daily P&L</span>
+            </a>
+          </li>
           <li>
             <a data-view="settings" data-label="Settings" class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200" onclick="app.switchView('settings')">
               <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

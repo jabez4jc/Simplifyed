@@ -193,8 +193,13 @@ class APIClient {
   }
 
   // Dashboard APIs
-  async getDashboardMetrics() {
-    return this.request('/dashboard/metrics');
+  async getDashboardMetrics(options = {}) {
+    const params = new URLSearchParams();
+    if (options.refresh) {
+      params.set('refresh', 'true');
+    }
+    const query = params.toString();
+    return this.request(`/dashboard/metrics${query ? `?${query}` : ''}`);
   }
 
   // Telemetry + snapshots
@@ -354,8 +359,14 @@ class APIClient {
   }
 
   // Position APIs
-  async getAllPositions(onlyOpen = false) {
-    const params = new URLSearchParams({ onlyOpen: onlyOpen.toString() });
+  async getAllPositions(options = false) {
+    const resolved = typeof options === 'object' ? options : { onlyOpen: !!options };
+    const params = new URLSearchParams({
+      onlyOpen: String(Boolean(resolved.onlyOpen)),
+    });
+    if (resolved.refresh === false) {
+      params.append('refresh', 'false');
+    }
     return this.request(`/positions/all?${params}`);
   }
 
@@ -369,6 +380,11 @@ class APIClient {
 
   async getAggregatedPnL() {
     return this.request('/positions/aggregate/pnl');
+  }
+
+  async getDailyPnlSnapshots(filters = {}) {
+    const params = new URLSearchParams(filters);
+    return this.request(`/pnl-snapshots?${params}`);
   }
 
   async closePositions(instanceId) {

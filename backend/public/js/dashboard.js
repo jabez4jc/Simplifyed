@@ -30,7 +30,7 @@ class DashboardApp {
     this.watchlistQuoteSnapshots = new Map();
     this.isSidebarCollapsed = false;
     this.quickOrder = window.quickOrder || null;
-    this.validViews = ['dashboard', 'instances', 'watchlists', 'orders', 'trades', 'positions', 'settings', 'notifications', 'api-playground'];
+    this.validViews = ['dashboard', 'instances', 'watchlists', 'orders', 'trades', 'positions', 'daily-pnl-snapshots', 'settings', 'notifications', 'api-playground'];
     this.suppressHashChange = false;
     this._throttledWatchlistRefresh = Utils.throttle((opts = {}) => {
       this.refreshWatchlistPositions(opts);
@@ -49,6 +49,8 @@ class DashboardApp {
     this.tradesLastUpdatedAt = null;
     this.tradesPayload = null;
     this.tradesInstanceStore = new Map();
+    this.tradesExpanded = new Set();
+    this.ordersExpanded = new Set();
     this.positionsInstanceStore = new Map();
     // Track expanded instances in positions view; default is collapsed
     this.positionsExpanded = new Set();
@@ -717,6 +719,7 @@ class DashboardApp {
       }
 
       this.applyAdminVisibility();
+      this.applyPermissionVisibility();
 
       // If no role assigned, show message and halt further loading
       if (!this.currentUser.role && !this.currentUser.is_admin) {
@@ -790,10 +793,25 @@ class DashboardApp {
     return (this.currentUser?.role || '').toUpperCase() === 'ADMIN' || this.currentUser?.is_admin === true;
   }
 
+  hasPermission(permissionKey) {
+    if (this.isAdmin()) return true;
+    const perms = this.currentUser?.permissions || [];
+    return perms.includes(permissionKey);
+  }
+
   applyAdminVisibility() {
     const adminOnly = document.querySelectorAll('[data-admin-only="true"]');
     const show = this.isAdmin();
     adminOnly.forEach((el) => {
+      el.style.display = show ? '' : 'none';
+    });
+  }
+
+  applyPermissionVisibility() {
+    const permissionEls = document.querySelectorAll('[data-permission]');
+    permissionEls.forEach((el) => {
+      const key = el.dataset.permission;
+      const show = this.hasPermission(key);
       el.style.display = show ? '' : 'none';
     });
   }
@@ -1033,6 +1051,10 @@ class DashboardApp {
       Utils.showToast('API Playground is restricted to admins.', 'warning');
       return;
     }
+    if (viewName === 'daily-pnl-snapshots' && !this.hasPermission('monitor.view')) {
+      Utils.showToast('Daily snapshots are restricted to admins and monitors.', 'warning');
+      return;
+    }
 
     // Avoid duplicate loads unless forced
     if (!forceReload && this.currentView === viewName) {
@@ -1093,6 +1115,7 @@ class DashboardApp {
 
     if (this.currentView === 'dashboard' && viewName !== 'dashboard') {
       this.stopTelemetryRefresh();
+      this.stopDashboardMetricsRefresh();
     }
 
     if (['watchlists', 'positions'].includes(this.currentView) && !['watchlists', 'positions'].includes(viewName)) {
@@ -1112,6 +1135,7 @@ class DashboardApp {
       settings: 'Settings',
       notifications: 'Notifications',
       'api-playground': 'API Playground',
+      'daily-pnl-snapshots': 'Daily P&L Snapshots',
     };
 
     document.getElementById('view-title').textContent =
@@ -1144,6 +1168,9 @@ class DashboardApp {
         case 'positions':
           await this.renderPositionsView();
           this.startSnapshotResync('positions');
+          break;
+        case 'daily-pnl-snapshots':
+          await this.renderDailyPnlSnapshotsView();
           break;
         case 'settings':
           await settings.renderSettingsView();
@@ -1184,6 +1211,9 @@ class DashboardApp {
             total_realized_pnl: 0,
             total_unrealized_pnl: 0,
             total_pnl: 0,
+            total_trade_value: 0,
+            total_buy_trades: 0,
+            total_sell_trades: 0,
           },
           analyzer: {
             instances: [],
@@ -1191,6 +1221,9 @@ class DashboardApp {
             total_realized_pnl: 0,
             total_unrealized_pnl: 0,
             total_pnl: 0,
+            total_trade_value: 0,
+            total_buy_trades: 0,
+            total_sell_trades: 0,
           },
         },
       })),
@@ -1210,18 +1243,24 @@ class DashboardApp {
         realized_pnl: mi.realized_pnl,
         unrealized_pnl: mi.unrealized_pnl,
         total_pnl: mi.total_pnl,
+        total_trade_value: mi.total_trade_value,
+        total_buy_trades: mi.total_buy_trades,
+        total_sell_trades: mi.total_sell_trades,
       });
     });
 
     // Add fund data to instances
     this.instances = this.instances.map(instance => ({
       ...instance,
-      ...(fundsMap.get(instance.id) || {
-        available_balance: 0,
-        realized_pnl: 0,
-        unrealized_pnl: 0,
-        total_pnl: 0,
-      }),
+        ...(fundsMap.get(instance.id) || {
+          available_balance: 0,
+          realized_pnl: 0,
+          unrealized_pnl: 0,
+          total_pnl: 0,
+          total_trade_value: 0,
+          total_buy_trades: 0,
+          total_sell_trades: 0,
+        }),
     }));
 
     // Telemetry summary
@@ -1265,34 +1304,40 @@ class DashboardApp {
       <div class="mb-4">
         <div class="flex items-center mb-2">
           <h2 class="text-xl font-semibold">Live Trading</h2>
-          <span class="ml-2 px-2 py-1 text-xs font-semibold bg-green-100 text-green-800 rounded">LIVE</span>
+          <span class="ml-2 px-2 py-1 text-xs font-semibold bg-green-100 text-green-800 rounded">L</span>
+          <button class="btn btn-neutral btn-outline btn-sm ml-auto" onclick="app.refreshDashboardMetrics({ force: true, showToast: true })">
+            ↻ Refresh Metrics
+          </button>
         </div>
-      <div class="stats-grid">
+      <div class="stats-grid stats-grid-centered">
         <div class="stat-card pnl-card ${Utils.getPnLBgClass(metrics.live.total_pnl)}">
-            <div class="stat-label">Total P&L</div>
+            <div class="stat-label">P&L (net)</div>
             <div class="stat-value ${Utils.getPnLColorClass(metrics.live.total_pnl)}">
-              ${Utils.formatCurrency(metrics.live.total_pnl)}
+              <span id="live-pnl-value">${Utils.formatCurrency(metrics.live.total_pnl)}</span>
+              <span class="badge badge-success ml-2">L</span>
             </div>
           </div>
 
           <div class="stat-card">
-            <div class="stat-label">Realized P&L</div>
-            <div class="stat-value ${Utils.getPnLColorClass(metrics.live.total_realized_pnl)}">
-              ${Utils.formatCurrency(metrics.live.total_realized_pnl)}
+            <div class="stat-label">Total Trades</div>
+            <div class="stat-value">
+              <span id="live-trades-value">
+                Buy: ${Utils.formatNumber(metrics.live.total_buy_trades, 0)} / Sell: ${Utils.formatNumber(metrics.live.total_sell_trades, 0)}
+              </span>
             </div>
           </div>
 
           <div class="stat-card">
-            <div class="stat-label">Unrealized P&L</div>
-            <div class="stat-value ${Utils.getPnLColorClass(metrics.live.total_unrealized_pnl)}">
-              ${Utils.formatCurrency(metrics.live.total_unrealized_pnl)}
+            <div class="stat-label">Total Turnover</div>
+            <div class="stat-value">
+              <span id="live-turnover-value">${Utils.formatCurrency(metrics.live.total_trade_value)}</span>
             </div>
           </div>
 
           <div class="stat-card">
             <div class="stat-label">Available Balance</div>
             <div class="stat-value">
-              ${Utils.formatCurrency(metrics.live.total_available_balance)}
+              <span id="live-balance-value">${Utils.formatCurrency(metrics.live.total_available_balance)}</span>
             </div>
           </div>
         </div>
@@ -1303,34 +1348,37 @@ class DashboardApp {
         <div class="mb-6">
           <div class="flex items-center mb-2">
             <h2 class="text-xl font-semibold text-neutral-600">Analyzer Mode</h2>
-            <span class="ml-2 px-2 py-1 text-xs font-semibold bg-gray-200 text-gray-700 rounded">SIMULATION</span>
+            <span class="ml-2 px-2 py-1 text-xs font-semibold bg-gray-200 text-gray-700 rounded">A</span>
           </div>
-          <div class="stats-grid opacity-75">
+          <div class="stats-grid stats-grid-centered opacity-75">
             <div class="stat-card bg-gray-50">
-              <div class="stat-label">Total P&L</div>
+              <div class="stat-label">P&L (net)</div>
               <div class="stat-value ${Utils.getPnLColorClass(metrics.analyzer.total_pnl)}">
-                ${Utils.formatCurrency(metrics.analyzer.total_pnl)}
+                <span id="analyzer-pnl-value">${Utils.formatCurrency(metrics.analyzer.total_pnl)}</span>
+                <span class="badge badge-warning ml-2">A</span>
               </div>
             </div>
 
             <div class="stat-card bg-gray-50">
-              <div class="stat-label">Realized P&L</div>
-              <div class="stat-value ${Utils.getPnLColorClass(metrics.analyzer.total_realized_pnl)}">
-                ${Utils.formatCurrency(metrics.analyzer.total_realized_pnl)}
+              <div class="stat-label">Total Trades</div>
+              <div class="stat-value">
+                <span id="analyzer-trades-value">
+                  Buy: ${Utils.formatNumber(metrics.analyzer.total_buy_trades, 0)} / Sell: ${Utils.formatNumber(metrics.analyzer.total_sell_trades, 0)}
+                </span>
               </div>
             </div>
 
             <div class="stat-card bg-gray-50">
-              <div class="stat-label">Unrealized P&L</div>
-              <div class="stat-value ${Utils.getPnLColorClass(metrics.analyzer.total_unrealized_pnl)}">
-                ${Utils.formatCurrency(metrics.analyzer.total_unrealized_pnl)}
+              <div class="stat-label">Total Turnover</div>
+              <div class="stat-value">
+                <span id="analyzer-turnover-value">${Utils.formatCurrency(metrics.analyzer.total_trade_value)}</span>
               </div>
             </div>
 
             <div class="stat-card bg-gray-50">
               <div class="stat-label">Available Balance</div>
               <div class="stat-value">
-                ${Utils.formatCurrency(metrics.analyzer.total_available_balance)}
+                <span id="analyzer-balance-value">${Utils.formatCurrency(metrics.analyzer.total_available_balance)}</span>
               </div>
             </div>
           </div>
@@ -1354,6 +1402,63 @@ class DashboardApp {
     this.applyTelemetrySnapshot(telemetrySnapshot);
     this.stopTelemetryRefresh();
     this.startTelemetryRefresh();
+    this.stopDashboardMetricsRefresh();
+    this.startDashboardMetricsRefresh();
+    this.refreshDashboardMetrics({ force: true });
+  }
+
+  async refreshDashboardMetrics({ force = false, showToast = false } = {}) {
+    try {
+      const metricsRes = await api.getDashboardMetrics({ refresh: force });
+      const metrics = metricsRes?.data;
+      if (!metrics) return;
+      this.updateDashboardMetricCards(metrics);
+      if (showToast) {
+        Utils.showToast('Metrics refreshed', 'success');
+      }
+    } catch (error) {
+      if (showToast) {
+        Utils.showToast('Failed to refresh metrics: ' + error.message, 'error');
+      }
+    }
+  }
+
+  updateDashboardMetricCards(metrics) {
+    const livePnl = document.getElementById('live-pnl-value');
+    if (livePnl) livePnl.textContent = Utils.formatCurrency(metrics.live.total_pnl);
+    const liveTrades = document.getElementById('live-trades-value');
+    if (liveTrades) {
+      liveTrades.textContent = `Buy: ${Utils.formatNumber(metrics.live.total_buy_trades, 0)} / Sell: ${Utils.formatNumber(metrics.live.total_sell_trades, 0)}`;
+    }
+    const liveTurnover = document.getElementById('live-turnover-value');
+    if (liveTurnover) liveTurnover.textContent = Utils.formatCurrency(metrics.live.total_trade_value);
+    const liveBalance = document.getElementById('live-balance-value');
+    if (liveBalance) liveBalance.textContent = Utils.formatCurrency(metrics.live.total_available_balance);
+
+    const analyzerPnl = document.getElementById('analyzer-pnl-value');
+    if (analyzerPnl) analyzerPnl.textContent = Utils.formatCurrency(metrics.analyzer.total_pnl);
+    const analyzerTrades = document.getElementById('analyzer-trades-value');
+    if (analyzerTrades) {
+      analyzerTrades.textContent = `Buy: ${Utils.formatNumber(metrics.analyzer.total_buy_trades, 0)} / Sell: ${Utils.formatNumber(metrics.analyzer.total_sell_trades, 0)}`;
+    }
+    const analyzerTurnover = document.getElementById('analyzer-turnover-value');
+    if (analyzerTurnover) analyzerTurnover.textContent = Utils.formatCurrency(metrics.analyzer.total_trade_value);
+    const analyzerBalance = document.getElementById('analyzer-balance-value');
+    if (analyzerBalance) analyzerBalance.textContent = Utils.formatCurrency(metrics.analyzer.total_available_balance);
+  }
+
+  startDashboardMetricsRefresh() {
+    this.stopDashboardMetricsRefresh();
+    this.dashboardMetricsInterval = setInterval(() => {
+      this.refreshDashboardMetrics({ force: true });
+    }, 30 * 1000);
+  }
+
+  stopDashboardMetricsRefresh() {
+    if (this.dashboardMetricsInterval) {
+      clearInterval(this.dashboardMetricsInterval);
+      this.dashboardMetricsInterval = null;
+    }
   }
 
   computeTelemetrySnapshot(rateEntries = [], cacheEntries = []) {
@@ -1559,6 +1664,130 @@ class DashboardApp {
     `;
   }
 
+  async renderDailyPnlSnapshotsView() {
+    const contentArea = document.getElementById('content-area');
+    const today = this._formatDateInputValue(new Date());
+
+    contentArea.innerHTML = `
+      <div class="card mb-4">
+        <div class="card-header">
+          <h3 class="card-title">Daily P&L Snapshots</h3>
+        </div>
+        <div class="card-body">
+          <div class="flex flex-wrap items-end gap-3">
+            <div>
+              <label class="form-label text-xs mb-1">Start Date (IST)</label>
+              <input type="date" id="pnl-snapshots-start" class="form-input" value="${today}">
+            </div>
+            <div>
+              <label class="form-label text-xs mb-1">End Date (IST)</label>
+              <input type="date" id="pnl-snapshots-end" class="form-input" value="${today}">
+            </div>
+            <button class="btn btn-neutral btn-outline btn-sm" onclick="app.loadDailyPnlSnapshots()">
+              Apply
+            </button>
+            <button class="btn btn-neutral btn-outline btn-sm" onclick="app.downloadDailyPnlSnapshots()">
+              Download CSV
+            </button>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <h3 class="card-title">Snapshot Results</h3>
+        </div>
+        <div class="card-body" id="pnl-snapshots-table">
+          <p class="text-sm text-neutral-500">Select a date range to load snapshots.</p>
+        </div>
+      </div>
+    `;
+
+    await this.loadDailyPnlSnapshots();
+  }
+
+  _formatDateInputValue(date) {
+    const year = date.getFullYear();
+    const month = `${date.getMonth() + 1}`.padStart(2, '0');
+    const day = `${date.getDate()}`.padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  async loadDailyPnlSnapshots() {
+    const startInput = document.getElementById('pnl-snapshots-start');
+    const endInput = document.getElementById('pnl-snapshots-end');
+    const tableContainer = document.getElementById('pnl-snapshots-table');
+    if (!startInput || !endInput || !tableContainer) return;
+
+    const start = startInput.value;
+    const end = endInput.value;
+    if (!start || !end) {
+      tableContainer.innerHTML = '<p class="text-sm text-neutral-500">Start and end dates are required.</p>';
+      return;
+    }
+
+    tableContainer.innerHTML = '<p class="text-sm text-neutral-500">Loading...</p>';
+
+    try {
+      const response = await api.getDailyPnlSnapshots({ start, end });
+      const rows = response?.data || [];
+      if (rows.length === 0) {
+        tableContainer.innerHTML = '<p class="text-sm text-neutral-500">No snapshots found for this range.</p>';
+        return;
+      }
+
+      tableContainer.innerHTML = `
+        <div class="table-container">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Instance</th>
+                <th>Broker</th>
+                <th class="text-right">P&L</th>
+                <th class="text-right">Buy Trades</th>
+                <th class="text-right">Sell Trades</th>
+                <th class="text-right">Buy Value</th>
+                <th class="text-right">Sell Value</th>
+                <th>Updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map((row) => `
+                <tr>
+                  <td>${Utils.escapeHTML(row.snapshot_date)}</td>
+                  <td class="font-medium">${Utils.escapeHTML(row.instance_name)}</td>
+                  <td>${Utils.escapeHTML(row.broker || '—')}</td>
+                  <td class="text-right ${Utils.getPnLColorClass(row.total_pnl)}">${Utils.formatCurrency(row.total_pnl)}</td>
+                  <td class="text-right">${Utils.formatNumber(row.buy_trades, 0)}</td>
+                  <td class="text-right">${Utils.formatNumber(row.sell_trades, 0)}</td>
+                  <td class="text-right">${Utils.formatCurrency(row.buy_value)}</td>
+                  <td class="text-right">${Utils.formatCurrency(row.sell_value)}</td>
+                  <td>${Utils.escapeHTML(row.updated_at || '')}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    } catch (error) {
+      tableContainer.innerHTML = `<p class="text-sm text-loss">Failed to load snapshots: ${Utils.escapeHTML(error.message)}</p>`;
+    }
+  }
+
+  downloadDailyPnlSnapshots() {
+    const startInput = document.getElementById('pnl-snapshots-start');
+    const endInput = document.getElementById('pnl-snapshots-end');
+    if (!startInput || !endInput) return;
+    const start = startInput.value;
+    const end = endInput.value;
+    if (!start || !end) {
+      Utils.showToast('Start and end dates are required', 'warning');
+      return;
+    }
+    const params = new URLSearchParams({ start, end });
+    window.location.href = `/api/v1/pnl-snapshots/export?${params.toString()}`;
+  }
+
   /**
    * Render instances table
    */
@@ -1567,9 +1796,9 @@ class DashboardApp {
       return '<p class="text-center text-neutral-600">No instances found</p>';
     }
 
-    // Fixed widths for consistent alignment (16 cols without bulk checkbox)
-    // [Name, Broker, Multiplier, Status, Health, Mode, Limits, Live P&L, Analyzer P&L, Balance, Total P&L, Realized, Unrealized, Session Limits, Cutoff Reason, Actions]
-    const baseColWidths = ['170px','120px','90px','90px','90px','100px','100px','110px','110px','110px','110px','110px','110px','190px','110px','140px'];
+    // Fixed widths for consistent alignment (12 cols without bulk checkbox)
+    // [Name, Broker, Multiplier, Status, Health, Mode, Limits, P&L, Balance, Session Limits, Cutoff Reason, Actions]
+    const baseColWidths = ['190px','120px','90px','90px','90px','100px','100px','140px','110px','190px','120px','140px'];
     const colWidths = showBulkActions ? ['40px', ...baseColWidths] : baseColWidths;
 
     return `
@@ -1587,12 +1816,8 @@ class DashboardApp {
               <th>Health</th>
               <th>Mode</th>
               <th>Limits</th>
-              <th class="text-right">Live P&L</th>
-              <th class="text-right">Analyzer P&L</th>
+              <th class="text-right">P&L</th>
               <th class="text-right">Balance</th>
-              <th class="text-right">Total P&L</th>
-              <th class="text-right">Realized</th>
-              <th class="text-right">Unrealized</th>
               <th>Session Limits</th>
               <th>Cutoff Reason</th>
               <th>Actions</th>
@@ -1613,33 +1838,24 @@ class DashboardApp {
               <td>${Utils.getStatusBadge(instance.health_status || 'unknown')}</td>
               <td>
                 ${instance.is_analyzer_mode
-                  ? '<span class="badge badge-warning">Analyzer</span>'
-                  : '<span class="badge badge-success">Live</span>'}
+                  ? '<span class="badge badge-warning">A</span>'
+                  : '<span class="badge badge-success">L</span>'}
               </td>
               <td>${this.renderLimitBadge(instance.limit_metrics)}</td>
-              <td class="text-right ${Utils.getPnLColorClass(instance.last_live_total_pnl)}">
-                ${instance.last_live_total_pnl != null
-                  ? Utils.formatCurrency(instance.last_live_total_pnl)
-                  : '<span class="text-neutral-400">-</span>'}
-              </td>
-              <td class="text-right ${Utils.getPnLColorClass(instance.is_analyzer_mode ? instance.total_pnl : 0)}">
-                ${instance.is_analyzer_mode
-                  ? Utils.formatCurrency(instance.total_pnl || 0)
-                  : '<span class="text-neutral-400">-</span>'}
+              <td class="text-right">
+                <div class="flex items-center justify-end gap-2">
+                  <span class="${Utils.getPnLColorClass(instance.total_pnl)}">
+                    ${Utils.formatCurrency(instance.total_pnl || 0)}
+                  </span>
+                  ${instance.is_analyzer_mode
+                    ? '<span class="badge badge-warning">A</span>'
+                    : '<span class="badge badge-success">L</span>'}
+                </div>
               </td>
               <td class="text-right">
                 ${instance.available_balance != null
                   ? Utils.formatCurrency(instance.available_balance)
                   : '<span class="text-neutral-400">-</span>'}
-              </td>
-              <td class="text-right ${Utils.getPnLColorClass(instance.total_pnl)}">
-                ${Utils.formatCurrency(instance.total_pnl || 0)}
-              </td>
-              <td class="text-right ${Utils.getPnLColorClass(instance.realized_pnl)}">
-                ${Utils.formatCurrency(instance.realized_pnl || 0)}
-              </td>
-              <td class="text-right ${Utils.getPnLColorClass(instance.unrealized_pnl)}">
-                ${Utils.formatCurrency(instance.unrealized_pnl || 0)}
               </td>
               <td>
                 <div class="text-sm">
@@ -1838,7 +2054,11 @@ class DashboardApp {
     }
 
     // Populate positions summary once so the inline panel is not empty
-    this.refreshWatchlistPositions({ showLoader: false });
+    this.refreshWatchlistPositions({ showLoader: false, force: false });
+    // Warm snapshots in the background for fresh data without blocking render
+    setTimeout(() => {
+      this.requestWatchlistRefresh({ showLoader: false, force: true });
+    }, 0);
     // Begin polling when the user expands the panel
   }
 
@@ -2497,11 +2717,11 @@ class DashboardApp {
       return;
     }
     if (force) {
-      this.refreshWatchlistPositions({ showLoader });
+      this.refreshWatchlistPositions({ showLoader, force: true });
       return;
     }
 
-    this._throttledWatchlistRefresh({ showLoader });
+    this._throttledWatchlistRefresh({ showLoader, force: false });
   }
 
   async updateWatchlistQuotes(watchlistId, { force = false } = {}) {
@@ -2988,7 +3208,7 @@ class DashboardApp {
     this.currentOrderFilter = this.currentOrderFilter || '';
 
     contentArea.innerHTML = `
-      <div class="space-y-4">
+      <div class="space-y-4 orders-trades-compact">
         <div class="card">
           <div class="card-header flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -3012,7 +3232,7 @@ class DashboardApp {
               </button>
             </div>
           </div>
-          <div class="p-4" id="orders-panel">
+          <div class="p-3" id="orders-panel">
             <div class="text-center text-neutral-500">Loading orders…</div>
           </div>
         </div>
@@ -3050,13 +3270,36 @@ class DashboardApp {
       return;
     }
 
+    const liveInstances = orders.liveInstances || [];
+    const analyzerInstances = orders.analyzerInstances || [];
+    const liveCount = liveInstances.reduce((acc, inst) => acc + (inst.orders?.length || 0), 0);
+    const analyzerCount = analyzerInstances.reduce((acc, inst) => acc + (inst.orders?.length || 0), 0);
+
     panel.innerHTML = `
-      <div class="space-y-5">
+      <div class="space-y-3">
         ${this.renderOrdersSummary(orders)}
-        ${this.renderOrdersSection('Live Instances', orders.liveInstances)}
-        ${this.renderOrdersSection('Analyzer Mode Instances', orders.analyzerInstances)}
+        <div class="card">
+          <div class="tabs">
+            <button class="tab-button active" data-orders-tab="live" onclick="app.switchOrdersTab('live')">
+              Live (${liveCount})
+            </button>
+            <button class="tab-button" data-orders-tab="analyzer" onclick="app.switchOrdersTab('analyzer')">
+              Analyzer (${analyzerCount})
+            </button>
+          </div>
+          <div class="tab-content">
+            <div id="orders-tab-live" class="tab-panel">
+              ${this.renderOrdersSectionList(liveInstances, 'No orders in Live mode.')}
+            </div>
+            <div id="orders-tab-analyzer" class="tab-panel hidden">
+              ${this.renderOrdersSectionList(analyzerInstances, 'No orders in Analyzer mode.')}
+            </div>
+          </div>
+        </div>
       </div>
     `;
+
+    this.attachOrdersToggles(panel);
   }
 
   renderOrdersSummary(payload) {
@@ -3094,47 +3337,43 @@ class DashboardApp {
     `;
   }
 
-  renderOrdersSection(title, instances = []) {
+  renderOrdersSectionList(instances = [], emptyText = 'No orders available.') {
     if (!instances.length) {
-      return `
-        <div class="card">
-          <div class="card-header">
-            <div>
-              <h3 class="card-title">${title}</h3>
-              <p class="text-sm text-neutral-600">No orders in this category.</p>
-            </div>
-            <span class="badge">0</span>
-          </div>
-        </div>
-      `;
+      return `<div class="p-3 text-sm text-neutral-600">${emptyText}</div>`;
     }
 
-    const totalOrders = instances.reduce((acc, inst) => acc + (inst.orders?.length || 0), 0);
-
     return `
-      <div class="card">
-        <div class="card-header">
-          <div>
-            <h3 class="card-title">${title}</h3>
-            <p class="text-sm text-neutral-600">Orders executed per instance (live/analyzer)</p>
-          </div>
-          <span class="badge">${totalOrders}</span>
-        </div>
-        <div class="p-4 space-y-4">
-          ${instances.map(instance => this.renderOrderInstanceCard(instance)).join('')}
-        </div>
+      <div class="p-3 space-y-3">
+        ${instances.map(instance => this.renderOrderInstanceCard(
+          instance,
+          this.ordersExpanded.has(String(instance.instance_id))
+        )).join('')}
       </div>
     `;
   }
 
-  renderOrderInstanceCard(instanceEntry) {
+  switchOrdersTab(tab) {
+    const tabs = document.querySelectorAll('[data-orders-tab]');
+    tabs.forEach((btn) => {
+      const isActive = btn.dataset.ordersTab === tab;
+      btn.classList.toggle('active', isActive);
+    });
+    const livePanel = document.getElementById('orders-tab-live');
+    const analyzerPanel = document.getElementById('orders-tab-analyzer');
+    if (livePanel && analyzerPanel) {
+      livePanel.classList.toggle('hidden', tab !== 'live');
+      analyzerPanel.classList.toggle('hidden', tab !== 'analyzer');
+    }
+  }
+
+  renderOrderInstanceCard(instanceEntry, isOpen = false) {
     const title = Utils.escapeHTML(instanceEntry.instance_name || `Instance ${instanceEntry.instance_id}`);
     const broker = Utils.escapeHTML(instanceEntry.broker || 'N/A');
     const orders = instanceEntry.orders || [];
     const openOrders = orders.filter(o => ['open', 'pending'].includes(o.status)).length;
 
     return `
-      <details class="rounded-lg border border-base-200 bg-base-100">
+      <details class="rounded-lg border border-base-200 bg-base-100" data-instance-id="${instanceEntry.instance_id}" ${isOpen ? 'open' : ''}>
         <summary class="flex flex-wrap cursor-pointer items-center justify-between gap-4 px-4 py-4">
           <div>
             <h4 class="font-semibold text-lg">${title}</h4>
@@ -3159,6 +3398,21 @@ class DashboardApp {
         </div>
       </details>
     `;
+  }
+
+  attachOrdersToggles(panel) {
+    const detailsList = panel.querySelectorAll('details[data-instance-id]');
+    detailsList.forEach(details => {
+      details.addEventListener('toggle', () => {
+        const id = details.dataset.instanceId;
+        if (!id) return;
+        if (details.open) {
+          this.ordersExpanded.add(String(id));
+        } else {
+          this.ordersExpanded.delete(String(id));
+        }
+      });
+    });
   }
 
   renderOrdersTable(orders) {
@@ -3285,7 +3539,7 @@ class DashboardApp {
     this.stopTradesPolling();
 
     contentArea.innerHTML = `
-      <div class="space-y-4">
+      <div class="space-y-4 orders-trades-compact">
         <div class="card">
           <div class="card-header flex flex-wrap items-center justify-between gap-3">
             <div>
@@ -3299,7 +3553,7 @@ class DashboardApp {
               </button>
             </div>
           </div>
-          <div class="p-4" id="trades-panel">
+          <div class="p-3" id="trades-panel">
             <div class="text-center text-neutral-500">Loading trades…</div>
           </div>
         </div>
@@ -3355,10 +3609,22 @@ class DashboardApp {
   ensureTradesLayout(panel) {
     if (panel.dataset.initialized === 'true') return;
     panel.innerHTML = `
-      <div class="space-y-5">
+      <div class="space-y-3">
         <div id="trades-summary"></div>
-        <div id="trades-live" class="trades-section"></div>
-        <div id="trades-analyzer" class="trades-section"></div>
+        <div class="card">
+          <div class="tabs">
+            <button class="tab-button active" data-trades-tab="live" onclick="app.switchTradesTab('live')">
+              Live
+            </button>
+            <button class="tab-button" data-trades-tab="analyzer" onclick="app.switchTradesTab('analyzer')">
+              Analyzer
+            </button>
+          </div>
+          <div class="tab-content">
+            <div id="trades-tab-live" class="tab-panel"></div>
+            <div id="trades-tab-analyzer" class="tab-panel hidden"></div>
+          </div>
+        </div>
       </div>
     `;
     panel.dataset.initialized = 'true';
@@ -3373,20 +3639,17 @@ class DashboardApp {
     if (!summary) return;
     summary.innerHTML = `
       <div class="card bg-base-100 border border-base-200">
-        <div class="card-header">
-          <h3 class="card-title">Trades Summary</h3>
-        </div>
-        <div class="p-6">
-          <div class="grid grid-cols-3 gap-4">
-            <div class="border border-base-200 rounded-lg p-4 text-center">
+        <div class="p-3">
+          <div class="grid grid-cols-3 gap-2">
+            <div class="border border-base-200 rounded-lg p-2 text-center">
               <div class="text-sm text-neutral-600 mb-1">Total Trades</div>
               <div class="text-3xl font-semibold">${totalTrades}</div>
             </div>
-            <div class="border border-base-200 rounded-lg p-4 text-center">
+            <div class="border border-base-200 rounded-lg p-2 text-center">
               <div class="text-sm text-neutral-600 mb-1">Buy / Sell</div>
               <div class="text-2xl font-semibold">${buyTrades} / ${sellTrades}</div>
             </div>
-            <div class="border border-base-200 rounded-lg p-4 text-center">
+            <div class="border border-base-200 rounded-lg p-2 text-center">
               <div class="text-sm text-neutral-600 mb-1">Notional Value</div>
               <div class="text-2xl font-semibold">${Utils.formatCurrency(notional)}</div>
             </div>
@@ -3397,41 +3660,32 @@ class DashboardApp {
   }
 
   updateTradesSection(type, instances = []) {
-    const container = document.getElementById(type === 'live' ? 'trades-live' : 'trades-analyzer');
+    const container = document.getElementById(type === 'live' ? 'trades-tab-live' : 'trades-tab-analyzer');
     if (!container) return;
     const title = type === 'live' ? 'Live Instances' : 'Analyzer Mode Instances';
-    const existingOpen = new Set(
-      Array.from(container.querySelectorAll('details[data-instance-id][open]')).map(el => el.dataset.instanceId)
-    );
     const sorted = [...instances].sort((a, b) => (a.instance_name || '').localeCompare(b.instance_name || ''));
     const totalTrades = sorted.reduce((acc, inst) => acc + (inst.trades?.length || 0), 0);
 
-    const header = `
-      <div class="card-header">
-        <div>
-          <h3 class="card-title">${title}</h3>
-          <p class="text-sm text-neutral-600">${totalTrades} trades</p>
-        </div>
-        <span class="badge badge-outline">${totalTrades}</span>
-      </div>
-    `;
+    const tabButton = document.querySelector(`[data-trades-tab="${type}"]`);
+    if (tabButton) {
+      tabButton.textContent = `${type === 'live' ? 'Live' : 'Analyzer'} (${totalTrades})`;
+    }
 
     const body = sorted.map(inst => {
       this.tradesInstanceStore.set(String(inst.instance_id), inst.trades || []);
-      const isOpen = existingOpen.has(String(inst.instance_id));
-      return this.buildTradesInstance(inst, isOpen, !isOpen);
+      const isOpen = this.tradesExpanded.has(String(inst.instance_id));
+      return this.buildTradesInstance(inst, isOpen);
     }).join('');
     container.innerHTML = `
-      <div class="card">
-        ${header}
-        <div class="divide-y divide-base-200">
-          ${body || `<div class="p-4 text-neutral-500">No trades in this category.</div>`}
-        </div>
+      <div class="divide-y divide-base-200">
+        ${body || `<div class="p-3 text-sm text-neutral-500">No trades in this category.</div>`}
       </div>
     `;
+
+    this.attachTradesToggles(container);
   }
 
-  buildTradesInstance(instanceEntry, preserveOpen = false, collapseByDefault = false) {
+  buildTradesInstance(instanceEntry, preserveOpen = false) {
     const trades = instanceEntry.trades || [];
     const broker = Utils.escapeHTML(instanceEntry.broker || 'N/A');
     const latestTrade = trades[0];
@@ -3441,8 +3695,7 @@ class DashboardApp {
         : Utils.escapeHTML(latestTrade.timestamp || ''))
       : '-';
     const bodyRows = this.renderTradesRows(trades);
-
-    const shouldOpen = preserveOpen && trades.length && !collapseByDefault;
+    const shouldOpen = preserveOpen && trades.length;
 
     return `
       <details class="instance-section" data-instance-id="${instanceEntry.instance_id}" ${shouldOpen ? 'open' : ''}>
@@ -3456,27 +3709,37 @@ class DashboardApp {
             </div>
           </div>
         </summary>
-        <div class="border-t border-base-200 p-4" id="trades-body-${instanceEntry.instance_id}" data-loaded="${shouldOpen || !collapseByDefault}">
-          ${trades.length && shouldOpen ? this.renderTradesTableShell(bodyRows) : '<p class="text-neutral-500">Expand to view trades.</p>'}
+        <div class="border-t border-base-200 p-4" id="trades-body-${instanceEntry.instance_id}">
+          ${trades.length ? this.renderTradesTableShell(bodyRows) : '<p class="text-neutral-500">No trades yet.</p>'}
         </div>
       </details>
     `;
+  }
+
+  switchTradesTab(tab) {
+    const tabs = document.querySelectorAll('[data-trades-tab]');
+    tabs.forEach((btn) => {
+      const isActive = btn.dataset.tradesTab === tab;
+      btn.classList.toggle('active', isActive);
+    });
+    const livePanel = document.getElementById('trades-tab-live');
+    const analyzerPanel = document.getElementById('trades-tab-analyzer');
+    if (livePanel && analyzerPanel) {
+      livePanel.classList.toggle('hidden', tab !== 'live');
+      analyzerPanel.classList.toggle('hidden', tab !== 'analyzer');
+    }
   }
 
   attachTradesToggles(container) {
     const detailsList = container.querySelectorAll('details.instance-section');
     detailsList.forEach(details => {
       details.addEventListener('toggle', () => {
+        const instanceId = details.dataset.instanceId;
+        if (!instanceId) return;
         if (details.open) {
-          const body = details.querySelector('[id^="trades-body-"]');
-          if (body && body.dataset.loaded !== 'true') {
-            const instanceId = details.dataset.instanceId;
-            const trades = this.tradesInstanceStore.get(String(instanceId)) || [];
-            body.innerHTML = trades.length
-              ? this.renderTradesTableShell(this.renderTradesRows(trades))
-              : '<p class="text-neutral-500">No trades yet.</p>';
-            body.dataset.loaded = 'true';
-          }
+          this.tradesExpanded.add(String(instanceId));
+        } else {
+          this.tradesExpanded.delete(String(instanceId));
         }
       });
     });
@@ -3551,12 +3814,13 @@ class DashboardApp {
     }
 
     try {
-      // Fetch ALL positions from all active instances (including closed)
-      const response = await api.getAllPositions(false); // onlyOpen = false
+      // Fetch cached open positions first for faster render
+      const response = await api.getAllPositions({ onlyOpen: true, refresh: false });
       const data = response.data;
       this.latestAllPositionsData = data;
 
-      if (data.instances.length === 0) {
+      const instances = Array.isArray(data?.instances) ? data.instances : [];
+      if (!instances.length) {
         contentArea.innerHTML = `
           <div class="card">
             <p class="text-center text-neutral-600">No active instances found</p>
@@ -3565,29 +3829,45 @@ class DashboardApp {
         return;
       }
 
-      if (!contentArea.dataset.positionsInitialized) {
-        contentArea.innerHTML = `
-          <!-- Overall Summary Card -->
-          <div class="card mb-6">
-            <div class="card-header">
-              <h3 class="card-title">All Positions Summary</h3>
+      contentArea.innerHTML = `
+        <div class="space-y-4 orders-trades-compact">
+          <div class="card">
+            <div class="card-header flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 class="card-title">Positions</h3>
+                <p class="text-sm text-neutral-600">Grouped by instance with open position counts.</p>
+              </div>
+              <div class="flex flex-wrap items-center gap-2">
+                <button class="btn btn-outline btn-sm" onclick="app.renderPositionsView()">
+                  Refresh
+                </button>
+                <button class="btn btn-outline btn-sm" onclick="app.toggleSnapshotResync()">
+                  Auto Resync: ${this.autoSnapshotResyncEnabled ? 'On' : 'Off'}
+                </button>
+                <button class="btn btn-outline btn-sm" onclick="app.resyncAllPositionsFromSnapshots()">
+                  Resync snapshots
+                </button>
+                <button class="btn btn-exit btn-sm" onclick="app.closeAllPositionsGlobal()">
+                  Close All Positions
+                </button>
+              </div>
             </div>
-            <div class="p-4" id="positions-summary"></div>
+            <div class="p-3" id="positions-panel">
+              <div class="text-center text-neutral-500">Loading positions…</div>
+            </div>
           </div>
-          <div class="space-y-5" id="positions-layout">
-            <div id="positions-live"></div>
-            <div id="positions-analyzer"></div>
-          </div>
-        `;
-        contentArea.dataset.positionsInitialized = 'true';
-      }
+        </div>
+      `;
 
-      this.updatePositionsSummary(data);
-      const instances = Array.isArray(data.instances) ? data.instances : [];
-      const liveInstances = instances.filter(inst => !inst.is_analyzer_mode);
-      const analyzerInstances = instances.filter(inst => inst.is_analyzer_mode);
-      this.updatePositionsSection('live', liveInstances);
-      this.updatePositionsSection('analyzer', analyzerInstances);
+      this.renderPositionsPanel(data);
+      // Background refresh for fresh data without blocking render
+      setTimeout(async () => {
+        try {
+          const refreshed = await api.getAllPositions({ onlyOpen: true, refresh: true });
+          this.latestAllPositionsData = refreshed.data;
+          this.renderPositionsPanel(refreshed.data);
+        } catch (_) {}
+      }, 0);
     } catch (error) {
       contentArea.innerHTML = `
         <div class="card">
@@ -3597,89 +3877,117 @@ class DashboardApp {
     }
   }
 
-  updatePositionsSummary(data) {
-    const container = document.getElementById('positions-summary');
-    if (!container) return;
-    container.innerHTML = `
-      <div class="flex flex-wrap items-center justify-between gap-4">
-        <div class="grid grid-cols-3 gap-4 flex-1 min-w-[280px]">
-          <div class="text-center">
-            <div class="text-sm text-neutral-600 mb-1">Open Positions</div>
-            <div class="text-2xl font-semibold">${data.overall_open_positions}</div>
-          </div>
-          <div class="text-center">
-            <div class="text-sm text-neutral-600 mb-1">Closed Positions</div>
-            <div class="text-2xl font-semibold">${data.overall_closed_positions}</div>
-          </div>
-          <div class="text-center">
-            <div class="text-sm text-neutral-600 mb-1">Overall P&L</div>
-            <div class="text-2xl font-semibold ${Utils.getPnLColorClass(data.overall_total_pnl)}">
-              ${Utils.formatCurrency(data.overall_total_pnl)}
+  renderPositionsPanel(data = {}) {
+    const panel = document.getElementById('positions-panel');
+    if (!panel) return;
+    const instances = Array.isArray(data.instances) ? data.instances : [];
+    const liveInstances = instances.filter(inst => !inst.is_analyzer_mode);
+    const analyzerInstances = instances.filter(inst => inst.is_analyzer_mode);
+    const liveOpen = this._countOpenPositions(liveInstances);
+    const analyzerOpen = this._countOpenPositions(analyzerInstances);
+
+    panel.innerHTML = `
+      <div class="space-y-3">
+        <div class="card border border-base-200 bg-base-100">
+          <div class="p-3">
+            <div class="grid grid-cols-3 gap-2">
+              <div class="border border-base-200 rounded-lg p-2 text-center">
+                <div class="text-sm text-neutral-600 mb-1">Open</div>
+                <div class="text-2xl font-semibold">${data.overall_open_positions ?? 0}</div>
+              </div>
+              <div class="border border-base-200 rounded-lg p-2 text-center">
+                <div class="text-sm text-neutral-600 mb-1">Closed</div>
+                <div class="text-2xl font-semibold">${data.overall_closed_positions ?? 0}</div>
+              </div>
+              <div class="border border-base-200 rounded-lg p-2 text-center">
+                <div class="text-sm text-neutral-600 mb-1">P&L</div>
+                <div class="text-2xl font-semibold ${Utils.getPnLColorClass(data.overall_total_pnl)}">
+                  ${Utils.formatCurrency(data.overall_total_pnl ?? 0)}
+                </div>
+              </div>
             </div>
           </div>
         </div>
-          <div class="flex flex-wrap items-center gap-2">
-            <button class="btn btn-outline btn-sm" onclick="app.renderPositionsView()">
-              Refresh
+        <div class="card">
+          <div class="tabs">
+            <button class="tab-button active" data-positions-tab="live" onclick="app.switchPositionsTab('live')">
+              Live (${liveOpen} open)
             </button>
-          <button class="btn btn-outline btn-sm" onclick="app.toggleSnapshotResync()">
-            Auto Resync: ${this.autoSnapshotResyncEnabled ? 'On' : 'Off'}
-          </button>
-          <button class="btn btn-outline btn-sm" onclick="app.resyncAllPositionsFromSnapshots()">
-            Resync snapshots
-          </button>
-            <button class="btn btn-exit btn-sm" onclick="app.closeAllPositionsGlobal()">
-              Close All Positions
+            <button class="tab-button" data-positions-tab="analyzer" onclick="app.switchPositionsTab('analyzer')">
+              Analyzer (${analyzerOpen} open)
             </button>
           </div>
+          <div class="tab-content">
+            <div id="positions-tab-live" class="tab-panel">
+              ${this.renderPositionsSectionList(liveInstances, 'No open positions in Live mode.')}
+            </div>
+            <div id="positions-tab-analyzer" class="tab-panel hidden">
+              ${this.renderPositionsSectionList(analyzerInstances, 'No open positions in Analyzer mode.')}
+            </div>
+          </div>
         </div>
+      </div>
+    `;
+    this.attachPositionsToggles(panel);
+  }
+
+  renderPositionsSectionList(instances = [], emptyText = '') {
+    if (!instances.length) {
+      return `<div class="p-3 text-sm text-neutral-600">${emptyText}</div>`;
+    }
+
+    const sorted = [...instances].sort((a, b) => (a.instance_name || '').localeCompare(b.instance_name || ''));
+    return `
+      <div class="divide-y divide-base-200">
+        ${sorted.map(inst => {
+          const id = String(inst.instance_id);
+          const isOpen = this.positionsExpanded.has(id);
+          this.positionsInstanceStore.set(id, inst.positions || []);
+          return this.buildPositionsInstance(inst, isOpen);
+        }).join('')}
+      </div>
     `;
   }
 
-  updatePositionsSection(type, instances = []) {
-    const container = document.getElementById(type === 'live' ? 'positions-live' : 'positions-analyzer');
-    if (!container) return;
-    const title = type === 'live' ? 'Live Instances' : 'Analyzer Mode Instances';
-    const sorted = [...instances].sort((a, b) => (a.instance_name || '').localeCompare(b.instance_name || ''));
-    const totalPositions = sorted.reduce((acc, inst) => {
+  switchPositionsTab(tab) {
+    const tabs = document.querySelectorAll('[data-positions-tab]');
+    tabs.forEach((btn) => {
+      const isActive = btn.dataset.positionsTab === tab;
+      btn.classList.toggle('active', isActive);
+    });
+    const livePanel = document.getElementById('positions-tab-live');
+    const analyzerPanel = document.getElementById('positions-tab-analyzer');
+    if (livePanel && analyzerPanel) {
+      livePanel.classList.toggle('hidden', tab !== 'live');
+      analyzerPanel.classList.toggle('hidden', tab !== 'analyzer');
+    }
+  }
+
+  _countOpenPositions(instances = []) {
+    return instances.reduce((acc, inst) => {
       const count = typeof inst.open_positions_count === 'number'
         ? inst.open_positions_count
         : (inst.positions || []).length;
       return acc + count;
     }, 0);
-
-    container.innerHTML = `
-      <div class="card">
-        <div class="card-header items-center justify-between">
-          <div>
-            <h3 class="card-title">${title}</h3>
-            <p class="text-sm text-neutral-600">${totalPositions} open positions</p>
-          </div>
-          <span class="badge badge-outline">${totalPositions}</span>
-        </div>
-        <div class="divide-y divide-base-200">
-          ${sorted.map(inst => {
-            const id = String(inst.instance_id);
-            const isOpen = this.positionsExpanded.has(id);
-            this.positionsInstanceStore.set(id, inst.positions || []);
-            return this.buildPositionsInstance(inst, isOpen);
-          }).join('') || `<div class="p-4 text-neutral-500">No positions in this category.</div>`}
-        </div>
-      </div>
-    `;
-
-    this.attachPositionsToggles(container);
   }
 
   buildPositionsInstance(inst, isOpen) {
+    const positions = inst.positions || [];
+    const openCount = typeof inst.open_positions_count === 'number'
+      ? inst.open_positions_count
+      : positions.length;
+    const closedCount = typeof inst.closed_positions_count === 'number'
+      ? inst.closed_positions_count
+      : 0;
     const header = `
-      <summary class="card-header flex items-center justify-between gap-3 px-4 py-4">
+      <summary class="card-header flex items-center justify-between gap-3 px-4 py-3">
         <div>
           <h3 class="card-title">${Utils.escapeHTML(inst.instance_name)}</h3>
           <div class="flex gap-4 mt-1 text-sm text-neutral-600">
             <span>Broker: <span class="font-medium">${Utils.escapeHTML(inst.broker || 'N/A')}</span></span>
-            <span>Open: <span class="font-medium">${inst.open_positions_count}</span></span>
-            <span>Closed: <span class="font-medium">${inst.closed_positions_count}</span></span>
+            <span>Open: <span class="font-medium">${openCount}</span></span>
+            <span>Closed: <span class="font-medium">${closedCount}</span></span>
             <span>P&L: <span class="font-medium ${Utils.getPnLColorClass(inst.total_pnl)}">${Utils.formatCurrency(inst.total_pnl)}</span></span>
           </div>
         </div>
@@ -3696,12 +4004,10 @@ class DashboardApp {
       </summary>
     `;
 
-    const positions = inst.positions || [];
-
     return `
-      <details class="card" data-instance-id="${inst.instance_id}" ${isOpen ? 'open' : ''}>
+      <details class="rounded-lg border border-base-200 bg-base-100" data-instance-id="${inst.instance_id}" ${isOpen ? 'open' : ''}>
         ${header}
-        <div class="p-4 instance-positions-body" data-loaded="${isOpen}">
+        <div class="p-3 instance-positions-body" data-loaded="${isOpen}">
           ${isOpen ? this.renderPositionsBody(positions, inst) : '<p class="text-neutral-500">Expand to view positions.</p>'}
         </div>
       </details>
@@ -3719,7 +4025,7 @@ class DashboardApp {
   }
 
   attachPositionsToggles(container) {
-    const detailsList = container.querySelectorAll('details.card');
+    const detailsList = container.querySelectorAll('details[data-instance-id]');
     detailsList.forEach(details => {
       details.addEventListener('toggle', () => {
         const instanceId = details.dataset.instanceId;
@@ -3744,7 +4050,7 @@ class DashboardApp {
       const positions = res?.data?.positions || [];
       this.positionsInstanceStore.set(String(instanceId), positions);
       const body = document.querySelector(
-        `details.card[data-instance-id="${instanceId}"] .instance-positions-body`
+        `details[data-instance-id="${instanceId}"] .instance-positions-body`
       );
       if (body) {
         body.innerHTML = this.renderPositionsBody(positions, { instance_id: instanceId });
@@ -3796,14 +4102,14 @@ class DashboardApp {
    */
   showAddInstanceModal() {
     const modal = document.createElement('div');
-    modal.className = 'modal-overlay symbol-search-modal';
+    modal.className = 'modal-overlay instance-modal';
     modal.innerHTML = `
       <div class="modal-content">
         <div class="modal-header">
           <h3>Add Instance</h3>
         </div>
         <div class="modal-body">
-          <form id="add-instance-form">
+          <form id="add-instance-form" class="instance-form-grid">
             <div class="form-group">
               <label class="form-label">Instance Name *</label>
               <input type="text" name="name" class="form-input" required>
@@ -3821,8 +4127,13 @@ class DashboardApp {
             </div>
 
             <div class="form-group">
-              <label class="form-label">Broker (auto-detected)</label>
-              <div style="display: flex; gap: 0.5rem; align-items: center;">
+              <div class="form-label-row">
+                <label class="form-label">Broker (auto-detected)</label>
+                <button type="button" class="info-button"
+                        title="Auto-detected from the OpenAlgo ping response."
+                        aria-label="Broker auto-detected info">i</button>
+              </div>
+              <div class="form-inline-row">
                 <input type="text" name="broker" id="instance-broker" class="form-input" readonly
                        placeholder="Click 'Test Connection' to detect">
                 <button type="button" class="btn btn-neutral btn-outline btn-sm"
@@ -3830,68 +4141,78 @@ class DashboardApp {
                   Test Connection
                 </button>
               </div>
-              <small id="connection-status" class="form-help" style="display: block; margin-top: 0.25rem;"></small>
+              <small id="connection-status" class="form-help"></small>
             </div>
 
-            <div class="form-group">
+            <div class="form-group form-span-2">
               <label class="form-label">Verify API Key</label>
               <button type="button" class="btn btn-neutral btn-outline btn-sm" style="width: 100%;"
                       onclick="app.testInstanceApiKey()">
                 Test API Key with Funds Endpoint
               </button>
-              <small id="apikey-status" class="form-help" style="display: block; margin-top: 0.25rem;"></small>
+              <small id="apikey-status" class="form-help"></small>
             </div>
 
             <div class="form-group">
-              <label class="form-label">Market Data</label>
+              <div class="form-label-row">
+                <label class="form-label">Market Data</label>
+                <button type="button" class="info-button"
+                        title="Enabled instances will be pooled and load-balanced for quotes/LTP/depth."
+                        aria-label="Market data info">i</button>
+              </div>
               <label class="inline-flex items-center gap-2">
                 <input type="checkbox" name="market_data_enabled" class="form-checkbox">
                 <span>Use this instance for market data</span>
               </label>
-              <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                Enabled instances will be pooled and load-balanced for quotes/LTP/depth.
-              </small>
             </div>
 
             <div class="form-group">
-              <label class="form-label">Broker WebSocket Quotes</label>
+              <div class="form-label-row">
+                <label class="form-label">Broker WebSocket Quotes</label>
+                <button type="button" class="info-button"
+                        title="Enable only if the broker/OpenAlgo instance provides WS quotes; otherwise leave off to stay on REST polling."
+                        aria-label="Broker WebSocket quotes info">i</button>
+              </div>
               <label class="inline-flex items-center gap-2">
                 <input type="checkbox" name="use_ws_quotes" class="form-checkbox" checked>
                 <span>Use broker WebSocket for quotes/LTP (only if this instance supports it)</span>
               </label>
-              <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                Only enable if the broker/OpenAlgo instance provides WS quotes; otherwise leave off to stay on REST polling.
-              </small>
             </div>
 
             <div class="form-group">
-              <label class="form-label">MultiQuotes (optional)</label>
+              <div class="form-label-row">
+                <label class="form-label">MultiQuotes (optional)</label>
+                <button type="button" class="info-button"
+                        title="When enabled, watchlist polling uses batched requests (max 1 every 5 seconds) instead of one call per symbol."
+                        aria-label="MultiQuotes info">i</button>
+              </div>
               <label class="inline-flex items-center gap-2">
                 <input type="checkbox" name="supports_multiquotes" class="form-checkbox">
                 <span>Instance supports <a href="https://docs.openalgo.in/api-documentation/v1/data-api/multiquotes" target="_blank" rel="noopener">OpenAlgo MultiQuotes</a></span>
               </label>
-              <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                When enabled, watchlist polling uses batched requests (max 1 every 5 seconds) instead of one call per symbol.
-              </small>
             </div>
 
             <div class="form-group">
-              <label class="form-label">Option Chain API (optional)</label>
+              <div class="form-label-row">
+                <label class="form-label">Option Chain API (optional)</label>
+                <button type="button" class="info-button"
+                        title="When enabled, options resolution fetches up to 15 strikes with live quotes directly from the broker."
+                        aria-label="Option chain info">i</button>
+              </div>
               <label class="inline-flex items-center gap-2">
                 <input type="checkbox" name="supports_option_chain" class="form-checkbox">
                 <span>Instance supports OpenAlgo Option Chain endpoint (limited strikes with LTP)</span>
               </label>
-              <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                When enabled, options resolution fetches up to 15 strikes with live quotes directly from the broker.
-              </small>
             </div>
 
             <div class="form-group">
-              <label class="form-label">Instance Multiplier</label>
+              <div class="form-label-row">
+                <label class="form-label">Instance Multiplier</label>
+                <button type="button" class="info-button"
+                        title="Scales order quantities for this instance (1-999)."
+                        aria-label="Instance multiplier info">i</button>
+              </div>
               <input type="number" name="multiplier" class="form-input" min="1" max="999" step="1" value="1">
-              <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                Scales order quantities for this instance (1-999).
-              </small>
             </div>
 
             <div class="form-group">
@@ -3900,19 +4221,23 @@ class DashboardApp {
             </div>
 
             <div class="form-group">
-              <label class="form-label">Session Target Profit</label>
+              <div class="form-label-row">
+                <label class="form-label">Session Target Profit</label>
+                <button type="button" class="info-button"
+                        title="Auto-switch to Analyze when this profit is reached within a session."
+                        aria-label="Session target profit info">i</button>
+              </div>
               <input type="number" name="session_target_profit" class="form-input" step="0.01" placeholder="5000">
-              <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                Auto-switch to Analyze when this profit is reached within a session.
-              </small>
             </div>
 
             <div class="form-group">
-              <label class="form-label">Session Max Loss</label>
+              <div class="form-label-row">
+                <label class="form-label">Session Max Loss</label>
+                <button type="button" class="info-button"
+                        title="Auto-switch to Analyze when this loss is hit within a session."
+                        aria-label="Session max loss info">i</button>
+              </div>
               <input type="number" name="session_max_loss" class="form-input" step="0.01" placeholder="2000">
-              <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                Auto-switch to Analyze when this loss is hit within a session.
-              </small>
             </div>
           </form>
         </div>
@@ -5042,7 +5367,7 @@ class DashboardApp {
     }, 15000);
   }
 
-  async refreshWatchlistPositions({ showLoader = false } = {}) {
+  async refreshWatchlistPositions({ showLoader = false, force = false } = {}) {
     const positionsPanel = document.getElementById('watchlist-positions-panel');
     if (!positionsPanel) return;
 
@@ -5051,8 +5376,8 @@ class DashboardApp {
     }
 
     try {
-      // Fetch the same aggregate payload as the Positions page
-      const response = await api.getAllPositions(false);
+      // Fetch cached open positions; refresh live only when forced
+      const response = await api.getAllPositions({ onlyOpen: true, refresh: force });
       const normalized = this.prepareWatchlistPositions(response.data);
       console.debug('[Watchlists] Positions payload', {
         instances: response.data?.instances?.length,
@@ -5539,14 +5864,14 @@ class DashboardApp {
       const instance = response.data;
 
       const modal = document.createElement('div');
-      modal.className = 'modal-overlay';
+      modal.className = 'modal-overlay instance-modal';
       modal.innerHTML = `
         <div class="modal-content">
           <div class="modal-header">
             <h3>Edit Instance: ${Utils.escapeHTML(instance.name)}</h3>
           </div>
           <div class="modal-body">
-            <form id="edit-instance-form">
+            <form id="edit-instance-form" class="instance-form-grid">
               <input type="hidden" name="instance_id" value="${instance.id}">
 
               <div class="form-group">
@@ -5562,17 +5887,24 @@ class DashboardApp {
               </div>
 
               <div class="form-group">
-                <label class="form-label">API Key *</label>
+                <div class="form-label-row">
+                  <label class="form-label">API Key *</label>
+                  <button type="button" class="info-button"
+                          title="Update API key if credentials have changed."
+                          aria-label="API key info">i</button>
+                </div>
                 <input type="text" name="api_key" id="edit-instance-api-key" class="form-input"
                        value="${Utils.escapeHTML(instance.api_key)}" required>
-                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                  Update API key if credentials have changed
-                </small>
               </div>
 
               <div class="form-group">
-                <label class="form-label">Broker (auto-detected, read-only)</label>
-                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                <div class="form-label-row">
+                  <label class="form-label">Broker (auto-detected, read-only)</label>
+                  <button type="button" class="info-button"
+                          title="Broker is auto-detected from the OpenAlgo ping response."
+                          aria-label="Broker auto-detected info">i</button>
+                </div>
+                <div class="form-inline-row">
                   <input type="text" name="broker" id="edit-instance-broker" class="form-input" readonly
                         value="${Utils.escapeHTML(instance.broker || 'N/A')}"
                         style="background-color: var(--color-neutral-100); cursor: not-allowed;">
@@ -5581,66 +5913,74 @@ class DashboardApp {
                     Test Connection
                   </button>
                 </div>
-                <small id="edit-connection-status" class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                  Broker is auto-detected from the OpenAlgo ping response
-                </small>
+                <small id="edit-connection-status" class="form-help"></small>
               </div>
 
               <div class="form-group">
-                <label class="form-label">Market Data</label>
+                <div class="form-label-row">
+                  <label class="form-label">Market Data</label>
+                  <button type="button" class="info-button"
+                          title="Enabled instances are pooled and load-balanced for quotes/LTP/depth."
+                          aria-label="Market data info">i</button>
+                </div>
                 <label class="inline-flex items-center gap-2">
                   <input type="checkbox" name="market_data_enabled" class="form-checkbox"
                          ${instance.market_data_enabled ? 'checked' : ''}>
                   <span>Use this instance for market data</span>
                 </label>
-                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                  Enabled instances are pooled and load-balanced for quotes/LTP/depth.
-                </small>
               </div>
 
               <div class="form-group">
-                <label class="form-label">Broker WebSocket Quotes</label>
+                <div class="form-label-row">
+                  <label class="form-label">Broker WebSocket Quotes</label>
+                  <button type="button" class="info-button"
+                          title="Turn on only if the broker/OpenAlgo instance exposes WS quotes. Otherwise keep disabled."
+                          aria-label="Broker WebSocket quotes info">i</button>
+                </div>
                 <label class="inline-flex items-center gap-2">
                   <input type="checkbox" name="use_ws_quotes" class="form-checkbox"
                          ${instance.use_ws_quotes ? 'checked' : ''}>
                   <span>Use broker WebSocket for quotes/LTP (only if supported)</span>
                 </label>
-                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                  Turn on only if the broker/OpenAlgo instance exposes WS quotes. Otherwise keep disabled.
-                </small>
               </div>
 
               <div class="form-group">
-                <label class="form-label">MultiQuotes (optional)</label>
+                <div class="form-label-row">
+                  <label class="form-label">MultiQuotes (optional)</label>
+                  <button type="button" class="info-button"
+                          title="When enabled, watchlist polling uses batched requests (max 1 every 5 seconds) instead of one call per symbol."
+                          aria-label="MultiQuotes info">i</button>
+                </div>
                 <label class="inline-flex items-center gap-2">
                   <input type="checkbox" name="supports_multiquotes" class="form-checkbox"
                          ${instance.supports_multiquotes ? 'checked' : ''}>
                   <span>Instance supports <a href="https://docs.openalgo.in/api-documentation/v1/data-api/multiquotes" target="_blank" rel="noopener">OpenAlgo MultiQuotes</a></span>
                 </label>
-                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                  When enabled, watchlist polling uses batched requests (max 1 every 5 seconds) instead of one call per symbol.
-                </small>
               </div>
 
               <div class="form-group">
-                <label class="form-label">Option Chain API (optional)</label>
+                <div class="form-label-row">
+                  <label class="form-label">Option Chain API (optional)</label>
+                  <button type="button" class="info-button"
+                          title="When enabled, options resolution fetches up to 15 strikes with live quotes directly from the broker."
+                          aria-label="Option chain info">i</button>
+                </div>
                 <label class="inline-flex items-center gap-2">
                   <input type="checkbox" name="supports_option_chain" class="form-checkbox"
                          ${instance.supports_option_chain ? 'checked' : ''}>
                   <span>Instance supports OpenAlgo Option Chain endpoint (limited strikes with LTP)</span>
                 </label>
-                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                  When enabled, options resolution fetches up to 15 strikes with live quotes directly from the broker.
-                </small>
               </div>
 
               <div class="form-group">
-                <label class="form-label">Instance Multiplier</label>
+                <div class="form-label-row">
+                  <label class="form-label">Instance Multiplier</label>
+                  <button type="button" class="info-button"
+                          title="Scales order quantities for this instance (1-999)."
+                          aria-label="Instance multiplier info">i</button>
+                </div>
                 <input type="number" name="multiplier" class="form-input" min="1" max="999" step="1"
                        value="${instance.multiplier ?? 1}">
-                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                  Scales order quantities for this instance (1-999).
-                </small>
               </div>
 
               <div class="form-group">
@@ -5650,32 +5990,39 @@ class DashboardApp {
               </div>
 
               <div class="form-group">
-                <label class="form-label">Session Target Profit</label>
+                <div class="form-label-row">
+                  <label class="form-label">Session Target Profit</label>
+                  <button type="button" class="info-button"
+                          title="Auto-switch to Analyze when this profit is reached within a session."
+                          aria-label="Session target profit info">i</button>
+                </div>
                 <input type="number" name="session_target_profit" class="form-input" step="0.01"
                        value="${instance.session_target_profit ?? ''}">
-                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                  Auto-switch to Analyze when this profit is reached within a session.
-                </small>
               </div>
 
               <div class="form-group">
-                <label class="form-label">Session Max Loss</label>
+                <div class="form-label-row">
+                  <label class="form-label">Session Max Loss</label>
+                  <button type="button" class="info-button"
+                          title="Auto-switch to Analyze when this loss is hit within a session."
+                          aria-label="Session max loss info">i</button>
+                </div>
                 <input type="number" name="session_max_loss" class="form-input" step="0.01"
                        value="${instance.session_max_loss ?? ''}">
-                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                  Auto-switch to Analyze when this loss is hit within a session.
-                </small>
               </div>
 
-              <div class="form-group">
-                <label class="form-label">
+              <div class="form-group form-span-2">
+                <div class="form-label-row">
+                  <label class="form-label">Active Instance</label>
+                  <button type="button" class="info-button"
+                          title="Inactive instances won't be polled or used for trading."
+                          aria-label="Active instance info">i</button>
+                </div>
+                <label class="inline-flex items-center gap-2">
                   <input type="checkbox" name="is_active"
                          ${instance.is_active ? 'checked' : ''}>
-                  Active Instance
+                  <span>Enabled</span>
                 </label>
-                <small class="form-help" style="display: block; margin-top: 0.25rem; color: var(--color-neutral-600);">
-                  Inactive instances won't be polled or used for trading
-                </small>
               </div>
             </form>
           </div>

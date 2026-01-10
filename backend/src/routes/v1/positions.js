@@ -36,8 +36,9 @@ function logAudit(req, action, metadata = {}) {
 router.get('/all', async (req, res, next) => {
   try {
     const onlyOpen = req.query.onlyOpen === 'true';
+    const refresh = req.query.refresh !== 'false';
 
-    const positions = await positionsService.getAllPositions({ onlyOpen });
+    const positions = await positionsService.getAllPositions({ onlyOpen, refresh });
 
     res.json({
       status: 'success',

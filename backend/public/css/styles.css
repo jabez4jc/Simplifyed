@@ -616,6 +616,29 @@ body {
   box-shadow: var(--shadow-sm);
 }
 
+.orders-trades-compact .card {
+  padding: var(--space-4);
+}
+
+.orders-trades-compact .card-header {
+  margin-bottom: var(--space-3);
+}
+
+.orders-trades-compact .table th,
+.orders-trades-compact .table td {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-xs);
+}
+
+.orders-trades-compact details summary {
+  padding: var(--space-3) var(--space-4);
+}
+
+.orders-trades-compact .tab-button {
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--font-size-sm);
+}
+
 .card-header {
   display: flex;
   justify-content: space-between;
@@ -831,6 +854,7 @@ body {
 }
 
 .form-help {
+  display: block;
   margin-top: var(--space-1);
   font-size: var(--font-size-xs);
   color: var(--color-neutral-600);
@@ -960,6 +984,21 @@ body {
   margin-bottom: var(--space-6);
 }
 
+.stats-grid.stats-grid-centered .stat-card {
+  text-align: center;
+}
+
+.stats-grid.stats-grid-centered .stat-label {
+  text-align: center;
+}
+
+.stats-grid.stats-grid-centered .stat-value {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
 .stat-card {
   background-color: white;
   border-radius: var(--radius-lg);
@@ -1024,6 +1063,85 @@ body {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-3);
+}
+
+/* Instance modal layout */
+.instance-modal .modal-content {
+  width: min(1100px, 96%);
+}
+
+.instance-modal .modal-header,
+.instance-modal .modal-body,
+.instance-modal .modal-footer {
+  padding: var(--space-4);
+}
+
+.instance-modal .form-group {
+  margin-bottom: var(--space-3);
+}
+
+.instance-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.form-span-2 {
+  grid-column: span 2;
+}
+
+.form-label-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.form-label-row .form-label {
+  margin-bottom: 0;
+}
+
+.form-inline-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.form-inline-row .form-input {
+  flex: 1;
+}
+
+.info-button {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid var(--color-neutral-300);
+  background-color: var(--color-neutral-100);
+  color: var(--color-neutral-700);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: help;
+  padding: 0;
+}
+
+.info-button:hover {
+  border-color: var(--color-info);
+  color: var(--color-info);
+  background-color: var(--color-info-bg);
+}
+
+@media (max-width: 900px) {
+  .instance-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .form-span-2 {
+    grid-column: auto;
+  }
 }
 
 /* ========== Toast Notifications ========== */
@@ -1128,6 +1246,33 @@ body {
   padding: var(--space-12);
 }
 
+.loading-dots {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: center;
+}
+
+.loading-dots span {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--color-info);
+  animation: dotPulse 1.2s ease-in-out infinite;
+  opacity: 0.6;
+}
+
+.loading-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+  background: var(--color-primary);
+}
+
+.loading-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+  background: var(--color-success);
+}
+
+/* Legacy spinner for buttons/flows still using .spinner */
 .spinner {
   width: 40px;
   height: 40px;
@@ -1140,6 +1285,17 @@ body {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes dotPulse {
+  0%, 100% {
+    transform: translateY(0);
+    opacity: 0.5;
+  }
+  50% {
+    transform: translateY(-6px);
+    opacity: 1;
   }
 }
 

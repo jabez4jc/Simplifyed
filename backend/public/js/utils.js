@@ -248,7 +248,11 @@ const Utils = {
     if (container) {
       container.innerHTML = `
         <div class="loading-spinner">
-          <div class="spinner"></div>
+          <div class="loading-dots">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
           <p>Loading...</p>
         </div>
       `;

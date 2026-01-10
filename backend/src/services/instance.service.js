@@ -23,6 +23,8 @@ import {
 import settingsService from './settings.service.js';
 import { toISTDate, toISTISOString } from '../utils/time.js';
 import config from '../core/config.js';
+import { calculateTradebookPnL } from '../utils/trade-pnl.js';
+import { buildBrokerageMap, resolveBrokerageValue } from '../utils/brokerage.js';
 
 const INSTANCE_REQUEST_DELAY_MS = 300;
 const DEFAULT_ANALYZER_TTL_MS = 15 * 1000;
@@ -176,6 +178,7 @@ class InstanceService {
         'is_secondary_admin',
         'market_data_role',
         'supports_multiquotes',
+        'market_data_enabled',
       ];
       const values = [
         normalized.name,
@@ -187,6 +190,7 @@ class InstanceService {
         normalized.is_secondary_admin ? 1 : 0,
         normalized.market_data_role || 'none',
         normalized.supports_multiquotes ?? 0,
+        normalized.market_data_enabled ?? 0,
       ];
 
       if (hasOptionChain) {
@@ -200,6 +204,14 @@ class InstanceService {
       if (hasMultiplier) {
         columns.push('multiplier');
         values.push(normalized.multiplier ?? 1);
+      }
+      if (normalized.session_target_profit !== undefined) {
+        columns.push('session_target_profit');
+        values.push(normalized.session_target_profit);
+      }
+      if (normalized.session_max_loss !== undefined) {
+        columns.push('session_max_loss');
+        values.push(normalized.session_max_loss);
       }
 
       const placeholders = columns.map(() => '?').join(', ');
@@ -565,31 +577,27 @@ class InstanceService {
         const tradeSnap = await marketDataFeedService.getTradebookSnapshot(id, { force: false });
 
         const funds = marketDataFeedService.getFundsSnapshot(id)?.data || {};
-        const positionbook = marketDataFeedService.getPositionSnapshot(id)?.data || [];
         const tradebook = tradeSnap?.data || [];
 
-        // Calculate P&L
+        // Calculate P&L using tradebook values minus charges
         const currentBalance = parseFloat(funds.availablecash || 0);
-
-        // Get realized P&L from funds endpoint (m2mrealized or realized_pnl)
-        // OpenAlgo's tradebook doesn't expose per-trade P&L, so we rely on the funds endpoint
-        const realizedPnl = parseFloat(
-          funds.m2mrealized ||
-          funds.realized_pnl ||
-          funds.realizedpnl ||
-          0
-        );
-
-        // Calculate unrealized P&L from positionbook
-        let unrealizedPnl = 0;
-        if (Array.isArray(positionbook)) {
-          unrealizedPnl = positionbook.reduce((sum, position) => {
-            const pnl = parseFloat(position.pnl || position.unrealized_pnl || 0);
-            return sum + pnl;
-          }, 0);
-        }
-
-        const totalPnl = realizedPnl + unrealizedPnl;
+        const brokerageSetting = await settingsService.getSetting('brokerage.by_broker').catch(() => null);
+        const defaultBrokerageSetting = await settingsService.getSetting('brokerage.default').catch(() => null);
+        const brokerageMap = buildBrokerageMap(brokerageSetting?.value);
+        const defaultBrokerage = Number.isFinite(defaultBrokerageSetting?.value)
+          ? defaultBrokerageSetting.value
+          : 20;
+        const brokerageValue = resolveBrokerageValue(instance.broker, brokerageMap, defaultBrokerage);
+        const tradePnl = calculateTradebookPnL(Array.isArray(tradebook) ? tradebook : [], {
+          brokerageValue,
+        });
+        const totalPnl = Number(tradePnl.net_pnl.toFixed(2));
+        const buyTrades = tradePnl.buy_count || 0;
+        const sellTrades = tradePnl.sell_count || 0;
+        const buyValue = tradePnl.buy_value || 0;
+        const sellValue = tradePnl.sell_value || 0;
+        const realizedPnl = 0;
+        const unrealizedPnl = 0;
 
         // Session-aware tracking (IST)
         const istNow = this._nowInIST();
@@ -676,6 +684,16 @@ class InstanceService {
               });
             }
           }
+        }
+
+        if (!instance.is_analyzer_mode && Array.isArray(tradebook) && tradebook.length > 0) {
+          await this._upsertDailyPnlSnapshot(instance.id, todayIst, {
+            total_pnl: totalPnl,
+            buy_trades: buyTrades,
+            sell_trades: sellTrades,
+            buy_value: buyValue,
+            sell_value: sellValue,
+          });
         }
 
         // Update database
@@ -1049,6 +1067,57 @@ class InstanceService {
     const [h, m] = hm.split(':').map((v) => parseInt(v, 10));
     if (Number.isNaN(h) || Number.isNaN(m)) return null;
     return h * 60 + m;
+  }
+
+  async _upsertDailyPnlSnapshot(instanceId, snapshotDate, payload) {
+    const {
+      total_pnl = 0,
+      buy_trades = 0,
+      sell_trades = 0,
+      buy_value = 0,
+      sell_value = 0,
+    } = payload || {};
+
+    const existing = await db.get(
+      `SELECT id, total_pnl, buy_trades, sell_trades, buy_value, sell_value
+       FROM daily_instance_pnl_snapshots
+       WHERE instance_id = ? AND snapshot_date = ?`,
+      [instanceId, snapshotDate]
+    );
+
+    if (existing) {
+      if (total_pnl === 0 && existing.total_pnl !== 0) {
+        return;
+      }
+      if (
+        buy_trades < existing.buy_trades ||
+        sell_trades < existing.sell_trades ||
+        buy_value < existing.buy_value ||
+        sell_value < existing.sell_value
+      ) {
+        return;
+      }
+
+      await db.run(
+        `UPDATE daily_instance_pnl_snapshots
+         SET total_pnl = ?,
+             buy_trades = ?,
+             sell_trades = ?,
+             buy_value = ?,
+             sell_value = ?,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [total_pnl, buy_trades, sell_trades, buy_value, sell_value, existing.id]
+      );
+      return;
+    }
+
+    await db.run(
+      `INSERT INTO daily_instance_pnl_snapshots
+        (instance_id, snapshot_date, total_pnl, buy_trades, sell_trades, buy_value, sell_value)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [instanceId, snapshotDate, total_pnl, buy_trades, sell_trades, buy_value, sell_value]
+    );
   }
 
   _findCurrentSession(date, sessions = []) {
