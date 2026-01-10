@@ -12,6 +12,7 @@ import marketDataFeedService from '../../services/market-data-feed.service.js';
 import { log } from '../../core/logger.js';
 import { NotFoundError, ValidationError } from '../../core/errors.js';
 import quickOrderService from '../../services/quick-order.service.js';
+import pnlSnapshotService from '../../services/pnl-snapshot.service.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';
 import db from '../../core/database.js';
 import telegramService from '../../services/telegram.service.js';
@@ -144,6 +145,10 @@ router.post('/:instanceId/close', requirePermission('positions.close_all'), asyn
       logAudit(req, 'positions.close_all', { instanceId });
     }
 
+    if (!instance.is_analyzer_mode) {
+      pnlSnapshotService.incrementSignalCounts(instance.id, { manual_sell_signals: 1 }).catch(() => {});
+    }
+
     // Telegram summary for close-all on a single instance
     telegramService.sendOrderSummary({
       title: 'ORDER SUMMARY',
@@ -198,6 +203,10 @@ router.post('/:instanceId/close/position', requirePermission('positions.close'),
 
     if ((req.user?.role || '').toUpperCase() !== 'ADMIN') {
       logAudit(req, 'positions.close_single', { instanceId, symbol, exchange });
+    }
+
+    if (!instance.is_analyzer_mode) {
+      pnlSnapshotService.incrementSignalCounts(instance.id, { manual_sell_signals: 1 }).catch(() => {});
     }
 
     // Telegram summary for single-position close

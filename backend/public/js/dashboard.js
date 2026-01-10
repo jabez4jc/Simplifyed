@@ -1748,6 +1748,10 @@ class DashboardApp {
                 <th class="text-right">Sell Trades</th>
                 <th class="text-right">Buy Value</th>
                 <th class="text-right">Sell Value</th>
+                <th class="text-right">Webhook Buy</th>
+                <th class="text-right">Webhook Sell</th>
+                <th class="text-right">Manual Buy</th>
+                <th class="text-right">Manual Sell</th>
                 <th>Updated</th>
               </tr>
             </thead>
@@ -1762,6 +1766,10 @@ class DashboardApp {
                   <td class="text-right">${Utils.formatNumber(row.sell_trades, 0)}</td>
                   <td class="text-right">${Utils.formatCurrency(row.buy_value)}</td>
                   <td class="text-right">${Utils.formatCurrency(row.sell_value)}</td>
+                  <td class="text-right">${Utils.formatNumber(row.webhook_buy_signals, 0)}</td>
+                  <td class="text-right">${Utils.formatNumber(row.webhook_sell_signals, 0)}</td>
+                  <td class="text-right">${Utils.formatNumber(row.manual_buy_signals, 0)}</td>
+                  <td class="text-right">${Utils.formatNumber(row.manual_sell_signals, 0)}</td>
                   <td>${Utils.escapeHTML(row.updated_at || '')}</td>
                 </tr>
               `).join('')}

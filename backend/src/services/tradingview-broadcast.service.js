@@ -7,6 +7,7 @@ import { extractLtp } from '../utils/price-extraction.js';
 import watchlistService from './watchlist.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import instrumentsService from './instruments.service.js';
+import pnlSnapshotService from './pnl-snapshot.service.js';
 
 const DEFAULT_PAYLOAD = {
   pricetype: 'MARKET',
@@ -241,6 +242,22 @@ class TradingviewBroadcastService {
     const message = okCount
       ? `Broadcast delivered to ${okCount}/${summary.length} target(s)`
       : 'All downstream requests failed';
+
+    const actionSide = payloadToSend.action === 'BUY' ? 'BUY' : 'SELL';
+    const signalCounts = actionSide === 'BUY'
+      ? { webhook_buy_signals: 1 }
+      : { webhook_sell_signals: 1 };
+    const countUpdates = summary
+      .map((result, idx) => {
+        if (!result.ok) return null;
+        const target = targets[idx];
+        if (!target?.instance_id || target.is_analyzer_mode) return null;
+        return pnlSnapshotService.incrementSignalCounts(target.instance_id, signalCounts);
+      })
+      .filter(Boolean);
+    if (countUpdates.length) {
+      Promise.allSettled(countUpdates).catch(() => {});
+    }
 
     // Record counters for broadcast watchlists
     if (watchlist?.id) {

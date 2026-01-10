@@ -11,6 +11,7 @@ import orderPayloadFactory from './order-payload.factory.js';
 import orderRepository from './order-repository.js';
 import telegramService from './telegram.service.js';
 import limitPriceService from './limit-price.service.js';
+import pnlSnapshotService from './pnl-snapshot.service.js';
 import {
   NotFoundError,
   ValidationError,
@@ -168,6 +169,13 @@ class OrderService {
         order_id: orderId,
         symbol: normalized.symbol,
       });
+
+      if (!instance.is_analyzer_mode) {
+        const manualCounts = normalized.action === 'BUY'
+          ? { manual_buy_signals: 1 }
+          : { manual_sell_signals: 1 };
+        pnlSnapshotService.incrementSignalCounts(instance.id, manualCounts).catch(() => {});
+      }
 
       // Fire-and-forget Telegram notification for manual/direct orders
       telegramService

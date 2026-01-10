@@ -18,6 +18,7 @@ import orderRepository from './order-repository.js';
 import orderService from './order.service.js';
 import telegramService from './telegram.service.js';
 import limitPriceService from './limit-price.service.js';
+import pnlSnapshotService from './pnl-snapshot.service.js';
 import { ValidationError, NotFoundError } from '../core/errors.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
 import instrumentsService from './instruments.service.js';
@@ -205,6 +206,22 @@ class QuickOrderService {
       failure_count: failureCount,
       unknown_count: uncertainCount,
     });
+
+    const sideForCount = this._deriveSideForSummary(action);
+    if (sideForCount === 'BUY' || sideForCount === 'SELL') {
+      const liveInstanceIds = new Set(
+        instances.filter(instance => !instance.is_analyzer_mode).map(instance => instance.id)
+      );
+      const counts = sideForCount === 'BUY'
+        ? { manual_buy_signals: 1 }
+        : { manual_sell_signals: 1 };
+      const updates = results
+        .filter(result => result.success && liveInstanceIds.has(result.instance_id))
+        .map(result => pnlSnapshotService.incrementSignalCounts(result.instance_id, counts));
+      if (updates.length) {
+        Promise.allSettled(updates).catch(() => {});
+      }
+    }
 
     return {
       success: results.every(r => r.success),

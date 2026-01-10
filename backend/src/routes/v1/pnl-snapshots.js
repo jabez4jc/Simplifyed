@@ -30,6 +30,10 @@ function buildCsv(rows) {
     'sell_trades',
     'buy_value',
     'sell_value',
+    'webhook_buy_signals',
+    'webhook_sell_signals',
+    'manual_buy_signals',
+    'manual_sell_signals',
     'updated_at',
   ];
   const lines = [headers.join(',')];
@@ -44,6 +48,10 @@ function buildCsv(rows) {
       row.sell_trades,
       row.buy_value,
       row.sell_value,
+      row.webhook_buy_signals,
+      row.webhook_sell_signals,
+      row.manual_buy_signals,
+      row.manual_sell_signals,
       row.updated_at,
     ].map((value) => {
       const str = String(value ?? '');
