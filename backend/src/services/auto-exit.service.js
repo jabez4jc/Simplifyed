@@ -10,8 +10,10 @@ import watchlistService from './watchlist.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import quickOrderService from './quick-order.service.js';
 import riskControlsService from './risk-controls.service.js';
+import openalgoClient from '../integrations/openalgo/client.js';
 import { extractLtp, extractAveragePrice } from '../utils/price-extraction.js';
 import { normalizeTradebookEntry } from '../utils/tradebook-utils.js';
+import { toISTDate } from '../utils/time.js';
 
 const TRADE_MODE_MAP = {
   direct: 'EQUITY',
@@ -26,6 +28,7 @@ class AutoExitService {
     this.isCycleRunning = false;
     this.pendingExits = new Map();
     this.exitConfirmations = new Map();
+    this.lastBlackoutLogAt = 0;
     const autoExitCfg = config.autoExit || {};
     this.monitorIntervalMs = autoExitCfg.monitorIntervalMs || 5000;
     this.provisionalEntryGraceMs = autoExitCfg.provisionalEntryGraceMs ?? 20000;
@@ -73,6 +76,11 @@ class AutoExitService {
       return;
     }
 
+    if (isGeneralEndpointBlackout()) {
+      this._logBlackoutSkip();
+      return;
+    }
+
     this.isCycleRunning = true;
     try {
       const configLookup = await this._buildAutoExitLookup();
@@ -93,33 +101,17 @@ class AutoExitService {
   }
 
   async _monitorInstance(instance, configLookup) {
-    const snapshot = marketDataFeedService.getPositionSnapshot(instance.id);
-    const positions = snapshot?.data || [];
-    const snapshotAge = snapshot?.fetchedAt ? Date.now() - snapshot.fetchedAt : null;
-    const positionTtl = config.marketDataFeed?.positionTtlMs || 5000;
-    const circuitState = marketDataFeedService.getCircuitState(instance.id, 'positions');
-    if (snapshotAge !== null && snapshotAge > positionTtl * 3) {
-      log.warn('Auto-exit skipped stale position snapshot', {
+    let positions = [];
+    try {
+      positions = await openalgoClient.getPositionBook(instance);
+    } catch (error) {
+      log.warn('Auto-exit skipped - live positionbook failed', {
         instance_id: instance.id,
-        age_ms: snapshotAge,
-        ttl_ms: positionTtl,
-        circuit_open: circuitState.open,
-        circuit_resume_ms: circuitState.resumeInMs,
+        error: error.message,
       });
       return;
     }
-
-    if ((!positions || positions.length === 0) && circuitState.open) {
-      log.warn('Auto-exit paused due to position feed circuit breaker', {
-        instance_id: instance.id,
-        circuit_resume_ms: circuitState.resumeInMs,
-        last_error: circuitState.lastError,
-      });
-      return;
-    }
-    if (!positions.length) {
-      return;
-    }
+    if (!positions.length) return;
 
     const tradebookSnapshot = await marketDataFeedService.getTradebookSnapshot(instance.id);
     const normalizedTradebook = this._prepareTradebookSnapshot(tradebookSnapshot?.data);
@@ -127,6 +119,15 @@ class AutoExitService {
     for (const position of positions) {
       await this._evaluatePosition(instance, position, configLookup, normalizedTradebook);
     }
+  }
+
+  _logBlackoutSkip() {
+    const now = Date.now();
+    if (now - this.lastBlackoutLogAt < 5 * 60 * 1000) {
+      return;
+    }
+    this.lastBlackoutLogAt = now;
+    log.info('Auto-exit paused during market blackout window');
   }
 
   async _evaluatePosition(instance, position, configLookup, tradebook = []) {
@@ -562,8 +563,12 @@ class AutoExitService {
       const instances = await instanceService.getAllInstances({ is_active: true });
       const ltps = [];
       for (const inst of instances) {
-        const snap = marketDataFeedService.getPositionSnapshot(inst.id);
-        const positions = snap?.data || [];
+        let positions = [];
+        try {
+          positions = await openalgoClient.getPositionBook(inst);
+        } catch {
+          continue;
+        }
         const match = positions.find(p =>
           this._normalizeSymbol(p.symbol || p.tradingsymbol || p.trading_symbol) === this._normalizeSymbol(symbol) &&
           this._normalizeExchange(p.exchange || p.exch || p.brexchange) === this._normalizeExchange(exchange)
@@ -679,6 +684,29 @@ class AutoExitService {
     if (!exchange) return null;
     return exchange.replace(/\s+/g, '').toUpperCase();
   }
+}
+
+function isGeneralEndpointBlackout() {
+  const ist = toISTDate();
+  const start = parseTimeWindow(config.marketHours?.generalBlackoutStart, { hour: 3, minute: 0 });
+  const end = parseTimeWindow(config.marketHours?.generalBlackoutEnd, { hour: 8, minute: 0 });
+  return isWithinWindow(ist, start.hour, start.minute, end.hour, end.minute);
+}
+
+function parseTimeWindow(value, fallback) {
+  if (!value || typeof value !== 'string') return fallback;
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return fallback;
+  const hour = Math.min(23, Math.max(0, parseInt(match[1], 10)));
+  const minute = Math.min(59, Math.max(0, parseInt(match[2], 10)));
+  return { hour, minute };
+}
+
+function isWithinWindow(istDate, startHour, startMinute, endHour, endMinute) {
+  const minutes = istDate.getHours() * 60 + istDate.getMinutes();
+  const start = startHour * 60 + startMinute;
+  const end = endHour * 60 + endMinute;
+  return minutes >= start && minutes < end;
 }
 
 const autoExitService = new AutoExitService();

@@ -45,6 +45,11 @@ class OrderService {
       price = 0,
       trigger_price = 0,
       position_size, // Required for placesmartorder
+      user_id = null,
+      source = null,
+      trigger_type = null,
+      request_id = null,
+      correlation_id = null,
     } = params;
 
     try {
@@ -62,10 +67,7 @@ class OrderService {
         throw new ValidationError('Instance is not active');
       }
 
-      // Check if instance is in analyzer mode
-      if (instance.is_analyzer_mode) {
-        throw new ValidationError('Instance is in analyzer mode');
-      }
+      // Allow analyzer mode instances to place orders
 
       // Validate required fields
       const normalized = this._normalizeOrderData(params);
@@ -108,6 +110,12 @@ class OrderService {
       normalized.pricetype = 'LIMIT';
       normalized.price = limitResult.price;
 
+      const currentPosition = await this._getLivePosition(instance, normalized);
+      const repeatUntilClosed = this._shouldRepeatToTarget(
+        currentPosition,
+        normalized.position_size
+      );
+
       // Build order data for OpenAlgo
       const orderData = orderPayloadFactory.buildEquityOrder({
         strategy: instance.strategy_tag || 'default',
@@ -135,6 +143,12 @@ class OrderService {
         base_symbol: normalized.symbol,
         trade_mode: 'DIRECT',
         exchange: normalized.exchange,
+        correlation_id,
+        limitBufferPoints: bufferPoints,
+        tickSize,
+        strategy: orderData.strategy,
+        repeatUntilClosed,
+        ignoreSlippage: repeatUntilClosed,
       });
 
       // Extract order ID from response
@@ -157,6 +171,11 @@ class OrderService {
         orderId,
         message: response.message || 'Order placed',
         metadata: response,
+        user_id,
+        source,
+        trigger_type,
+        request_id,
+        correlation_id,
       });
 
       const order = await db.get(
@@ -196,8 +215,9 @@ class OrderService {
             watchlist_id, instance_id, symbol_id,
             exchange, symbol, side, quantity,
             order_type, product_type, price, trigger_price,
-            status, message
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            status, message,
+            user_id, source, trigger_type, request_id, correlation_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             watchlistId || null,
             instanceId,
@@ -212,6 +232,11 @@ class OrderService {
             trigger_price,
             'failed',
             error.message,
+            user_id,
+            source,
+            trigger_type,
+            request_id,
+            correlation_id,
           ]
         );
       } catch (dbError) {
@@ -220,6 +245,84 @@ class OrderService {
 
       throw error;
     }
+  }
+
+  async _getLivePosition(instance, params) {
+    if (!instance?.id || !params?.symbol || !params?.exchange) return null;
+    let positions = [];
+    try {
+      positions = await openalgoClient.getPositionBook(instance);
+    } catch (error) {
+      log.warn('Live positionbook fetch failed', {
+        instance_id: instance.id,
+        error: error.message,
+      });
+      return null;
+    }
+    if (!Array.isArray(positions) || positions.length === 0) return null;
+
+    const targetSymbol = this._normalizeSymbol(params.symbol);
+    const targetExchange = this._normalizeExchange(params.exchange);
+    const targetProduct = this._normalizeProduct(params.product);
+
+    for (const position of positions) {
+      const symbol = this._normalizeSymbol(
+        position.symbol || position.tradingsymbol || position.trading_symbol
+      );
+      const exchange = this._normalizeExchange(position.exchange || position.exch || position.brexchange);
+      const product = this._normalizeProduct(position.product || position.producttype);
+      if (symbol !== targetSymbol || exchange !== targetExchange) {
+        continue;
+      }
+      if (targetProduct && product && product !== targetProduct) {
+        continue;
+      }
+      return this._extractPositionQty(position);
+    }
+
+    return 0;
+  }
+
+  _extractPositionQty(position) {
+    const candidates = [
+      position.quantity,
+      position.netqty,
+      position.net_quantity,
+      position.net,
+      position.netQty,
+    ];
+    for (const value of candidates) {
+      const num = typeof value === 'string' ? parseFloat(value) : value;
+      if (Number.isFinite(num)) {
+        return num;
+      }
+    }
+    return 0;
+  }
+
+  _shouldRepeatToTarget(currentPosition, targetPosition) {
+    if (!Number.isFinite(currentPosition) || !Number.isFinite(targetPosition)) {
+      return false;
+    }
+    if (currentPosition === 0) return false;
+    if (targetPosition === 0) return true;
+    if (Math.sign(currentPosition) !== Math.sign(targetPosition)) return true;
+    return Math.abs(targetPosition) < Math.abs(currentPosition);
+  }
+
+  _normalizeSymbol(symbol) {
+    if (!symbol) return null;
+    return String(symbol).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  }
+
+  _normalizeExchange(exchange) {
+    if (!exchange) return null;
+    return String(exchange).trim().toUpperCase();
+  }
+
+  _normalizeProduct(product) {
+    if (!product) return null;
+    return String(product).trim().toUpperCase();
   }
 
   /**

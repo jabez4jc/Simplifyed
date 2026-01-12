@@ -24,6 +24,11 @@ class OrderRepository {
       orderId = null,
       message = null,
       metadata = null,
+      user_id = null,
+      source = null,
+      trigger_type = null,
+      request_id = null,
+      correlation_id = null,
     } = params;
 
     const result = await db.run(
@@ -31,8 +36,9 @@ class OrderRepository {
         watchlist_id, instance_id, symbol_id,
         exchange, symbol, side, quantity,
         order_type, product_type, price, trigger_price,
-        status, order_id, message, metadata
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        status, order_id, message, metadata,
+        user_id, source, trigger_type, request_id, correlation_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         watchlistId || null,
         instanceId,
@@ -49,6 +55,11 @@ class OrderRepository {
         orderId,
         message,
         metadata ? JSON.stringify(metadata) : null,
+        user_id,
+        source,
+        trigger_type,
+        request_id,
+        correlation_id,
       ]
     );
 
@@ -62,8 +73,10 @@ class OrderRepository {
         watchlist_id, symbol_id, instance_id, underlying, symbol, exchange,
         action, trade_mode, options_leg, quantity, product, order_type,
         price, trigger_price, resolved_symbol, strike_price, option_type,
-        expiry_date, status, order_id, message, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        expiry_date, status, order_id, message,
+        user_id, source, trigger_type, request_id, correlation_id,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
       [
         params.watchlist_id,
         params.symbol_id,
@@ -86,6 +99,11 @@ class OrderRepository {
         params.status,
         params.order_id,
         params.message,
+        params.user_id || null,
+        params.source || null,
+        params.trigger_type || null,
+        params.request_id || null,
+        params.correlation_id || null,
       ]
     );
 

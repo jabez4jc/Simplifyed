@@ -8,6 +8,7 @@ import openalgoClient from '../integrations/openalgo/client.js';
 import { log } from '../core/logger.js';
 import * as orderValidation from '../utils/order-validation.js';
 import { ValidationError } from '../core/errors.js';
+import orderRetryService from './order-retry.service.js';
 
 class OrderPlacementService {
   /**
@@ -102,6 +103,30 @@ class OrderPlacementService {
       status: response?.status,
       message: response?.message,
     });
+
+    const orderId = response?.orderid || response?.order_id;
+    const shouldScheduleRetry = !context?.skipRetry && orderId;
+    const effectivePriceType = (payload.pricetype || 'MARKET').toUpperCase();
+    if (shouldScheduleRetry && effectivePriceType === 'LIMIT') {
+      orderRetryService.scheduleRetry({
+        instance,
+        payload,
+        orderId,
+        initialLimitPrice: payload.price,
+        bufferPoints: context.limitBufferPoints ?? 0,
+        bufferPct: context.limitBufferPct ?? null,
+        tickSize: context.tickSize ?? null,
+        strategy: payload.strategy || context.strategy || null,
+        context,
+        allowPartialRetry: context.allowPartialRetry ?? true,
+        repeatUntilClosed: Object.prototype.hasOwnProperty.call(context, 'repeatUntilClosed')
+          ? context.repeatUntilClosed
+          : null,
+        ignoreSlippage: Object.prototype.hasOwnProperty.call(context, 'ignoreSlippage')
+          ? context.ignoreSlippage
+          : null,
+      });
+    }
 
     return response;
   }

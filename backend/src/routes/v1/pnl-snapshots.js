@@ -9,7 +9,7 @@ import pnlSnapshotService from '../../services/pnl-snapshot.service.js';
 
 const router = express.Router();
 
-router.use(requirePermission('monitor.view'));
+router.use(requirePermission('pages.daily_pnl.view'));
 
 function parseDate(value, label) {
   const text = String(value || '').trim();

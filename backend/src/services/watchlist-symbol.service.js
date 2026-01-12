@@ -122,6 +122,19 @@ class WatchlistSymbolService {
     );
   }
 
+  async findSymbolByWatchlist(watchlistId, exchange, symbol) {
+    const cleanExchange = sanitizeExchange(exchange);
+    const cleanSymbol = sanitizeSymbol(symbol);
+    if (!watchlistId || !cleanExchange || !cleanSymbol) return null;
+
+    return db.get(
+      `SELECT * FROM watchlist_symbols
+       WHERE watchlist_id = ? AND exchange = ? AND symbol = ?
+       LIMIT 1`,
+      [watchlistId, cleanExchange, cleanSymbol]
+    );
+  }
+
   async searchSymbolsByWatchlist(filters = {}) {
     const {
       watchlistId,

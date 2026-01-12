@@ -37,7 +37,7 @@ function requireAdmin(req, _res, next) {
  * GET /api/v1/watchlists
  * Get all watchlists
  */
-router.get('/', async (req, res, next) => {
+router.get('/', requirePermission('pages.watchlists.view'), async (req, res, next) => {
   try {
     const filters = {};
 
@@ -61,7 +61,7 @@ router.get('/', async (req, res, next) => {
  * GET /api/v1/watchlists/:id
  * Get watchlist by ID with symbols and instances
  */
-router.get('/:id', async (req, res, next) => {
+router.get('/:id', requirePermission('pages.watchlists.view'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const watchlist = await watchlistService.getWatchlistById(id);
@@ -170,7 +170,7 @@ router.post('/:id/clone', async (req, res, next) => {
  * GET /api/v1/watchlists/:id/symbols
  * Get watchlist symbols with latest quotes
  */
-router.get('/:id/symbols', async (req, res, next) => {
+router.get('/:id/symbols', requirePermission('pages.watchlists.view'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const symbols = await watchlistService.getSymbolsWithQuotes(id);

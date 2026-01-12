@@ -1,12 +1,12 @@
 import express from 'express';
 import db from '../../core/database.js';
-import { requireAuth } from '../../middleware/auth.js';
+import { requireAuth, requirePermission } from '../../middleware/auth.js';
 
 const router = express.Router();
 
 router.use(requireAuth);
 
-router.get('/', async (req, res, next) => {
+router.get('/', requirePermission('pages.notifications.view'), async (req, res, next) => {
   try {
     const rows = await db.all(
       `SELECT id, title, body, severity, created_at, read
@@ -20,7 +20,7 @@ router.get('/', async (req, res, next) => {
   }
 });
 
-router.post('/:id/read', async (req, res, next) => {
+router.post('/:id/read', requirePermission('pages.notifications.edit'), async (req, res, next) => {
   try {
     const { id } = req.params;
     await db.run(`UPDATE notifications SET read = 1 WHERE id = ?`, [id]);

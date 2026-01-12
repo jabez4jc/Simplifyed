@@ -5,9 +5,12 @@ import { ORDER_PARAMS } from '../integrations/openalgo/endpoints.js';
 import { maskApiKey, parseIntSafe } from '../utils/sanitizers.js';
 import { extractLtp } from '../utils/price-extraction.js';
 import watchlistService from './watchlist.service.js';
+import watchlistSymbolService from './watchlist-symbol.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import instrumentsService from './instruments.service.js';
 import pnlSnapshotService from './pnl-snapshot.service.js';
+import orderRetryService from './order-retry.service.js';
+import instanceService from './instance.service.js';
 
 const DEFAULT_PAYLOAD = {
   pricetype: 'MARKET',
@@ -221,7 +224,7 @@ class TradingviewBroadcastService {
           quantity: payloadToSend.quantity * instanceMultiplier,
           position_size: payloadToSend.position_size * instanceMultiplier,
         };
-        return this._dispatchToTarget(target, targetPayload, instanceMultiplier);
+        return this._dispatchToTarget(target, targetPayload, instanceMultiplier, watchlist);
       })
     );
 
@@ -379,7 +382,7 @@ class TradingviewBroadcastService {
     return idx === -1 ? 0 : Math.min(6, text.length - idx - 1);
   }
 
-  async _dispatchToTarget(target, payload, instanceMultiplier = 1) {
+  async _dispatchToTarget(target, payload, instanceMultiplier = 1, watchlist = null) {
     const rateLimit = target.rateLimit ?? (this.defaultRps > 0 ? this.defaultRps : null);
     const bucket = this._getBucket(target.key, rateLimit);
     if (bucket) {
@@ -400,6 +403,13 @@ class TradingviewBroadcastService {
         status: response.status,
         duration_ms: response.durationMs,
       });
+
+      await this._scheduleRetryForTarget({
+        target,
+        payload,
+        response,
+        watchlist,
+      });
     } else {
       log.warn('[TV Webhook] Downstream failure', {
         target: target.name,
@@ -414,6 +424,66 @@ class TradingviewBroadcastService {
     return response;
   }
 
+  async _scheduleRetryForTarget({ target, payload, response, watchlist }) {
+    if (!response?.ok || !response?.data) return;
+    if ((payload.pricetype || '').toUpperCase() !== 'LIMIT') return;
+    if (!target?.instance_id) return;
+
+    const orderId = response.data?.orderid || response.data?.order_id;
+    if (!orderId) return;
+
+    let instance;
+    try {
+      instance = await instanceService.getInstanceById(target.instance_id);
+    } catch (error) {
+      log.warn('[TV Webhook] Retry scheduling skipped - instance missing', {
+        instance_id: target.instance_id,
+        error: error.message,
+      });
+      return;
+    }
+
+    let bufferPoints = null;
+    let bufferPct = Number.isFinite(watchlist?.limit_buffer_pct)
+      ? watchlist.limit_buffer_pct
+      : null;
+    let tickSize = null;
+    if (watchlist?.id) {
+      const symbolRow = await watchlistSymbolService.findSymbolByWatchlist(
+        watchlist.id,
+        payload.exchange,
+        payload.symbol
+      );
+      if (symbolRow) {
+        bufferPoints = Number.isFinite(symbolRow.limit_buffer_points)
+          ? symbolRow.limit_buffer_points
+          : null;
+        if (Number.isFinite(bufferPoints)) {
+          bufferPct = null;
+        }
+        tickSize = Number.isFinite(symbolRow.tick_size) ? symbolRow.tick_size : null;
+      }
+    }
+
+    if (!Number.isFinite(tickSize) || tickSize <= 0) {
+      tickSize = await this._resolveTickSize(payload.exchange, payload.symbol);
+    }
+
+    orderRetryService.scheduleRetry({
+      instance,
+      payload,
+      orderId,
+      initialLimitPrice: payload.price,
+      bufferPoints: Number.isFinite(bufferPoints) ? bufferPoints : 0,
+      bufferPct,
+      tickSize,
+      strategy: payload.strategy || null,
+      context: {
+        request_type: 'TRADINGVIEW',
+      },
+    });
+  }
+
   async _postWithRetries(target, body) {
     let attempt = 0;
     let lastError = null;
@@ -423,11 +493,11 @@ class TradingviewBroadcastService {
       const start = Date.now();
 
       try {
-        const { ok, status } = await this._postJson(target.endpoint, body);
+        const { ok, status, data } = await this._postJson(target.endpoint, body);
         const durationMs = Date.now() - start;
 
         if (ok) {
-          return { ok: true, status, attempts: attempt, durationMs };
+          return { ok: true, status, attempts: attempt, durationMs, data };
         }
 
         if (status >= 400 && status < 500) {
@@ -474,8 +544,9 @@ class TradingviewBroadcastService {
       });
       // Consume quietly to free resources
       const { status, ok } = res;
-      await res.text().catch(() => {});
-      return { status, ok };
+      const text = await res.text().catch(() => '');
+      const data = text ? tryParseJson(text) : null;
+      return { status, ok, data };
     } finally {
       clearTimeout(timer);
     }

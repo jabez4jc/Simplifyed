@@ -3,7 +3,20 @@
  * Logs HTTP requests with timing information
  */
 
+import crypto from 'crypto';
 import { log } from '../core/logger.js';
+
+export function correlationId(req, res, next) {
+  const existing = req.headers['x-request-id'] || req.headers['x-correlation-id'];
+  const correlationId = typeof existing === 'string' && existing.trim()
+    ? existing.trim()
+    : crypto.randomUUID();
+
+  req.correlationId = correlationId;
+  req.headers['x-request-id'] = correlationId;
+  res.setHeader('X-Request-Id', correlationId);
+  next();
+}
 
 /**
  * Request logger middleware
@@ -41,6 +54,7 @@ export function bodyParserErrorHandler(err, req, res, next) {
 }
 
 export default {
+  correlationId,
   requestLogger,
   bodyParserErrorHandler,
 };

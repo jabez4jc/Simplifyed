@@ -65,6 +65,11 @@ class QuickOrderService {
       operatingMode = 'BUYER',  // Buyer or Writer mode for OPTIONS
       strikePolicy = 'FLOAT_OFS',  // FLOAT_OFS or ANCHOR_OFS for OPTIONS
       stepLots = 1,  // Step size in lots for OPTIONS
+      triggerType = null,
+      correlationId = null,
+      requestId = null,
+      userId = null,
+      source = null,
     } = params;
     const effectiveOrderType = 'LIMIT';
 
@@ -79,6 +84,11 @@ class QuickOrderService {
       operatingMode,
       strikePolicy,
       stepLots,
+      triggerType,
+      correlationId,
+      requestId,
+      userId,
+      source,
     });
 
     // Validate inputs
@@ -135,7 +145,24 @@ class QuickOrderService {
       strategy,
       symbol,
       instances,
-      { action, tradeMode, quantity, product: resolvedProduct, orderType: effectiveOrderType, price, expiry, optionsLeg, operatingMode, strikePolicy, stepLots }
+      {
+        action,
+        tradeMode,
+        quantity,
+        product: resolvedProduct,
+        orderType: effectiveOrderType,
+        price,
+        expiry,
+        optionsLeg,
+        operatingMode,
+        strikePolicy,
+        stepLots,
+        triggerType,
+        correlationId,
+        requestId,
+        userId,
+        source,
+      }
     );
 
     log.info('Quick order completed', {
@@ -152,7 +179,7 @@ class QuickOrderService {
     const uncertainCount = results.filter(r => r.uncertain).length;
     const failureCount = results.length - successCount - uncertainCount;
     const instanceNames = instances.map(i => i.name).filter(Boolean);
-    const triggerType = params.triggerType || 'Manual';
+    const summaryTriggerType = params.triggerType || 'Manual';
     const buttonLabel = params.button_label || action;
     const sideForSummary = this._deriveSideForSummary(action);
     const successInstances = results.filter(r => r.success).map(r => r.instance_name).filter(Boolean);
@@ -164,7 +191,7 @@ class QuickOrderService {
     );
     const summaryPayload = {
       title: 'ORDER SUMMARY',
-      trigger_type: triggerType,
+      trigger_type: summaryTriggerType,
       button_label: buttonLabel,
       trade_mode: tradeMode,
       side: sideForSummary,
@@ -336,7 +363,9 @@ class QuickOrderService {
       const instances = await db.all(
         `SELECT i.* FROM instances i
          JOIN watchlist_instances wi ON i.id = wi.instance_id
-         WHERE wi.watchlist_id = ? AND i.is_active = 1 AND i.order_placement_enabled = 1`,
+         WHERE wi.watchlist_id = ?
+           AND i.is_active = 1
+           AND i.order_placement_enabled = 1`,
         [watchlistId]
       );
 
@@ -361,7 +390,6 @@ class QuickOrderService {
         throw new ValidationError('Order placement is disabled for this instance');
       }
 
-      // Allow order placement even in analyzer mode
       return [instance];
     }
   }
@@ -483,9 +511,9 @@ class QuickOrderService {
             break;
 
         case 'CLOSE_POSITIONS':
-          // OPTIMIZATION: Close/Exit orders can use cached positions
+          // Close/Exit orders should use live positions for accuracy
           result = await this._closePositions(instance, symbol, orderParams, {
-            useCachedPositions: true,
+            useCachedPositions: false,
           });
           await this._forceCloseSymbolIfNeeded(instance, symbol, orderParams);
           break;
@@ -678,7 +706,18 @@ class QuickOrderService {
    * @param {Map} options.preloadedPositions - Pre-fetched positions map (instanceId -> positions[])
    */
   async _executeDirectOrder(instance, symbol, orderParams, options = {}) {
-    const { action, tradeMode, quantity, product, expiry } = orderParams;
+    const {
+      action,
+      tradeMode,
+      quantity,
+      product,
+      expiry,
+      triggerType,
+      correlationId,
+      requestId,
+      userId,
+      source,
+    } = orderParams;
     const { preloadedPositions } = options;
 
     // Determine final symbol based on trade mode
@@ -873,6 +912,8 @@ class QuickOrderService {
     }
 
     targetPosition = lotSize > 0 ? targetLots * lotSize : targetLots;
+    const repeatUntilClosed = this._shouldRepeatToTarget(currentPosition, targetPosition)
+      || this._isRepeatExitAction(action);
 
     log.info('Calculated position for order', {
       action,
@@ -929,6 +970,12 @@ class QuickOrderService {
       trade_mode: tradeMode,
       base_symbol: symbol.symbol,
       expiry: expiry || null,
+      correlation_id: correlationId,
+      limitBufferPoints: symbol.limit_buffer_points || 0,
+      tickSize: resolvedTickSize,
+      strategy: orderPayload.strategy,
+      repeatUntilClosed,
+      ignoreSlippage: repeatUntilClosed,
     });
 
     // Verify final position using live positionbook (fire-and-forget to avoid blocking response)
@@ -980,6 +1027,11 @@ class QuickOrderService {
       order_id: orderResult.orderid,
       status: orderResult.status,
       message: orderResult.message || 'Order placed successfully',
+      user_id: userId,
+      source: source,
+      trigger_type: triggerType,
+      request_id: requestId,
+      correlation_id: correlationId,
     });
 
     this._invalidateInstanceCaches(instance.id);
@@ -1008,6 +1060,11 @@ class QuickOrderService {
       operatingMode = 'BUYER',
       strikePolicy = 'FLOAT_OFS',
       stepLots = 1,
+      triggerType,
+      correlationId,
+      requestId,
+      userId,
+      source,
     } = orderParams;
     const { preloadedPositions } = options;
     const bufferPoints = Number.isFinite(symbol.limit_buffer_points) ? symbol.limit_buffer_points : 0;
@@ -1252,6 +1309,12 @@ class QuickOrderService {
           expiry,
           option_type: optionType,
           strike: order.strike,
+          correlation_id: correlationId,
+          limitBufferPoints: bufferPoints,
+          tickSize: optionSymbol?.tick_size || symbol.tick_size,
+          strategy: orderDataToSend.strategy,
+          repeatUntilClosed: this._isRepeatExitAction(action),
+          ignoreSlippage: this._isRepeatExitAction(action),
         });
 
         await this._syncOptionsState(
@@ -1289,6 +1352,11 @@ class QuickOrderService {
           order_id: orderResult.orderid,
           status: orderResult.status,
           message: orderResult.message || `${operatingMode} mode: ${action} executed successfully`,
+          user_id: userId,
+          source: source,
+          trigger_type: triggerType,
+          request_id: requestId,
+          correlation_id: correlationId,
         });
 
         return {
@@ -1467,6 +1535,7 @@ class QuickOrderService {
       symbol: optionSymbol.symbol,
       strike,
     });
+    const repeatUntilClosed = this._shouldRepeatToTarget(currentPosition, targetPosition);
 
     // Prepare order data for OpenAlgo
     const orderDataToSend = orderPayloadFactory.buildOptionsOrder({
@@ -1498,6 +1567,12 @@ class QuickOrderService {
       expiry,
       option_type: optionType,
       strike,
+      correlation_id: correlationId,
+      limitBufferPoints: bufferPoints,
+      tickSize: optionSymbol.tick_size || symbol.tick_size,
+      strategy: orderDataToSend.strategy,
+      repeatUntilClosed,
+      ignoreSlippage: repeatUntilClosed,
     });
 
     // Sync position to watchlist_options_state table
@@ -1537,6 +1612,11 @@ class QuickOrderService {
       order_id: orderResult.orderid,
       status: orderResult.status,
       message: orderResult.message || `${operatingMode} mode: ${action} executed successfully`,
+      user_id: userId,
+      source: source,
+      trigger_type: triggerType,
+      request_id: requestId,
+      correlation_id: correlationId,
     });
 
     // Verify final position post-trade
@@ -1609,7 +1689,17 @@ class QuickOrderService {
    * - This saves 1 API call per close order
    */
   async _closePositions(instance, symbol, orderParams, options = {}) {
-    const { action, tradeMode, product, expiry: userExpiry } = orderParams;
+    const {
+      action,
+      tradeMode,
+      product,
+      expiry: userExpiry,
+      triggerType,
+      correlationId,
+      requestId,
+      userId,
+      source,
+    } = orderParams;
     const { useCachedPositions = false } = options;
     const bufferPoints = Number.isFinite(symbol.limit_buffer_points) ? symbol.limit_buffer_points : 0;
 
@@ -1799,6 +1889,12 @@ class QuickOrderService {
           trade_mode: orderParams.tradeMode || 'DIRECT',
           base_symbol: symbol.symbol,
           closing_symbol: position.symbol,
+          correlation_id: correlationId,
+          limitBufferPoints: bufferPoints,
+          tickSize: symbol.tick_size,
+          strategy: orderPayload.strategy,
+          repeatUntilClosed: true,
+          ignoreSlippage: true,
         });
 
         closeResults.push({
@@ -1827,6 +1923,11 @@ class QuickOrderService {
           order_id: orderResult.orderid,
           status: orderResult.status,
           message: `Position closed: ${position.symbol}`,
+          user_id: userId,
+          source: source,
+          trigger_type: triggerType,
+          request_id: requestId,
+          correlation_id: correlationId,
         });
       } catch (error) {
         log.error('Failed to close position', error, { symbol: position.symbol });
@@ -1881,7 +1982,7 @@ class QuickOrderService {
    * Reconcile options positions (close opposite positions)
    * @private
    */
-  async _reconcileOptionsPositions(instance, positions, side, optionType, product, strategy) {
+  async _reconcileOptionsPositions(instance, positions, side, optionType, product, strategy, correlationId = null) {
     const positionsToClose = [];
     const bufferPoints = 0;
 
@@ -1924,6 +2025,10 @@ class QuickOrderService {
           base_symbol: position.symbol,
           option_type: optionType,
           position_side: side,
+          correlation_id: correlationId,
+          limitBufferPoints: bufferPoints,
+          tickSize: null,
+          strategy: orderPayload.strategy,
         });
 
         closeResults.push({
@@ -2498,6 +2603,66 @@ class QuickOrderService {
       log.error('Failed to get quick orders', error);
       throw error;
     }
+  }
+
+  async syncQuickOrdersForInstance(instanceId, { days = 7 } = {}) {
+    const parsedDays = Number.isFinite(days) ? days : parseInt(days, 10);
+    const windowDays = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 7;
+    const snapshot = await marketDataFeedService.getOrderbookSnapshot(instanceId, { force: true });
+    const payload = snapshot?.data || [];
+    const orders = Array.isArray(payload) ? payload : payload.orders || payload.data || [];
+
+    const normalizeStatus = (value) => {
+      const normalized = (value || '').toString().toLowerCase();
+      if (!normalized) return null;
+      if (['open', 'pending'].includes(normalized)) return normalized;
+      if (['complete', 'completed', 'filled'].includes(normalized)) return 'complete';
+      if (['cancelled', 'canceled'].includes(normalized)) return 'cancelled';
+      if (['rejected'].includes(normalized)) return 'rejected';
+      return normalized;
+    };
+
+    const statusMap = new Map();
+    for (const order of orders) {
+      const orderId = order?.orderid || order?.order_id || order?.id;
+      if (!orderId) continue;
+      const rawStatus = order?.order_status || order?.status || order?.orderStatus || null;
+      statusMap.set(String(orderId), {
+        broker_status: rawStatus ? String(rawStatus) : null,
+        status: normalizeStatus(rawStatus),
+      });
+    }
+
+    const rows = await db.all(
+      `SELECT id, order_id, status
+       FROM quick_orders
+       WHERE instance_id = ?
+         AND order_id IS NOT NULL
+         AND created_at >= datetime('now', ?)`,
+      [instanceId, `-${windowDays} days`]
+    );
+
+    let updated = 0;
+    for (const row of rows) {
+      const entry = statusMap.get(String(row.order_id));
+      if (!entry) continue;
+      const nextStatus = entry.status || row.status;
+      await db.run(
+        `UPDATE quick_orders
+         SET broker_status = ?, status = ?, last_sync_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [entry.broker_status, nextStatus, row.id]
+      );
+      updated += 1;
+    }
+
+    return {
+      instance_id: instanceId,
+      total_checked: rows.length,
+      updated,
+      skipped: rows.length - updated,
+      fetched_at: snapshot?.fetchedAt || Date.now(),
+    };
   }
 
   /**
@@ -4015,6 +4180,21 @@ class QuickOrderService {
 
     const normalizedExchange = this._normalizeExchange(exchange) || 'DEFAULT';
     return `${normalizedExchange}::${normalizedSymbol}`;
+  }
+
+  _shouldRepeatToTarget(currentPosition, targetPosition) {
+    if (!Number.isFinite(currentPosition) || !Number.isFinite(targetPosition)) {
+      return false;
+    }
+    if (currentPosition === 0) return false;
+    if (targetPosition === 0) return true;
+    if (Math.sign(currentPosition) !== Math.sign(targetPosition)) return true;
+    return Math.abs(targetPosition) < Math.abs(currentPosition);
+  }
+
+  _isRepeatExitAction(action) {
+    return ['REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE']
+      .includes((action || '').toUpperCase());
   }
 
   _normalizeSymbolKey(symbol) {

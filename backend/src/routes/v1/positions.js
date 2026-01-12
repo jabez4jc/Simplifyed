@@ -22,6 +22,7 @@ router.use(requireAuth);
 
 function logAudit(req, action, metadata = {}) {
   if (!req.user) return;
+  req.auditLogged = true;
   db.run(
     `INSERT INTO audit_logs (user_id, action, metadata) VALUES (?, ?, ?)`,
     [req.user.id, action, JSON.stringify(metadata)]
@@ -34,7 +35,7 @@ function logAudit(req, action, metadata = {}) {
  * Query params: onlyOpen=true/false (default: false)
  * NOTE: Must be before /:instanceId routes to avoid capturing "all" as instanceId
  */
-router.get('/all', async (req, res, next) => {
+router.get('/all', requirePermission('pages.positions.view'), async (req, res, next) => {
   try {
     const onlyOpen = req.query.onlyOpen === 'true';
     const refresh = req.query.refresh !== 'false';
@@ -55,7 +56,7 @@ router.get('/all', async (req, res, next) => {
  * Get aggregated P&L across all active instances
  * NOTE: Must be before /:instanceId routes to avoid capturing "aggregate" as instanceId
  */
-router.get('/aggregate/pnl', async (req, res, next) => {
+router.get('/aggregate/pnl', requirePermission('pages.positions.view'), async (req, res, next) => {
   try {
     const instances = await instanceService.getAllInstances({
       is_active: true,
@@ -76,7 +77,7 @@ router.get('/aggregate/pnl', async (req, res, next) => {
  * GET /api/v1/positions/:instanceId
  * Get positions for an instance
  */
-router.get('/:instanceId', async (req, res, next) => {
+router.get('/:instanceId', requirePermission('pages.positions.view'), async (req, res, next) => {
   try {
     const instanceId = parseInt(req.params.instanceId, 10);
     const instance = await instanceService.getInstanceById(instanceId);
@@ -111,7 +112,7 @@ router.get('/:instanceId', async (req, res, next) => {
  * GET /api/v1/positions/:instanceId/pnl
  * Get P&L breakdown for an instance
  */
-router.get('/:instanceId/pnl', async (req, res, next) => {
+router.get('/:instanceId/pnl', requirePermission('pages.positions.view'), async (req, res, next) => {
   try {
     const instanceId = parseInt(req.params.instanceId, 10);
     const instance = await instanceService.getInstanceById(instanceId);

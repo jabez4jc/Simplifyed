@@ -4,6 +4,7 @@
 
 import express from 'express';
 import dashboardService from '../../services/dashboard.service.js';
+import { requirePermission } from '../../middleware/auth.js';
 
 const router = express.Router();
 
@@ -12,7 +13,7 @@ const router = express.Router();
  * Get aggregated dashboard metrics from all instances
  * Returns metrics grouped by Live and Analyzer modes
  */
-router.get('/metrics', async (req, res, next) => {
+router.get('/metrics', requirePermission('pages.dashboard.view'), async (req, res, next) => {
   try {
     const refresh = req.query.refresh === 'true';
     const metrics = await dashboardService.getDashboardMetrics({ refresh });

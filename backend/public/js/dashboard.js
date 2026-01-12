@@ -30,7 +30,7 @@ class DashboardApp {
     this.watchlistQuoteSnapshots = new Map();
     this.isSidebarCollapsed = false;
     this.quickOrder = window.quickOrder || null;
-    this.validViews = ['dashboard', 'instances', 'watchlists', 'orders', 'trades', 'positions', 'daily-pnl-snapshots', 'settings', 'notifications', 'api-playground'];
+    this.validViews = ['dashboard', 'instances', 'watchlists', 'orders', 'trades', 'positions', 'daily-pnl-snapshots', 'settings', 'notifications', 'audit', 'api-playground'];
     this.suppressHashChange = false;
     this._throttledWatchlistRefresh = Utils.throttle((opts = {}) => {
       this.refreshWatchlistPositions(opts);
@@ -128,8 +128,8 @@ class DashboardApp {
       { label: 'GET /api/v1/orders', method: 'GET', path: '/api/v1/orders?limit=20', headers: {}, description: 'List recent orders with filters.' },
       { label: 'GET /api/v1/orders/orderbook', method: 'GET', path: '/api/v1/orders/orderbook', headers: {}, description: 'Fetch consolidated orderbook snapshot.' },
       { label: 'GET /api/v1/orders/:id', method: 'GET', path: '/api/v1/orders/1', headers: {}, description: 'Get a single order by ID.' },
-      { label: 'POST /api/v1/orders', method: 'POST', path: '/api/v1/orders', headers: { 'Content-Type': 'application/json' }, body: '{\n  "instanceId": 1,\n  "symbol": "NIFTY23DEC24000CE",\n  "action": "BUY",\n  "quantity": 50\n}', description: 'Place a single order (manual payload).' },
-      { label: 'POST /api/v1/orders/batch', method: 'POST', path: '/api/v1/orders/batch', headers: { 'Content-Type': 'application/json' }, body: '{\n  "orders": []\n}', description: 'Place batch orders.' },
+      { label: 'POST /api/v1/orders', method: 'POST', path: '/api/v1/orders', headers: { 'Content-Type': 'application/json' }, body: '{\n  "instanceId": 1,\n  "symbol": "NIFTY23DEC24000CE",\n  "action": "BUY",\n  "quantity": 50,\n  "request_id": "manual-001"\n}', description: 'Place a single order (manual payload).' },
+      { label: 'POST /api/v1/orders/batch', method: 'POST', path: '/api/v1/orders/batch', headers: { 'Content-Type': 'application/json' }, body: '{\n  "request_id": "batch-001",\n  "orders": []\n}', description: 'Place batch orders.' },
       { label: 'POST /api/v1/orders/:id/cancel', method: 'POST', path: '/api/v1/orders/1/cancel', headers: {}, description: 'Cancel a specific order.' },
       { label: 'POST /api/v1/orders/cancel-all', method: 'POST', path: '/api/v1/orders/cancel-all', headers: {}, description: 'Cancel all open orders across instances.' },
       { label: 'POST /api/v1/orders/sync/:instanceId', method: 'POST', path: '/api/v1/orders/sync/1', headers: {}, description: 'Force sync orderbook from broker for an instance.' },
@@ -143,7 +143,7 @@ class DashboardApp {
       { label: 'POST /api/v1/positions/:instanceId/close/position', method: 'POST', path: '/api/v1/positions/1/close/position', headers: { 'Content-Type': 'application/json' }, body: '{\n  "symbol": "NIFTY23DEC24000CE",\n  "quantity": 50\n}', description: 'Close a specific position.' },
 
       // Quick Orders
-      { label: 'POST /api/v1/quickorders', method: 'POST', path: '/api/v1/quickorders', headers: { 'Content-Type': 'application/json' }, body: '{\n  "symbolId": 1,\n  "instanceId": "ALL",\n  "action": "BUY",\n  "tradeMode": "EQUITY",\n  "quantity": 1,\n  "orderType": "LIMIT"\n}', description: 'Place a quick order (auto-resolved symbols).' },
+      { label: 'POST /api/v1/quickorders', method: 'POST', path: '/api/v1/quickorders', headers: { 'Content-Type': 'application/json' }, body: '{\n  "symbolId": 1,\n  "instanceId": "ALL",\n  "action": "BUY",\n  "tradeMode": "EQUITY",\n  "quantity": 1,\n  "orderType": "LIMIT",\n  "request_id": "quick-001"\n}', description: 'Place a quick order (auto-resolved symbols).' },
       { label: 'GET /api/v1/quickorders/options/preview', method: 'GET', path: '/api/v1/quickorders/options/preview?symbolId=1&expiry=YYYY-MM-DD&optionsLeg=ATM', headers: {}, description: 'Preview CE/PE symbols + quotes for a watchlist symbol.' },
       { label: 'GET /api/v1/quickorders/futures/preview', method: 'GET', path: '/api/v1/quickorders/futures/preview?symbolId=1&expiry=YYYY-MM-DD', headers: {}, description: 'Preview futures contract + quote for a watchlist symbol.' },
       { label: 'GET /api/v1/quickorders', method: 'GET', path: '/api/v1/quickorders?limit=20', headers: {}, description: 'List quick order history.' },
@@ -233,6 +233,19 @@ class DashboardApp {
       { label: 'GET /api/v1/symbols/option-chain (DB)', method: 'GET', path: '/api/v1/symbols/option-chain?underlying=NIFTY&exchange=NFO&expiry=YYYY-MM-DD', headers: {}, description: 'Option chain via symbol route (DB).' },
       { label: 'GET /api/v1/option-chain (quotes)', method: 'GET', path: '/api/v1/option-chain?underlying=NIFTY&expiry=YYYY-MM-DD&include_quotes=true', headers: {}, description: 'Option chain including quotes and spot/forward.' },
     ];
+    this.viewPermissions = {
+      dashboard: 'pages.dashboard.view',
+      instances: 'pages.instances.view',
+      watchlists: 'pages.watchlists.view',
+      orders: 'pages.orders.view',
+      trades: 'pages.trades.view',
+      positions: 'pages.positions.view',
+      'daily-pnl-snapshots': 'pages.daily_pnl.view',
+      settings: 'pages.settings.view',
+      notifications: 'pages.notifications.view',
+      audit: 'pages.audit.view',
+      'api-playground': 'pages.api_playground.view',
+    };
   }
 
   async renderNotificationsView() {
@@ -241,6 +254,7 @@ class DashboardApp {
       const res = await api.getNotifications();
       const rows = res.data || [];
       const fmtDate = (ts) => Utils.formatDateTime(ts, true);
+      const canEdit = this.hasPermission('pages.notifications.edit');
       const items = rows.length
         ? rows
             .map(
@@ -249,7 +263,7 @@ class DashboardApp {
             <div class="text-sm font-semibold">${n.title}</div>
             <div class="ml-auto text-xs text-neutral-500">${fmtDate(n.created_at)}</div>
             <div class="text-xs text-neutral-600 w-full">${n.body || ''}</div>
-            ${n.read ? '' : `<button class="btn btn-xs btn-outline" onclick="app.markNotificationRead(${n.id})">Mark read</button>`}
+            ${n.read || !canEdit ? '' : `<button class="btn btn-xs btn-outline" onclick="app.markNotificationRead(${n.id})">Mark read</button>`}
           </div>`
             )
             .join('')
@@ -263,7 +277,7 @@ class DashboardApp {
           </div>
           <div class="space-y-2">${items}</div>
           <div class="flex gap-2">
-            <button class="btn btn-buy btn-sm" onclick="app.markAllNotificationsRead()">Mark all read</button>
+            ${canEdit ? `<button class="btn btn-buy btn-sm" onclick="app.markAllNotificationsRead()">Mark all read</button>` : ''}
             <button class="btn btn-neutral btn-outline btn-sm" onclick="app.renderNotificationsView()">Refresh</button>
             <button class="btn btn-outline btn-sm" onclick="app.triggerHealthCheck()">Run health check now</button>
           </div>
@@ -271,6 +285,97 @@ class DashboardApp {
       `;
     } catch (err) {
       contentArea.innerHTML = `<p class="text-error text-sm">Failed to load notifications: ${err.message}</p>`;
+    }
+  }
+
+  async renderAuditView() {
+    const contentArea = document.getElementById('content-area');
+    if (!this.hasPermission('pages.audit.view')) {
+      contentArea.innerHTML = `
+        <div class="p-6">
+          <div class="alert alert-warning">
+            <div>
+              <h3 class="font-semibold">Access required</h3>
+              <p class="text-sm text-neutral-600">You do not have permission to view audit logs.</p>
+            </div>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
+    const actionFilter = document.getElementById('audit-action-filter')?.value || '';
+    const userFilter = document.getElementById('audit-user-filter')?.value || '';
+    const limit = 200;
+
+    contentArea.innerHTML = `
+      <div class="p-4 space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 class="text-lg font-semibold">Audit Logs</h3>
+            <p class="text-sm text-neutral-600">Recent admin and trading actions.</p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <input id="audit-action-filter" class="input input-bordered input-sm" placeholder="Action (e.g. orders.place)" value="${Utils.escapeHTML(actionFilter)}" />
+            <input id="audit-user-filter" class="input input-bordered input-sm" placeholder="User ID" value="${Utils.escapeHTML(userFilter)}" />
+            <button class="btn btn-outline btn-sm" onclick="app.renderAuditView()">Refresh</button>
+          </div>
+        </div>
+        <div id="audit-table" class="table-container overflow-x-auto">
+          <div class="text-center text-neutral-500">Loading audit logs…</div>
+        </div>
+      </div>
+    `;
+
+    try {
+      const filters = { limit: String(limit) };
+      if (actionFilter) filters.action = actionFilter;
+      if (userFilter) filters.userId = userFilter;
+
+      const res = await api.getAuditLogs(filters);
+      const rows = res.data || [];
+      const formatMetadata = (value) => {
+        if (!value) return '-';
+        try {
+          const parsed = JSON.parse(value);
+          return `<pre class="text-xs whitespace-pre-wrap">${Utils.escapeHTML(JSON.stringify(parsed, null, 2))}</pre>`;
+        } catch {
+          return `<span class="text-xs text-neutral-600">${Utils.escapeHTML(String(value))}</span>`;
+        }
+      };
+
+      const body = rows.length
+        ? rows.map((row) => `
+            <tr>
+              <td>${Utils.formatDateTime(row.created_at, true)}</td>
+              <td>${Utils.escapeHTML(row.user_email || row.user_id || 'System')}</td>
+              <td>${Utils.escapeHTML(row.action || '-')}</td>
+              <td>${formatMetadata(row.metadata)}</td>
+            </tr>
+          `).join('')
+        : '<tr><td colspan="4" class="text-center text-neutral-500">No audit entries.</td></tr>';
+
+      const table = `
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>User</th>
+              <th>Action</th>
+              <th>Metadata</th>
+            </tr>
+          </thead>
+          <tbody>${body}</tbody>
+        </table>
+      `;
+
+      const container = document.getElementById('audit-table');
+      if (container) container.innerHTML = table;
+    } catch (err) {
+      const container = document.getElementById('audit-table');
+      if (container) {
+        container.innerHTML = `<p class="text-error text-sm">Failed to load audit logs: ${err.message}</p>`;
+      }
     }
   }
 
@@ -310,13 +415,13 @@ class DashboardApp {
   async renderApiPlaygroundView() {
     const contentArea = document.getElementById('content-area');
 
-    if (!this.isAdmin()) {
+    if (!this.hasPermission('pages.api_playground.view')) {
       contentArea.innerHTML = `
         <div class="p-6">
           <div class="alert alert-warning">
             <div>
-              <h3 class="font-semibold">Admin access required</h3>
-              <p class="text-sm text-neutral-600">Only admins can use the API Playground.</p>
+              <h3 class="font-semibold">Access required</h3>
+              <p class="text-sm text-neutral-600">You do not have permission to use the API Playground.</p>
             </div>
           </div>
         </div>
@@ -1047,12 +1152,9 @@ class DashboardApp {
       return;
     }
 
-    if (viewName === 'api-playground' && !this.isAdmin()) {
-      Utils.showToast('API Playground is restricted to admins.', 'warning');
-      return;
-    }
-    if (viewName === 'daily-pnl-snapshots' && !this.hasPermission('monitor.view')) {
-      Utils.showToast('Daily snapshots are restricted to admins and monitors.', 'warning');
+    const requiredPerm = this.viewPermissions[viewName];
+    if (requiredPerm && !this.hasPermission(requiredPerm)) {
+      Utils.showToast('You do not have access to this page.', 'warning');
       return;
     }
 
@@ -1177,6 +1279,9 @@ class DashboardApp {
           break;
         case 'notifications':
           await this.renderNotificationsView();
+          break;
+        case 'audit':
+          await this.renderAuditView();
           break;
         case 'api-playground':
           await this.renderApiPlaygroundView();
@@ -3244,10 +3349,45 @@ class DashboardApp {
             <div class="text-center text-neutral-500">Loading orders…</div>
           </div>
         </div>
+        <div class="card">
+          <div class="card-header flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 class="card-title">Order History</h3>
+              <p class="text-sm text-neutral-600">Stored watchlist orders with provenance fields.</p>
+            </div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <input id="order-history-instance" class="input input-bordered input-sm" placeholder="Instance ID" />
+              <input id="order-history-status" class="input input-bordered input-sm" placeholder="Status" />
+              <button class="btn btn-outline btn-sm" onclick="app.loadOrderHistory()">Refresh</button>
+            </div>
+          </div>
+          <div class="p-3" id="order-history-panel">
+            <div class="text-center text-neutral-500">Loading order history…</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 class="card-title">Quick Orders</h3>
+              <p class="text-sm text-neutral-600">Quick order ledger with provenance and broker sync status.</p>
+            </div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <input id="quick-orders-instance" class="input input-bordered input-sm" placeholder="Instance ID" />
+              <input id="quick-orders-days" class="input input-bordered input-sm" placeholder="Days" value="7" />
+              <button class="btn btn-outline btn-sm" onclick="app.loadQuickOrdersHistory()">Refresh</button>
+              <button class="btn btn-neutral btn-outline btn-sm" onclick="app.syncQuickOrdersHistory()">Sync Broker Status</button>
+            </div>
+          </div>
+          <div class="p-3" id="quick-orders-panel">
+            <div class="text-center text-neutral-500">Loading quick orders…</div>
+          </div>
+        </div>
       </div>
     `;
 
     await this.loadOrders(this.currentOrderFilter);
+    await this.loadOrderHistory();
+    await this.loadQuickOrdersHistory();
   }
 
   async loadOrders(status = '') {
@@ -3266,6 +3406,162 @@ class DashboardApp {
       if (panel) {
         panel.innerHTML = `<p class="text-error text-center">${error.message}</p>`;
       }
+    }
+  }
+
+  async loadOrderHistory() {
+    const panel = document.getElementById('order-history-panel');
+    if (!panel) return;
+    try {
+      const instanceInput = document.getElementById('order-history-instance');
+      const statusInput = document.getElementById('order-history-status');
+      const filters = {};
+      if (instanceInput?.value) filters.instanceId = instanceInput.value.trim();
+      if (statusInput?.value) filters.status = statusInput.value.trim();
+      const response = await api.getOrders(filters);
+      this.renderOrderHistoryTable(response.data || []);
+    } catch (error) {
+      panel.innerHTML = `<p class="text-error text-center">${error.message}</p>`;
+    }
+  }
+
+  renderOrderHistoryTable(orders = []) {
+    const panel = document.getElementById('order-history-panel');
+    if (!panel) return;
+    if (!orders.length) {
+      panel.innerHTML = '<p class="text-center text-neutral-600">No order history found.</p>';
+      return;
+    }
+
+    const rows = orders.map((order) => `
+      <tr>
+        <td>${Utils.escapeHTML(order.symbol || '-')}</td>
+        <td>${Utils.escapeHTML(order.exchange || '-')}</td>
+        <td>${Utils.escapeHTML(order.side || '-')}</td>
+        <td>${order.quantity ?? '-'}</td>
+        <td>${Utils.escapeHTML(order.status || '-')}</td>
+        <td>${Utils.escapeHTML(order.instance_name || order.instance_id || '-')}</td>
+        <td>${Utils.escapeHTML(order.watchlist_name || order.watchlist_id || '-')}</td>
+        <td>${Utils.escapeHTML(order.source || '-')}</td>
+        <td>${Utils.escapeHTML(order.trigger_type || '-')}</td>
+        <td class="text-xs">${Utils.escapeHTML(order.request_id || '-')}</td>
+        <td class="text-xs">${Utils.escapeHTML(order.correlation_id || '-')}</td>
+        <td>${Utils.escapeHTML(order.user_id || '-')}</td>
+        <td class="text-right">${Utils.formatDateTime(order.placed_at, true)}</td>
+      </tr>
+    `).join('');
+
+    panel.innerHTML = `
+      <div class="table-container overflow-x-auto">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Exchange</th>
+              <th>Side</th>
+              <th>Qty</th>
+              <th>Status</th>
+              <th>Instance</th>
+              <th>Watchlist</th>
+              <th>Source</th>
+              <th>Trigger</th>
+              <th>Request ID</th>
+              <th>Correlation</th>
+              <th>User ID</th>
+              <th class="text-right">Placed</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  async loadQuickOrdersHistory() {
+    const panel = document.getElementById('quick-orders-panel');
+    if (!panel) return;
+    try {
+      const instanceInput = document.getElementById('quick-orders-instance');
+      const filters = { limit: 200 };
+      if (instanceInput?.value) filters.instanceId = instanceInput.value.trim();
+      const response = await api.getQuickOrders(filters);
+      this.renderQuickOrdersTable(response.data || []);
+    } catch (error) {
+      panel.innerHTML = `<p class="text-error text-center">${error.message}</p>`;
+    }
+  }
+
+  renderQuickOrdersTable(orders = []) {
+    const panel = document.getElementById('quick-orders-panel');
+    if (!panel) return;
+    if (!orders.length) {
+      panel.innerHTML = '<p class="text-center text-neutral-600">No quick orders found.</p>';
+      return;
+    }
+
+    const rows = orders.map((order) => `
+      <tr>
+        <td>${Utils.escapeHTML(order.underlying || '-')}</td>
+        <td>${Utils.escapeHTML(order.symbol || '-')}</td>
+        <td>${Utils.escapeHTML(order.exchange || '-')}</td>
+        <td>${Utils.escapeHTML(order.action || '-')}</td>
+        <td>${Utils.escapeHTML(order.trade_mode || '-')}</td>
+        <td>${order.quantity ?? '-'}</td>
+        <td>${Utils.escapeHTML(order.status || '-')}</td>
+        <td>${Utils.escapeHTML(order.broker_status || '-')}</td>
+        <td>${Utils.escapeHTML(order.source || '-')}</td>
+        <td>${Utils.escapeHTML(order.trigger_type || '-')}</td>
+        <td class="text-xs">${Utils.escapeHTML(order.request_id || '-')}</td>
+        <td class="text-xs">${Utils.escapeHTML(order.correlation_id || '-')}</td>
+        <td>${Utils.escapeHTML(order.user_id || '-')}</td>
+        <td class="text-right">${Utils.formatDateTime(order.created_at, true)}</td>
+        <td class="text-right">${order.last_sync_at ? Utils.formatDateTime(order.last_sync_at, true) : '-'}</td>
+      </tr>
+    `).join('');
+
+    panel.innerHTML = `
+      <div class="table-container overflow-x-auto">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Underlying</th>
+              <th>Symbol</th>
+              <th>Exchange</th>
+              <th>Action</th>
+              <th>Mode</th>
+              <th>Qty</th>
+              <th>Status</th>
+              <th>Broker Status</th>
+              <th>Source</th>
+              <th>Trigger</th>
+              <th>Request ID</th>
+              <th>Correlation</th>
+              <th>User ID</th>
+              <th class="text-right">Created</th>
+              <th class="text-right">Last Sync</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  async syncQuickOrdersHistory() {
+    try {
+      const instanceInput = document.getElementById('quick-orders-instance');
+      const daysInput = document.getElementById('quick-orders-days');
+      const instanceId = instanceInput?.value ? parseInt(instanceInput.value, 10) : null;
+      if (!instanceId || Number.isNaN(instanceId)) {
+        Utils.showToast('Enter a valid Instance ID to sync', 'error');
+        return;
+      }
+      const days = daysInput?.value ? parseInt(daysInput.value, 10) : 7;
+      await api.syncQuickOrders(instanceId, days);
+      Utils.showToast('Quick orders synced', 'success');
+      await this.loadQuickOrdersHistory();
+    } catch (error) {
+      Utils.showToast(`Failed to sync quick orders: ${error.message}`, 'error');
     }
   }
 

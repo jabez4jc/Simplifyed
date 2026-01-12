@@ -580,7 +580,8 @@ class WatchlistService {
       `SELECT i.*
        FROM instances i
        JOIN watchlist_instances wi ON i.id = wi.instance_id
-       WHERE wi.watchlist_id = ? AND i.is_active = 1`,
+       WHERE wi.watchlist_id = ?
+         AND i.is_active = 1`,
       [enriched.id]
     );
 

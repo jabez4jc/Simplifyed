@@ -7,10 +7,11 @@ import express from 'express';
 import marketDataFeedService from '../../services/market-data-feed.service.js';
 import instanceService from '../../services/instance.service.js';
 import { normalizeTradebookEntry } from '../../utils/tradebook-utils.js';
+import { requirePermission } from '../../middleware/auth.js';
 
 const router = express.Router();
 
-router.get('/tradebook', async (req, res, next) => {
+router.get('/tradebook', requirePermission('pages.trades.view'), async (req, res, next) => {
   try {
     const instances = await instanceService.getAllInstances({ is_active: true });
     const payload = {

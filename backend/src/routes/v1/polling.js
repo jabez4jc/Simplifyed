@@ -15,6 +15,7 @@ router.use(requireAuth);
 
 function logAudit(req, action, metadata = {}) {
   if (!req.user) return;
+  req.auditLogged = true;
   db.run(
     `INSERT INTO audit_logs (user_id, action, metadata) VALUES (?, ?, ?)`,
     [req.user.id, action, JSON.stringify(metadata)]

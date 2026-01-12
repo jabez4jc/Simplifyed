@@ -5,6 +5,7 @@
 
 import express from 'express';
 import quickOrderService from '../../services/quick-order.service.js';
+import idempotencyService from '../../services/idempotency.service.js';
 import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';
@@ -15,6 +16,7 @@ router.use(requireAuth);
 
 function logAudit(req, action, metadata = {}) {
   if (!req.user) return;
+  req.auditLogged = true;
   db.run(
     `INSERT INTO audit_logs (user_id, action, metadata) VALUES (?, ?, ?)`,
     [req.user.id, action, JSON.stringify(metadata)]
@@ -56,7 +58,14 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
       operatingMode,
       strikePolicy,
       stepLots,
+      request_id: requestId,
+      trigger_type: triggerType,
+      correlation_id: correlationId,
     } = req.body;
+
+    if (requestId !== undefined && (!requestId || typeof requestId !== 'string')) {
+      throw new ValidationError('request_id must be a non-empty string');
+    }
 
     // Validate required fields
     if (!symbolId) {
@@ -132,7 +141,7 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
     });
 
     // Place quick order
-    const result = await quickOrderService.placeQuickOrder({
+    const normalizedPayload = {
       symbolId: parsedSymbolId,
       action,
       tradeMode,
@@ -145,7 +154,40 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
       operatingMode: operatingMode || 'BUYER',
       strikePolicy: strikePolicy || 'FLOAT_OFS',
       stepLots: stepLots ? parseInt(stepLots, 10) : undefined,
-    });
+      triggerType: triggerType || 'Manual',
+      correlationId: correlationId || req.correlationId || null,
+      requestId,
+      userId: req.user?.id || null,
+      source: 'quickorder',
+    };
+
+    if (requestId) {
+      const { hit, record, mismatch } = await idempotencyService.getOrCreate({
+        requestId,
+        source: 'quickorder',
+        payload: normalizedPayload,
+      });
+      if (mismatch) {
+        return res.status(409).json({
+          status: 'error',
+          message: 'Request ID reuse with different payload',
+        });
+      }
+      if (hit && record?.response_json) {
+        const cached = JSON.parse(record.response_json);
+        res.set('X-Idempotency-Hit', 'true');
+        const statusCode = record.status_code || (record.status === 'success' ? 201 : 409);
+        return res.status(statusCode).json(cached);
+      }
+      if (hit) {
+        return res.status(409).json({
+          status: 'error',
+          message: 'Request is already in progress',
+        });
+      }
+    }
+
+    const result = await quickOrderService.placeQuickOrder(normalizedPayload);
 
     // Determine overall success
     const totalOrders = result.results.length;
@@ -153,11 +195,9 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
     const uncertainOrders = result.results.filter(r => r.uncertain).length;
     const failedOrders = totalOrders - successfulOrders - uncertainOrders;
 
-    if ((req.user?.role || '').toUpperCase() !== 'ADMIN') {
-      logAudit(req, 'quickorder.place', { symbolId: parsedSymbolId, action, tradeMode });
-    }
+    logAudit(req, 'quickorder.place', { symbolId: parsedSymbolId, action, tradeMode });
 
-    res.status(201).json({
+    const responsePayload = {
       status: 'success',
       message: `Quick order placed: ${successfulOrders} successful, ${failedOrders} failed${uncertainOrders ? `, ${uncertainOrders} unknown` : ''}`,
       data: {
@@ -169,8 +209,33 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
           uncertain: uncertainOrders,
         },
       },
-    });
+    };
+
+    if (requestId) {
+      await idempotencyService.complete({
+        requestId,
+        source: 'quickorder',
+        response: responsePayload,
+        status: 'success',
+        statusCode: 201,
+      });
+    }
+
+    res.status(201).json(responsePayload);
   } catch (error) {
+    const requestId = req.body?.request_id;
+    if (requestId) {
+      await idempotencyService.complete({
+        requestId,
+        source: 'quickorder',
+        response: {
+          status: 'error',
+          message: error.message,
+        },
+        status: 'failed',
+        statusCode: error.statusCode || 500,
+      });
+    }
     next(error);
   }
 });
@@ -179,7 +244,7 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
  * GET /api/v1/quickorders/options/preview
  * Resolve the CE/PE symbols + quotes for the current options configuration
  */
-router.get('/options/preview', async (req, res, next) => {
+router.get('/options/preview', requirePermission('pages.watchlists.view'), async (req, res, next) => {
   try {
     const { symbolId, expiry, optionsLeg } = req.query;
 
@@ -207,7 +272,7 @@ router.get('/options/preview', async (req, res, next) => {
  * GET /api/v1/quickorders/futures/preview
  * Resolve the futures contract + quote for the current futures configuration
  */
-router.get('/futures/preview', async (req, res, next) => {
+router.get('/futures/preview', requirePermission('pages.watchlists.view'), async (req, res, next) => {
   try {
     const { symbolId, expiry } = req.query;
 
@@ -242,7 +307,7 @@ router.get('/futures/preview', async (req, res, next) => {
  * - limit: Limit number of results (default: 100)
  * - offset: Offset for pagination (default: 0)
  */
-router.get('/', async (req, res, next) => {
+router.get('/', requirePermission('pages.orders.view'), async (req, res, next) => {
   try {
     const filters = {};
 
@@ -299,7 +364,7 @@ router.get('/', async (req, res, next) => {
  * GET /api/v1/quickorders/:id
  * Get a specific quick order by ID
  */
-router.get('/:id', async (req, res, next) => {
+router.get('/:id', requirePermission('pages.orders.view'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
 
@@ -327,7 +392,7 @@ router.get('/:id', async (req, res, next) => {
  * - tradeMode: Filter by trade mode (optional)
  * - limit: Limit number of results (default: 50)
  */
-router.get('/symbol/:symbol', async (req, res, next) => {
+router.get('/symbol/:symbol', requirePermission('pages.orders.view'), async (req, res, next) => {
   try {
     const { symbol } = req.params;
 
@@ -376,7 +441,7 @@ router.get('/symbol/:symbol', async (req, res, next) => {
  * - symbol: Filter by symbol (optional)
  * - days: Number of days to include (default: 7)
  */
-router.get('/stats/summary', async (req, res, next) => {
+router.get('/stats/summary', requirePermission('pages.orders.view'), async (req, res, next) => {
   try {
     const filters = {};
 
@@ -403,6 +468,34 @@ router.get('/stats/summary', async (req, res, next) => {
     res.json({
       status: 'success',
       data: stats,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/quickorders/sync/:instanceId
+ * Sync quick order status with broker orderbook
+ */
+router.post('/sync/:instanceId', requirePermission('orders.place'), async (req, res, next) => {
+  try {
+    const instanceId = parseInt(req.params.instanceId, 10);
+    if (Number.isNaN(instanceId) || instanceId <= 0) {
+      throw new ValidationError('instanceId must be a positive integer');
+    }
+    const days = req.query.days ? parseInt(req.query.days, 10) : 7;
+    if (Number.isNaN(days) || days <= 0 || days > 90) {
+      throw new ValidationError('days must be between 1 and 90');
+    }
+
+    const result = await quickOrderService.syncQuickOrdersForInstance(instanceId, { days });
+
+    logAudit(req, 'quickorders.sync', { instanceId, days });
+
+    res.json({
+      status: 'success',
+      data: result,
     });
   } catch (error) {
     next(error);

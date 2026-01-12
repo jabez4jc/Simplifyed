@@ -33,6 +33,7 @@ function hasPermission(req, key) {
 
 function logAudit(req, action, metadata = {}) {
   if (!req.user) return;
+  req.auditLogged = true;
   db.run(
     `INSERT INTO audit_logs (user_id, action, metadata) VALUES (?, ?, ?)`,
     [req.user.id, action, JSON.stringify(metadata)]
@@ -43,7 +44,7 @@ function logAudit(req, action, metadata = {}) {
  * GET /api/v1/instances
  * Get all instances with optional filters
  */
-router.get('/', async (req, res, next) => {
+router.get('/', requirePermission('pages.instances.view'), async (req, res, next) => {
   try {
     const filters = {};
 
@@ -76,7 +77,7 @@ router.get('/', async (req, res, next) => {
  * Get admin instances (primary and secondary)
  * NOTE: Must be before /:id route to avoid capturing "admin" as id
  */
-router.get('/admin/instances', async (req, res, next) => {
+router.get('/admin/instances', requirePermission('pages.instances.view'), async (req, res, next) => {
   try {
     const adminInstances = await instanceService.getAdminInstances();
 
@@ -95,7 +96,7 @@ router.get('/admin/instances', async (req, res, next) => {
  * Used for frontend quote polling
  * NOTE: Must be before /:id route to avoid capturing "market-data" as id
  */
-router.get('/market-data/instance', async (req, res, next) => {
+router.get('/market-data/instance', requirePermission('pages.instances.view'), async (req, res, next) => {
   try {
     const instance = await marketDataInstanceService.getMarketDataInstance();
 
@@ -113,7 +114,7 @@ router.get('/market-data/instance', async (req, res, next) => {
  * Get all market data instances (primary and secondary) for status display
  * NOTE: Must be before /:id route
  */
-router.get('/market-data/all', async (req, res, next) => {
+router.get('/market-data/all', requirePermission('pages.instances.view'), async (req, res, next) => {
   try {
     const instances = await marketDataInstanceService.getMarketDataInstances();
 
@@ -131,7 +132,7 @@ router.get('/market-data/all', async (req, res, next) => {
  * GET /api/v1/instances/:id
  * Get instance by ID
  */
-router.get('/:id', async (req, res, next) => {
+router.get('/:id', requirePermission('pages.instances.view'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const instance = await instanceService.getInstanceById(id);

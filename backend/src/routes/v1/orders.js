@@ -5,6 +5,7 @@
 
 import express from 'express';
 import orderService from '../../services/order.service.js';
+import idempotencyService from '../../services/idempotency.service.js';
 import marketDataFeedService from '../../services/market-data-feed.service.js';
 import instanceService from '../../services/instance.service.js';
 import { log } from '../../core/logger.js';
@@ -20,6 +21,7 @@ router.use(requireAuth);
 
 function logAudit(req, action, metadata = {}) {
   if (!req.user) return;
+  req.auditLogged = true;
   db.run(
     `INSERT INTO audit_logs (user_id, action, metadata) VALUES (?, ?, ?)`,
     [req.user.id, action, JSON.stringify(metadata)]
@@ -30,7 +32,7 @@ function logAudit(req, action, metadata = {}) {
  * GET /api/v1/orders
  * Get orders with filters
  */
-router.get('/', async (req, res, next) => {
+router.get('/', requirePermission('pages.orders.view'), async (req, res, next) => {
   try {
     const filters = {};
 
@@ -70,7 +72,7 @@ router.get('/', async (req, res, next) => {
  * GET /api/v1/orders/orderbook
  * Orderbook data grouped by live vs analyzer instances (cached)
  */
-router.get('/orderbook', async (req, res, next) => {
+router.get('/orderbook', requirePermission('pages.orders.view'), async (req, res, next) => {
   try {
     const statusFilter = req.query.status;
 
@@ -162,7 +164,7 @@ router.get('/orderbook', async (req, res, next) => {
  * GET /api/v1/orders/:id
  * Get order by ID
  */
-router.get('/:id', async (req, res, next) => {
+router.get('/:id', requirePermission('pages.orders.view'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const order = await orderService.getOrderById(id);
@@ -182,14 +184,77 @@ router.get('/:id', async (req, res, next) => {
  */
 router.post('/', requirePermission('orders.place'), async (req, res, next) => {
   try {
-    const order = await orderService.placeOrder(req.body);
+    const requestId = req.body?.request_id;
+    if (requestId !== undefined && (!requestId || typeof requestId !== 'string')) {
+      throw new ValidationError('request_id must be a non-empty string');
+    }
 
-    res.status(201).json({
+    if (requestId) {
+      const { hit, record, mismatch } = await idempotencyService.getOrCreate({
+        requestId,
+        source: 'manual_order',
+        payload: req.body,
+      });
+      if (mismatch) {
+        return res.status(409).json({
+          status: 'error',
+          message: 'Request ID reuse with different payload',
+        });
+      }
+      if (hit && record?.response_json) {
+        const cached = JSON.parse(record.response_json);
+        res.set('X-Idempotency-Hit', 'true');
+        const statusCode = record.status_code || (record.status === 'success' ? 201 : 409);
+        return res.status(statusCode).json(cached);
+      }
+      if (hit) {
+        return res.status(409).json({
+          status: 'error',
+          message: 'Request is already in progress',
+        });
+      }
+    }
+
+    const order = await orderService.placeOrder({
+      ...req.body,
+      user_id: req.user?.id || null,
+      source: 'manual',
+      trigger_type: req.body?.trigger_type || 'Manual',
+      correlation_id: req.correlationId || null,
+      request_id: requestId || null,
+    });
+
+    const responsePayload = {
       status: 'success',
       message: 'Order placed successfully',
       data: order,
-    });
+    };
+
+    if (requestId) {
+      await idempotencyService.complete({
+        requestId,
+        source: 'manual_order',
+        response: responsePayload,
+        status: 'success',
+        statusCode: 201,
+      });
+    }
+
+    res.status(201).json(responsePayload);
   } catch (error) {
+    const requestId = req.body?.request_id;
+    if (requestId) {
+      await idempotencyService.complete({
+        requestId,
+        source: 'manual_order',
+        response: {
+          status: 'error',
+          message: error.message,
+        },
+        status: 'failed',
+        statusCode: error.statusCode || 500,
+      });
+    }
     next(error);
   }
 });
@@ -200,18 +265,57 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
  */
 router.post('/batch', requirePermission('orders.place'), async (req, res, next) => {
   try {
-    const { orders } = req.body;
+    const { orders, request_id: requestId } = req.body;
+
+    if (requestId !== undefined && (!requestId || typeof requestId !== 'string')) {
+      throw new ValidationError('request_id must be a non-empty string');
+    }
 
     if (!Array.isArray(orders)) {
       throw new ValidationError('orders must be an array');
     }
 
-    const results = await orderService.placeMultipleOrders(orders);
+    if (requestId) {
+      const { hit, record, mismatch } = await idempotencyService.getOrCreate({
+        requestId,
+        source: 'manual_batch',
+        payload: req.body,
+      });
+      if (mismatch) {
+        return res.status(409).json({
+          status: 'error',
+          message: 'Request ID reuse with different payload',
+        });
+      }
+      if (hit && record?.response_json) {
+        const cached = JSON.parse(record.response_json);
+        res.set('X-Idempotency-Hit', 'true');
+        const statusCode = record.status_code || (record.status === 'success' ? 201 : 409);
+        return res.status(statusCode).json(cached);
+      }
+      if (hit) {
+        return res.status(409).json({
+          status: 'error',
+          message: 'Request is already in progress',
+        });
+      }
+    }
+
+    const enrichedOrders = orders.map((order, index) => ({
+      ...order,
+      user_id: req.user?.id || null,
+      source: 'manual_batch',
+      trigger_type: req.body?.trigger_type || 'Manual',
+      correlation_id: req.correlationId || null,
+      request_id: requestId ? `${requestId}:${index + 1}` : null,
+    }));
+
+    const results = await orderService.placeMultipleOrders(enrichedOrders);
 
     const successful = results.filter(r => r.success).length;
     const failed = results.filter(r => !r.success).length;
 
-    res.status(201).json({
+    const responsePayload = {
       status: 'success',
       message: `Placed ${successful} orders, ${failed} failed`,
       data: {
@@ -222,8 +326,33 @@ router.post('/batch', requirePermission('orders.place'), async (req, res, next) 
           failed,
         },
       },
-    });
+    };
+
+    if (requestId) {
+      await idempotencyService.complete({
+        requestId,
+        source: 'manual_batch',
+        response: responsePayload,
+        status: 'success',
+        statusCode: 201,
+      });
+    }
+
+    res.status(201).json(responsePayload);
   } catch (error) {
+    const requestId = req.body?.request_id;
+    if (requestId) {
+      await idempotencyService.complete({
+        requestId,
+        source: 'manual_batch',
+        response: {
+          status: 'error',
+          message: error.message,
+        },
+        status: 'failed',
+        statusCode: error.statusCode || 500,
+      });
+    }
     next(error);
   }
 });

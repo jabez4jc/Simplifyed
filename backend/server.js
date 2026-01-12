@@ -32,12 +32,14 @@ import authLocalService from './src/services/auth-local.service.js';
 import wsGatewayService from './src/services/ws-gateway.service.js';
 import instanceService from './src/services/instance.service.js';
 import tradingviewWebhookRoutes from './src/routes/tradingview-webhook.js';
+import idempotencyService from './src/services/idempotency.service.js';
 
 // Middleware
 import { configureSession, requireAuth, optionalAuth, getUserWithRole } from './src/middleware/auth.js';
 import { errorHandler, notFoundHandler } from './src/middleware/error-handler.js';
-import { requestLogger, bodyParserErrorHandler } from './src/middleware/request-logger.js';
+import { correlationId, requestLogger, bodyParserErrorHandler } from './src/middleware/request-logger.js';
 import { checkInstrumentsRefresh } from './src/middleware/instruments-refresh.middleware.js';
+import { auditLogger } from './src/middleware/audit-logger.js';
 
 // Routes
 import apiV1Routes from './src/routes/v1/index.js';
@@ -164,6 +166,9 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Body parser error handler
 app.use(bodyParserErrorHandler);
 
+// Correlation ID
+app.use(correlationId);
+
 // Request logging
 app.use(requestLogger);
 
@@ -176,12 +181,16 @@ app.use(optionalAuth);
 // Instruments refresh check (runs in background after authentication)
 app.use(checkInstrumentsRefresh);
 
+// Audit logger for mutating API requests
+app.use('/api/v1', auditLogger);
+
 /**
  * Routes
  */
 
 // TradingView broadcast webhook (public token auth)
 app.use('/webhook/tradingview', tradingviewWebhookRoutes);
+app.use('/webhook/tradingview', auditLogger);
 
 // API v1
 app.use('/api/v1', apiV1Routes);
@@ -293,6 +302,12 @@ async function startServer() {
     // Load configuration from database
     await config.loadFromDatabase();
     log.info('Configuration loaded from database');
+
+    // Clean up expired idempotency keys on boot and every 6 hours
+    await idempotencyService.cleanupExpired();
+    setInterval(() => {
+      idempotencyService.cleanupExpired().catch(() => {});
+    }, 6 * 60 * 60 * 1000);
 
     // Initialize OpenAlgo client rate limits from database
     await openalgoClient.initializeRateLimits();

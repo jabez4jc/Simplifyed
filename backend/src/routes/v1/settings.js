@@ -17,7 +17,7 @@ router.use(requireAuth);
  * GET /api/v1/settings
  * Get all settings grouped by category
  */
-router.get('/', requirePermission('settings.manage'), async (req, res, next) => {
+router.get('/', requirePermission('pages.settings.view'), async (req, res, next) => {
   try {
     const settings = await settingsService.getAllSettings();
     res.json({
@@ -33,7 +33,7 @@ router.get('/', requirePermission('settings.manage'), async (req, res, next) => 
  * GET /api/v1/settings/categories
  * Get all setting categories
  */
-router.get('/categories', requirePermission('settings.manage'), async (req, res, next) => {
+router.get('/categories', requirePermission('pages.settings.view'), async (req, res, next) => {
   try {
     const categories = await settingsService.getCategories();
     res.json({
@@ -49,7 +49,7 @@ router.get('/categories', requirePermission('settings.manage'), async (req, res,
  * GET /api/v1/settings/:category
  * Get settings by category
  */
-router.get('/:category', requirePermission('settings.manage'), async (req, res, next) => {
+router.get('/:category', requirePermission('pages.settings.view'), async (req, res, next) => {
   try {
     const { category } = req.params;
     const settings = await settingsService.getSettingsByCategory(category);
@@ -66,7 +66,7 @@ router.get('/:category', requirePermission('settings.manage'), async (req, res, 
  * GET /api/v1/settings/key/:key
  * Get a single setting by key
  */
-router.get('/key/:key', requirePermission('settings.manage'), async (req, res, next) => {
+router.get('/key/:key', requirePermission('pages.settings.view'), async (req, res, next) => {
   try {
     const { key } = req.params;
     const setting = await settingsService.getSetting(key);
@@ -125,7 +125,7 @@ router.put('/:key', requirePermission('settings.manage'), async (req, res, next)
 });
 
 // Instance health test config
-router.get('/instance-health-tests/config', requirePermission('settings.manage'), async (req, res, next) => {
+router.get('/instance-health-tests/config', requirePermission('pages.settings.view'), async (req, res, next) => {
   try {
     const cfg = await settingsService.getSetting('instance_health_tests');
     const raw = cfg?.value ?? cfg?.rawValue;

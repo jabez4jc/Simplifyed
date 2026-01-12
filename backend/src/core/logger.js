@@ -223,7 +223,7 @@ export const log = {
       path: req.url,
       status: res.statusCode,
       duration_ms: duration,
-      trace_id: req.headers['x-request-id'],
+      trace_id: req.correlationId || req.headers['x-request-id'],
     }));
   },
 

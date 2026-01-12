@@ -116,6 +116,11 @@ class APIClient {
   async getNotifications() {
     return this.request('/notifications');
   }
+
+  async getAuditLogs(filters = {}) {
+    const params = new URLSearchParams(filters);
+    return this.request(`/audit?${params}`);
+  }
   async markNotificationRead(id) {
     return this.request(`/notifications/${id}/read`, { method: 'POST' });
   }
@@ -694,6 +699,13 @@ class APIClient {
   async getQuickOrderStats(filters = {}) {
     const params = new URLSearchParams(filters);
     return this.request(`/quickorders/stats/summary?${params}`);
+  }
+
+  async syncQuickOrders(instanceId, days = 7) {
+    const params = new URLSearchParams({ days: String(days) });
+    return this.request(`/quickorders/sync/${instanceId}?${params.toString()}`, {
+      method: 'POST',
+    });
   }
 
   // Auth APIs

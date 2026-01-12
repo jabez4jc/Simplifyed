@@ -6,11 +6,12 @@
 
 import db from '../core/database.js';
 import log from '../core/logger.js';
+import config from '../core/config.js';
 import openalgoClient from '../integrations/openalgo/client.js';
-import marketDataFeedService from './market-data-feed.service.js';
 import telegramService from './telegram.service.js';
 import { parseIntSafe, parseFloatSafe } from '../utils/sanitizers.js';
 import { extractAveragePrice, extractLtp } from '../utils/price-extraction.js';
+import { toISTDate } from '../utils/time.js';
 
 class OrderMonitorService {
   constructor() {
@@ -19,6 +20,7 @@ class OrderMonitorService {
     this.monitorInterval = null;
     this.checkedPositions = new Map(); // Prevent duplicate triggers
     this.monitorIntervalMs = 5000; // 5 seconds
+    this.lastBlackoutLogAt = 0;
   }
 
   /**
@@ -68,6 +70,11 @@ class OrderMonitorService {
       return;
     }
 
+    if (isGeneralEndpointBlackout()) {
+      this._logBlackoutSkip();
+      return;
+    }
+
     this.isCycleRunning = true;
     try {
       const startTime = Date.now();
@@ -107,25 +114,13 @@ class OrderMonitorService {
    */
   async monitorInstance(instance) {
     try {
-      // Prefer cached position snapshot if fresh (<5s), else fetch live and refresh cache
-      const snapshot = marketDataFeedService.getPositionSnapshot(instance.id);
-      const cacheFreshMs = 5000;
-      let positions;
-
-      if (snapshot && Date.now() - snapshot.fetchedAt < cacheFreshMs) {
-        positions = snapshot.data || [];
-        log.debug('OrderMonitor using cached positions', { instance: instance.id });
-      } else {
-        const positionsResponse = await openalgoClient.getPositionBook(instance);
-        if (!positionsResponse || !positionsResponse.data) {
-          log.debug('No positions data', { instance: instance.id });
-          return;
-        }
-        positions = positionsResponse.data;
-        // Update cache for downstream consumers
-        marketDataFeedService.setPositionSnapshot(instance.id, positions);
-        log.debug('OrderMonitor fetched live positions', { instance: instance.id });
+      const positionsResponse = await openalgoClient.getPositionBook(instance);
+      if (!positionsResponse || !positionsResponse.data) {
+        log.debug('No positions data', { instance: instance.id });
+        return;
       }
+      const positions = positionsResponse.data;
+      log.debug('OrderMonitor fetched live positions', { instance: instance.id });
 
       // Filter only open positions
       const openPositions = positions.filter((p) => {
@@ -149,6 +144,15 @@ class OrderMonitorService {
         error: error.message,
       });
     }
+  }
+
+  _logBlackoutSkip() {
+    const now = Date.now();
+    if (now - this.lastBlackoutLogAt < 5 * 60 * 1000) {
+      return;
+    }
+    this.lastBlackoutLogAt = now;
+    log.info('Order monitor paused during market blackout window');
   }
 
   /**
@@ -591,6 +595,29 @@ class OrderMonitorService {
       checked_positions_count: this.checkedPositions.size,
     };
   }
+}
+
+function isGeneralEndpointBlackout() {
+  const ist = toISTDate();
+  const start = parseTimeWindow(config.marketHours?.generalBlackoutStart, { hour: 3, minute: 0 });
+  const end = parseTimeWindow(config.marketHours?.generalBlackoutEnd, { hour: 8, minute: 0 });
+  return isWithinWindow(ist, start.hour, start.minute, end.hour, end.minute);
+}
+
+function parseTimeWindow(value, fallback) {
+  if (!value || typeof value !== 'string') return fallback;
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return fallback;
+  const hour = Math.min(23, Math.max(0, parseInt(match[1], 10)));
+  const minute = Math.min(59, Math.max(0, parseInt(match[2], 10)));
+  return { hour, minute };
+}
+
+function isWithinWindow(istDate, startHour, startMinute, endHour, endMinute) {
+  const minutes = istDate.getHours() * 60 + istDate.getMinutes();
+  const start = startHour * 60 + startMinute;
+  const end = endHour * 60 + endMinute;
+  return minutes >= start && minutes < end;
 }
 
 export default new OrderMonitorService();
