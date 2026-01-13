@@ -31,6 +31,7 @@ NODE_VERSION="20"
 DOMAIN=""
 EMAIL=""
 PORT=3000
+ADMIN_EMAIL=""
 
 ################################################################################
 # Helper Functions
@@ -154,6 +155,14 @@ collect_user_input() {
         PORT=$PORT_INPUT
     fi
 
+    # Admin email for first login
+    while [[ -z "$ADMIN_EMAIL" ]]; do
+        read -p "Enter admin user email (first login will be granted Admin): " ADMIN_EMAIL
+        if [[ -z "$ADMIN_EMAIL" ]]; then
+            print_error "Admin email cannot be empty"
+        fi
+    done
+
     # Allow override of installation directory
     read -p "Installation directory (default: $INSTALL_DIR): " INSTALL_DIR_INPUT
     if [[ -n "$INSTALL_DIR_INPUT" ]]; then
@@ -168,6 +177,7 @@ collect_user_input() {
     fi
     echo "  Domain: $DOMAIN"
     echo "  Port: $PORT"
+    echo "  Admin Email: $ADMIN_EMAIL"
     echo "  Install Dir: $INSTALL_DIR"
     echo "  User: $APP_USER"
     if [[ -n "$INSTANCE_NAME" ]]; then
@@ -438,6 +448,20 @@ setup_database() {
 
     print_info "Running database migrations..."
     sudo -u $APP_USER npm run migrate
+
+    print_info "Updating application settings (server.port)..."
+    sqlite3 "$INSTALL_DIR/backend/database/simplifyed.db" \
+      "UPDATE application_settings SET value='${PORT}' WHERE key='server.port';"
+
+    print_info "Granting admin role to ${ADMIN_EMAIL}..."
+    sqlite3 "$INSTALL_DIR/backend/database/simplifyed.db" <<SQL
+INSERT OR IGNORE INTO users (email, is_admin) VALUES ('${ADMIN_EMAIL}', 1);
+UPDATE users SET is_admin = 1 WHERE email = '${ADMIN_EMAIL}';
+INSERT OR REPLACE INTO user_roles (user_id, role_id)
+SELECT u.id, r.id
+FROM users u, roles r
+WHERE u.email = '${ADMIN_EMAIL}' AND r.name = 'Admin';
+SQL
 
     print_success "Database initialized and migrations applied"
 }
