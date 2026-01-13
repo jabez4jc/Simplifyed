@@ -1480,8 +1480,11 @@ class OpenAlgoClient extends EventEmitter {
    * @param {Object} orderData - Order parameters
    * @returns {Promise<Object>} - { orderid }
    */
-  async placeSmartOrder(instance, orderData) {
-    const response = await this.request(instance, 'placesmartorder', orderData, 'POST', { isCritical: true });
+  async placeSmartOrder(instance, orderData, options = {}) {
+    const response = await this.request(instance, 'placesmartorder', orderData, 'POST', {
+      isCritical: true,
+      ...options,
+    });
     return {
       orderid: response.orderid || response.data?.orderid,
       status: response.status,

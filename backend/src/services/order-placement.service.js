@@ -76,7 +76,9 @@ class OrderPlacementService {
 
     let response;
     try {
-      response = await openalgoClient.placeSmartOrder(instance, payload);
+      response = await openalgoClient.placeSmartOrder(instance, payload, {
+        skipRateLimit: context?.skipRateLimit === true,
+      });
     } catch (error) {
       const statusCode = Number.isFinite(error?.statusCode) ? error.statusCode : null;
       const shouldRecover = statusCode !== null && statusCode >= 500;

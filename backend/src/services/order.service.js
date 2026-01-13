@@ -149,6 +149,7 @@ class OrderService {
         strategy: orderData.strategy,
         repeatUntilClosed,
         ignoreSlippage: repeatUntilClosed,
+        skipRateLimit: true,
       });
 
       // Extract order ID from response

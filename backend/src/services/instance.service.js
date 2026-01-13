@@ -1318,6 +1318,10 @@ class InstanceService {
       normalized.is_analyzer_mode = parseBooleanSafe(data.is_analyzer_mode, false);
     }
 
+    if (data.order_placement_enabled !== undefined) {
+      normalized.order_placement_enabled = parseBooleanSafe(data.order_placement_enabled, true);
+    }
+
     if (errors.length > 0) {
       throw new ValidationError('Instance validation failed', errors);
     }

@@ -4511,6 +4511,19 @@ class DashboardApp {
 
             <div class="form-group">
               <div class="form-label-row">
+                <label class="form-label">Order Placement</label>
+                <button type="button" class="info-button"
+                        title="Disable to block order placement for this instance (still visible for monitoring)."
+                        aria-label="Order placement info">i</button>
+              </div>
+              <label class="inline-flex items-center gap-2">
+                <input type="checkbox" name="order_placement_enabled" class="form-checkbox" checked>
+                <span>Allow order placement</span>
+              </label>
+            </div>
+
+            <div class="form-group">
+              <div class="form-label-row">
                 <label class="form-label">Instance Multiplier</label>
                 <button type="button" class="info-button"
                         title="Scales order quantities for this instance (1-999)."
@@ -4578,6 +4591,7 @@ class DashboardApp {
     data.use_ws_quotes = form.querySelector('input[name="use_ws_quotes"]').checked;
     data.supports_multiquotes = form.querySelector('input[name="supports_multiquotes"]').checked;
     data.supports_option_chain = form.querySelector('input[name="supports_option_chain"]').checked;
+    data.order_placement_enabled = form.querySelector('input[name="order_placement_enabled"]').checked;
 
     try {
       await api.createInstance(data);
@@ -6317,6 +6331,20 @@ class DashboardApp {
 
               <div class="form-group form-span-2">
                 <div class="form-label-row">
+                  <label class="form-label">Order Placement</label>
+                  <button type="button" class="info-button"
+                          title="Disable to block order placement for this instance (still visible for monitoring)."
+                          aria-label="Order placement info">i</button>
+                </div>
+                <label class="inline-flex items-center gap-2">
+                  <input type="checkbox" name="order_placement_enabled"
+                         ${instance.order_placement_enabled ? 'checked' : ''}>
+                  <span>Allow order placement</span>
+                </label>
+              </div>
+
+              <div class="form-group form-span-2">
+                <div class="form-label-row">
                   <label class="form-label">Active Instance</label>
                   <button type="button" class="info-button"
                           title="Inactive instances won't be polled or used for trading."
@@ -6376,6 +6404,7 @@ class DashboardApp {
     data.use_ws_quotes = form.querySelector('input[name="use_ws_quotes"]').checked;
     data.supports_multiquotes = form.querySelector('input[name="supports_multiquotes"]').checked;
     data.supports_option_chain = form.querySelector('input[name="supports_option_chain"]').checked;
+    data.order_placement_enabled = form.querySelector('input[name="order_placement_enabled"]').checked;
 
     try {
       await api.updateInstance(instanceId, data);

@@ -269,6 +269,7 @@ class OrderRetryService {
       ...context,
       request_type: 'RETRY_ORDER',
       skipRetry: true,
+      skipRateLimit: true,
     });
 
     const retryOrderId = retryResult?.orderid || retryResult?.order_id;
