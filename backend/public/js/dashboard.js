@@ -3654,6 +3654,12 @@ class DashboardApp {
     if (!panel) return;
 
     if (!orders || (!orders.liveInstances?.length && !orders.analyzerInstances?.length)) {
+      if (!this.instances || this.instances.length === 0) {
+        this.ensureInstancesLoaded().then(() => {
+          this.renderOrdersPanel(orders);
+        });
+        return;
+      }
       const merged = this._buildPanelInstances(orders, 'orders');
       orders = {
         ...orders,
@@ -3996,6 +4002,12 @@ class DashboardApp {
     const analyzerInstances = payload.analyzerInstances || [];
 
     if (!liveInstances.length && !analyzerInstances.length) {
+      if (!this.instances || this.instances.length === 0) {
+        this.ensureInstancesLoaded().then(() => {
+          this.renderTradesPanel(payload);
+        });
+        return;
+      }
       const merged = this._buildPanelInstances(payload, 'trades');
       payload = {
         ...payload,
@@ -4296,6 +4308,12 @@ class DashboardApp {
     if (!panel) return;
     let instances = Array.isArray(data.instances) ? data.instances : [];
     if (!instances.length) {
+      if (!this.instances || this.instances.length === 0) {
+        this.ensureInstancesLoaded().then(() => {
+          this.renderPositionsPanel(data);
+        });
+        return;
+      }
       data = this._buildEmptyPositionsPayload();
       instances = Array.isArray(data.instances) ? data.instances : [];
     }
