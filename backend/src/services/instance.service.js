@@ -621,12 +621,13 @@ class InstanceService {
           maxLossHits = 0;
         }
 
-        if (!instance.is_analyzer_mode) {
+        const isLiveMode = !instance.is_analyzer_mode;
+        if (isLiveMode) {
           lastLiveTotalPnl = totalPnl;
           lastLiveTotalPnlAt = toISTISOString();
         }
 
-        if (!instance.is_analyzer_mode && currentSession) {
+        if (isLiveMode && currentSession) {
           if (sessionBaselineAt !== sessionKey || sessionBaseline === null || sessionBaseline === undefined) {
             sessionBaseline = totalPnl;
             sessionBaselineAt = sessionKey;
