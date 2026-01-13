@@ -83,6 +83,8 @@ class MarketDataFeedService extends EventEmitter {
     this.orderbookRefreshTimestamps = new Map();
     this.tradebookCache = new Map();
     this.tradebookRefreshTimestamps = new Map();
+    this.openOrderInstances = new Set();
+    this.hasOpenOrders = false;
     // Fallback entry prices captured at order placement (key: instanceId|exchange|symbol)
     this.entryPriceCache = new Map();
     // Track last persisted quote hashes to avoid noisy writes
@@ -607,6 +609,9 @@ class MarketDataFeedService extends EventEmitter {
         log.warn('Skipping positions refresh - instance unhealthy', { instanceId });
         return;
       }
+      if (!force && !this._hasActiveRisk(instanceId)) {
+        return;
+      }
       const circuitKey = this._getCircuitKey(instanceId, 'positions');
       if (this._shouldSkipPolling(circuitKey)) {
         return;
@@ -1010,6 +1015,9 @@ class MarketDataFeedService extends EventEmitter {
     if (!force && cache && last && now - last < ttlMs) {
       return cache;
     }
+    if (!force && !this._hasActiveRisk(instanceId)) {
+      return cache || null;
+    }
 
     try {
       const instance = await instanceService.getInstanceById(instanceId);
@@ -1017,6 +1025,7 @@ class MarketDataFeedService extends EventEmitter {
       const snapshot = { data: orderbook, fetchedAt: Date.now() };
       this.orderbookCache.set(instanceId, snapshot);
       this.orderbookRefreshTimestamps.set(instanceId, now);
+      this._updateOpenOrderState(instanceId, orderbook);
       return snapshot;
     } catch (error) {
       log.warn('Failed to refresh orderbook for instance', { instanceId, error: error.message });
@@ -1026,6 +1035,7 @@ class MarketDataFeedService extends EventEmitter {
 
   invalidateOrderbook(instanceId) {
     this.orderbookCache.delete(instanceId);
+    this._updateOpenOrderState(instanceId, []);
   }
 
   async getTradebookSnapshot(instanceId, { force = false } = {}) {
@@ -1047,6 +1057,9 @@ class MarketDataFeedService extends EventEmitter {
 
     if (!force && cache && last && now - last < ttlMs) {
       return cache;
+    }
+    if (!force && !this._hasActiveRisk(instanceId)) {
+      return cache || null;
     }
 
     try {
@@ -1379,14 +1392,17 @@ class MarketDataFeedService extends EventEmitter {
 
   _getStatefulTtlMs(feed, instanceId = null) {
     const hasOpenForInstance = instanceId ? this.openPositionInstances.has(instanceId) : this.hasOpenPositions;
+    const hasOrdersForInstance = instanceId ? this.openOrderInstances.has(instanceId) : this.hasOpenOrders;
     if (feed === 'positions') {
-      return hasOpenForInstance ? this.positionIntervalActiveMs : this.positionIntervalIdleMs;
+      const active = hasOpenForInstance || hasOrdersForInstance;
+      return active ? this.positionIntervalActiveMs : this.positionIntervalIdleMs;
     }
     if (feed === 'orderbook') {
-      return this.orderbookIntervalMs;
+      return hasOrdersForInstance ? this.orderbookIntervalMs : Number.POSITIVE_INFINITY;
     }
     if (feed === 'tradebook') {
-      return hasOpenForInstance ? this.tradebookIntervalActiveMs : this.tradebookIntervalIdleMs;
+      const active = hasOpenForInstance || hasOrdersForInstance;
+      return active ? this.tradebookIntervalActiveMs : this.tradebookIntervalIdleMs;
     }
     return this.QUOTE_TTL_MS;
   }
@@ -1731,7 +1747,7 @@ class MarketDataFeedService extends EventEmitter {
    */
   _startDynamicPositionRefresh(initialDelayMs = 0) {
     // Initial interval based on current state
-    const initialInterval = this.hasOpenPositions
+    const initialInterval = this._hasActiveRisk()
       ? DEFAULT_POSITION_INTERVAL_ACTIVE
       : DEFAULT_POSITION_INTERVAL_IDLE;
 
@@ -1759,25 +1775,27 @@ class MarketDataFeedService extends EventEmitter {
         await this.refreshPositions({ force: false });
 
         // Detect open positions across all instances
-        const hadOpenPositions = this.hasOpenPositions;
+        const hadActiveRisk = this._hasActiveRisk();
         this.hasOpenPositions = this._detectOpenPositions();
 
         // Log interval change if position state changed
-        if (hadOpenPositions !== this.hasOpenPositions) {
-          const newInterval = this.hasOpenPositions
+        const hasActiveRisk = this._hasActiveRisk();
+        if (hadActiveRisk !== hasActiveRisk) {
+          const newInterval = hasActiveRisk
             ? DEFAULT_POSITION_INTERVAL_ACTIVE
             : DEFAULT_POSITION_INTERVAL_IDLE;
           log.info('Position refresh interval changed', {
             hasOpenPositions: this.hasOpenPositions,
+            hasOpenOrders: this.hasOpenOrders,
             newIntervalMs: newInterval,
-            reason: this.hasOpenPositions
-              ? 'Open positions detected - switching to active refresh for SL/target tracking'
-              : 'No open positions - switching to idle refresh',
+            reason: hasActiveRisk
+              ? 'Open positions/orders detected - switching to active refresh'
+              : 'No open positions/orders - switching to idle refresh',
           });
         }
 
         // Schedule next refresh with appropriate interval
-        const nextInterval = this.hasOpenPositions
+        const nextInterval = this._hasActiveRisk()
           ? DEFAULT_POSITION_INTERVAL_ACTIVE
           : DEFAULT_POSITION_INTERVAL_IDLE;
         this._schedulePositionRefresh(nextInterval);
@@ -1854,6 +1872,40 @@ class MarketDataFeedService extends EventEmitter {
       this.openPositionInstances.delete(instanceId);
     }
     this.hasOpenPositions = this.openPositionInstances.size > 0;
+  }
+
+  _updateOpenOrderState(instanceId, orders = []) {
+    const openStatuses = new Set(['open', 'pending', 'trigger_pending', 'partial']);
+    const list = Array.isArray(orders) ? orders : orders?.orders || orders?.data || [];
+    const hasOpen = Array.isArray(list) && list.some((order) => {
+      const statusRaw = (order.order_status || order.status || '').toString().toLowerCase();
+      const status = this._normalizeOrderStatus(statusRaw);
+      return openStatuses.has(status);
+    });
+
+    if (hasOpen) {
+      this.openOrderInstances.add(instanceId);
+    } else {
+      this.openOrderInstances.delete(instanceId);
+    }
+    this.hasOpenOrders = this.openOrderInstances.size > 0;
+  }
+
+  _normalizeOrderStatus(status) {
+    if (['complete', 'completed', 'filled'].includes(status)) return 'complete';
+    if (['cancelled', 'canceled'].includes(status)) return 'cancelled';
+    if (['rejected'].includes(status)) return 'rejected';
+    if (['trigger_pending'].includes(status)) return 'trigger_pending';
+    if (['partial', 'partially_filled', 'partiallyfilled'].includes(status)) return 'partial';
+    if (['open', 'pending'].includes(status)) return status;
+    return status || 'unknown';
+  }
+
+  _hasActiveRisk(instanceId) {
+    if (!instanceId) {
+      return this.hasOpenPositions || this.hasOpenOrders;
+    }
+    return this.openPositionInstances.has(instanceId) || this.openOrderInstances.has(instanceId);
   }
 
   _hashPayload(payload) {
