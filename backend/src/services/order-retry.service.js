@@ -195,38 +195,86 @@ class OrderRetryService {
     });
     const ltp = ltpResult?.ltp || extractLtp(ltpResult?.quote);
     if (!ltp || ltp <= 0) {
-      await this._cancelAll(instance.id, strategy);
+      await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
       log.warn('Retry cancelled - no LTP available', {
         instance_id: instance.id,
         order_id: orderId,
       });
+      if (resolvedRepeat) {
+        this._scheduleFinalCheck({
+          instance,
+          orderId,
+          strategy,
+          context,
+          payload,
+          initialLimitPrice: initialLimitPrice || payload.price,
+          bufferPoints,
+          bufferPct,
+          tickSize,
+          allowPartialRetry,
+          repeatUntilClosed: resolvedRepeat,
+          ignoreSlippage: resolvedIgnore,
+        });
+      }
       return;
     }
 
     const initialPrice = Number(initialLimitPrice || payload.price || 0);
     if (!Number.isFinite(initialPrice) || initialPrice <= 0) {
-      await this._cancelAll(instance.id, strategy);
+      await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
       log.warn('Retry cancelled - invalid initial limit price', {
         instance_id: instance.id,
         order_id: orderId,
       });
+      if (resolvedRepeat) {
+        this._scheduleFinalCheck({
+          instance,
+          orderId,
+          strategy,
+          context,
+          payload,
+          initialLimitPrice: initialLimitPrice || payload.price,
+          bufferPoints,
+          bufferPct,
+          tickSize,
+          allowPartialRetry,
+          repeatUntilClosed: resolvedRepeat,
+          ignoreSlippage: resolvedIgnore,
+        });
+      }
       return;
     }
 
     if (!resolvedIgnore) {
       const slippage = Math.abs(initialPrice - ltp) / ltp;
       if (slippage > MAX_SLIPPAGE_PCT) {
-        await this._cancelAll(instance.id, strategy);
+        await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
         log.warn('Retry cancelled - slippage threshold exceeded', {
           instance_id: instance.id,
           order_id: orderId,
           slippage_pct: slippage,
         });
+        if (resolvedRepeat) {
+          this._scheduleFinalCheck({
+            instance,
+            orderId,
+            strategy,
+            context,
+            payload,
+            initialLimitPrice: initialLimitPrice || payload.price,
+            bufferPoints,
+            bufferPct,
+            tickSize,
+            allowPartialRetry,
+            repeatUntilClosed: resolvedRepeat,
+            ignoreSlippage: resolvedIgnore,
+          });
+        }
         return;
       }
     }
 
-    await this._cancelAll(instance.id, strategy);
+    await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
 
     const retryPrice = this._applyBufferAndTick({
       ltp,
@@ -432,8 +480,8 @@ class OrderRetryService {
       return;
     }
 
-    await this._cancelAll(instance.id, strategy);
-    log.info('Final check cancelled open/pending orders', {
+    await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
+    log.info('Final check cancelled open/pending orders for symbol', {
       instance_id: instance.id,
       order_id: orderId,
       status: normalizedStatus,

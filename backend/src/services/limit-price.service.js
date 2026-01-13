@@ -63,12 +63,16 @@ class LimitPriceService {
 
     const bid = this._parsePrice(quote?.bid ?? quote?.best_bid ?? quote?.bestBid ?? quote?.bp);
     const ask = this._parsePrice(quote?.ask ?? quote?.best_ask ?? quote?.bestAsk ?? quote?.ap);
+    const ltp = extractLtp(quote);
 
     let basePrice = null;
     let priceSource = null;
     let spreadPct = null;
 
-    if (!forceLtp && bid && ask) {
+    if (ltp && ltp > 0) {
+      basePrice = ltp;
+      priceSource = 'ltp';
+    } else if (!forceLtp && bid && ask) {
       const spread = ask - bid;
       const mid = (ask + bid) / 2;
       if (mid > 0) {
@@ -80,7 +84,6 @@ class LimitPriceService {
       basePrice = normalizedSide === 'BUY' ? ask : bid;
       priceSource = normalizedSide === 'BUY' ? 'ask' : 'bid';
     } else {
-      const ltp = extractLtp(quote);
       if (!ltp || ltp <= 0) {
         throw new ValidationError(`No usable price for ${normalizedExchange}:${normalizedSymbol}`);
       }
@@ -89,6 +92,13 @@ class LimitPriceService {
     }
 
     const bufferValue = this._parseBuffer(bufferPoints);
+    if (ltp && ltp > 0 && basePrice !== ltp && bufferValue > 0) {
+      const deviation = Math.abs(basePrice - ltp);
+      if (deviation > bufferValue) {
+        basePrice = ltp;
+        priceSource = 'ltp_clamped';
+      }
+    }
     let price =
       normalizedSide === 'BUY'
         ? basePrice + bufferValue

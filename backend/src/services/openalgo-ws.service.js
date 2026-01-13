@@ -245,6 +245,26 @@ class OpenAlgoWsService extends EventEmitter {
     return count;
   }
 
+  getConnectedInstanceIds() {
+    const ids = [];
+    for (const [instanceId, conn] of this.connections.entries()) {
+      if (conn.connected) ids.push(instanceId);
+    }
+    return ids;
+  }
+
+  subscribeSymbol(instanceId, symbol) {
+    const conn = this.connections.get(instanceId);
+    if (!conn || !conn.connected) return false;
+    const exchange = (symbol?.exchange || '').toUpperCase();
+    const sym = (symbol?.symbol || '').toUpperCase();
+    if (!exchange || !sym) return false;
+    const key = `${exchange}|${sym}`;
+    conn.desired.add(key);
+    conn._syncSubscriptions();
+    return true;
+  }
+
   hasActiveConnections() {
     return this.getActiveConnectionCount() > 0;
   }

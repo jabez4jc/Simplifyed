@@ -95,6 +95,8 @@ class MarketDataFeedService extends EventEmitter {
     this.multiQuoteTimestamps = new Map();
     this._sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     this.lastGlobalSymbolList = [];
+    this.wsRoundRobinCursor = new Map(); // key: EXCHANGE|SYMBOL -> next index
+    this.wsQuoteRecency = new Map(); // key: instanceId|EXCHANGE|SYMBOL -> fetchedAt
 
     // Track whether there are open positions for dynamic refresh interval
     this.hasOpenPositions = false;
@@ -123,7 +125,12 @@ class MarketDataFeedService extends EventEmitter {
     await this._startWsQuotes();
     openalgoWsService.on('quote', ({ instanceId, quote }) => {
       try {
-        this.setQuoteSnapshot(instanceId, [quote]);
+        const enriched = {
+          ...quote,
+          _source_instance_id: instanceId,
+          _source: 'ws',
+        };
+        this.setQuoteSnapshot(instanceId, [enriched]);
       } catch (err) {
         log.warn('Failed to cache WS quote', { error: err.message });
       }
@@ -387,6 +394,10 @@ class MarketDataFeedService extends EventEmitter {
       if (!q?.symbol) return;
       const key = this._symbolKey(q.exchange, q.symbol);
       this.symbolQuoteCache.set(key, { quote: q, fetchedAt: snapshot.fetchedAt });
+      if (q?._source_instance_id) {
+        const recencyKey = `${q._source_instance_id}|${key}`;
+        this.wsQuoteRecency.set(recencyKey, snapshot.fetchedAt);
+      }
     });
     this.emit('quotes:update', { instanceId, data: snapshot.data });
     // Persist snapshot asynchronously for warm restarts
@@ -1506,9 +1517,61 @@ class MarketDataFeedService extends EventEmitter {
    * @returns {Promise<Object>} - { ltp, quote, source, attempts }
    */
   async fetchLtpForSymbol(exchange, symbol, options = {}) {
-    const { maxRounds = 2, bypassCache = false } = options;
+    const {
+      maxRounds = 2,
+      bypassCache = false,
+      wsRetries = 5,
+      wsRetryDelayMs = 200,
+    } = options;
 
-    // Check cache first unless bypassed (use order-critical TTL)
+    if (isQuoteEndpointBlackout()) {
+      throw new Error('Market closed for quotes (02:00-08:45 IST)');
+    }
+
+    // Prefer WebSocket quotes when available
+    if (openalgoWsService.hasActiveConnections()) {
+      const connectedIds = openalgoWsService.getConnectedInstanceIds();
+      const symbolKey = this._symbolKey(exchange, symbol);
+      const orderedIds = this._orderWsInstancesRoundRobin(
+        symbolKey,
+        this._preferRecentWsInstances(symbolKey, connectedIds)
+      );
+      const maxInstances = Math.min(5, orderedIds.length);
+      for (let idx = 0; idx < maxInstances; idx += 1) {
+        const instanceId = orderedIds[idx];
+        const subscribed = openalgoWsService.subscribeSymbol(instanceId, { exchange, symbol });
+        if (!subscribed) continue;
+        const wsResult = await this._waitForWsQuote(exchange, symbol, {
+          retries: wsRetries,
+          delayMs: wsRetryDelayMs,
+          targetInstanceId: instanceId,
+        });
+        if (wsResult) {
+          const ltp = this._extractLtpFromQuote(wsResult.quote);
+          if (ltp && ltp > 0) {
+            return {
+              ltp,
+              quote: wsResult.quote,
+              source: 'ws',
+              attempts: wsResult.attempts,
+              instanceId,
+            };
+          }
+        }
+      }
+
+      if (!bypassCache) {
+        const cachedWs = this._getWsCachedQuote(exchange, symbol);
+        if (cachedWs) {
+          const ltp = this._extractLtpFromQuote(cachedWs.quote);
+          if (ltp && ltp > 0) {
+            return { ltp, quote: cachedWs.quote, source: 'ws_cache', attempts: cachedWs.attempts };
+          }
+        }
+      }
+    }
+
+    // Check cache next unless bypassed (use order-critical TTL)
     if (!bypassCache) {
       const { cached } = this.getCachedQuotesForSymbols(
         [{ exchange, symbol }],
@@ -1523,10 +1586,6 @@ class MarketDataFeedService extends EventEmitter {
           return { ltp, quote, source: 'cache', attempts: 0 };
         }
       }
-    }
-
-    if (isQuoteEndpointBlackout()) {
-      throw new Error('Market closed for quotes (02:00-08:45 IST)');
     }
 
     // Get market data pool for retry/failover
@@ -1552,6 +1611,66 @@ class MarketDataFeedService extends EventEmitter {
     }
 
     return result;
+  }
+
+  _orderWsInstancesRoundRobin(symbolKey, instanceIds = []) {
+    if (!symbolKey || instanceIds.length === 0) return instanceIds;
+    const cursor = this.wsRoundRobinCursor.get(symbolKey) || 0;
+    const size = instanceIds.length;
+    const start = cursor % size;
+    const ordered = [
+      ...instanceIds.slice(start),
+      ...instanceIds.slice(0, start),
+    ];
+    this.wsRoundRobinCursor.set(symbolKey, (start + 1) % size);
+    return ordered;
+  }
+
+  _preferRecentWsInstances(symbolKey, instanceIds = []) {
+    if (!symbolKey || instanceIds.length === 0) return instanceIds;
+    const scored = instanceIds.map((id) => ({
+      id,
+      ts: this.wsQuoteRecency.get(`${id}|${symbolKey}`) || 0,
+    }));
+    scored.sort((a, b) => b.ts - a.ts);
+    return scored.map((item) => item.id);
+  }
+
+  _getWsCachedQuote(exchange, symbol) {
+    const key = this._symbolKey(exchange, symbol);
+    const entry = this.symbolQuoteCache.get(key);
+    if (!entry?.quote?._source_instance_id) return null;
+    const ttlMs = this.QUOTE_TTL_ORDER_MS;
+    if (entry.fetchedAt && Date.now() - entry.fetchedAt <= ttlMs) {
+      return { quote: entry.quote, attempts: 0 };
+    }
+    return null;
+  }
+
+  _ensureWsSymbolSubscription(symbols = []) {
+    if (!openalgoWsService.hasActiveConnections()) return;
+    const next = this._dedupeSymbols([...(this.lastGlobalSymbolList || []), ...symbols]);
+    this.lastGlobalSymbolList = next;
+    const preferred = this._buildPreferredInstanceMap(next);
+    openalgoWsService.syncAll(next, preferred);
+  }
+
+  async _waitForWsQuote(exchange, symbol, { retries = 5, delayMs = 200, targetInstanceId = null } = {}) {
+    if (!exchange || !symbol) return null;
+    const key = this._symbolKey(exchange, symbol);
+    const startTs = Date.now();
+    for (let attempt = 0; attempt < retries; attempt += 1) {
+      const entry = this.symbolQuoteCache.get(key);
+      if (entry && entry.fetchedAt && entry.fetchedAt >= startTs) {
+        if (targetInstanceId && entry.quote?._source_instance_id !== targetInstanceId) {
+          await this._sleep(delayMs);
+          continue;
+        }
+        return { quote: entry.quote, attempts: attempt + 1 };
+      }
+      await this._sleep(delayMs);
+    }
+    return null;
   }
 
   /**
