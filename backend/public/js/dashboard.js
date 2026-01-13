@@ -3398,64 +3398,66 @@ class DashboardApp {
     this.currentOrderFilter = this.currentOrderFilter || '';
 
     contentArea.innerHTML = `
-      <div class="space-y-4 orders-trades-compact">
-        <div class="card">
-          <div class="card-header flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h3 class="card-title">Orders</h3>
-              <p class="text-sm text-neutral-600">Live view of every OpenAlgo order grouped by instance category.</p>
-            </div>
-            <div class="flex items-center gap-2">
-              <select id="orders-filter" class="form-select" onchange="app.filterOrders(this.value)">
-                <option value="">All Status</option>
-                <option value="pending">Pending</option>
-                <option value="open">Open</option>
-                <option value="complete">Complete</option>
-                <option value="cancelled">Cancelled</option>
-                <option value="rejected">Rejected</option>
-              </select>
-              <button class="btn btn-outline btn-sm" onclick="app.loadOrders()">
-                Refresh
-              </button>
-              <button class="btn btn-exit btn-sm" onclick="app.cancelAllOpenOrdersGlobal()">
-                Cancel All Open
-              </button>
-            </div>
+      <div class="ops-page orders-page">
+        <div class="ops-header">
+          <div class="ops-title-wrap">
+            <p class="ops-kicker">Order Flow</p>
+            <h2 class="ops-title">Orders</h2>
+            <p class="ops-subtitle">Realtime orderbook with broker rollups and instance health context.</p>
           </div>
-          <div class="p-3" id="orders-panel">
-            <div class="text-center text-neutral-500">Loading orders…</div>
+          <div class="ops-controls">
+            <select id="orders-filter" class="form-select" onchange="app.filterOrders(this.value)">
+              <option value="">All Status</option>
+              <option value="pending">Pending</option>
+              <option value="open">Open</option>
+              <option value="complete">Complete</option>
+              <option value="cancelled">Cancelled</option>
+              <option value="rejected">Rejected</option>
+            </select>
+            <button class="btn btn-outline btn-sm" onclick="app.loadOrders()">
+              Refresh
+            </button>
+            <button class="btn btn-exit btn-sm" onclick="app.cancelAllOpenOrdersGlobal()">
+              Cancel All Open
+            </button>
           </div>
         </div>
-        <div class="card">
-          <div class="card-header flex flex-wrap items-center justify-between gap-3">
+
+        <div class="ops-panel" id="orders-panel">
+          <div class="text-center text-neutral-500">Loading orders…</div>
+        </div>
+
+        <div class="ops-panel">
+          <div class="ops-section-header">
             <div>
-              <h3 class="card-title">Order History</h3>
-              <p class="text-sm text-neutral-600">Stored watchlist orders with provenance fields.</p>
+              <h3 class="ops-section-title">Order History</h3>
+              <p class="ops-section-subtitle">Stored watchlist orders with provenance fields.</p>
             </div>
-            <div class="flex items-center gap-2 flex-wrap">
+            <div class="ops-inline-actions">
               <input id="order-history-instance" class="input input-bordered input-sm" placeholder="Instance ID" />
               <input id="order-history-status" class="input input-bordered input-sm" placeholder="Status" />
               <button class="btn btn-outline btn-sm" onclick="app.loadOrderHistory()">Refresh</button>
             </div>
           </div>
-          <div class="p-3" id="order-history-panel">
+          <div class="ops-panel-body" id="order-history-panel">
             <div class="text-center text-neutral-500">Loading order history…</div>
           </div>
         </div>
-        <div class="card">
-          <div class="card-header flex flex-wrap items-center justify-between gap-3">
+
+        <div class="ops-panel">
+          <div class="ops-section-header">
             <div>
-              <h3 class="card-title">Quick Orders</h3>
-              <p class="text-sm text-neutral-600">Quick order ledger with provenance and broker sync status.</p>
+              <h3 class="ops-section-title">Quick Orders</h3>
+              <p class="ops-section-subtitle">Quick order ledger with provenance and broker sync status.</p>
             </div>
-            <div class="flex items-center gap-2 flex-wrap">
+            <div class="ops-inline-actions">
               <input id="quick-orders-instance" class="input input-bordered input-sm" placeholder="Instance ID" />
               <input id="quick-orders-days" class="input input-bordered input-sm" placeholder="Days" value="7" />
               <button class="btn btn-outline btn-sm" onclick="app.loadQuickOrdersHistory()">Refresh</button>
               <button class="btn btn-neutral btn-outline btn-sm" onclick="app.syncQuickOrdersHistory()">Sync Broker Status</button>
             </div>
           </div>
-          <div class="p-3" id="quick-orders-panel">
+          <div class="ops-panel-body" id="quick-orders-panel">
             <div class="text-center text-neutral-500">Loading quick orders…</div>
           </div>
         </div>
@@ -3681,26 +3683,34 @@ class DashboardApp {
     const analyzerCount = analyzerInstances.reduce((acc, inst) => acc + (inst.orders?.length || 0), 0);
 
     panel.innerHTML = `
-      <div class="space-y-3">
+      <div class="ops-summary-grid">
         ${this.renderOrdersSummary(orders)}
-        <div class="card">
-          <div class="tabs">
-            <button class="tab-button active" data-orders-tab="live" onclick="app.switchOrdersTab('live')">
-              Live (${liveCount})
-            </button>
-            <button class="tab-button" data-orders-tab="analyzer" onclick="app.switchOrdersTab('analyzer')">
-              Analyzer (${analyzerCount})
-            </button>
-          </div>
-          <div class="tab-content">
-            <div id="orders-tab-live" class="tab-panel">
-              ${this.renderOrdersSectionList(liveInstances, 'No orders in Live mode.')}
+      </div>
+      <div class="ops-section-grid">
+        <section class="ops-section">
+          <div class="ops-section-header">
+            <div>
+              <h3 class="ops-section-title">Live Execution</h3>
+              <p class="ops-section-subtitle">Active broker instances running in live mode.</p>
             </div>
-            <div id="orders-tab-analyzer" class="tab-panel hidden">
-              ${this.renderOrdersSectionList(analyzerInstances, 'No orders in Analyzer mode.')}
-            </div>
+            <span class="ops-count-pill">${liveCount} orders</span>
           </div>
-        </div>
+          <div class="instance-grid">
+            ${this.renderOrdersSectionList(liveInstances, 'No orders in Live mode.')}
+          </div>
+        </section>
+        <section class="ops-section">
+          <div class="ops-section-header">
+            <div>
+              <h3 class="ops-section-title">Analyzer Mode</h3>
+              <p class="ops-section-subtitle">Paper-trading instances with full orderbook visibility.</p>
+            </div>
+            <span class="ops-count-pill">${analyzerCount} orders</span>
+          </div>
+          <div class="instance-grid">
+            ${this.renderOrdersSectionList(analyzerInstances, 'No orders in Analyzer mode.')}
+          </div>
+        </section>
       </div>
     `;
 
@@ -3720,41 +3730,61 @@ class DashboardApp {
 
     const badgeOrder = ['pending', 'open', 'complete', 'cancelled', 'rejected'];
     const badges = badgeOrder
-      .filter(status => statusCounts[status])
       .map(status => `
-        <span class="badge badge-sm ${status === 'open' ? 'badge-info' : status === 'pending' ? 'badge-warning' : status === 'complete' ? 'badge-success' : 'badge-neutral'}">
-          ${status}: ${statusCounts[status]}
+        <span class="ops-chip ${status}">
+          <span class="ops-chip-label">${status}</span>
+          <span class="ops-chip-value">${statusCounts[status] || 0}</span>
         </span>
-      `).join(' ');
+      `).join('');
 
     return `
-      <div class="card border border-base-200 bg-base-100 p-4">
-        <div class="flex items-center justify-between">
-          <div>
-            <div class="text-sm text-neutral-600 uppercase tracking-wide">Total orders</div>
-            <div class="text-2xl font-semibold">${total}</div>
-          </div>
-            <div class="flex flex-wrap gap-2">
-              ${badges}
-            </div>
+      <div class="ops-summary-card">
+        <div class="ops-summary-title">Total orders</div>
+        <div class="ops-summary-value">${total}</div>
+        <div class="ops-chip-row">
+          ${badges}
         </div>
+      </div>
+      <div class="ops-summary-card">
+        <div class="ops-summary-title">Buy vs Sell</div>
+        <div class="ops-summary-metric">
+          <div>
+            <span class="ops-summary-label">BUY</span>
+            <span class="ops-summary-value-sm">${stats.total_buy_orders || 0}</span>
+          </div>
+          <div>
+            <span class="ops-summary-label">SELL</span>
+            <span class="ops-summary-value-sm">${stats.total_sell_orders || 0}</span>
+          </div>
+        </div>
+        <div class="ops-summary-footnote">Includes Live + Analyzer instances</div>
+      </div>
+      <div class="ops-summary-card">
+        <div class="ops-summary-title">Open Exposure</div>
+        <div class="ops-summary-metric">
+          <div>
+            <span class="ops-summary-label">Open/Pending</span>
+            <span class="ops-summary-value-sm">${stats.total_open_orders || 0}</span>
+          </div>
+          <div>
+            <span class="ops-summary-label">Rejected</span>
+            <span class="ops-summary-value-sm">${stats.total_rejected_orders || 0}</span>
+          </div>
+        </div>
+        <div class="ops-summary-footnote">Snapshot based on OpenAlgo orderbook</div>
       </div>
     `;
   }
 
   renderOrdersSectionList(instances = [], emptyText = 'No orders available.') {
     if (!instances.length) {
-      return `<div class="p-3 text-sm text-neutral-600">${emptyText}</div>`;
+      return `<div class="ops-empty">${emptyText}</div>`;
     }
 
-    return `
-      <div class="p-3 space-y-3">
-        ${instances.map(instance => this.renderOrderInstanceCard(
-          instance,
-          this.ordersExpanded.has(String(instance.instance_id))
-        )).join('')}
-      </div>
-    `;
+    return instances.map(instance => this.renderOrderInstanceCard(
+      instance,
+      this.ordersExpanded.has(String(instance.instance_id))
+    )).join('');
   }
 
   switchOrdersTab(tab) {
@@ -3778,28 +3808,29 @@ class DashboardApp {
     const openOrders = orders.filter(o => ['open', 'pending'].includes(o.status)).length;
 
     return `
-      <details class="rounded-lg border border-base-200 bg-base-100" data-instance-id="${instanceEntry.instance_id}" ${isOpen ? 'open' : ''}>
-        <summary class="flex flex-wrap cursor-pointer items-center justify-between gap-4 px-4 py-4">
-          <div>
-            <h4 class="font-semibold text-lg">${title}</h4>
-            <div class="text-sm text-neutral-600 flex gap-4 flex-wrap">
+      <details class="instance-card" data-instance-id="${instanceEntry.instance_id}" ${isOpen || orders.length ? 'open' : ''}>
+        <summary class="instance-card-header">
+          <div class="instance-info">
+            <div class="instance-title">${title}</div>
+            <div class="instance-meta">
               <span>Broker: ${broker}</span>
-              <span>Total orders: ${orders.length}</span>
-              <span>Open/pending: ${openOrders}</span>
+              <span>Total: ${orders.length}</span>
+              <span>Open/Pending: ${openOrders}</span>
             </div>
           </div>
-          <div class="flex flex-wrap items-center gap-2">
+          <div class="instance-actions">
+            <span class="instance-pill">${orders.length} orders</span>
             <button
               type="button"
               class="btn btn-exit btn-sm"
               onclick="event.stopPropagation(); app.cancelAllOrders(${instanceEntry.instance_id})"
             >
-              Cancel All Open Orders
+              Cancel All Open
             </button>
           </div>
         </summary>
-        <div class="border-t border-base-200 p-4">
-          ${this.renderOrdersTable(orders)}
+        <div class="instance-card-body">
+          ${orders.length ? this.renderOrdersTable(orders) : '<div class="ops-empty">No orders for this instance.</div>'}
         </div>
       </details>
     `;
@@ -3944,23 +3975,22 @@ class DashboardApp {
     this.stopTradesPolling();
 
     contentArea.innerHTML = `
-      <div class="space-y-4 orders-trades-compact">
-        <div class="card">
-          <div class="card-header flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h3 class="card-title">Trades</h3>
-              <p class="text-sm text-neutral-600">Live tradebook snapshot grouped by instance. Auto-refreshes every 5 seconds.</p>
-            </div>
-            <div class="flex items-center gap-3 flex-wrap text-sm text-neutral-500">
-              <span id="trades-last-updated">Waiting for updates…</span>
-              <button class="btn btn-outline btn-sm" onclick="app.loadTrades()">
-                Refresh
-              </button>
-            </div>
+      <div class="ops-page trades-page">
+        <div class="ops-header">
+          <div class="ops-title-wrap">
+            <p class="ops-kicker">Tradebook</p>
+            <h2 class="ops-title">Trades</h2>
+            <p class="ops-subtitle">Live tradebook snapshots grouped by instance with auto-refresh.</p>
           </div>
-          <div class="p-3" id="trades-panel">
-            <div class="text-center text-neutral-500">Loading trades…</div>
+          <div class="ops-controls">
+            <span id="trades-last-updated" class="ops-meta">Waiting for updates…</span>
+            <button class="btn btn-outline btn-sm" onclick="app.loadTrades()">
+              Refresh
+            </button>
           </div>
+        </div>
+        <div class="ops-panel" id="trades-panel">
+          <div class="text-center text-neutral-500">Loading trades…</div>
         </div>
       </div>
     `;
@@ -4005,15 +4035,14 @@ class DashboardApp {
   }
 
   renderTradesPanel(payload = {}) {
-    // Ensure caches are always initialized even if constructor did not run as expected
     if (!this.tradesInstanceStore) {
       this.tradesInstanceStore = new Map();
     }
     const panel = document.getElementById('trades-panel');
     if (!panel) return;
 
-    const liveInstances = payload.liveInstances || [];
-    const analyzerInstances = payload.analyzerInstances || [];
+    let liveInstances = payload.liveInstances || [];
+    let analyzerInstances = payload.analyzerInstances || [];
 
     if (!liveInstances.length && !analyzerInstances.length) {
       if (!this.instances || this.instances.length === 0) {
@@ -4023,22 +4052,95 @@ class DashboardApp {
         return;
       }
       const merged = this._buildPanelInstances(payload, 'trades');
-      payload = {
-        ...payload,
-        liveInstances: merged.liveInstances,
-        analyzerInstances: merged.analyzerInstances,
-      };
+      liveInstances = merged.liveInstances;
+      analyzerInstances = merged.analyzerInstances;
     }
 
-    if (!payload.liveInstances.length && !payload.analyzerInstances.length) {
+    if (!liveInstances.length && !analyzerInstances.length) {
       panel.innerHTML = '<p class="text-center text-neutral-600">No trades available.</p>';
       return;
     }
 
-    this.ensureTradesLayout(panel);
-    this.updateTradesSummary(payload.statistics);
-    this.updateTradesSection('live', liveInstances);
-    this.updateTradesSection('analyzer', analyzerInstances);
+    const liveCount = liveInstances.reduce((acc, inst) => acc + (inst.trades?.length || 0), 0);
+    const analyzerCount = analyzerInstances.reduce((acc, inst) => acc + (inst.trades?.length || 0), 0);
+
+    panel.innerHTML = `
+      <div class="ops-summary-grid">
+        ${this.renderTradesSummary(payload.statistics || {})}
+      </div>
+      <div class="ops-section-grid">
+        <section class="ops-section">
+          <div class="ops-section-header">
+            <div>
+              <h3 class="ops-section-title">Live Execution</h3>
+              <p class="ops-section-subtitle">Tradebook entries from live instances.</p>
+            </div>
+            <span class="ops-count-pill">${liveCount} trades</span>
+          </div>
+          <div class="instance-grid">
+            ${this.renderTradesSectionList(liveInstances, 'No live trades yet.')}
+          </div>
+        </section>
+        <section class="ops-section">
+          <div class="ops-section-header">
+            <div>
+              <h3 class="ops-section-title">Analyzer Mode</h3>
+              <p class="ops-section-subtitle">Simulation trades grouped by analyzer instances.</p>
+            </div>
+            <span class="ops-count-pill">${analyzerCount} trades</span>
+          </div>
+          <div class="instance-grid">
+            ${this.renderTradesSectionList(analyzerInstances, 'No analyzer trades yet.')}
+          </div>
+        </section>
+      </div>
+    `;
+  }
+
+  renderTradesSummary(stats = {}) {
+    const totalTrades = stats.total_trades || 0;
+    const buyTrades = stats.total_buy_trades || 0;
+    const sellTrades = stats.total_sell_trades || 0;
+    const notional = stats.total_value || 0;
+
+    return `
+      <div class="ops-summary-card">
+        <div class="ops-summary-title">Total Trades</div>
+        <div class="ops-summary-value">${totalTrades}</div>
+        <div class="ops-summary-footnote">Live + Analyzer</div>
+      </div>
+      <div class="ops-summary-card">
+        <div class="ops-summary-title">Buy / Sell</div>
+        <div class="ops-summary-metric">
+          <div>
+            <span class="ops-summary-label">BUY</span>
+            <span class="ops-summary-value-sm">${buyTrades}</span>
+          </div>
+          <div>
+            <span class="ops-summary-label">SELL</span>
+            <span class="ops-summary-value-sm">${sellTrades}</span>
+          </div>
+        </div>
+      </div>
+      <div class="ops-summary-card">
+        <div class="ops-summary-title">Notional Value</div>
+        <div class="ops-summary-value-sm">${Utils.formatCurrency(notional)}</div>
+        <div class="ops-summary-footnote">Aggregated across instances</div>
+      </div>
+    `;
+  }
+
+  renderTradesSectionList(instances = [], emptyText = '') {
+    if (!instances.length) {
+      return `<div class="ops-empty">${emptyText}</div>`;
+    }
+
+    const sorted = [...instances].sort((a, b) => (a.instance_name || '').localeCompare(b.instance_name || ''));
+    return sorted.map(inst => {
+      this.tradesInstanceStore.set(String(inst.instance_id), inst.trades || []);
+      const isOpen = this.tradesExpanded.has(String(inst.instance_id));
+      return this.buildTradesInstance(inst, isOpen);
+    }).join('');
   }
 
   ensureTradesLayout(panel) {
@@ -4130,22 +4232,25 @@ class DashboardApp {
         : Utils.escapeHTML(latestTrade.timestamp || ''))
       : '-';
     const bodyRows = this.renderTradesRows(trades);
-    const shouldOpen = preserveOpen && trades.length;
+    const shouldOpen = preserveOpen || trades.length > 0;
 
     return `
-      <details class="instance-section" data-instance-id="${instanceEntry.instance_id}" ${shouldOpen ? 'open' : ''}>
-        <summary class="flex flex-wrap cursor-pointer items-center justify-between gap-4 px-4 py-4">
-          <div>
-            <h4 class="font-semibold text-lg">${Utils.escapeHTML(instanceEntry.instance_name)}</h4>
-            <div class="text-sm text-neutral-600 flex gap-4 flex-wrap">
+      <details class="instance-card" data-instance-id="${instanceEntry.instance_id}" ${shouldOpen ? 'open' : ''}>
+        <summary class="instance-card-header">
+          <div class="instance-info">
+            <div class="instance-title">${Utils.escapeHTML(instanceEntry.instance_name)}</div>
+            <div class="instance-meta">
               <span>Broker: ${broker}</span>
               <span>Total trades: ${trades.length}</span>
               <span>Last trade: ${lastTradeTime || '-'}</span>
             </div>
           </div>
+          <div class="instance-actions">
+            <span class="instance-pill">${trades.length} trades</span>
+          </div>
         </summary>
-        <div class="border-t border-base-200 p-4" id="trades-body-${instanceEntry.instance_id}">
-          ${trades.length ? this.renderTradesTableShell(bodyRows) : '<p class="text-neutral-500">No trades yet.</p>'}
+        <div class="instance-card-body" id="trades-body-${instanceEntry.instance_id}">
+          ${trades.length ? this.renderTradesTableShell(bodyRows) : '<div class="ops-empty">No trades yet.</div>'}
         </div>
       </details>
     `;
@@ -4270,31 +4375,30 @@ class DashboardApp {
       }
 
       contentArea.innerHTML = `
-        <div class="space-y-4 orders-trades-compact">
-          <div class="card">
-            <div class="card-header flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h3 class="card-title">Positions</h3>
-                <p class="text-sm text-neutral-600">Grouped by instance with open position counts.</p>
-              </div>
-              <div class="flex flex-wrap items-center gap-2">
-                <button class="btn btn-outline btn-sm" onclick="app.renderPositionsView()">
-                  Refresh
-                </button>
-                <button class="btn btn-outline btn-sm" onclick="app.toggleSnapshotResync()">
-                  Auto Resync: ${this.autoSnapshotResyncEnabled ? 'On' : 'Off'}
-                </button>
-                <button class="btn btn-outline btn-sm" onclick="app.resyncAllPositionsFromSnapshots()">
-                  Resync snapshots
-                </button>
-                <button class="btn btn-exit btn-sm" onclick="app.closeAllPositionsGlobal()">
-                  Close All Positions
-                </button>
-              </div>
+        <div class="ops-page positions-page">
+          <div class="ops-header">
+            <div class="ops-title-wrap">
+              <p class="ops-kicker">Risk Monitor</p>
+              <h2 class="ops-title">Positions</h2>
+              <p class="ops-subtitle">Open positions grouped by instance with live P&L context.</p>
             </div>
-            <div class="p-3" id="positions-panel">
-              <div class="text-center text-neutral-500">Loading positions…</div>
+            <div class="ops-controls">
+              <button class="btn btn-outline btn-sm" onclick="app.renderPositionsView()">
+                Refresh
+              </button>
+              <button class="btn btn-outline btn-sm" onclick="app.toggleSnapshotResync()">
+                Auto Resync: ${this.autoSnapshotResyncEnabled ? 'On' : 'Off'}
+              </button>
+              <button class="btn btn-outline btn-sm" onclick="app.resyncAllPositionsFromSnapshots()">
+                Resync snapshots
+              </button>
+              <button class="btn btn-exit btn-sm" onclick="app.closeAllPositionsGlobal()">
+                Close All Positions
+              </button>
             </div>
+          </div>
+          <div class="ops-panel" id="positions-panel">
+            <div class="text-center text-neutral-500">Loading positions…</div>
           </div>
         </div>
       `;
@@ -4337,66 +4441,73 @@ class DashboardApp {
     const analyzerOpen = this._countOpenPositions(analyzerInstances);
 
     panel.innerHTML = `
-      <div class="space-y-3">
-        <div class="card border border-base-200 bg-base-100">
-          <div class="p-3">
-            <div class="grid grid-cols-3 gap-2">
-              <div class="border border-base-200 rounded-lg p-2 text-center">
-                <div class="text-sm text-neutral-600 mb-1">Open</div>
-                <div class="text-2xl font-semibold">${data.overall_open_positions ?? 0}</div>
-              </div>
-              <div class="border border-base-200 rounded-lg p-2 text-center">
-                <div class="text-sm text-neutral-600 mb-1">Closed</div>
-                <div class="text-2xl font-semibold">${data.overall_closed_positions ?? 0}</div>
-              </div>
-              <div class="border border-base-200 rounded-lg p-2 text-center">
-                <div class="text-sm text-neutral-600 mb-1">P&L</div>
-                <div class="text-2xl font-semibold ${Utils.getPnLColorClass(data.overall_total_pnl)}">
-                  ${Utils.formatCurrency(data.overall_total_pnl ?? 0)}
-                </div>
-              </div>
+      <div class="ops-summary-grid">
+        ${this.renderPositionsSummary(data)}
+      </div>
+      <div class="ops-section-grid">
+        <section class="ops-section">
+          <div class="ops-section-header">
+            <div>
+              <h3 class="ops-section-title">Live Exposure</h3>
+              <p class="ops-section-subtitle">Open positions in live trading instances.</p>
             </div>
+            <span class="ops-count-pill">${liveOpen} open</span>
           </div>
-        </div>
-        <div class="card">
-          <div class="tabs">
-            <button class="tab-button active" data-positions-tab="live" onclick="app.switchPositionsTab('live')">
-              Live (${liveOpen} open)
-            </button>
-            <button class="tab-button" data-positions-tab="analyzer" onclick="app.switchPositionsTab('analyzer')">
-              Analyzer (${analyzerOpen} open)
-            </button>
+          <div class="instance-grid">
+            ${this.renderPositionsSectionList(liveInstances, 'No open positions in Live mode.')}
           </div>
-          <div class="tab-content">
-            <div id="positions-tab-live" class="tab-panel">
-              ${this.renderPositionsSectionList(liveInstances, 'No open positions in Live mode.')}
+        </section>
+        <section class="ops-section">
+          <div class="ops-section-header">
+            <div>
+              <h3 class="ops-section-title">Analyzer Exposure</h3>
+              <p class="ops-section-subtitle">Open positions in analyzer mode instances.</p>
             </div>
-            <div id="positions-tab-analyzer" class="tab-panel hidden">
-              ${this.renderPositionsSectionList(analyzerInstances, 'No open positions in Analyzer mode.')}
-            </div>
+            <span class="ops-count-pill">${analyzerOpen} open</span>
           </div>
-        </div>
+          <div class="instance-grid">
+            ${this.renderPositionsSectionList(analyzerInstances, 'No open positions in Analyzer mode.')}
+          </div>
+        </section>
       </div>
     `;
     this.attachPositionsToggles(panel);
   }
 
+  renderPositionsSummary(data = {}) {
+    return `
+      <div class="ops-summary-card">
+        <div class="ops-summary-title">Open Positions</div>
+        <div class="ops-summary-value">${data.overall_open_positions ?? 0}</div>
+        <div class="ops-summary-footnote">Across all instances</div>
+      </div>
+      <div class="ops-summary-card">
+        <div class="ops-summary-title">Closed Positions</div>
+        <div class="ops-summary-value-sm">${data.overall_closed_positions ?? 0}</div>
+        <div class="ops-summary-footnote">Session total</div>
+      </div>
+      <div class="ops-summary-card">
+        <div class="ops-summary-title">Total P&L</div>
+        <div class="ops-summary-value-sm ${Utils.getPnLColorClass(data.overall_total_pnl ?? 0)}">
+          ${Utils.formatCurrency(data.overall_total_pnl ?? 0)}
+        </div>
+        <div class="ops-summary-footnote">Live + Analyzer</div>
+      </div>
+    `;
+  }
+
   renderPositionsSectionList(instances = [], emptyText = '') {
     if (!instances.length) {
-      return `<div class="p-3 text-sm text-neutral-600">${emptyText}</div>`;
+      return `<div class="ops-empty">${emptyText}</div>`;
     }
 
     const sorted = [...instances].sort((a, b) => (a.instance_name || '').localeCompare(b.instance_name || ''));
-    return `
-      <div class="divide-y divide-base-200">
-        ${sorted.map(inst => {
-          const id = String(inst.instance_id);
-          const isOpen = this.positionsExpanded.has(id);
-          this.positionsInstanceStore.set(id, inst.positions || []);
-          return this.buildPositionsInstance(inst, isOpen);
-        }).join('')}
-      </div>
-    `;
+    return sorted.map(inst => {
+      const id = String(inst.instance_id);
+      const isOpen = this.positionsExpanded.has(id);
+      this.positionsInstanceStore.set(id, inst.positions || []);
+      return this.buildPositionsInstance(inst, isOpen);
+    }).join('');
   }
 
   switchPositionsTab(tab) {
@@ -4431,34 +4542,38 @@ class DashboardApp {
       ? inst.closed_positions_count
       : 0;
     const header = `
-      <summary class="card-header flex items-center justify-between gap-3 px-4 py-3">
-        <div>
-          <h3 class="card-title">${Utils.escapeHTML(inst.instance_name)}</h3>
-          <div class="flex gap-4 mt-1 text-sm text-neutral-600">
+      <summary class="instance-card-header">
+        <div class="instance-info">
+          <div class="instance-title">${Utils.escapeHTML(inst.instance_name)}</div>
+          <div class="instance-meta">
             <span>Broker: <span class="font-medium">${Utils.escapeHTML(inst.broker || 'N/A')}</span></span>
             <span>Open: <span class="font-medium">${openCount}</span></span>
             <span>Closed: <span class="font-medium">${closedCount}</span></span>
-            <span>P&L: <span class="font-medium ${Utils.getPnLColorClass(inst.total_pnl)}">${Utils.formatCurrency(inst.total_pnl)}</span></span>
+            <span>P&L:
+              <span class="font-medium ${Utils.getPnLColorClass(inst.total_pnl)}">
+                ${Utils.formatCurrency(inst.total_pnl)}
+              </span>
+            </span>
           </div>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="instance-actions">
           <button class="btn btn-outline btn-sm"
                   onclick="event.stopPropagation(); app.resyncPositionsFromSnapshot(${inst.instance_id})">
             Resync
           </button>
           <button class="btn btn-exit btn-sm"
                   onclick="event.stopPropagation(); app.closeAllPositions(${inst.instance_id})">
-            Close All Positions
+            Close All
           </button>
         </div>
       </summary>
     `;
 
     return `
-      <details class="rounded-lg border border-base-200 bg-base-100" data-instance-id="${inst.instance_id}" ${isOpen ? 'open' : ''}>
+      <details class="instance-card" data-instance-id="${inst.instance_id}" ${isOpen || positions.length ? 'open' : ''}>
         ${header}
-        <div class="p-3 instance-positions-body" data-loaded="${isOpen}">
-          ${isOpen ? this.renderPositionsBody(positions, inst) : '<p class="text-neutral-500">Expand to view positions.</p>'}
+        <div class="instance-card-body instance-positions-body" data-loaded="${isOpen}">
+          ${isOpen ? this.renderPositionsBody(positions, inst) : '<div class="ops-empty">Expand to view positions.</div>'}
         </div>
       </details>
     `;
