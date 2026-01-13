@@ -248,6 +248,83 @@ class DashboardApp {
     };
   }
 
+  async ensureInstancesLoaded() {
+    if (Array.isArray(this.instances) && this.instances.length > 0) {
+      return;
+    }
+    try {
+      const instancesRes = await api.getInstances({ is_active: true });
+      this.instances = Array.isArray(instancesRes?.data) ? instancesRes.data : [];
+    } catch (error) {
+      console.warn('Failed to load instances for panel rendering', error);
+    }
+  }
+
+  _buildPanelInstances(payload = {}, itemKey = 'orders') {
+    const liveFromPayload = Array.isArray(payload.liveInstances) ? payload.liveInstances : [];
+    const analyzerFromPayload = Array.isArray(payload.analyzerInstances) ? payload.analyzerInstances : [];
+
+    const entryMap = new Map();
+    [...liveFromPayload, ...analyzerFromPayload].forEach((entry) => {
+      entryMap.set(String(entry.instance_id), entry);
+    });
+
+    if (!Array.isArray(this.instances) || this.instances.length === 0) {
+      return { liveInstances: liveFromPayload, analyzerInstances: analyzerFromPayload };
+    }
+
+    const liveInstances = [];
+    const analyzerInstances = [];
+    this.instances.forEach((inst) => {
+      const id = String(inst.id);
+      const existing = entryMap.get(id) || {};
+      const merged = {
+        instance_id: inst.id,
+        instance_name: inst.name || existing.instance_name,
+        broker: inst.broker || existing.broker,
+        is_analyzer_mode: !!inst.is_analyzer_mode,
+        market_data_role: inst.market_data_role || existing.market_data_role,
+        [itemKey]: Array.isArray(existing[itemKey]) ? existing[itemKey] : [],
+        fetchedAt: existing.fetchedAt || null,
+      };
+      if (merged.is_analyzer_mode) {
+        analyzerInstances.push(merged);
+      } else {
+        liveInstances.push(merged);
+      }
+    });
+
+    return { liveInstances, analyzerInstances };
+  }
+
+  _buildEmptyPositionsPayload() {
+    if (!Array.isArray(this.instances) || this.instances.length === 0) {
+      return {
+        instances: [],
+        overall_total_pnl: 0,
+        overall_open_positions: 0,
+        overall_closed_positions: 0,
+      };
+    }
+
+    return {
+      instances: this.instances.map((inst) => ({
+        instance_id: inst.id,
+        instance_name: inst.name,
+        broker: inst.broker,
+        is_analyzer_mode: !!inst.is_analyzer_mode,
+        positions: [],
+        total_pnl: 0,
+        open_positions_count: 0,
+        closed_positions_count: 0,
+        error: null,
+      })),
+      overall_total_pnl: 0,
+      overall_open_positions: 0,
+      overall_closed_positions: 0,
+    };
+  }
+
   async renderNotificationsView() {
     const contentArea = document.getElementById('content-area');
     try {
@@ -3395,9 +3472,16 @@ class DashboardApp {
       const params = {};
       if (status) params.status = status;
       const response = await api.getOrderbook(status);
+      await this.ensureInstancesLoaded();
       const payload = response.data || {};
-      this.orderbookPayload = payload;
-      this.renderOrdersPanel(payload);
+      const merged = this._buildPanelInstances(payload, 'orders');
+      const normalized = {
+        ...payload,
+        liveInstances: merged.liveInstances,
+        analyzerInstances: merged.analyzerInstances,
+      };
+      this.orderbookPayload = normalized;
+      this.renderOrdersPanel(normalized);
       const select = document.getElementById('orders-filter');
       if (select) select.value = status || '';
     } catch (error) {
@@ -3873,9 +3957,17 @@ class DashboardApp {
   async loadTrades(isAuto = false) {
     try {
       const response = await api.getTradebook();
-      this.tradesPayload = response.data || {};
-      this.tradesLastUpdatedAt = this.tradesPayload.fetchedAt || Date.now();
-      this.renderTradesPanel(this.tradesPayload);
+      await this.ensureInstancesLoaded();
+      const payload = response.data || {};
+      const merged = this._buildPanelInstances(payload, 'trades');
+      const normalized = {
+        ...payload,
+        liveInstances: merged.liveInstances,
+        analyzerInstances: merged.analyzerInstances,
+      };
+      this.tradesPayload = normalized;
+      this.tradesLastUpdatedAt = normalized.fetchedAt || Date.now();
+      this.renderTradesPanel(normalized);
       this.updateTradesLastUpdatedDisplay(this.tradesLastUpdatedAt);
     } catch (error) {
       const panel = document.getElementById('trades-panel');
@@ -4118,12 +4210,17 @@ class DashboardApp {
     }
 
     try {
+      await this.ensureInstancesLoaded();
       // Fetch cached open positions first for faster render
       const response = await api.getAllPositions({ onlyOpen: true, refresh: false });
-      const data = response.data;
+      let data = response.data;
+      let instances = Array.isArray(data?.instances) ? data.instances : [];
+      if (!instances.length) {
+        data = this._buildEmptyPositionsPayload();
+        instances = Array.isArray(data?.instances) ? data.instances : [];
+      }
       this.latestAllPositionsData = data;
 
-      const instances = Array.isArray(data?.instances) ? data.instances : [];
       if (!instances.length) {
         contentArea.innerHTML = `
           <div class="card">
