@@ -3654,8 +3654,12 @@ class DashboardApp {
     if (!panel) return;
 
     if (!orders || (!orders.liveInstances?.length && !orders.analyzerInstances?.length)) {
-      panel.innerHTML = '<p class="text-center text-neutral-600">No orders found</p>';
-      return;
+      const merged = this._buildPanelInstances(orders, 'orders');
+      orders = {
+        ...orders,
+        liveInstances: merged.liveInstances,
+        analyzerInstances: merged.analyzerInstances,
+      };
     }
 
     const liveInstances = orders.liveInstances || [];
@@ -3992,6 +3996,15 @@ class DashboardApp {
     const analyzerInstances = payload.analyzerInstances || [];
 
     if (!liveInstances.length && !analyzerInstances.length) {
+      const merged = this._buildPanelInstances(payload, 'trades');
+      payload = {
+        ...payload,
+        liveInstances: merged.liveInstances,
+        analyzerInstances: merged.analyzerInstances,
+      };
+    }
+
+    if (!payload.liveInstances.length && !payload.analyzerInstances.length) {
       panel.innerHTML = '<p class="text-center text-neutral-600">No trades available.</p>';
       return;
     }
@@ -4281,7 +4294,11 @@ class DashboardApp {
   renderPositionsPanel(data = {}) {
     const panel = document.getElementById('positions-panel');
     if (!panel) return;
-    const instances = Array.isArray(data.instances) ? data.instances : [];
+    let instances = Array.isArray(data.instances) ? data.instances : [];
+    if (!instances.length) {
+      data = this._buildEmptyPositionsPayload();
+      instances = Array.isArray(data.instances) ? data.instances : [];
+    }
     const liveInstances = instances.filter(inst => !inst.is_analyzer_mode);
     const analyzerInstances = instances.filter(inst => inst.is_analyzer_mode);
     const liveOpen = this._countOpenPositions(liveInstances);
