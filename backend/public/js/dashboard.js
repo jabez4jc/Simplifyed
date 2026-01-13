@@ -3462,12 +3462,19 @@ class DashboardApp {
       </div>
     `;
 
-    await this.loadOrders(this.currentOrderFilter);
+    await this.loadOrders(this.currentOrderFilter, { ensureView: false });
     await this.loadOrderHistory();
     await this.loadQuickOrdersHistory();
   }
 
-  async loadOrders(status = '') {
+  async loadOrders(status = '', options = {}) {
+    const { ensureView = true } = options;
+    const panel = document.getElementById('orders-panel');
+    if (ensureView && !panel) {
+      await this.renderOrdersView();
+      return;
+    }
+
     try {
       const params = {};
       if (status) params.status = status;
@@ -3958,13 +3965,20 @@ class DashboardApp {
       </div>
     `;
 
-    await this.loadTrades();
+    await this.loadTrades(false, { ensureView: false });
     if (!this.isPaused) {
       this.tradesPollingInterval = setInterval(() => this.loadTrades(true), 5000);
     }
   }
 
-  async loadTrades(isAuto = false) {
+  async loadTrades(isAuto = false, options = {}) {
+    const { ensureView = true } = options;
+    const panel = document.getElementById('trades-panel');
+    if (ensureView && !panel) {
+      await this.renderTradesView();
+      return;
+    }
+
     try {
       const response = await api.getTradebook();
       await this.ensureInstancesLoaded();
