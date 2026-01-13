@@ -7,7 +7,7 @@
 import db from '../core/database.js';
 import log from '../core/logger.js';
 import config from '../core/config.js';
-import openalgoClient from '../integrations/openalgo/client.js';
+import marketDataFeedService from './market-data-feed.service.js';
 import telegramService from './telegram.service.js';
 import { parseIntSafe, parseFloatSafe } from '../utils/sanitizers.js';
 import { extractAveragePrice, extractLtp } from '../utils/price-extraction.js';
@@ -114,13 +114,16 @@ class OrderMonitorService {
    */
   async monitorInstance(instance) {
     try {
-      const positionsResponse = await openalgoClient.getPositionBook(instance);
-      if (!positionsResponse || !positionsResponse.data) {
+      const snapshot = marketDataFeedService.getPositionSnapshot(instance.id);
+      if (!snapshot || !Array.isArray(snapshot.data)) {
         log.debug('No positions data', { instance: instance.id });
         return;
       }
-      const positions = positionsResponse.data;
-      log.debug('OrderMonitor fetched live positions', { instance: instance.id });
+      const positions = snapshot.data;
+      log.debug('OrderMonitor using cached positions snapshot', {
+        instance: instance.id,
+        fetched_at: snapshot.fetchedAt || null,
+      });
 
       // Filter only open positions
       const openPositions = positions.filter((p) => {

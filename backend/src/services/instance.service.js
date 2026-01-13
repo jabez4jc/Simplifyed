@@ -23,7 +23,7 @@ import {
 import settingsService from './settings.service.js';
 import { toISTDate, toISTISOString } from '../utils/time.js';
 import config from '../core/config.js';
-import { calculateTradebookPnL } from '../utils/trade-pnl.js';
+import { calculateTradebookPnL, calculateTradebookPnLForAppExits } from '../utils/trade-pnl.js';
 import { buildBrokerageMap, resolveBrokerageValue } from '../utils/brokerage.js';
 
 const INSTANCE_REQUEST_DELAY_MS = 300;
@@ -686,13 +686,23 @@ class InstanceService {
           }
         }
 
+        const appOrderIds = await this._getAppOrderIdsForDate(instance.id, todayIst);
+        const snapshotPnl = calculateTradebookPnLForAppExits(
+          Array.isArray(tradebook) ? tradebook : [],
+          {
+            brokerageValue,
+            appOrderIds,
+            strategyTag: instance.strategy_tag || 'default',
+          }
+        );
+
         if (!instance.is_analyzer_mode && Array.isArray(tradebook) && tradebook.length > 0) {
           await this._upsertDailyPnlSnapshot(instance.id, todayIst, {
-            total_pnl: totalPnl,
-            buy_trades: buyTrades,
-            sell_trades: sellTrades,
-            buy_value: buyValue,
-            sell_value: sellValue,
+            total_pnl: Number(snapshotPnl.net_pnl.toFixed(2)),
+            buy_trades: snapshotPnl.buy_count || 0,
+            sell_trades: snapshotPnl.sell_count || 0,
+            buy_value: snapshotPnl.buy_value || 0,
+            sell_value: snapshotPnl.sell_value || 0,
           });
         }
 
@@ -1061,6 +1071,34 @@ class InstanceService {
     const month = `${date.getMonth() + 1}`.padStart(2, '0');
     const day = `${date.getDate()}`.padStart(2, '0');
     return `${year}-${month}-${day}`;
+  }
+
+  async _getAppOrderIdsForDate(instanceId, dateKey) {
+    if (!instanceId || !dateKey) return new Set();
+    const rows = await db.all(
+      `
+        SELECT order_id, broker_order_id
+        FROM watchlist_orders
+        WHERE instance_id = ?
+          AND DATE(placed_at, '+5 hours', '+30 minutes') = ?
+        UNION ALL
+        SELECT order_id, broker_order_id
+        FROM quick_orders
+        WHERE instance_id = ?
+          AND DATE(created_at, '+5 hours', '+30 minutes') = ?
+      `,
+      [instanceId, dateKey, instanceId, dateKey]
+    );
+
+    const ids = new Set();
+    rows.forEach((row) => {
+      const orderId = row.order_id ? String(row.order_id).trim() : null;
+      const brokerOrderId = row.broker_order_id ? String(row.broker_order_id).trim() : null;
+      if (orderId) ids.add(orderId);
+      if (brokerOrderId) ids.add(brokerOrderId);
+    });
+
+    return ids;
   }
 
   _parseHmToMinutes(hm = '') {

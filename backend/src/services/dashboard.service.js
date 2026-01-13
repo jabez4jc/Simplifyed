@@ -7,7 +7,7 @@ import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
-import { calculateTradebookPnL } from '../utils/trade-pnl.js';
+import { calculateTradebookPnLClosedOnly } from '../utils/trade-pnl.js';
 import settingsService from './settings.service.js';
 import { buildBrokerageMap, resolveBrokerageValue } from '../utils/brokerage.js';
 
@@ -154,7 +154,7 @@ class DashboardService {
         brokerageConfig?.brokerageMap || {},
         brokerageConfig?.defaultBrokerage ?? 20
       );
-      const tradePnl = calculateTradebookPnL(Array.isArray(tradebook) ? tradebook : [], {
+      const tradePnl = calculateTradebookPnLClosedOnly(Array.isArray(tradebook) ? tradebook : [], {
         brokerageValue,
       });
       const hasTradebook = Array.isArray(tradebook) && tradebook.length > 0;

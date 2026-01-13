@@ -12,6 +12,29 @@ function resolveSide(normalized = {}) {
   return null;
 }
 
+function normalizeOrderId(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text ? text : null;
+}
+
+function isAppTrade(normalized = {}, { appOrderIds, strategyTag } = {}) {
+  const orderId = normalizeOrderId(normalized.order_id || normalized?.metadata?.orderid || normalized?.metadata?.order_id);
+  if (orderId && appOrderIds && appOrderIds.has(orderId)) return true;
+
+  if (strategyTag) {
+    const normalizedStrategy = String(strategyTag || '').trim().toUpperCase();
+    const tradeStrategy = String(
+      normalized.strategy || normalized?.metadata?.strategy || normalized?.metadata?.strategy_tag || ''
+    )
+      .trim()
+      .toUpperCase();
+    if (normalizedStrategy && tradeStrategy && tradeStrategy === normalizedStrategy) return true;
+  }
+
+  return false;
+}
+
 export function calculateTradeChargesOpenAlgo(
   tradeValue,
   {
@@ -101,6 +124,336 @@ export function calculateTradebookPnL(trades = [], options = {}) {
     });
     chargesTotal += charges.total_cost;
   });
+
+  const grossPnl = sellValue - buyValue;
+  const netPnl = grossPnl - chargesTotal;
+
+  return {
+    buy_count: buyCount,
+    sell_count: sellCount,
+    buy_value: buyValue,
+    sell_value: sellValue,
+    gross_pnl: grossPnl,
+    charges_total: chargesTotal,
+    net_pnl: netPnl,
+  };
+}
+
+export function calculateTradebookPnLForAppExits(trades = [], options = {}) {
+  const {
+    exchangeFallback = '',
+    symbolFallback = '',
+    brokerageValue = 0,
+    appOrderIds = null,
+    strategyTag = null,
+  } = options;
+
+  if (!Array.isArray(trades) || trades.length === 0) {
+    return {
+      buy_count: 0,
+      sell_count: 0,
+      buy_value: 0,
+      sell_value: 0,
+      gross_pnl: 0,
+      charges_total: 0,
+      net_pnl: 0,
+    };
+  }
+
+  const normalizedTrades = trades
+    .map((trade) => normalizeTradebookEntry(trade))
+    .filter((trade) => resolveSide(trade));
+
+  // Sort trades by time to preserve FIFO matching
+  normalizedTrades.sort((a, b) => {
+    const timeA = Number.isFinite(a.timestamp_epoch) ? a.timestamp_epoch : 0;
+    const timeB = Number.isFinite(b.timestamp_epoch) ? b.timestamp_epoch : 0;
+    return timeA - timeB;
+  });
+
+  const buyQueue = [];
+  const sellQueue = [];
+
+  let buyValue = 0;
+  let sellValue = 0;
+  let chargesTotal = 0;
+  let buyCount = 0;
+  let sellCount = 0;
+
+  for (const trade of normalizedTrades) {
+    const side = resolveSide(trade);
+    let remainingQty = Math.abs(parseFloatSafe(trade.quantity, 0));
+    const price = parseFloatSafe(trade.average_price, 0);
+    if (!side || remainingQty <= 0 || price <= 0) continue;
+
+    const isAppExit = isAppTrade(trade, { appOrderIds, strategyTag });
+    let closeCounted = false;
+
+    if (side === 'BUY') {
+      while (remainingQty > 0 && sellQueue.length > 0) {
+        const open = sellQueue[0];
+        const matchQty = Math.min(remainingQty, open.quantity);
+        remainingQty -= matchQty;
+        open.quantity -= matchQty;
+
+        if (isAppExit) {
+          const buyTradeValue = matchQty * price;
+          const sellTradeValue = matchQty * open.price;
+          buyValue += buyTradeValue;
+          sellValue += sellTradeValue;
+
+          const buyCharges = calculateTradeChargesOpenAlgo(buyTradeValue, {
+            exchange: trade.exchange || exchangeFallback,
+            symbol: trade.symbol || symbolFallback,
+            side: 'BUY',
+            brokerage: brokerageValue,
+          });
+          const sellCharges = calculateTradeChargesOpenAlgo(sellTradeValue, {
+            exchange: open.exchange || exchangeFallback,
+            symbol: open.symbol || symbolFallback,
+            side: 'SELL',
+            brokerage: brokerageValue,
+          });
+          chargesTotal += buyCharges.total_cost + sellCharges.total_cost;
+
+          if (!closeCounted) {
+            buyCount += 1;
+            closeCounted = true;
+          }
+          if (!open.counted) {
+            sellCount += 1;
+            open.counted = true;
+          }
+        }
+
+        if (open.quantity <= 0) {
+          sellQueue.shift();
+        }
+      }
+
+      if (remainingQty > 0) {
+        buyQueue.push({
+          quantity: remainingQty,
+          price,
+          exchange: trade.exchange || exchangeFallback,
+          symbol: trade.symbol || symbolFallback,
+          counted: false,
+        });
+      }
+    } else {
+      while (remainingQty > 0 && buyQueue.length > 0) {
+        const open = buyQueue[0];
+        const matchQty = Math.min(remainingQty, open.quantity);
+        remainingQty -= matchQty;
+        open.quantity -= matchQty;
+
+        if (isAppExit) {
+          const buyTradeValue = matchQty * open.price;
+          const sellTradeValue = matchQty * price;
+          buyValue += buyTradeValue;
+          sellValue += sellTradeValue;
+
+          const buyCharges = calculateTradeChargesOpenAlgo(buyTradeValue, {
+            exchange: open.exchange || exchangeFallback,
+            symbol: open.symbol || symbolFallback,
+            side: 'BUY',
+            brokerage: brokerageValue,
+          });
+          const sellCharges = calculateTradeChargesOpenAlgo(sellTradeValue, {
+            exchange: trade.exchange || exchangeFallback,
+            symbol: trade.symbol || symbolFallback,
+            side: 'SELL',
+            brokerage: brokerageValue,
+          });
+          chargesTotal += buyCharges.total_cost + sellCharges.total_cost;
+
+          if (!closeCounted) {
+            sellCount += 1;
+            closeCounted = true;
+          }
+          if (!open.counted) {
+            buyCount += 1;
+            open.counted = true;
+          }
+        }
+
+        if (open.quantity <= 0) {
+          buyQueue.shift();
+        }
+      }
+
+      if (remainingQty > 0) {
+        sellQueue.push({
+          quantity: remainingQty,
+          price,
+          exchange: trade.exchange || exchangeFallback,
+          symbol: trade.symbol || symbolFallback,
+          counted: false,
+        });
+      }
+    }
+  }
+
+  const grossPnl = sellValue - buyValue;
+  const netPnl = grossPnl - chargesTotal;
+
+  return {
+    buy_count: buyCount,
+    sell_count: sellCount,
+    buy_value: buyValue,
+    sell_value: sellValue,
+    gross_pnl: grossPnl,
+    charges_total: chargesTotal,
+    net_pnl: netPnl,
+  };
+}
+
+export function calculateTradebookPnLClosedOnly(trades = [], options = {}) {
+  const {
+    exchangeFallback = '',
+    symbolFallback = '',
+    brokerageValue = 0,
+  } = options;
+
+  if (!Array.isArray(trades) || trades.length === 0) {
+    return {
+      buy_count: 0,
+      sell_count: 0,
+      buy_value: 0,
+      sell_value: 0,
+      gross_pnl: 0,
+      charges_total: 0,
+      net_pnl: 0,
+    };
+  }
+
+  const normalizedTrades = trades
+    .map((trade) => normalizeTradebookEntry(trade))
+    .filter((trade) => resolveSide(trade));
+
+  normalizedTrades.sort((a, b) => {
+    const timeA = Number.isFinite(a.timestamp_epoch) ? a.timestamp_epoch : 0;
+    const timeB = Number.isFinite(b.timestamp_epoch) ? b.timestamp_epoch : 0;
+    return timeA - timeB;
+  });
+
+  const buyQueue = [];
+  const sellQueue = [];
+
+  let buyValue = 0;
+  let sellValue = 0;
+  let chargesTotal = 0;
+  let buyCount = 0;
+  let sellCount = 0;
+
+  for (const trade of normalizedTrades) {
+    const side = resolveSide(trade);
+    let remainingQty = Math.abs(parseFloatSafe(trade.quantity, 0));
+    const price = parseFloatSafe(trade.average_price, 0);
+    if (!side || remainingQty <= 0 || price <= 0) continue;
+
+    let closeCounted = false;
+
+    if (side === 'BUY') {
+      while (remainingQty > 0 && sellQueue.length > 0) {
+        const open = sellQueue[0];
+        const matchQty = Math.min(remainingQty, open.quantity);
+        remainingQty -= matchQty;
+        open.quantity -= matchQty;
+
+        const buyTradeValue = matchQty * price;
+        const sellTradeValue = matchQty * open.price;
+        buyValue += buyTradeValue;
+        sellValue += sellTradeValue;
+
+        const buyCharges = calculateTradeChargesOpenAlgo(buyTradeValue, {
+          exchange: trade.exchange || exchangeFallback,
+          symbol: trade.symbol || symbolFallback,
+          side: 'BUY',
+          brokerage: brokerageValue,
+        });
+        const sellCharges = calculateTradeChargesOpenAlgo(sellTradeValue, {
+          exchange: open.exchange || exchangeFallback,
+          symbol: open.symbol || symbolFallback,
+          side: 'SELL',
+          brokerage: brokerageValue,
+        });
+        chargesTotal += buyCharges.total_cost + sellCharges.total_cost;
+
+        if (!closeCounted) {
+          buyCount += 1;
+          closeCounted = true;
+        }
+        if (!open.counted) {
+          sellCount += 1;
+          open.counted = true;
+        }
+
+        if (open.quantity <= 0) {
+          sellQueue.shift();
+        }
+      }
+
+      if (remainingQty > 0) {
+        buyQueue.push({
+          quantity: remainingQty,
+          price,
+          exchange: trade.exchange || exchangeFallback,
+          symbol: trade.symbol || symbolFallback,
+          counted: false,
+        });
+      }
+    } else {
+      while (remainingQty > 0 && buyQueue.length > 0) {
+        const open = buyQueue[0];
+        const matchQty = Math.min(remainingQty, open.quantity);
+        remainingQty -= matchQty;
+        open.quantity -= matchQty;
+
+        const buyTradeValue = matchQty * open.price;
+        const sellTradeValue = matchQty * price;
+        buyValue += buyTradeValue;
+        sellValue += sellTradeValue;
+
+        const buyCharges = calculateTradeChargesOpenAlgo(buyTradeValue, {
+          exchange: open.exchange || exchangeFallback,
+          symbol: open.symbol || symbolFallback,
+          side: 'BUY',
+          brokerage: brokerageValue,
+        });
+        const sellCharges = calculateTradeChargesOpenAlgo(sellTradeValue, {
+          exchange: trade.exchange || exchangeFallback,
+          symbol: trade.symbol || symbolFallback,
+          side: 'SELL',
+          brokerage: brokerageValue,
+        });
+        chargesTotal += buyCharges.total_cost + sellCharges.total_cost;
+
+        if (!closeCounted) {
+          sellCount += 1;
+          closeCounted = true;
+        }
+        if (!open.counted) {
+          buyCount += 1;
+          open.counted = true;
+        }
+
+        if (open.quantity <= 0) {
+          buyQueue.shift();
+        }
+      }
+
+      if (remainingQty > 0) {
+        sellQueue.push({
+          quantity: remainingQty,
+          price,
+          exchange: trade.exchange || exchangeFallback,
+          symbol: trade.symbol || symbolFallback,
+          counted: false,
+        });
+      }
+    }
+  }
 
   const grossPnl = sellValue - buyValue;
   const netPnl = grossPnl - chargesTotal;

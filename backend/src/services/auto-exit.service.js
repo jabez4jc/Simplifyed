@@ -10,7 +10,6 @@ import watchlistService from './watchlist.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import quickOrderService from './quick-order.service.js';
 import riskControlsService from './risk-controls.service.js';
-import openalgoClient from '../integrations/openalgo/client.js';
 import { extractLtp, extractAveragePrice } from '../utils/price-extraction.js';
 import { normalizeTradebookEntry } from '../utils/tradebook-utils.js';
 import { toISTDate } from '../utils/time.js';
@@ -101,16 +100,8 @@ class AutoExitService {
   }
 
   async _monitorInstance(instance, configLookup) {
-    let positions = [];
-    try {
-      positions = await openalgoClient.getPositionBook(instance);
-    } catch (error) {
-      log.warn('Auto-exit skipped - live positionbook failed', {
-        instance_id: instance.id,
-        error: error.message,
-      });
-      return;
-    }
+    const snapshot = marketDataFeedService.getPositionSnapshot(instance.id);
+    const positions = Array.isArray(snapshot?.data) ? snapshot.data : [];
     if (!positions.length) return;
 
     const tradebookSnapshot = await marketDataFeedService.getTradebookSnapshot(instance.id);
@@ -563,12 +554,9 @@ class AutoExitService {
       const instances = await instanceService.getAllInstances({ is_active: true });
       const ltps = [];
       for (const inst of instances) {
-        let positions = [];
-        try {
-          positions = await openalgoClient.getPositionBook(inst);
-        } catch {
-          continue;
-        }
+        const snapshot = marketDataFeedService.getPositionSnapshot(inst.id);
+        const positions = Array.isArray(snapshot?.data) ? snapshot.data : [];
+        if (!positions.length) continue;
         const match = positions.find(p =>
           this._normalizeSymbol(p.symbol || p.tradingsymbol || p.trading_symbol) === this._normalizeSymbol(symbol) &&
           this._normalizeExchange(p.exchange || p.exch || p.brexchange) === this._normalizeExchange(exchange)

@@ -42,6 +42,8 @@ export function normalizeTradebookEntry(trade = {}) {
 
   const symbol = trade.symbol || trade.tradingsymbol || trade.trading_symbol;
   const exchange = trade.exchange || trade.exch || trade.exchange_name;
+  const orderId = trade.orderid || trade.order_id || trade.orderId || null;
+  const strategy = trade.strategy || trade.strategy_tag || trade.algo_strategy || null;
 
   const quantity = Number(trade.quantity ?? trade.qty ?? 0) || 0;
   const priceValue = Number(trade.average_price ?? trade.price ?? trade.avg_price ?? 0) || 0;
@@ -54,6 +56,8 @@ export function normalizeTradebookEntry(trade = {}) {
   return {
     symbol,
     exchange,
+    order_id: orderId,
+    strategy,
     action,
     quantity,
     average_price: priceValue,

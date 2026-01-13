@@ -431,7 +431,6 @@ class QuickOrderService {
    *
    * OPTIMIZATIONS:
    * - Pre-fetch all instance positions in PARALLEL before processing orders
-   * - Use cached positions for CLOSE_POSITIONS strategy
    * - Enables position-aware order sizing without N sequential API calls
    */
   async _executeOrderStrategy(strategy, symbol, instances, orderParams) {
@@ -453,15 +452,14 @@ class QuickOrderService {
       });
     }
 
-    // OPTIMIZATION: Pre-fetch all instance positions in PARALLEL
-    // For CLOSE_POSITIONS, use cached positions (EXIT/CLOSE don't need live position for sizing)
-    // For DIRECT_ORDER and OPTIONS, fetch live positions once before processing
+    // Pre-fetch all instance positions in PARALLEL
+    // For entry/adjust flows, force live positions for accurate sizing.
     const isCloseAction = strategy === 'CLOSE_POSITIONS' ||
                           ['EXIT', 'EXIT_ALL', 'CLOSE_ALL_CE', 'CLOSE_ALL_PE'].includes(action);
 
     let preloadedPositions = null;
     if (!isCloseAction) {
-      const forceLive = instances.length > 1;
+      const forceLive = true;
       log.info('Pre-fetching positions', {
         instanceCount: instances.length,
         strategy,
