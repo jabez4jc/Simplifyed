@@ -50,7 +50,35 @@ class APIClient {
         return { status: 'success' };
       }
 
-      const data = await response.json();
+      let data = null;
+      const contentType = response.headers.get('content-type') || '';
+      const looksJson = contentType.includes('application/json');
+      const responseClone = response.clone();
+
+      if (looksJson) {
+        try {
+          data = await response.json();
+        } catch (error) {
+          let text = '';
+          try {
+            text = await responseClone.text();
+          } catch (textError) {
+            text = '';
+          }
+          throw new APIError(
+            `Invalid JSON response (HTTP ${response.status}): ${text.substring(0, 200)}`,
+            response.status,
+            'INVALID_JSON'
+          );
+        }
+      } else {
+        const text = await response.text();
+        throw new APIError(
+          `Non-JSON response (HTTP ${response.status}): ${text.substring(0, 200)}`,
+          response.status,
+          'NON_JSON_RESPONSE'
+        );
+      }
 
       if (!response.ok) {
         // If not authenticated, redirect to Google OAuth flow
@@ -78,11 +106,8 @@ class APIClient {
       }
 
       // Network error
-      throw new APIError(
-        'Network error. Please check your connection.',
-        0,
-        'NETWORK_ERROR'
-      );
+      const message = error?.message || 'Network error. Please check your connection.';
+      throw new APIError(message, 0, 'NETWORK_ERROR');
     }
   }
 

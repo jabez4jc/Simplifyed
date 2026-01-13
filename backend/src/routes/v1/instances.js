@@ -366,9 +366,19 @@ router.post('/bulk-update', async (req, res, next) => {
  * Manually refresh instance data (bypasses cron)
  */
 router.post('/:id/refresh', async (req, res, next) => {
+  const startTime = Date.now();
   try {
     const id = parseInt(req.params.id, 10);
+    log.info('Manual refresh requested', {
+      instance_id: id,
+      user_id: req.user?.id || null,
+    });
     const instance = await pollingService.refreshInstance(id);
+    const durationMs = Date.now() - startTime;
+    log.info('Manual refresh completed (route)', {
+      instance_id: id,
+      duration_ms: durationMs,
+    });
 
     res.json({
       status: 'success',
@@ -376,6 +386,12 @@ router.post('/:id/refresh', async (req, res, next) => {
       data: instance,
     });
   } catch (error) {
+    const durationMs = Date.now() - startTime;
+    log.warn('Manual refresh failed (route)', {
+      instance_id: Number.isNaN(Number(req.params.id)) ? req.params.id : Number(req.params.id),
+      duration_ms: durationMs,
+      error: error?.message,
+    });
     next(error);
   }
 });
