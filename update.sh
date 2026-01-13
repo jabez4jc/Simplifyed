@@ -17,12 +17,15 @@ APP_USER=""
 SERVICE_NAME=""
 INSTALL_ROOT="/opt"
 SOURCE_DIR="$(cd "$(dirname "$0")" && pwd)"
+REINSTALL=false
+BACKUP_DIR=""
 
 usage() {
-  echo "Usage: sudo $0 [--instance <name> | --dir <path>] [--source <path>]"
+  echo "Usage: sudo $0 [--instance <name> | --dir <path>] [--source <path>] [--reinstall]"
   echo "  --instance   Instance identifier used during install (e.g., prod, dev, staging)"
   echo "  --dir        Absolute install directory (e.g., /opt/simplifyed-dev)"
   echo "  --source     Path to the updated code (defaults to the directory containing this script)"
+  echo "  --reinstall  In-place reinstall (backs up existing config/data; no prompts)"
   echo "If neither is provided and /opt/simplifyed* dirs exist, you'll be prompted to choose."
   exit 1
 }
@@ -40,6 +43,10 @@ while [[ $# -gt 0 ]]; do
     --source)
       SOURCE_DIR="$2"
       shift 2
+      ;;
+    --reinstall)
+      REINSTALL=true
+      shift 1
       ;;
     *)
       usage
@@ -105,20 +112,67 @@ echo "  Install dir : $INSTALL_DIR"
 echo "  Source dir  : $SOURCE_DIR"
 echo "  Service     : $SERVICE_NAME"
 echo "  App user    : $APP_USER"
+echo "  Reinstall   : $REINSTALL"
 echo "============================================================"
 
 echo "➜ Stopping service..."
 systemctl stop "$SERVICE_NAME"
 
-echo "➜ Syncing updated code from source..."
-rsync -av \
-  --exclude='.git' \
-  --exclude='node_modules' \
-  --exclude='backend/node_modules' \
-  --exclude='backend/database' \
-  --exclude='backend/logs' \
-  --exclude='*.log' \
-  "$SOURCE_DIR/" "$INSTALL_DIR/"
+if [[ "$REINSTALL" == true ]]; then
+  BACKUP_DIR="$(mktemp -d /tmp/simplifyed-reinstall-XXXX)"
+  echo "➜ Backing up current instance data to $BACKUP_DIR..."
+  if [[ -f "$INSTALL_DIR/backend/.env" ]]; then
+    rsync -a "$INSTALL_DIR/backend/.env" "$BACKUP_DIR/.env"
+  fi
+  if [[ -d "$INSTALL_DIR/backend/database" ]]; then
+    rsync -a "$INSTALL_DIR/backend/database" "$BACKUP_DIR/database"
+  fi
+  if [[ -d "$INSTALL_DIR/backend/logs" ]]; then
+    rsync -a "$INSTALL_DIR/backend/logs" "$BACKUP_DIR/logs"
+  fi
+  if [[ -d "$INSTALL_DIR/backend/data" ]]; then
+    rsync -a "$INSTALL_DIR/backend/data" "$BACKUP_DIR/data"
+  fi
+
+  echo "➜ Syncing clean code from source (in-place reinstall)..."
+  rsync -av --delete \
+    --exclude='.git' \
+    --exclude='node_modules' \
+    --exclude='backend/node_modules' \
+    --exclude='backend/database' \
+    --exclude='backend/logs' \
+    --exclude='backend/data' \
+    --exclude='backend/.env' \
+    --exclude='*.log' \
+    "$SOURCE_DIR/" "$INSTALL_DIR/"
+
+  echo "➜ Restoring backed up instance data..."
+  if [[ -f "$BACKUP_DIR/.env" ]]; then
+    rsync -a "$BACKUP_DIR/.env" "$INSTALL_DIR/backend/.env"
+  fi
+  if [[ -d "$BACKUP_DIR/database" ]]; then
+    rsync -a "$BACKUP_DIR/database/" "$INSTALL_DIR/backend/database/"
+  fi
+  if [[ -d "$BACKUP_DIR/logs" ]]; then
+    rsync -a "$BACKUP_DIR/logs/" "$INSTALL_DIR/backend/logs/"
+  fi
+  if [[ -d "$BACKUP_DIR/data" ]]; then
+    rsync -a "$BACKUP_DIR/data/" "$INSTALL_DIR/backend/data/"
+  fi
+
+  echo "➜ Cleaning install artifacts..."
+  rm -rf "$INSTALL_DIR/backend/node_modules"
+else
+  echo "➜ Syncing updated code from source..."
+  rsync -av \
+    --exclude='.git' \
+    --exclude='node_modules' \
+    --exclude='backend/node_modules' \
+    --exclude='backend/database' \
+    --exclude='backend/logs' \
+    --exclude='*.log' \
+    "$SOURCE_DIR/" "$INSTALL_DIR/"
+fi
 
 # Ensure writable dirs (db/logs/public assets) belong to app user
 chown -R "$APP_USER":"$APP_USER" \
