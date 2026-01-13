@@ -378,9 +378,10 @@ class APIClient {
     });
   }
 
-  async getOrderbook(status = '') {
+  async getOrderbook(status = '', options = {}) {
     const params = new URLSearchParams();
     if (status) params.append('status', status);
+    if (options.refresh === true) params.append('refresh', 'true');
     return this.request(`/orders/orderbook?${params.toString()}`);
   }
 

@@ -3462,13 +3462,13 @@ class DashboardApp {
       </div>
     `;
 
-    await this.loadOrders(this.currentOrderFilter, { ensureView: false });
+    await this.loadOrders(this.currentOrderFilter, { ensureView: false, refresh: true });
     await this.loadOrderHistory();
     await this.loadQuickOrdersHistory();
   }
 
   async loadOrders(status = '', options = {}) {
-    const { ensureView = true } = options;
+    const { ensureView = true, refresh = false } = options;
     const panel = document.getElementById('orders-panel');
     if (ensureView && !panel) {
       await this.renderOrdersView();
@@ -3478,7 +3478,7 @@ class DashboardApp {
     try {
       const params = {};
       if (status) params.status = status;
-      const response = await api.getOrderbook(status);
+      const response = await api.getOrderbook(status, { refresh });
       await this.ensureInstancesLoaded();
       const payload = response.data || {};
       const merged = this._buildPanelInstances(payload, 'orders');

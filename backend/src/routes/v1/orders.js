@@ -75,6 +75,7 @@ router.get('/', requirePermission('pages.orders.view'), async (req, res, next) =
 router.get('/orderbook', requirePermission('pages.orders.view'), async (req, res, next) => {
   try {
     const statusFilter = req.query.status;
+    const force = req.query.refresh === 'true';
 
     const instances = await instanceService.getAllInstances({ is_active: true });
     const resultPayload = {
@@ -121,7 +122,7 @@ router.get('/orderbook', requirePermission('pages.orders.view'), async (req, res
     };
 
     await Promise.all(instances.map(async (instance) => {
-      const snapshot = await marketDataFeedService.getOrderbookSnapshot(instance.id);
+      const snapshot = await marketDataFeedService.getOrderbookSnapshot(instance.id, { force });
       const snapshotData = snapshot?.data || {};
       const normalizedPayload = Array.isArray(snapshotData) ? snapshotData : snapshotData.orders || snapshotData.data || [];
 
