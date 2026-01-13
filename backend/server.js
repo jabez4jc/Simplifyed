@@ -140,6 +140,7 @@ async function validateWsSessionFromRequest(req) {
 const app = express();
 const server = http.createServer(app);
 app.locals.startServices = startBackgroundServices;
+app.set('trust proxy', 1);
 
 /**
  * Middleware Setup
