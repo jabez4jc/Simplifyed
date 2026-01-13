@@ -487,7 +487,7 @@ create_systemd_service() {
     cat > /etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
 Description=$SERVICE_DESC
-Documentation=https://github.com/yourusername/simplifyed
+Documentation=https://github.com/jabez4jc/simplifyed
 After=network-online.target
 Wants=network-online.target
 
