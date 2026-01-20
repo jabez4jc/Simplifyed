@@ -602,88 +602,55 @@ class InstanceService {
         // Session-aware tracking (IST)
         const istNow = this._nowInIST();
         const todayIst = this._formatDateIST(istNow);
-        const sessions = await this._getTradingSessions();
-        const currentSession = this._findCurrentSession(istNow, sessions);
+        const sessionState = await this._computeSessionState(instance, totalPnl, istNow);
+        const {
+          currentSession,
+          sessionKey,
+          sessionLabel,
+          sessionBaseline,
+          sessionBaselineAt,
+          sessionPnl,
+          maxLossHits,
+          hitsKey,
+          cutoffReason,
+          lastLiveTotalPnl,
+          lastLiveTotalPnlAt,
+          isLiveMode,
+        } = sessionState;
 
-        let sessionBaseline = instance.session_baseline_total_pnl;
-        let sessionBaselineAt = instance.session_baseline_at;
-        let sessionPnl = instance.session_pnl;
-        let lastLiveTotalPnl = instance.last_live_total_pnl;
-        let lastLiveTotalPnlAt = instance.last_live_total_pnl_at;
-        let cutoffReason = null;
-        const sessionLabel = currentSession?.label || 'Session';
-        const sessionKey = `${todayIst}|${sessionLabel}`;
-
-        // Reset per-day max-loss hit counter
-        let maxLossHits = parseIntSafe(instance.session_max_loss_hits, 0);
-        const hitsDate = instance.session_max_loss_hits_date;
-        if (hitsDate !== todayIst) {
-          maxLossHits = 0;
+        // Auto-revert to live at start of a new session if prior cutoff was max-loss (not limit reached)
+        if (
+          instance.is_analyzer_mode &&
+          currentSession &&
+          instance.session_cutoff_reason &&
+          instance.session_cutoff_reason.startsWith('SESSION_MAX_LOSS') &&
+          cutoffReason === null &&
+          hitsKey !== sessionKey // new session window
+        ) {
+          try {
+            await this.toggleAnalyzerMode(id, false);
+            log.info('Auto-switching back to live for new session after prior max-loss cutoff', { id });
+          } catch (toggleErr) {
+            log.warn('Failed to auto-switch to live for new session', { id, error: toggleErr.message });
+          }
         }
 
-        const isLiveMode = !instance.is_analyzer_mode;
-        if (isLiveMode) {
-          lastLiveTotalPnl = totalPnl;
-          lastLiveTotalPnlAt = toISTISOString();
-        }
-
-        if (isLiveMode && currentSession) {
-          if (sessionBaselineAt !== sessionKey || sessionBaseline === null || sessionBaseline === undefined) {
-            sessionBaseline = totalPnl;
-            sessionBaselineAt = sessionKey;
-            sessionPnl = 0;
-          } else {
-            sessionPnl = totalPnl - sessionBaseline;
-          }
-
-          const target = parseFloatSafe(instance.session_target_profit, null);
-          const maxLoss = parseFloatSafe(instance.session_max_loss, null);
-
-          if (target !== null && sessionPnl >= target) {
-            cutoffReason = 'SESSION_TARGET_PROFIT_REACHED';
-          } else if (maxLoss !== null && sessionPnl <= -Math.abs(maxLoss)) {
-            maxLossHits += 1;
-            const limitReached = maxLossHits >= 3;
-            cutoffReason = limitReached
-              ? 'SESSION_MAX_LOSS_LIMIT_REACHED'
-              : 'SESSION_MAX_LOSS_BREACHED';
-          }
-
-          // Auto-revert to live at start of a new session if prior cutoff was max-loss (not limit reached)
-          if (
-            instance.is_analyzer_mode &&
-            instance.session_cutoff_reason &&
-            instance.session_cutoff_reason.startsWith('SESSION_MAX_LOSS') &&
-            cutoffReason === null &&
-            hitsDate !== todayIst // new day/session window
-          ) {
-            try {
-              await this.toggleAnalyzerMode(id, false);
-              cutoffReason = null;
-              maxLossHits = 0;
-              log.info('Auto-switching back to live for new session after prior max-loss cutoff', { id });
-            } catch (toggleErr) {
-              log.warn('Failed to auto-switch to live for new session', { id, error: toggleErr.message });
-            }
-          }
-
-          if (cutoffReason) {
-            log.warn('Session cutoff triggered; switching to analyzer mode', {
+        if (isLiveMode && currentSession && cutoffReason) {
+          log.warn('Session cutoff triggered; switching to analyzer mode', {
+            id,
+            session: sessionLabel,
+            session_pnl: sessionPnl,
+            reason: cutoffReason,
+            max_loss_hits: maxLossHits,
+          });
+          // fire-and-forget safe toggle; errors logged but do not throw to keep polling running
+          try {
+            await this.toggleAnalyzerMode(id, true);
+          } catch (toggleError) {
+            log.error('Failed to toggle analyzer after cutoff', {
               id,
-              session: sessionLabel,
-              session_pnl: sessionPnl,
-              reason: cutoffReason,
-              max_loss_hits: maxLossHits,
+              error: toggleError.message,
             });
-            // fire-and-forget safe toggle; errors logged but do not throw to keep polling running
-            try {
-              await this.toggleAnalyzerMode(id, true);
-            } catch (toggleError) {
-              log.error('Failed to toggle analyzer after cutoff', {
-                id,
-                error: toggleError.message,
-              });
-            }
           }
         }
 
@@ -741,7 +708,7 @@ class InstanceService {
             cutoffReason,
             cutoffReason,
             maxLossHits,
-            todayIst,
+            sessionKey || hitsKey || null,
             id,
           ]
         );
@@ -881,6 +848,27 @@ class InstanceService {
       const hasAnalyzerCheckColumn = await this._hasColumn('last_analyzer_check_at');
       let sql = 'UPDATE instances SET is_analyzer_mode = ?, last_updated = CURRENT_TIMESTAMP';
       const params = [mode ? 1 : 0];
+
+      if (!mode) {
+        const istNow = this._nowInIST();
+        const todayIst = this._formatDateIST(istNow);
+        const sessions = await this._getTradingSessions();
+        const currentSession = this._findCurrentSession(istNow, sessions);
+        const sessionLabel = currentSession?.label || null;
+        const sessionKey = currentSession ? `${todayIst}|${sessionLabel}` : null;
+        const baseline = Number.isFinite(instance.total_pnl) ? instance.total_pnl : 0;
+
+        sql += `,
+          session_baseline_total_pnl = ?,
+          session_baseline_at = ?,
+          session_pnl = ?,
+          session_cutoff_reason = NULL,
+          session_cutoff_at = NULL,
+          session_max_loss_hits = 0,
+          session_max_loss_hits_date = ?`;
+        params.push(baseline, sessionKey, 0, sessionKey);
+      }
+
       if (hasAnalyzerCheckColumn) {
         sql += ', last_analyzer_check_at = CURRENT_TIMESTAMP';
       }
@@ -1072,6 +1060,81 @@ class InstanceService {
     const month = `${date.getMonth() + 1}`.padStart(2, '0');
     const day = `${date.getDate()}`.padStart(2, '0');
     return `${year}-${month}-${day}`;
+  }
+
+  async _computeSessionState(instance, totalPnl, now, { overrideAnalyzerMode = null } = {}) {
+    const istNow = now || this._nowInIST();
+    const todayIst = this._formatDateIST(istNow);
+    const sessions = await this._getTradingSessions();
+    const currentSession = this._findCurrentSession(istNow, sessions);
+
+    let sessionBaseline = instance.session_baseline_total_pnl;
+    let sessionBaselineAt = instance.session_baseline_at;
+    let sessionPnl = instance.session_pnl;
+    let cutoffReason = null;
+
+    const sessionLabel = currentSession?.label || null;
+    const sessionKey = currentSession ? `${todayIst}|${sessionLabel}` : null;
+
+    let maxLossHits = parseIntSafe(instance.session_max_loss_hits, 0);
+    const hitsKey = instance.session_max_loss_hits_date;
+    if (currentSession && hitsKey !== sessionKey) {
+      maxLossHits = 0;
+    }
+
+    const analyzerMode = overrideAnalyzerMode === null ? !!instance.is_analyzer_mode : !!overrideAnalyzerMode;
+    const isLiveMode = !analyzerMode;
+
+    let lastLiveTotalPnl = instance.last_live_total_pnl;
+    let lastLiveTotalPnlAt = instance.last_live_total_pnl_at;
+    if (isLiveMode) {
+      lastLiveTotalPnl = totalPnl;
+      lastLiveTotalPnlAt = toISTISOString();
+    }
+
+    const target = parseFloatSafe(instance.session_target_profit, null);
+    const maxLoss = parseFloatSafe(instance.session_max_loss, null);
+    const rawMultiplier = parseFloatSafe(instance.multiplier, 1);
+    const multiplier = rawMultiplier > 0 ? rawMultiplier : 1;
+    const effectiveTarget = target !== null ? target * multiplier : null;
+    const effectiveMaxLoss = maxLoss !== null ? Math.abs(maxLoss) * multiplier : null;
+
+    if (isLiveMode && currentSession) {
+      if (sessionBaselineAt !== sessionKey || sessionBaseline === null || sessionBaseline === undefined) {
+        sessionBaseline = totalPnl;
+        sessionBaselineAt = sessionKey;
+        sessionPnl = 0;
+      } else {
+        sessionPnl = totalPnl - sessionBaseline;
+      }
+
+      if (effectiveTarget !== null && sessionPnl >= effectiveTarget) {
+        cutoffReason = 'SESSION_TARGET_PROFIT_REACHED';
+      } else if (effectiveMaxLoss !== null && sessionPnl <= -effectiveMaxLoss) {
+        maxLossHits += 1;
+        const limitReached = maxLossHits >= 3;
+        cutoffReason = limitReached
+          ? 'SESSION_MAX_LOSS_LIMIT_REACHED'
+          : 'SESSION_MAX_LOSS_BREACHED';
+      }
+    }
+
+    return {
+      currentSession,
+      sessionKey,
+      sessionLabel,
+      sessionBaseline,
+      sessionBaselineAt,
+      sessionPnl,
+      maxLossHits,
+      hitsKey,
+      cutoffReason,
+      effectiveTarget,
+      effectiveMaxLoss,
+      lastLiveTotalPnl,
+      lastLiveTotalPnlAt,
+      isLiveMode,
+    };
   }
 
   async _getAppOrderIdsForDate(instanceId, dateKey) {

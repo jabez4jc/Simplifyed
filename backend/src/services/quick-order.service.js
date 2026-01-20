@@ -34,6 +34,34 @@ class QuickOrderService {
     this.optionPreviewQuoteCache = new Map(); // key: exch::symbol -> { ltp, changePercent, fetchedAt }
     this.optionPreviewQuoteTtlMs = 60000; // keep last-good preview quotes for 60s
     this.optionPreviewStaleMs = 15000; // mark UI as stale after 15s
+    this.optionPreviewInstanceCache = new Map(); // symbolId -> { instanceId, ts }
+  }
+
+  async _getStableMarketDataInstanceForPreview(symbolId) {
+    const cacheKey = String(symbolId || '');
+    if (!cacheKey) {
+      return marketDataInstanceService.getMarketDataInstance();
+    }
+
+    const pool = await marketDataInstanceService.getMarketDataPool();
+    if (!pool.length) {
+      return marketDataInstanceService.getMarketDataInstance();
+    }
+
+    const cached = this.optionPreviewInstanceCache.get(cacheKey);
+    if (cached) {
+      const match = pool.find(inst => inst.id === cached.instanceId);
+      if (match) {
+        return match;
+      }
+      this.optionPreviewInstanceCache.delete(cacheKey);
+    }
+
+    const instance = await marketDataInstanceService.getMarketDataInstance();
+    if (instance) {
+      this.optionPreviewInstanceCache.set(cacheKey, { instanceId: instance.id, ts: Date.now() });
+    }
+    return instance;
   }
   /**
    * Place quick order from watchlist
@@ -2360,92 +2388,22 @@ class QuickOrderService {
         exchange,
       });
 
-      // Check cache first (from instance or symbol cache)
-      const cachedQuote = this._findQuoteInSnapshot(
-        marketDataFeedService.getQuoteSnapshot(instance.id),
-        exchange,
-        underlying
-      );
-
-      if (cachedQuote) {
-        const cachedLtp = this._extractLtpFromQuote(cachedQuote);
-        if (cachedLtp && cachedLtp > 0) {
-          log.debug('Using cached LTP for underlying', {
-            instance_id: instance.id,
-            underlying,
-            ltp: cachedLtp,
-            source: 'cache',
-          });
-          return cachedLtp;
-        }
-      }
-
-      // Also check symbol-level cache
-      const { cached } = marketDataFeedService.getCachedQuotesForSymbols(
-        [{ exchange, symbol: underlying }],
-        { orderCritical: true } // Use aggressive TTL for LTP
-      );
-
-      if (cached.length > 0) {
-        const cachedLtp = this._extractLtpFromQuote(cached[0]);
-        if (cachedLtp && cachedLtp > 0) {
-          log.debug('Using symbol cache LTP for underlying', {
-            instance_id: instance.id,
-            underlying,
-            ltp: cachedLtp,
-            source: 'symbol_cache',
-          });
-          return cachedLtp;
-        }
-      }
-
-      // Get market data pool for fallback capability
-      // LTP is critical - use all available instances for reliability
-      let instancePool = [instance];
-      try {
-        const marketDataPool = await marketDataInstanceService.getPoolForEndpoint('quotes');
-        if (marketDataPool.length > 0) {
-          // Put the requested instance first, then add others
-          instancePool = [instance, ...marketDataPool.filter(i => i.id !== instance.id)];
-        }
-      } catch (poolError) {
-        log.warn('Failed to get market data pool, using single instance', {
-          error: poolError.message,
-        });
-      }
-
-      // Pause non-critical polling during LTP fetch to prioritize bandwidth
-      marketDataFeedService.pauseNonCriticalPolling(3000);
-
-      // Use getLtpWithRetry for aggressive retry with exponential backoff
-      // Strategy: Try different instances first, then do another round if needed
-      const result = await openalgoClient.getLtpWithRetry(
-        instancePool,
-        exchange,
-        underlying,
-        {
-          maxRounds: 2,         // 2 rounds through all instances
-          baseDelayMs: 50,      // 50ms between rounds
-        }
-      );
-
-      // Update cache with fresh LTP
-      if (result.quote) {
-        marketDataFeedService.setQuoteSnapshot(result.instanceId, [result.quote], {
-          fetchedAt: Date.now(),
-          source: 'ltp_retry',
-        });
-      }
-
-      log.debug('LTP fetched successfully', {
-        instance_id: instance.id,
-        underlying,
-        ltp: result.ltp,
-        source: result.source,
-        attempts: result.attempts,
+      const result = await marketDataFeedService.fetchLtpForSymbol(exchange, underlying, {
+        maxRounds: 2,
       });
 
-      return result.ltp;
+      if (result?.ltp && result.ltp > 0) {
+        log.debug('LTP fetched successfully', {
+          instance_id: instance.id,
+          underlying,
+          ltp: result.ltp,
+          source: result.source,
+          attempts: result.attempts,
+        });
+        return result.ltp;
+      }
+
+      throw new Error('No LTP returned');
     } catch (error) {
       log.error('Failed to get underlying LTP after retries', error, {
         instance_id: instance.id,
@@ -3201,8 +3159,7 @@ class QuickOrderService {
 
     const normalizedExpiry = expiry ? this._normalizeExpiryInput(expiry) : null;
 
-    const marketDataInstanceService = (await import('./market-data-instance.service.js')).default;
-    const marketDataInstance = await marketDataInstanceService.getMarketDataInstance();
+    const marketDataInstance = await this._getStableMarketDataInstanceForPreview(symbolId);
 
     let effectiveExpiry =
       normalizedExpiry ||
@@ -3293,21 +3250,29 @@ class QuickOrderService {
       quoteRequests.push({ exchange: derivativeExchange, symbol: peResolution.symbol });
     }
 
-    const optionChainQuotes = await this._getOptionChainQuotesMap({
-      instance: marketDataInstance,
-      underlying,
-      expiry: effectiveExpiry,
-      exchange: derivativeExchange,
-      minStrikeCount: 5,
-    });
-
     const requestedKeys = quoteRequests
       .map(req => this._buildQuoteMatchKey(req.exchange || derivativeExchange, req.symbol))
       .filter(Boolean);
 
-    const chainHasAll = this._hasAllQuotes(optionChainQuotes, requestedKeys, true);
-    const fallbackQuotes = chainHasAll ? null : await this._getQuotesFromCache(marketDataInstance, quoteRequests);
-    let quotesMap = this._mergeQuoteMaps(optionChainQuotes, fallbackQuotes);
+    const wsQuotes = await this._getQuotesPreferWs(quoteRequests);
+    const wsHasAll = this._hasAllQuotes(wsQuotes, requestedKeys, true);
+
+    let optionChainQuotes = null;
+    let fallbackQuotes = null;
+    if (!wsHasAll) {
+      optionChainQuotes = await this._getOptionChainQuotesMap({
+        instance: marketDataInstance,
+        underlying,
+        expiry: effectiveExpiry,
+        exchange: derivativeExchange,
+        minStrikeCount: 5,
+      });
+      const chainHasAll = this._hasAllQuotes(optionChainQuotes, requestedKeys, true);
+      fallbackQuotes = chainHasAll ? null : await this._getQuotesFromCache(marketDataInstance, quoteRequests);
+    }
+
+    let quotesMap = this._mergeQuoteMaps(wsQuotes, optionChainQuotes);
+    quotesMap = this._mergeQuoteMaps(quotesMap, fallbackQuotes);
     const now = Date.now();
 
     // Use a longer-lived symbol cache to reduce blanks when live fetches miss.
@@ -3368,6 +3333,7 @@ class QuickOrderService {
         }
       }
       const quoteStale = fetchedAt ? now - fetchedAt > this.optionPreviewStaleMs : false;
+      const quoteSource = quote?._source || quote?.source || (quote ? 'rest' : null);
 
       return {
         symbol: resolution.symbol,
@@ -3380,6 +3346,7 @@ class QuickOrderService {
         ltp,
         changePercent,
         quoteStale,
+        quoteSource,
       };
     };
 
@@ -3432,8 +3399,7 @@ class QuickOrderService {
       ? symbol.exchange
       : derivativeResolutionService.getDerivativeExchange(symbol.exchange);
 
-    const marketDataInstanceService = (await import('./market-data-instance.service.js')).default;
-    const marketDataInstance = await marketDataInstanceService.getMarketDataInstance();
+    const marketDataInstance = await this._getStableMarketDataInstanceForPreview(symbolId);
 
     // Prevent using past expiries; if stale, switch to nearest future
     const todayIso = (() => {
@@ -3479,7 +3445,7 @@ class QuickOrderService {
       );
     }
 
-    const quotesMap = await this._getQuotesFromCache(marketDataInstance, [
+    const quotesMap = await this._getQuotesPreferWs([
       {
         exchange: derivativeExchange,
         symbol: futuresResolution.symbol,
@@ -3489,6 +3455,7 @@ class QuickOrderService {
     const quoteKey = this._buildQuoteMatchKey(derivativeExchange, futuresResolution.symbol);
     const quote = quoteKey ? quotesMap.get(quoteKey) : null;
     const fetchedAt = quote?.fetchedAt || Date.now();
+    const quoteSource = quote?._source || quote?.source || (quote ? 'rest' : null);
 
     return {
       symbolId,
@@ -3504,6 +3471,7 @@ class QuickOrderService {
             ltp: this._extractLtpFromQuote(quote),
             changePercent: this._extractChangePercentFromQuote(quote),
             fetchedAt,
+            source: quoteSource,
           }
         : null,
       updatedAt: toISTISOString(),
@@ -3802,6 +3770,12 @@ class QuickOrderService {
     const snapshot = marketDataFeedService.getQuoteSnapshot(instance.id);
     const cached = this._findQuoteInSnapshot(snapshot, exchange, symbol);
     if (cached) return;
+    try {
+      await marketDataFeedService.fetchLtpForSymbol(exchange, symbol, { maxRounds: 1 });
+      return;
+    } catch (_) {
+      // fallback to REST refresh
+    }
     await marketDataFeedService.refreshQuotes({ force: true });
   }
 
@@ -4147,6 +4121,46 @@ class QuickOrderService {
         marketDataFeedService.setQuoteSnapshot(instance.id, merged, { fetchedAt });
       }
     }
+
+    return results;
+  }
+
+  async _getQuotesPreferWs(requests = []) {
+    if (!Array.isArray(requests) || requests.length === 0) {
+      return new Map();
+    }
+
+    const results = new Map();
+    const now = Date.now();
+
+    await Promise.all(requests.map(async (request) => {
+      try {
+        const res = await marketDataFeedService.fetchLtpForSymbol(
+          request.exchange,
+          request.symbol,
+          { maxRounds: 1 }
+        );
+        if (!res) return;
+        const quote = res.quote || {
+          exchange: request.exchange,
+          symbol: request.symbol,
+          ltp: res.ltp,
+        };
+        if (!quote._source && res.source) {
+          quote._source = res.source;
+        }
+        const key = this._buildQuoteMatchKey(
+          quote.exchange || quote.exch || request.exchange,
+          quote.symbol || quote.trading_symbol || quote.tradingsymbol || request.symbol
+        );
+        if (key) {
+          const fetchedAt = quote.fetchedAt || now;
+          results.set(key, { ...quote, fetchedAt });
+        }
+      } catch (_) {
+        // best effort; fallback handled by callers
+      }
+    }));
 
     return results;
   }

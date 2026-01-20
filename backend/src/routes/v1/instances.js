@@ -490,6 +490,110 @@ router.post('/:id/analyzer/toggle', async (req, res, next) => {
   }
 });
 
+/**
+ * POST /api/v1/instances/:id/test/session-cutoff
+ * Admin-only: Simulate session cutoff evaluation without placing trades
+ */
+router.post('/:id/test/session-cutoff', requireAdmin, async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const { total_pnl: totalPnlRaw, commit, allow_mode_flip, simulate_analyzer_mode, now } = req.body || {};
+
+    const totalPnl = parseFloat(totalPnlRaw);
+    if (Number.isNaN(totalPnl)) {
+      throw new ValidationError('total_pnl must be a number');
+    }
+
+    const commitUpdate = parseBooleanSafe(commit, false);
+    const allowModeFlip = parseBooleanSafe(allow_mode_flip, false);
+    const overrideAnalyzer = simulate_analyzer_mode === undefined
+      ? null
+      : parseBooleanSafe(simulate_analyzer_mode, false);
+
+    const instance = await instanceService.getInstanceById(id);
+    const testNow = now ? new Date(now) : instanceService._nowInIST();
+    if (Number.isNaN(testNow?.getTime?.())) {
+      throw new ValidationError('now must be a valid date string');
+    }
+
+    const sessionState = await instanceService._computeSessionState(
+      instance,
+      totalPnl,
+      testNow,
+      { overrideAnalyzerMode: overrideAnalyzer }
+    );
+
+    const wouldSwitchToAnalyzer = !!(
+      sessionState.isLiveMode &&
+      sessionState.currentSession &&
+      sessionState.cutoffReason
+    );
+
+    if (commitUpdate) {
+      const sessionKey = sessionState.sessionKey || sessionState.hitsKey || null;
+      const cutoffAt = sessionState.cutoffReason ? testNow.toISOString() : null;
+      const modeFlip = allowModeFlip && wouldSwitchToAnalyzer ? 1 : instance.is_analyzer_mode ? 1 : 0;
+
+      await db.run(
+        `UPDATE instances SET
+          total_pnl = ?,
+          session_baseline_total_pnl = ?,
+          session_baseline_at = ?,
+          session_pnl = ?,
+          session_cutoff_reason = ?,
+          session_cutoff_at = ?,
+          session_max_loss_hits = ?,
+          session_max_loss_hits_date = ?,
+          last_live_total_pnl = ?,
+          last_live_total_pnl_at = ?,
+          is_analyzer_mode = ?,
+          last_updated = CURRENT_TIMESTAMP
+        WHERE id = ?`,
+        [
+          totalPnl,
+          sessionState.sessionBaseline,
+          sessionState.sessionBaselineAt,
+          sessionState.sessionPnl,
+          sessionState.cutoffReason,
+          cutoffAt,
+          sessionState.maxLossHits,
+          sessionKey,
+          sessionState.lastLiveTotalPnl,
+          sessionState.lastLiveTotalPnlAt,
+          modeFlip,
+          id,
+        ]
+      );
+    }
+
+    res.json({
+      status: 'success',
+      data: {
+        instance_id: id,
+        simulated: {
+          total_pnl: totalPnl,
+          now: testNow.toISOString(),
+          session_key: sessionState.sessionKey,
+          session_label: sessionState.sessionLabel,
+          session_pnl: sessionState.sessionPnl,
+          session_baseline_total_pnl: sessionState.sessionBaseline,
+          session_baseline_at: sessionState.sessionBaselineAt,
+          cutoff_reason: sessionState.cutoffReason,
+          max_loss_hits: sessionState.maxLossHits,
+          effective_target: sessionState.effectiveTarget,
+          effective_max_loss: sessionState.effectiveMaxLoss,
+          is_live_mode: sessionState.isLiveMode,
+          would_switch_to_analyzer: wouldSwitchToAnalyzer,
+        },
+        committed: commitUpdate,
+        allow_mode_flip: allowModeFlip,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Admin-only middleware
 function requireAdmin(req, _res, next) {
   if (!req.user?.is_admin) {

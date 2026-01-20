@@ -406,21 +406,28 @@ class QuickOrderHandler {
         )
       : '';
 
+    const strikePolicyHint = strikePolicy === 'ANCHOR_OFS'
+      ? 'Anchors the selected strike after the first order.'
+      : 'Strikes float with ATM as it moves.';
+
     const strikePolicyField = showStrikePolicy
       ? renderField(
           'Policy',
           'How strikes migrate as ATM moves.',
-          `<select
-            class="select-compact"
-            data-symbol-id="${symbolId}"
-            onchange="quickOrder.selectStrikePolicy(${symbolId}, this.value)">
-            <option value="FLOAT_OFS" ${strikePolicy === 'FLOAT_OFS' ? 'selected' : ''}>
-              FLOAT_OFS
-            </option>
-            <option value="ANCHOR_OFS" ${strikePolicy === 'ANCHOR_OFS' ? 'selected' : ''}>
-              ANCHOR_OFS
-            </option>
-          </select>`
+          `<div class="flex flex-col gap-1">
+            <select
+              class="select-compact"
+              data-symbol-id="${symbolId}"
+              onchange="quickOrder.selectStrikePolicy(${symbolId}, this.value)">
+              <option value="FLOAT_OFS" ${strikePolicy === 'FLOAT_OFS' ? 'selected' : ''}>
+                FLOAT_OFS
+              </option>
+              <option value="ANCHOR_OFS" ${strikePolicy === 'ANCHOR_OFS' ? 'selected' : ''}>
+                ANCHOR_OFS
+              </option>
+            </select>
+            <span class="text-xs text-neutral-500">${strikePolicyHint}</span>
+          </div>`
         )
       : '';
 
@@ -1390,17 +1397,30 @@ class QuickOrderHandler {
     const changeClass = changeDefined
       ? (legChange > 0 ? 'text-profit' : (legChange < 0 ? 'text-loss' : 'text-neutral-500'))
       : 'text-neutral-500';
+    const sourceBadge = this.renderQuoteSourceBadge(leg.quoteSource);
 
     return `
       <div class="text-xs">
         <div class="text-neutral-600 mb-1">
-          ${label} • <span class="font-mono">${Utils.escapeHTML(leg.symbol || '')}</span> • Strike ${leg.strike ?? '—'} • Lot ${leg.lotSize ?? '—'}
+          ${label} • <span class="font-mono">${Utils.escapeHTML(leg.symbol || '')}</span> • Strike ${leg.strike ?? '—'} • Lot ${leg.lotSize ?? '—'} ${sourceBadge}
         </div>
         <div class="flex items-baseline gap-2">
           <span class="${ltpClass}" ${quoteKey ? `data-quote-key="${Utils.escapeHTML(quoteKey)}" data-quote-role="ltp"` : ''}>${ltpText}</span>
         </div>
       </div>
     `;
+  }
+
+  renderQuoteSourceBadge(source) {
+    if (!source) return '';
+    const normalized = String(source).toLowerCase();
+    let label = 'REST';
+    if (normalized.includes('ws')) {
+      label = 'WS';
+    } else if (normalized.includes('cache')) {
+      label = 'CACHE';
+    }
+    return `<span class="text-[10px] uppercase tracking-wide text-neutral-500 border border-neutral-300 rounded px-1 align-middle">${label}</span>`;
   }
 
   triggerFuturesPreviewRefresh(symbolId) {
@@ -1599,6 +1619,7 @@ class QuickOrderHandler {
       preview.quote?.exchange || preview.exchange,
       preview.quote?.symbol || preview.tradingSymbol || preview.futuresSymbol
     );
+    const sourceBadge = this.renderQuoteSourceBadge(preview.quote?.source);
     const refreshedLabel = preview.quote?.fetchedAt
       ? `Refreshed ${Utils.formatDateTime(new Date(preview.quote.fetchedAt).toISOString(), true)}`
       : preview.updatedAt
@@ -1608,7 +1629,7 @@ class QuickOrderHandler {
     container.innerHTML = `
       <div class="flex items-center justify-between gap-2 text-xs mb-1">
         <div class="font-semibold text-base-content">
-          Contract | <span class="text-neutral-700">${Utils.escapeHTML(preview.tradingSymbol || preview.futuresSymbol)}</span> • Expiry <span class="text-neutral-700">${expiryLabel}</span>
+          Contract | <span class="text-neutral-700">${Utils.escapeHTML(preview.tradingSymbol || preview.futuresSymbol)}</span> • Expiry <span class="text-neutral-700">${expiryLabel}</span> ${sourceBadge}
         </div>
         ${refreshedLabel ? `<span class="text-neutral-500 whitespace-nowrap">${Utils.escapeHTML(refreshedLabel)}</span>` : ''}
       </div>
