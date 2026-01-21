@@ -446,15 +446,43 @@ setup_database() {
 
     cd "$INSTALL_DIR/backend"
 
+    DB_PATH="$INSTALL_DIR/backend/database/simplifyed.db"
+    if [[ -f "$DB_PATH" ]]; then
+        existing_table=$(sqlite3 "$DB_PATH" "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations';" 2>/dev/null || true)
+        if [[ -n "$existing_table" ]]; then
+            version_type=$(sqlite3 "$DB_PATH" "SELECT type FROM pragma_table_info('schema_migrations') WHERE name='version';" 2>/dev/null || true)
+            if [[ "$version_type" != "TEXT" ]]; then
+                print_info "Normalizing schema_migrations.version to TEXT..."
+                sqlite3 "$DB_PATH" <<'SQL'
+BEGIN;
+CREATE TABLE schema_migrations_new (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  version TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO schema_migrations_new (id, version, name, applied_at)
+SELECT id, printf('%03d', version), name, applied_at FROM schema_migrations;
+DROP TABLE schema_migrations;
+ALTER TABLE schema_migrations_new RENAME TO schema_migrations;
+COMMIT;
+SQL
+            else
+                sqlite3 "$DB_PATH" \
+                  "UPDATE schema_migrations SET version = printf('%03d', version) WHERE version GLOB '[0-9]*' AND length(version) < 3;" || true
+            fi
+        fi
+    fi
+
     print_info "Running database migrations..."
     sudo -u $APP_USER npm run migrate
 
     print_info "Updating application settings (server.port)..."
-    sqlite3 "$INSTALL_DIR/backend/database/simplifyed.db" \
+    sqlite3 "$DB_PATH" \
       "UPDATE application_settings SET value='${PORT}' WHERE key='server.port';"
 
     print_info "Granting admin role to ${ADMIN_EMAIL}..."
-    sqlite3 "$INSTALL_DIR/backend/database/simplifyed.db" <<SQL
+    sqlite3 "$DB_PATH" <<SQL
 INSERT OR IGNORE INTO users (email, is_admin) VALUES ('${ADMIN_EMAIL}', 1);
 UPDATE users SET is_admin = 1 WHERE email = '${ADMIN_EMAIL}';
 INSERT OR REPLACE INTO user_roles (user_id, role_id)
