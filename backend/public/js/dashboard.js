@@ -334,16 +334,16 @@ class DashboardApp {
       const canEdit = this.hasPermission('pages.notifications.edit');
       const items = rows.length
         ? rows
-            .map(
-              (n) => `
+          .map(
+            (n) => `
           <div class="flex items-start gap-3 p-3 rounded-lg ${n.read ? 'bg-base-200' : 'bg-base-100'} border border-base-200">
             <div class="text-sm font-semibold">${n.title}</div>
             <div class="ml-auto text-xs text-neutral-500">${fmtDate(n.created_at)}</div>
             <div class="text-xs text-neutral-600 w-full">${n.body || ''}</div>
             ${n.read || !canEdit ? '' : `<button class="btn btn-xs btn-outline" onclick="app.markNotificationRead(${n.id})">Mark read</button>`}
           </div>`
-            )
-            .join('')
+          )
+          .join('')
         : '<p class="text-sm text-neutral-600">No notifications.</p>';
 
       contentArea.innerHTML = `
@@ -714,9 +714,10 @@ class DashboardApp {
    */
   async init() {
     try {
-    this.loadSidebarState();
-    this.applySidebarState();
-    this.applyTheme();
+      this.loadSidebarState();
+      this.applySidebarState();
+      this.loadTheme();
+      this.applyTheme();
       this.quickOrder = window.quickOrder || null;
 
       // Load current user
@@ -756,22 +757,35 @@ class DashboardApp {
     this.isSidebarCollapsed = stored === 'true';
   }
 
+  loadTheme() {
+    const stored = localStorage.getItem('dashboard-theme');
+    this.theme = stored || 'dark';
+  }
+
   applyTheme() {
-    const theme = 'light';
-    this.theme = theme;
+    const theme = this.theme || 'light';
     document.documentElement.setAttribute('data-theme', theme);
     this.updateThemeButtonUI();
+    localStorage.setItem('dashboard-theme', theme);
   }
 
   toggleTheme() {
-    this.theme = 'light';
+    this.theme = this.theme === 'light' ? 'dark' : 'light';
     this.applyTheme();
   }
 
   updateThemeButtonUI() {
-    const btn = document.getElementById('theme-toggle-btn');
-    if (!btn) return;
-    btn.textContent = `Theme: light`;
+    const sunIcon = document.querySelector('#theme-toggle-icon .sun-icon');
+    const moonIcon = document.querySelector('#theme-toggle-icon .moon-icon');
+    if (!sunIcon || !moonIcon) return;
+
+    if (this.theme === 'dark') {
+      sunIcon.classList.remove('hidden');
+      moonIcon.classList.add('hidden');
+    } else {
+      sunIcon.classList.add('hidden');
+      moonIcon.classList.remove('hidden');
+    }
   }
 
   loadWsPreference() {
@@ -848,12 +862,12 @@ class DashboardApp {
         this.pollingInterval = null;
       }
       // Stop backend polling
-      api.stopPolling().catch(() => {});
-      api.stopMarketDataPolling().catch(() => {});
+      api.stopPolling().catch(() => { });
+      api.stopMarketDataPolling().catch(() => { });
     } else {
       Utils.showToast('Resumed data fetching', 'success');
       // Resume backend polling
-      api.startPolling().catch(() => {});
+      api.startPolling().catch(() => { });
       this.refreshCurrentView(true);
       this.startAutoRefresh();
     }
@@ -1016,7 +1030,7 @@ class DashboardApp {
       this.wsReconnectTimer = null;
     }
     if (this.ws) {
-      try { this.ws.close(); } catch (_) {}
+      try { this.ws.close(); } catch (_) { }
       this.ws = null;
     }
     this.wsConnected = false;
@@ -1434,15 +1448,15 @@ class DashboardApp {
     // Add fund data to instances
     this.instances = this.instances.map(instance => ({
       ...instance,
-        ...(fundsMap.get(instance.id) || {
-          available_balance: 0,
-          realized_pnl: 0,
-          unrealized_pnl: 0,
-          total_pnl: 0,
-          total_trade_value: 0,
-          total_buy_trades: 0,
-          total_sell_trades: 0,
-        }),
+      ...(fundsMap.get(instance.id) || {
+        available_balance: 0,
+        realized_pnl: 0,
+        unrealized_pnl: 0,
+        total_pnl: 0,
+        total_trade_value: 0,
+        total_buy_trades: 0,
+        total_sell_trades: 0,
+      }),
     }));
 
     // Telemetry summary
@@ -1486,7 +1500,7 @@ class DashboardApp {
       <div class="mb-4">
         <div class="flex items-center mb-2">
           <h2 class="text-xl font-semibold">Live Trading</h2>
-          <span class="ml-2 px-2 py-1 text-xs font-semibold bg-green-100 text-green-800 rounded">L</span>
+          <span class="ml-2 px-2 py-1 text-xs font-semibold badge-v-live rounded">L</span>
           <button class="btn btn-neutral btn-outline btn-sm ml-auto" onclick="app.refreshDashboardMetrics({ force: true, showToast: true })">
             ↻ Refresh Metrics
           </button>
@@ -1530,10 +1544,10 @@ class DashboardApp {
         <div class="mb-6">
           <div class="flex items-center mb-2">
             <h2 class="text-xl font-semibold text-neutral-600">Analyzer Mode</h2>
-            <span class="ml-2 px-2 py-1 text-xs font-semibold bg-gray-200 text-gray-700 rounded">A</span>
+            <span class="ml-2 px-2 py-1 text-xs font-semibold badge-v-analyzer rounded">A</span>
           </div>
           <div class="stats-grid stats-grid-centered opacity-75">
-            <div class="stat-card bg-gray-50">
+            <div class="stat-card">
               <div class="stat-label">P&L (net)</div>
               <div class="stat-value ${Utils.getPnLColorClass(metrics.analyzer.total_pnl)}">
                 <span id="analyzer-pnl-value">${Utils.formatCurrency(metrics.analyzer.total_pnl)}</span>
@@ -1541,7 +1555,7 @@ class DashboardApp {
               </div>
             </div>
 
-            <div class="stat-card bg-gray-50">
+            <div class="stat-card">
               <div class="stat-label">Total Trades</div>
               <div class="stat-value">
                 <span id="analyzer-trades-value">
@@ -1550,14 +1564,14 @@ class DashboardApp {
               </div>
             </div>
 
-            <div class="stat-card bg-gray-50">
+            <div class="stat-card">
               <div class="stat-label">Total Turnover</div>
               <div class="stat-value">
                 <span id="analyzer-turnover-value">${Utils.formatCurrency(metrics.analyzer.total_trade_value)}</span>
               </div>
             </div>
 
-            <div class="stat-card bg-gray-50">
+            <div class="stat-card">
               <div class="stat-label">Available Balance</div>
               <div class="stat-value">
                 <span id="analyzer-balance-value">${Utils.formatCurrency(metrics.analyzer.total_available_balance)}</span>
@@ -1781,11 +1795,11 @@ class DashboardApp {
       ...(instance.is_active && fundsMap.has(instance.id)
         ? fundsMap.get(instance.id)
         : {
-            available_balance: null, // null indicates no data for inactive instances
-            realized_pnl: instance.realized_pnl || 0,
-            unrealized_pnl: instance.unrealized_pnl || 0,
-            total_pnl: instance.total_pnl || 0,
-          }),
+          available_balance: null, // null indicates no data for inactive instances
+          realized_pnl: instance.realized_pnl || 0,
+          unrealized_pnl: instance.unrealized_pnl || 0,
+          total_pnl: instance.total_pnl || 0,
+        }),
     }));
 
     const searchValue = (this.instanceSearchQuery || '').toLowerCase();
@@ -1988,7 +2002,7 @@ class DashboardApp {
 
     // Fixed widths for consistent alignment (12 cols without bulk checkbox)
     // [Name, Broker, Multiplier, Status, Health, Mode, Limits, P&L, Balance, Session Limits, Cutoff Reason, Actions]
-    const baseColWidths = ['190px','120px','90px','90px','90px','100px','100px','140px','110px','190px','120px','140px'];
+    const baseColWidths = ['190px', '120px', '90px', '90px', '90px', '100px', '100px', '140px', '110px', '190px', '120px', '140px'];
     const colWidths = showBulkActions ? ['40px', ...baseColWidths] : baseColWidths;
 
     return `
@@ -2022,14 +2036,14 @@ class DashboardApp {
               <td class="text-right">${instance.multiplier != null ? Utils.formatNumber(instance.multiplier, 0) : '1'}</td>
               <td>
                 ${instance.is_active
-                  ? '<span class="badge badge-success">Active</span>'
-                  : '<span class="badge badge-neutral">Inactive</span>'}
+        ? '<span class="badge badge-success">Active</span>'
+        : '<span class="badge badge-neutral">Inactive</span>'}
               </td>
               <td>${Utils.getStatusBadge(instance.health_status || 'unknown')}</td>
               <td>
                 ${instance.is_analyzer_mode
-                  ? '<span class="badge badge-warning">A</span>'
-                  : '<span class="badge badge-success">L</span>'}
+        ? '<span class="badge badge-warning">A</span>'
+        : '<span class="badge badge-success">L</span>'}
               </td>
               <td>${this.renderLimitBadge(instance.limit_metrics)}</td>
               <td class="text-right">
@@ -2038,14 +2052,14 @@ class DashboardApp {
                     ${Utils.formatCurrency(instance.total_pnl || 0)}
                   </span>
                   ${instance.is_analyzer_mode
-                    ? '<span class="badge badge-warning">A</span>'
-                    : '<span class="badge badge-success">L</span>'}
+        ? '<span class="badge badge-warning">A</span>'
+        : '<span class="badge badge-success">L</span>'}
                 </div>
               </td>
               <td class="text-right">
                 ${instance.available_balance != null
-                  ? Utils.formatCurrency(instance.available_balance)
-                  : '<span class="text-neutral-400">-</span>'}
+        ? Utils.formatCurrency(instance.available_balance)
+        : '<span class="text-neutral-400">-</span>'}
               </td>
               <td>
                 <div class="text-sm">
@@ -2055,8 +2069,8 @@ class DashboardApp {
               </td>
               <td>
                 ${instance.session_cutoff_reason
-                  ? `<div class="text-[11px] text-neutral-500 mt-1">${Utils.escapeHTML(instance.session_cutoff_reason.replace(/_/g, ' '))}</div>`
-                  : '<span class="text-neutral-400">—</span>'}
+        ? `<div class="text-[11px] text-neutral-500 mt-1">${Utils.escapeHTML(instance.session_cutoff_reason.replace(/_/g, ' '))}</div>`
+        : '<span class="text-neutral-400">—</span>'}
               </td>
               <td>
                 <div class="flex gap-2">
@@ -2760,7 +2774,7 @@ class DashboardApp {
       if (button) {
         const wlId = parseInt(button.dataset.watchlistId);
         const symId = parseInt(button.dataset.symbolId);
-      // debug removed
+        // debug removed
         this.handleSymbolToggle(wlId, symId);
       }
     };
@@ -2775,7 +2789,7 @@ class DashboardApp {
       const symbol = row?.dataset?.symbol;
       const exchange = row?.dataset?.exchange;
       if (symbol && exchange && window.api && typeof api.getMarketData === 'function') {
-        api.getMarketData(exchange, symbol).catch(() => {});
+        api.getMarketData(exchange, symbol).catch(() => { });
       }
     } catch (_) {
       // non-blocking
@@ -2923,7 +2937,7 @@ class DashboardApp {
       // Check if watchlist table exists in DOM (view might be re-rendering)
       const table = document.getElementById(`watchlist-table-${watchlistId}`);
       if (!table) {
-      // debug removed
+        // debug removed
         return;
       }
 
@@ -4410,7 +4424,7 @@ class DashboardApp {
           const refreshed = await api.getAllPositions({ onlyOpen: true, refresh: true });
           this.latestAllPositionsData = refreshed.data;
           this.renderPositionsPanel(refreshed.data);
-        } catch (_) {}
+        } catch (_) { }
       }, 0);
     } catch (error) {
       contentArea.innerHTML = `
@@ -6200,9 +6214,9 @@ class DashboardApp {
     const totalOpen = typeof data.overall_open_positions === 'number'
       ? data.overall_open_positions
       : instances.reduce(
-          (sum, inst) => sum + (inst.open_positions_count ?? inst.positions.length),
-          0
-        );
+        (sum, inst) => sum + (inst.open_positions_count ?? inst.positions.length),
+        0
+      );
 
     return {
       overallOpen: totalOpen,
@@ -6226,15 +6240,15 @@ class DashboardApp {
     return `
       <div style="display: flex; flex-direction: column; gap: 0.5rem;">
         ${this.renderPositionsSection(
-          'Live Market Instances',
-          'Instances actively executing trades',
-          liveInstances
-        )}
+      'Live Market Instances',
+      'Instances actively executing trades',
+      liveInstances
+    )}
         ${this.renderPositionsSection(
-          'Analyzer Mode Instances',
-          'Instances running in analyzer/paper mode',
-          analyzerInstances
-        )}
+      'Analyzer Mode Instances',
+      'Instances running in analyzer/paper mode',
+      analyzerInstances
+    )}
       </div>
     `;
   }
@@ -6306,8 +6320,8 @@ class DashboardApp {
         <div id="positions-body-${inst.instance_id}" class="${isExpanded ? 'block' : 'hidden'} border-t border-base-200">
           <div style="padding: 0.25rem;">
             ${positions.length > 0
-              ? this.renderPositionsTable(positions, inst.instance_id)
-              : '<p style="font-size: 0.688rem;" class="text-neutral-500">No open positions for this instance.</p>'}
+        ? this.renderPositionsTable(positions, inst.instance_id)
+        : '<p style="font-size: 0.688rem;" class="text-neutral-500">No open positions for this instance.</p>'}
           </div>
         </div>
       </div>
@@ -6340,43 +6354,43 @@ class DashboardApp {
           </thead>
           <tbody>
             ${positions.map(pos => {
-              const qty = this.getNormalizedPositionQty(pos);
-              const entry = Number(
-                pos.entry_price ??
-                pos.average_price ??
-                pos.avg_price ??
-                pos.net_avg_price ??
-                0
-              ) || 0;
-              const entrySourceRaw = pos.entry_price_source || pos.entryPriceSource || null;
-              const entrySourceLabel = (() => {
-                if (!entrySourceRaw) return (pos.average_price || pos.avg_price) ? 'BROKER' : '-';
-                const base = entrySourceRaw.split(':')[0];
-                const map = {
-                  broker_avg: 'BROKER',
-                  fallback_cache: 'FALLBACK (ORDER)',
-                  positionbook_fallback: 'POSITIONBOOK Fallback',
-                  median_ltp: 'Median LTP',
-                };
-                return map[base] || base.replace(/_/g, ' ').toUpperCase();
-              })();
+      const qty = this.getNormalizedPositionQty(pos);
+      const entry = Number(
+        pos.entry_price ??
+        pos.average_price ??
+        pos.avg_price ??
+        pos.net_avg_price ??
+        0
+      ) || 0;
+      const entrySourceRaw = pos.entry_price_source || pos.entryPriceSource || null;
+      const entrySourceLabel = (() => {
+        if (!entrySourceRaw) return (pos.average_price || pos.avg_price) ? 'BROKER' : '-';
+        const base = entrySourceRaw.split(':')[0];
+        const map = {
+          broker_avg: 'BROKER',
+          fallback_cache: 'FALLBACK (ORDER)',
+          positionbook_fallback: 'POSITIONBOOK Fallback',
+          median_ltp: 'Median LTP',
+        };
+        return map[base] || base.replace(/_/g, ' ').toUpperCase();
+      })();
 
-              const ltp = Number(
-                pos.ltp_resolved ??
-                pos.ltp ??
-                pos.last_price ??
-                pos.lastprice ??
-                0
-              ) || 0;
-              const pnl = pos.pnl_derived != null
-                ? pos.pnl_derived
-                : (() => {
-                    if (entry && ltp && qty !== 0) {
-                      return qty > 0 ? (ltp - entry) * qty : (entry - ltp) * Math.abs(qty);
-                    }
-                    return parseFloat(pos.pnl || pos.unrealized_pnl || pos.mtm || 0);
-                  })();
-              return `
+      const ltp = Number(
+        pos.ltp_resolved ??
+        pos.ltp ??
+        pos.last_price ??
+        pos.lastprice ??
+        0
+      ) || 0;
+      const pnl = pos.pnl_derived != null
+        ? pos.pnl_derived
+        : (() => {
+          if (entry && ltp && qty !== 0) {
+            return qty > 0 ? (ltp - entry) * qty : (entry - ltp) * Math.abs(qty);
+          }
+          return parseFloat(pos.pnl || pos.unrealized_pnl || pos.mtm || 0);
+        })();
+      return `
                 <tr>
                   <td class="font-medium">${Utils.escapeHTML(pos.symbol || pos.tradingsymbol || '-')}</td>
                   <td>${qty}</td>
@@ -6399,7 +6413,7 @@ class DashboardApp {
                   </td>
                 </tr>
               `;
-            }).join('')}
+    }).join('')}
           </tbody>
         </table>
       </div>
@@ -6955,9 +6969,9 @@ class DashboardApp {
                             <td>${s.qty_value || 1}</td>
                             <td><span class="badge badge-info">${Utils.escapeHTML(s.product_type || 'MIS')}</span></td>
                             <td>${s.is_enabled ?
-                              '<span class="badge badge-success">Enabled</span>' :
-                              '<span class="badge badge-neutral">Disabled</span>'
-                            }</td>
+          '<span class="badge badge-success">Enabled</span>' :
+          '<span class="badge badge-neutral">Disabled</span>'
+        }</td>
                           </tr>
                         `).join('')}
                       </tbody>
@@ -6999,7 +7013,7 @@ class DashboardApp {
     await this.loadOrders(this.currentOrderFilter);
   }
 
-  renderPausedPlaceholder() {}
+  renderPausedPlaceholder() { }
 }
 
 // Initialize app when DOM is ready and expose globally for inline handlers

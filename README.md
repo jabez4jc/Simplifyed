@@ -158,6 +158,21 @@ sqlite3 backend/database/simplifyed.db ".tables"
 - **Market data feed** starts automatically (quotes/positions/funds). Restart the server if you change feed configuration.
 - **Expiry cache**: schedule auto-refresh via `expiry-management.service` or trigger manually via the `/symbols/expiry` route with `instanceId`.
 
+### Uninstall an instance
+
+Use the uninstall script to completely remove a specific instance:
+
+```bash
+# Auto-detect installed instances and prompt
+sudo ./uninstall-instance.sh
+
+# Or target a specific instance identifier (e.g., dev, staging, prod)
+sudo ./uninstall-instance.sh --instance dev
+
+# Or target a specific install directory
+sudo ./uninstall-instance.sh --dir /opt/simplifyed-dev
+```
+
 ---
 
 ## Troubleshooting

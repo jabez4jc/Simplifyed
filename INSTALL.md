@@ -547,32 +547,20 @@ sudo chmod +x /usr/local/bin/backup-simplifyed.sh
 
 ## Uninstallation
 
-To completely remove the application:
+To completely remove an instance, use the uninstall script (single or multi-instance):
 
 ```bash
-# 1. Stop and disable service
-sudo systemctl stop simplifyed
-sudo systemctl disable simplifyed
-sudo rm /etc/systemd/system/simplifyed.service
-sudo systemctl daemon-reload
+# Auto-detect installed instances and prompt
+sudo ./uninstall-instance.sh
 
-# 2. Remove Nginx configuration
-sudo rm /etc/nginx/sites-enabled/simplifyed
-sudo rm /etc/nginx/sites-available/simplifyed
-sudo systemctl reload nginx
+# Or target a specific instance identifier (e.g., dev, staging, prod)
+sudo ./uninstall-instance.sh --instance dev
 
-# 3. Remove application files
-sudo rm -rf /opt/simplifyed
-
-# 4. Remove application user
-sudo userdel -r simplifyed
-
-# 5. Remove SSL certificates (optional)
-sudo certbot delete --cert-name yourdomain.com
-
-# 6. Remove logs
-sudo rm -rf /var/log/nginx/simplifyed-*
+# Or target a specific install directory
+sudo ./uninstall-instance.sh --dir /opt/simplifyed-dev
 ```
+
+This removes the systemd service, Nginx site, app files, user, and related logs. You can also optionally remove certbot SSL certificates when prompted.
 
 ---
 

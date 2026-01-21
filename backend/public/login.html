@@ -1,120 +1,128 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Simplifyed - Sign In</title>
-  <link rel="stylesheet" href="/css/trading-buttons.css">
+  <link rel="stylesheet" href="/css/landing.css">
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
-
     :root {
-      --primary: #6366f1;
-      --primary-dark: #4f46e5;
-      --primary-light: #818cf8;
-      --success: #10b981;
+      --primary: var(--accent-signal);
+      --primary-dark: #cc4629;
+      --primary-light: #ff7c61;
+      --success: var(--accent-success);
       --error: #ef4444;
       --warning: #f59e0b;
-      --neutral-50: #f9fafb;
-      --neutral-100: #f3f4f6;
-      --neutral-200: #e5e7eb;
-      --neutral-300: #d1d5db;
-      --neutral-400: #9ca3af;
-      --neutral-500: #6b7280;
-      --neutral-600: #4b5563;
-      --neutral-700: #374151;
-      --neutral-800: #1f2937;
-      --neutral-900: #111827;
     }
 
     body {
-      font-family: var(--font-family);
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      background-color: var(--bg-dark);
+      background-image:
+        radial-gradient(circle at 20% 30%, rgba(255, 87, 51, 0.05) 0%, transparent 40%),
+        radial-gradient(circle at 80% 70%, rgba(255, 87, 51, 0.05) 0%, transparent 40%);
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
       padding: 0.75rem;
       line-height: 1.6;
+      font-family: var(--font-main);
     }
 
     .auth-container {
-      background: white;
-      border-radius: 1rem;
-      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+      background: var(--bg-card);
+      border: 1px solid var(--accent-dim);
+      border-radius: var(--radius-sharp);
+      box-shadow: 0 40px 100px rgba(0, 0, 0, 0.6);
       width: 100%;
       max-width: 440px;
       overflow: hidden;
+      position: relative;
+    }
+
+    .auth-container::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      background: var(--accent-signal);
     }
 
     .auth-header {
-      background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
-      color: white;
-      padding: 1rem;
-      text-align: center;
+      padding: 2.5rem 2rem 1.5rem;
+      text-align: left;
     }
 
     .auth-header h1 {
-      font-size: 1.25rem;
-      font-weight: 700;
-      margin-bottom: 0.375rem;
+      font-size: 1.5rem;
+      font-weight: 800;
+      margin-bottom: 0.5rem;
+      text-transform: uppercase;
+      letter-spacing: -0.04em;
+    }
+
+    .auth-header h1 span {
+      color: var(--accent-signal);
     }
 
     .auth-header p {
-      opacity: 0.9;
-      font-size: 0.8125rem;
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
     }
 
     .auth-body {
-      padding: 1rem;
+      padding: 0 2rem 2.5rem;
     }
 
     .status-badge {
       display: inline-flex;
       align-items: center;
-      gap: 0.375rem;
-      padding: 0.375rem 0.75rem;
-      border-radius: 0.5rem;
-      font-size: 0.8125rem;
-      margin-bottom: 1rem;
+      gap: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--accent-dim);
+      font-size: 0.6875rem;
+      margin-bottom: 1.5rem;
       width: 100%;
       justify-content: space-between;
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      background: rgba(255, 255, 255, 0.02);
     }
 
     .status-badge.loading {
-      background: var(--neutral-100);
-      color: var(--neutral-600);
+      color: var(--text-secondary);
     }
 
     .status-badge.success {
-      background: rgba(16, 185, 129, 0.1);
-      color: var(--success);
-      border: 1px solid rgba(16, 185, 129, 0.3);
+      color: var(--accent-success);
+      border-color: rgba(16, 185, 129, 0.3);
     }
 
     .status-badge.error {
-      background: rgba(239, 68, 68, 0.1);
       color: var(--error);
-      border: 1px solid rgba(239, 68, 68, 0.3);
+      border-color: rgba(239, 68, 68, 0.3);
     }
 
     .status-indicator {
-      width: 8px;
-      height: 8px;
+      width: 6px;
+      height: 6px;
       border-radius: 50%;
-      animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
     }
 
     .status-badge.loading .status-indicator {
-      background: var(--neutral-400);
+      background: var(--text-muted);
+      animation: pulse 1s infinite;
     }
 
     .status-badge.success .status-indicator {
-      background: var(--success);
+      background: var(--accent-success);
+      box-shadow: 0 0 8px var(--accent-success);
     }
 
     .status-badge.error .status-indicator {
@@ -122,50 +130,57 @@
     }
 
     @keyframes pulse {
-      0%, 100% {
+
+      0%,
+      100% {
         opacity: 1;
+        transform: scale(1);
       }
+
       50% {
         opacity: 0.5;
+        transform: scale(1.2);
       }
     }
 
     .tabs {
       display: flex;
-      gap: 0.5rem;
-      margin-bottom: 1.5rem;
-      border-bottom: 2px solid var(--neutral-200);
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+      border-bottom: 1px solid var(--accent-dim);
     }
 
     .tab {
-      flex: 1;
-      padding: 0.5rem 0.75rem;
+      padding: 0.75rem 0;
       border: none;
       background: none;
       cursor: pointer;
-      font-size: 0.8125rem;
-      font-weight: 500;
-      color: var(--neutral-600);
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--text-muted);
       position: relative;
       transition: all 0.2s;
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
     }
 
     .tab:hover {
-      color: var(--primary);
+      color: var(--text-primary);
     }
 
     .tab.active {
-      color: var(--primary);
+      color: var(--accent-signal);
     }
 
     .tab.active::after {
       content: '';
       position: absolute;
-      bottom: -2px;
+      bottom: -1px;
       left: 0;
       right: 0;
       height: 2px;
-      background: var(--primary);
+      background: var(--accent-signal);
     }
 
     .tab-panel {
@@ -174,154 +189,126 @@
 
     .tab-panel.active {
       display: block;
-      animation: fadeIn 0.3s ease;
+      animation: tabFadeIn 0.4s cubic-bezier(0.19, 1, 0.22, 1);
     }
 
-    @keyframes fadeIn {
+    @keyframes tabFadeIn {
       from {
         opacity: 0;
-        transform: translateY(10px);
+        transform: translateX(-10px);
       }
+
       to {
         opacity: 1;
-        transform: translateY(0);
+        transform: translateX(0);
       }
     }
 
     .form-group {
-      margin-bottom: 1rem;
+      margin-bottom: 1.5rem;
     }
 
     .form-label {
       display: block;
-      font-size: 0.8125rem;
-      font-weight: 500;
-      color: var(--neutral-700);
-      margin-bottom: 0.375rem;
+      font-size: 0.625rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
     }
 
     .form-input {
       width: 100%;
-      padding: 0.5rem 0.75rem;
-      border: 1px solid var(--neutral-300);
-      border-radius: 0.5rem;
+      padding: 0.75rem 1rem;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--accent-dim);
+      border-radius: var(--radius-sharp);
       font-size: 0.875rem;
+      color: var(--text-primary);
       transition: all 0.2s;
       outline: none;
+      font-family: var(--font-main);
     }
 
     .form-input:focus {
-      border-color: var(--primary);
-      box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
+      border-color: var(--accent-signal);
+      background: rgba(255, 255, 255, 0.06);
     }
 
     .form-input::placeholder {
-      color: var(--neutral-400);
+      color: var(--text-muted);
     }
 
-    /* Using ButtonHighlights btn classes for authentication buttons */
+    .btn-block {
+      width: 100%;
+      justify-content: center;
+    }
 
     .spinner {
-      width: 16px;
-      height: 16px;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(10, 10, 11, 0.3);
+      border-top-color: var(--bg-dark);
       border-radius: 50%;
-      /* Simple solid colored element - most reliable rendering */
-      background: white;
-      /* Clip to circle and hide center portion */
-      -webkit-mask: radial-gradient(circle 6px, transparent 6px, black 7px);
-      mask: radial-gradient(circle 6px, transparent 6px, black 7px);
-      /* Enable GPU acceleration to prevent pixel scattering */
-      will-change: transform;
-      transform: translateZ(0);
       animation: spin-login 0.6s linear infinite;
+      margin-right: 10px;
     }
 
     @keyframes spin-login {
       to {
-        transform: translateZ(0) rotate(360deg);
+        transform: rotate(360deg);
       }
     }
 
     .message {
-      padding: 0.5rem 0.75rem;
-      border-radius: 0.5rem;
+      padding: 0.75rem 1rem;
+      border-radius: var(--radius-sharp);
       font-size: 0.8125rem;
-      margin-top: 0.75rem;
-      animation: slideIn 0.3s ease;
-    }
-
-    @keyframes slideIn {
-      from {
-        opacity: 0;
-        transform: translateY(-10px);
-      }
-      to {
-        opacity: 1;
-        transform: translateY(0);
-      }
+      margin-top: 1.5rem;
+      font-family: var(--font-mono);
+      border: 1px solid transparent;
     }
 
     .message.success {
-      background: rgba(16, 185, 129, 0.1);
-      color: var(--success);
-      border: 1px solid rgba(16, 185, 129, 0.3);
+      background: rgba(16, 185, 129, 0.05);
+      color: var(--accent-success);
+      border-color: rgba(16, 185, 129, 0.2);
     }
 
     .message.error {
-      background: rgba(239, 68, 68, 0.1);
+      background: rgba(239, 68, 68, 0.05);
       color: var(--error);
-      border: 1px solid rgba(239, 68, 68, 0.3);
+      border-color: rgba(239, 68, 68, 0.2);
     }
 
     .message.info {
-      background: rgba(59, 130, 246, 0.1);
-      color: #3b82f6;
-      border: 1px solid rgba(59, 130, 246, 0.3);
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--text-secondary);
+      border-color: var(--accent-dim);
     }
 
     .help-text {
       font-size: 0.6875rem;
-      color: var(--neutral-500);
-      margin-top: 0.375rem;
-    }
-
-    .link {
-      color: var(--primary);
-      text-decoration: none;
-      font-size: 0.8125rem;
-      font-weight: 500;
-    }
-
-    .link:hover {
-      text-decoration: underline;
-    }
-
-    .divider {
-      display: flex;
-      align-items: center;
-      text-align: center;
-      margin: 1.5rem 0;
-    }
-
-    .divider::before,
-    .divider::after {
-      content: '';
-      flex: 1;
-      border-bottom: 1px solid var(--neutral-200);
-    }
-
-    .divider span {
-      padding: 0 0.75rem;
-      font-size: 0.8125rem;
-      color: var(--neutral-500);
+      color: var(--text-muted);
+      margin-top: 0.5rem;
+      line-height: 1.4;
     }
 
     .password-requirements {
-      margin-top: 0.375rem;
-      padding: 0.5rem;
-      background: var(--neutral-50);
-      border-radius: 0.375rem;
+      margin-top: 0.75rem;
+      padding: 0.75rem;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--accent-dim);
       font-size: 0.6875rem;
+    }
+
+    .password-requirements strong {
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      font-size: 0.625rem;
+      letter-spacing: 0.05em;
     }
 
     .password-requirements ul {
@@ -330,32 +317,37 @@
     }
 
     .password-requirements li {
-      color: var(--neutral-600);
-      padding: 0.25rem 0;
+      color: var(--text-muted);
+      padding: 0.125rem 0;
     }
 
     .password-requirements li::before {
-      content: '•';
+      content: '>';
       margin-right: 0.5rem;
-      color: var(--neutral-400);
+      color: var(--accent-signal);
+      font-family: var(--font-mono);
     }
 
     @media (max-width: 480px) {
       .auth-container {
+        border-width: 0 0 1px 0;
         border-radius: 0;
       }
 
+      .auth-header,
       .auth-body {
-        padding: 0.75rem;
+        padding-left: 1.5rem;
+        padding-right: 1.5rem;
       }
     }
   </style>
 </head>
+
 <body>
   <div class="auth-container">
     <div class="auth-header">
-      <h1>📊 Simplifyed</h1>
-      <p>Trading Management Dashboard</p>
+      <div class="logo text-2xl">SIMPLIFYED<span>.VELOCITY</span></div>
+      <p>Terminal Access Protocol</p>
     </div>
 
     <div class="auth-body">
@@ -375,27 +367,15 @@
         <form onsubmit="handleLogin(event)">
           <div class="form-group">
             <label class="form-label" for="login-email">Email</label>
-            <input
-              id="login-email"
-              class="form-input"
-              type="email"
-              placeholder="you@example.com"
-              autocomplete="email"
-              required
-            >
+            <input id="login-email" class="form-input" type="email" placeholder="you@example.com" autocomplete="email"
+              required>
           </div>
           <div class="form-group">
             <label class="form-label" for="login-password">Password</label>
-            <input
-              id="login-password"
-              class="form-input"
-              type="password"
-              placeholder="Enter your password"
-              autocomplete="current-password"
-              required
-            >
+            <input id="login-password" class="form-input" type="password" placeholder="Enter your password"
+              autocomplete="current-password" required>
           </div>
-          <button type="submit" class="btn btn-buy btn-block" id="login-btn">
+          <button type="submit" class="btn-v btn-v-primary btn-block" id="login-btn">
             <span>Sign In</span>
           </button>
         </form>
@@ -406,26 +386,13 @@
         <form onsubmit="handleSignup(event)">
           <div class="form-group">
             <label class="form-label" for="signup-email">Email</label>
-            <input
-              id="signup-email"
-              class="form-input"
-              type="email"
-              placeholder="you@example.com"
-              autocomplete="email"
-              required
-            >
+            <input id="signup-email" class="form-input" type="email" placeholder="you@example.com" autocomplete="email"
+              required>
           </div>
           <div class="form-group">
             <label class="form-label" for="signup-password">Password</label>
-            <input
-              id="signup-password"
-              class="form-input"
-              type="password"
-              placeholder="Create a strong password"
-              autocomplete="new-password"
-              required
-              minlength="6"
-            >
+            <input id="signup-password" class="form-input" type="password" placeholder="Create a strong password"
+              autocomplete="new-password" required minlength="6">
             <div class="password-requirements">
               <strong>Password requirements:</strong>
               <ul>
@@ -434,11 +401,12 @@
               </ul>
             </div>
           </div>
-          <button type="submit" class="btn btn-buy btn-block" id="signup-btn">
+          <button type="submit" class="btn-v btn-v-primary btn-block" id="signup-btn">
             <span>Create Account</span>
           </button>
           <p class="help-text">
-            By signing up, you agree to receive a confirmation email. You may need to verify your email before logging in.
+            By signing up, you agree to receive a confirmation email. You may need to verify your email before logging
+            in.
           </p>
         </form>
       </div>
@@ -448,19 +416,13 @@
         <form onsubmit="handleReset(event)">
           <div class="form-group">
             <label class="form-label" for="reset-email">Email</label>
-            <input
-              id="reset-email"
-              class="form-input"
-              type="email"
-              placeholder="you@example.com"
-              autocomplete="email"
-              required
-            >
+            <input id="reset-email" class="form-input" type="email" placeholder="you@example.com" autocomplete="email"
+              required>
             <p class="help-text">
               We'll send you an email with instructions to reset your password.
             </p>
           </div>
-          <button type="submit" class="btn btn-buy btn-block" id="reset-btn">
+          <button type="submit" class="btn-v btn-v-primary btn-block" id="reset-btn">
             <span>Send Reset Link</span>
           </button>
         </form>
@@ -472,11 +434,9 @@
   </div>
 
   <!-- Supabase JS SDK -->
-  <script
-    src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.2/dist/umd/supabase.min.js"
-    integrity="sha384-fHA3aDUXCIxySoZcUhq38IKiSI0PxdCsiwF9+rmAnKi2yOVX7xtMuxl60vCNJxKC"
-    crossorigin="anonymous">
-  </script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.2/dist/umd/supabase.min.js"
+    integrity="sha384-fHA3aDUXCIxySoZcUhq38IKiSI0PxdCsiwF9+rmAnKi2yOVX7xtMuxl60vCNJxKC" crossorigin="anonymous">
+    </script>
 
   <script>
     let supabaseClient = null;
@@ -803,25 +763,7 @@
 
         if (error) throw error;
 
-        // Check if email confirmation is required
-        if (data?.user && !data?.session) {
-          showMessage(
-            'Account created! Please check your email to confirm your account before logging in.',
-            'success'
-          );
-
-          // Switch to login tab after 3 seconds
-          setTimeout(() => {
-            switchTab('login');
-            document.getElementById('login-email').value = email;
-          }, 3000);
-        } else if (data?.session?.access_token) {
-          // Email confirmation disabled, user is logged in immediately
-          localStorage.setItem('auth_token', data.session.access_token);
-          showMessage('Account created successfully! Redirecting...', 'success');
-
-          await redirectBasedOnAccess();
-        }
+        showMessage('Account created! Please check your email for confirmation link.', 'success');
 
       } catch (error) {
         if (abortController.signal.aborted) return;
@@ -895,4 +837,5 @@
     });
   </script>
 </body>
+
 </html>

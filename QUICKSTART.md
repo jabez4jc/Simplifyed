@@ -176,27 +176,17 @@ sudo ./install.sh
 
 ## Uninstall
 
-To remove everything:
+Use the uninstall script to remove a specific instance:
 
 ```bash
-# Stop services
-sudo systemctl stop simplifyed nginx
+# Auto-detect installed instances and prompt
+sudo ./uninstall-instance.sh
 
-# Remove application
-sudo rm -rf /opt/simplifyed
+# Or target a specific instance identifier (e.g., dev, staging, prod)
+sudo ./uninstall-instance.sh --instance dev
 
-# Remove service
-sudo rm /etc/systemd/system/simplifyed.service
-sudo systemctl daemon-reload
-
-# Remove nginx config
-sudo rm /etc/nginx/sites-*/simplifyed
-
-# Remove user
-sudo userdel -r simplifyed
-
-# Remove SSL cert (optional)
-sudo certbot delete --cert-name yourdomain.com
+# Or target a specific install directory
+sudo ./uninstall-instance.sh --dir /opt/simplifyed-dev
 ```
 
 ---

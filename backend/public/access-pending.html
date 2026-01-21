@@ -1,77 +1,112 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Access Pending | Simplifyed</title>
-  <link rel="stylesheet" href="/css/styles.css">
-  <link rel="stylesheet" href="/css/trading-buttons.css">
+  <link rel="stylesheet" href="/css/landing.css">
   <style>
     body {
-      background: radial-gradient(circle at 20% 20%, #f3f4f6, #e5e7eb 45%, #f9fafb);
+      background-color: var(--bg-dark);
+      background-image:
+        radial-gradient(circle at 20% 30%, rgba(255, 87, 51, 0.05) 0%, transparent 40%),
+        radial-gradient(circle at 80% 70%, rgba(255, 87, 51, 0.05) 0%, transparent 40%);
       min-height: 100vh;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-family: var(--font-family);
-      color: #111827;
+      padding: 0.75rem;
+      font-family: var(--font-main);
+      color: var(--text-primary);
     }
+
     .pending-card {
-      background: white;
-      border: 1px solid #e5e7eb;
-      border-radius: 16px;
-      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.06);
-      padding: 20px;
+      background: var(--bg-card);
+      border: 1px solid var(--accent-dim);
+      border-radius: var(--radius-sharp);
+      box-shadow: 0 40px 100px rgba(0, 0, 0, 0.6);
+      padding: 2.5rem;
       max-width: 560px;
       width: 100%;
+      position: relative;
     }
+
+    .pending-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 2px;
+      background: var(--accent-signal);
+    }
+
     .badge {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      background: #fff7ed;
-      color: #9a3412;
-      border: 1px solid #fed7aa;
-      border-radius: 999px;
-      padding: 5px 10px;
-      font-weight: 600;
-      font-size: 0.6875rem;
-      letter-spacing: 0.01em;
+      gap: 0.5rem;
+      background: rgba(255, 87, 51, 0.1);
+      color: var(--accent-signal);
+      border: 1px solid rgba(255, 87, 51, 0.2);
+      border-radius: var(--radius-sharp);
+      padding: 0.5rem 0.75rem;
+      font-weight: 700;
+      font-size: 0.625rem;
+      font-family: var(--font-mono);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
     }
-    /* Using ButtonHighlights btn classes */
+
     .checklist {
-      margin-top: 16px;
-      padding: 10px 12px;
-      background: #f9fafb;
-      border: 1px dashed #e5e7eb;
-      border-radius: 12px;
-      color: #374151;
+      margin-top: 2rem;
+      padding: 1.25rem;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid var(--accent-dim);
+      border-radius: var(--radius-sharp);
+      color: var(--text-secondary);
       font-size: 0.8125rem;
-      line-height: 1.5;
+      line-height: 1.6;
+    }
+
+    .checklist div {
+      margin-bottom: 0.5rem;
+    }
+
+    .checklist div::before {
+      content: '>';
+      color: var(--accent-signal);
+      font-family: var(--font-mono);
+      margin-right: 0.75rem;
     }
   </style>
 </head>
+
 <body>
   <div class="pending-card">
+    <div class="logo text-2xl" style="margin-bottom: 2rem;">SIMPLIFYED<span>.VELOCITY</span></div>
     <div class="badge">🔒 Access Pending</div>
-    <h1 style="margin: 12px 0 6px; font-size: 1.25rem; font-weight: 800;">Hang tight — your access is being reviewed</h1>
-    <p style="margin-bottom: 16px; color: #4b5563; line-height: 1.6; font-size: 0.875rem;">
-      You've successfully signed in, but an administrator needs to assign you a role before you can use the dashboard.
-      This is usually quick. We'll keep checking for you.
+    <h1
+      style="margin: 1.5rem 0 1rem; font-size: 1.5rem; font-weight: 800; text-transform: uppercase; letter-spacing: -0.02em;">
+      Account Review in Progress</h1>
+    <p style="margin-bottom: 2rem; color: var(--text-secondary); line-height: 1.6; font-size: 0.875rem;">
+      Your credentials have been verified, but an administrator must authorize your clearance level before the terminal
+      can be engaged.
     </p>
 
     <div class="checklist">
-      <div>• Keep this page open — we'll auto-check every 10 seconds.</div>
-      <div>• If you believe you should already have access, contact your admin.</div>
+      <div>Maintain active session — auto-polling every 10s</div>
+      <div>Authorization pending administrator approval</div>
     </div>
 
-    <div style="display: flex; gap: 10px; margin-top: 16px;">
-      <button class="btn btn-refresh btn-block" id="retry-btn">🔄 Check Again</button>
-      <button class="btn btn-exit btn-outline btn-block" id="logout-btn">🚪 Logout</button>
+    <div style="display: flex; gap: 15px; margin-top: 2rem;">
+      <button class="btn-v btn-v-primary btn-block" id="retry-btn">REFRESH PROXIES</button>
+      <button class="btn-v btn-v-secondary btn-block" id="logout-btn">TERMINATE SESSION</button>
     </div>
 
-    <p id="status-text" style="margin-top: 12px; color: #6b7280; font-size: 0.8125rem;">
-      Checking access status...
+    <p id="status-text"
+      style="margin-top: 1.5rem; color: var(--text-muted); font-size: 0.6875rem; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.1em;">
+      Awaiting server response...
     </p>
   </div>
 
@@ -87,10 +122,10 @@
     async function logout() {
       try {
         await fetch('/auth/logout', { method: 'POST', credentials: 'include' });
-      } catch (_) {}
+      } catch (_) { }
       try {
         localStorage.removeItem('auth_token');
-      } catch (_) {}
+      } catch (_) { }
       window.location.href = '/login.html';
     }
 
@@ -144,4 +179,5 @@
     setInterval(checkAccess, 10000);
   </script>
 </body>
+
 </html>
