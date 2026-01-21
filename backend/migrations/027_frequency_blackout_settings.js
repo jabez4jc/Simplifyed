@@ -2,7 +2,7 @@
  * Migration 026 - Add frequency + blackout settings
  */
 
-export const version = '026';
+export const version = '027';
 export const name = 'frequency_blackout_settings';
 
 export const up = async (db) => {
