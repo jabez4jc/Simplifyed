@@ -27,6 +27,52 @@ async function initMigrationTable() {
 }
 
 /**
+ * Normalize schema_migrations versions (handle legacy integer versions).
+ */
+async function normalizeMigrationTable() {
+  const info = await db.get(
+    "SELECT type FROM pragma_table_info('schema_migrations') WHERE name='version'"
+  );
+  if (!info || !info.type) return;
+
+  const type = String(info.type).toUpperCase();
+
+  if (type !== 'TEXT') {
+    try {
+      await db.run('BEGIN');
+      await db.run(`
+        CREATE TABLE schema_migrations_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          version TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      await db.run(`
+        INSERT OR IGNORE INTO schema_migrations_new (id, version, name, applied_at)
+        SELECT id, printf('%03d', version), name, applied_at
+        FROM schema_migrations
+      `);
+      await db.run('DROP TABLE schema_migrations');
+      await db.run('ALTER TABLE schema_migrations_new RENAME TO schema_migrations');
+      await db.run('COMMIT');
+    } catch (error) {
+      await db.run('ROLLBACK');
+      throw error;
+    }
+  } else {
+    await db.run(
+      "UPDATE schema_migrations SET version = trim(version) WHERE version != trim(version)"
+    );
+    await db.run(`
+      UPDATE schema_migrations
+      SET version = printf('%03d', CAST(version AS INTEGER))
+      WHERE version GLOB '[0-9]*' AND length(version) < 3
+    `);
+  }
+}
+
+/**
  * Get all applied migrations
  */
 async function getAppliedMigrations() {
@@ -67,6 +113,7 @@ async function migrateUp() {
   try {
     await db.connect();
     await initMigrationTable();
+    await normalizeMigrationTable();
 
     const appliedMigrations = await getAppliedMigrations();
     const allMigrations = await loadMigrations();
@@ -116,6 +163,7 @@ async function migrateDown() {
   try {
     await db.connect();
     await initMigrationTable();
+    await normalizeMigrationTable();
 
     const appliedMigrations = await db.all(
       'SELECT version, name FROM schema_migrations ORDER BY version DESC LIMIT 1'
@@ -168,6 +216,7 @@ async function showStatus() {
   try {
     await db.connect();
     await initMigrationTable();
+    await normalizeMigrationTable();
 
     const appliedMigrations = await getAppliedMigrations();
     const allMigrations = await loadMigrations();

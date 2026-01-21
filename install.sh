@@ -475,7 +475,7 @@ SQL
     fi
 
     print_info "Running database migrations..."
-    sudo -u $APP_USER npm run migrate
+    DATABASE_PATH="$DB_PATH" sudo -u $APP_USER npm run migrate
 
     print_info "Updating application settings (server.port)..."
     sqlite3 "$DB_PATH" \
