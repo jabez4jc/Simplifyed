@@ -374,9 +374,9 @@ class SettingsHandler {
         </div>
         <div class="settings-main-tabs-nav">
           ${tabs.map(tab => {
-            if (tab.adminOnly && !this.isAdmin()) return '';
-            const isActive = this.activeMainTab === tab.id;
-            return `
+      if (tab.adminOnly && !this.isAdmin()) return '';
+      const isActive = this.activeMainTab === tab.id;
+      return `
               <button
                 class="settings-main-tab ${isActive ? 'active' : ''}"
                 data-tab="${tab.id}"
@@ -389,7 +389,7 @@ class SettingsHandler {
                 </div>
               </button>
             `;
-          }).join('')}
+    }).join('')}
         </div>
       </div>
     `;
@@ -634,8 +634,8 @@ class SettingsHandler {
               </div>
               <nav class="settings-nav">
                 ${this.displayCategories.map(cat => {
-                  const meta = this.categoryMeta[cat.category] || { icon: '⚙️', description: '' };
-                  return `
+      const meta = this.categoryMeta[cat.category] || { icon: '⚙️', description: '' };
+      return `
                     <button
                       class="settings-nav-item ${cat.category === this.activeCategory ? 'active' : ''}"
                       data-category="${cat.category}"
@@ -646,7 +646,7 @@ class SettingsHandler {
                       <span class="settings-nav-count">${cat.count}</span>
                     </button>
                   `;
-                }).join('')}
+    }).join('')}
               </nav>
             </div>
 
@@ -804,8 +804,8 @@ class SettingsHandler {
         const keyLower = key.toLowerCase();
 
         if (settingName.includes(this.searchQuery) ||
-            description.includes(this.searchQuery) ||
-            keyLower.includes(this.searchQuery)) {
+          description.includes(this.searchQuery) ||
+          keyLower.includes(this.searchQuery)) {
           results.push({
             key,
             category,
@@ -834,12 +834,12 @@ class SettingsHandler {
         </div>
         <div class="settings-content">
           ${results.map(result => {
-            const inputId = `setting-${result.key.replace(/\./g, '-')}`;
-            const inputValue = result.setting.pendingValue ?? result.setting.rawValue ?? result.setting.value;
-            const meta = this.categoryMeta[result.category] || { icon: '⚙️' };
-            const helpText = this.getSettingHelpText(result.key);
+      const inputId = `setting-${result.key.replace(/\./g, '-')}`;
+      const inputValue = result.setting.pendingValue ?? result.setting.rawValue ?? result.setting.value;
+      const meta = this.categoryMeta[result.category] || { icon: '⚙️' };
+      const helpText = this.getSettingHelpText(result.key);
 
-            return `
+      return `
               <div class="settings-field settings-field-search">
                 <label for="${inputId}" class="settings-field-label">
                   <div class="settings-field-title">
@@ -858,7 +858,7 @@ class SettingsHandler {
                 </div>
               </div>
             `;
-          }).join('')}
+    }).join('')}
         </div>
       </div>
     `;
@@ -2037,26 +2037,26 @@ class SettingsHandler {
 
       return `
         <div class="space-y-4">
-          <div class="p-4 bg-neutral-50 rounded-lg border border-neutral-200">
+          <div class="settings-stat-box p-4 border border-neutral-200">
             <p class="text-sm text-neutral-700">
               The Order Monitor tracks targets for live and analyzer instances when they have open positions. It checks on a fixed
               interval and uses the latest position/quote data to evaluate targets. Live instances emit alerts; analyzer instances simulate exits.
             </p>
           </div>
           <div class="grid grid-cols-3 gap-4">
-            <div class="p-4 bg-neutral-50 rounded-lg border border-neutral-200">
+            <div class="settings-stat-box p-4 border border-neutral-200">
               <p class="text-sm text-neutral-600">Monitoring Status</p>
               <p class="text-lg font-semibold ${status.is_monitoring ? 'text-success-600' : 'text-neutral-500'}">
                 ${status.is_monitoring ? '✅ Active' : '⏸️ Inactive'}
               </p>
             </div>
-            <div class="p-4 bg-neutral-50 rounded-lg border border-neutral-200">
+            <div class="settings-stat-box p-4 border border-neutral-200">
               <p class="text-sm text-neutral-600">Check Interval</p>
               <p class="text-lg font-semibold text-neutral-800">
                 ${status.interval_ms / 1000}s
               </p>
             </div>
-            <div class="p-4 bg-neutral-50 rounded-lg border border-neutral-200">
+            <div class="settings-stat-box p-4 border border-neutral-200">
               <p class="text-sm text-neutral-600">Active Instances</p>
               <p class="text-lg font-semibold text-neutral-800">
                 ${status.eligible_instances_count ?? status.analyzer_instances_count ?? 0}
@@ -2064,7 +2064,7 @@ class SettingsHandler {
             </div>
           </div>
 
-          <div class="p-4 bg-info-50 rounded-lg border border-info-200">
+          <div class="settings-method-card method-info p-4">
             <p class="text-sm text-info-800">
               ℹ️ The order monitor checks live and analyzer positions every ${status.interval_ms / 1000} seconds,
               but only evaluates instances that have open positions.
@@ -2103,7 +2103,7 @@ class SettingsHandler {
       const html = `
         <div class="space-y-6">
           <!-- Cache Stats Header -->
-          <div class="bg-white rounded-lg border border-neutral-200 p-5">
+          <div class="settings-sub-panel">
             <div class="flex items-center justify-between mb-4">
               <div>
                 <h3 class="text-lg font-semibold text-neutral-900">📊 Instruments Cache Overview</h3>
@@ -2120,19 +2120,19 @@ class SettingsHandler {
 
             <!-- Stats Grid -->
             <div class="grid grid-cols-3 gap-4">
-              <div class="bg-neutral-50 rounded-lg p-4">
+              <div class="settings-stat-box">
                 <p class="text-xs font-medium text-neutral-600 uppercase tracking-wide">Total Instruments</p>
                 <p class="text-2xl font-bold text-neutral-900 mt-2">
                   ${(stats.total || 0).toLocaleString()}
                 </p>
               </div>
-              <div class="bg-neutral-50 rounded-lg p-4">
+              <div class="settings-stat-box">
                 <p class="text-xs font-medium text-neutral-600 uppercase tracking-wide">Last Refresh</p>
                 <p class="text-lg font-semibold text-neutral-900 mt-2">
                   ${stats.last_refresh ? this.formatDate(stats.last_refresh.completed_at) : 'Never'}
                 </p>
               </div>
-              <div class="bg-neutral-50 rounded-lg p-4">
+              <div class="settings-stat-box">
                 <p class="text-xs font-medium text-neutral-600 uppercase tracking-wide">Exchanges</p>
                 <p class="text-lg font-semibold text-neutral-900 mt-2">
                   9 Exchanges
@@ -2145,12 +2145,12 @@ class SettingsHandler {
           </div>
 
           <!-- Data Import Methods -->
-          <div class="bg-white rounded-lg border border-neutral-200 p-5">
+          <div class="settings-sub-panel">
             <h3 class="text-lg font-semibold text-neutral-900 mb-4">💾 Import Methods</h3>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <!-- CSV Upload Card -->
-              <div class="bg-primary-50 rounded-lg border border-primary-200 p-4">
+              <div class="settings-method-card method-primary">
                 <div class="flex items-start gap-3">
                   <div class="text-2xl">📁</div>
                   <div class="flex-1">
@@ -2173,7 +2173,7 @@ class SettingsHandler {
                         📤 Upload & Import
                       </button>
                       <div id="upload-progress" class="hidden">
-                        <div class="bg-white rounded border border-primary-300 p-2">
+                        <div class="settings-status-box">
                           <p class="text-xs text-primary-800 font-medium" id="upload-status">Processing...</p>
                         </div>
                       </div>
@@ -2183,7 +2183,7 @@ class SettingsHandler {
               </div>
 
               <!-- Fetch from Instance Card -->
-              <div class="bg-success-50 rounded-lg border border-success-200 p-4">
+              <div class="settings-method-card method-success">
                 <div class="flex items-start gap-3">
                   <div class="text-2xl">🔄</div>
                   <div class="flex-1">
@@ -2203,7 +2203,7 @@ class SettingsHandler {
                         🚀 Start Fetch
                       </button>
                       <div id="fetch-progress" class="hidden">
-                        <div class="bg-white rounded border border-success-300 p-2">
+                        <div class="settings-status-box">
                           <p class="text-xs text-success-800 font-medium" id="fetch-status">Initializing...</p>
                           <p class="text-xs text-success-700 mt-1">⏱️ This may take several minutes</p>
                         </div>

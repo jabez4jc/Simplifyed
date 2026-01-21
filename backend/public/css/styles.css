@@ -5300,3 +5300,82 @@ body {
     grid-template-columns: 1fr;
   }
 }
+/* ========== Settings Specific Overrides ========== */
+.settings-sub-panel {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-neutral-200);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+}
+
+.settings-stat-box {
+  background-color: var(--color-neutral-50);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+}
+
+.settings-method-card {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-neutral-200);
+  padding: var(--space-4);
+}
+
+.settings-status-box {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-neutral-200);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+}
+
+[data-theme="dark"] .settings-sub-panel {
+  background-color: var(--color-surface) !important;
+  border-color: var(--color-border) !important;
+}
+
+[data-theme="dark"] .settings-stat-box {
+  background-color: var(--color-surface-alt) !important;
+  border: 1px solid var(--color-border) !important;
+}
+
+[data-theme="dark"] .settings-method-card {
+  border-color: var(--color-border) !important;
+}
+
+[data-theme="dark"] .settings-method-card.method-primary {
+  background-color: rgba(59, 130, 246, 0.05) !important;
+  border-color: rgba(59, 130, 246, 0.2) !important;
+}
+
+[data-theme="dark"] .settings-method-card.method-success {
+  background-color: rgba(16, 185, 129, 0.05) !important;
+  border-color: rgba(16, 185, 129, 0.2) !important;
+}
+
+[data-theme="dark"] .settings-status-box {
+  background-color: var(--color-surface-alt) !important;
+  border-color: var(--color-border) !important;
+}
+
+[data-theme="dark"] .text-primary-900, 
+[data-theme="dark"] .text-primary-800 {
+  color: var(--color-info) !important;
+}
+
+[data-theme="dark"] .text-success-900, 
+[data-theme="dark"] .text-success-800 {
+  color: var(--color-profit) !important;
+}
+
+[data-theme="dark"] .settings-method-card.method-info {
+  background-color: rgba(59, 130, 246, 0.05) !important;
+  border-color: rgba(59, 130, 246, 0.2) !important;
+}
+
+[data-theme="dark"] .text-info-800 {
+  color: var(--color-info) !important;
+}
+
+[data-theme="dark"] .text-neutral-700,
+[data-theme="dark"] .text-neutral-800 {
+  color: var(--color-neutral-800) !important;
+}

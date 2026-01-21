@@ -163,15 +163,21 @@ if [[ "$REINSTALL" == true ]]; then
   echo "➜ Cleaning install artifacts..."
   rm -rf "$INSTALL_DIR/backend/node_modules"
 else
-  echo "➜ Syncing updated code from source..."
-  rsync -av \
-    --exclude='.git' \
-    --exclude='node_modules' \
-    --exclude='backend/node_modules' \
-    --exclude='backend/database' \
-    --exclude='backend/logs' \
-    --exclude='*.log' \
-    "$SOURCE_DIR/" "$INSTALL_DIR/"
+echo "➜ Syncing updated code from source..."
+rsync -av \
+  --exclude='.git' \
+  --exclude='node_modules' \
+  --exclude='backend/node_modules' \
+  --exclude='backend/database' \
+  --exclude='backend/logs' \
+  --exclude='*.log' \
+  "$SOURCE_DIR/" "$INSTALL_DIR/"
+fi
+
+# Ensure migrations directory mirrors source (removes renamed/deleted files)
+if [[ -d "$SOURCE_DIR/backend/migrations" ]]; then
+  echo "➜ Syncing migrations..."
+  rsync -av --delete "$SOURCE_DIR/backend/migrations/" "$INSTALL_DIR/backend/migrations/"
 fi
 
 # Ensure writable dirs (db/logs/public assets) belong to app user
@@ -224,6 +230,22 @@ else
   echo "ℹ Skipping .env check (missing .env or .env.example)."
 fi
 
+DB_PATH="$INSTALL_DIR/backend/database/simplifyed.db"
+if [[ -f "$ENV_FILE" ]]; then
+  env_db_path=$(grep -E '^DATABASE_PATH=' "$ENV_FILE" | tail -n 1 | cut -d= -f2-)
+  env_db_path="${env_db_path%\"}"
+  env_db_path="${env_db_path#\"}"
+  env_db_path="${env_db_path%\'}"
+  env_db_path="${env_db_path#\'}"
+  if [[ -n "$env_db_path" ]]; then
+    if [[ "$env_db_path" == /* ]]; then
+      DB_PATH="$env_db_path"
+    else
+      DB_PATH="$INSTALL_DIR/backend/$env_db_path"
+    fi
+  fi
+fi
+
 echo "➜ Installing dependencies..."
 cd "$INSTALL_DIR/backend"
 sudo -u "$APP_USER" npm ci --quiet
@@ -235,7 +257,7 @@ echo "➜ Pruning dev dependencies..."
 sudo -u "$APP_USER" npm prune --production --quiet
 
 echo "➜ Running migrations..."
-sudo -u "$APP_USER" npm run migrate --silent
+DATABASE_PATH="$DB_PATH" sudo -u "$APP_USER" npm run migrate --silent
 
 echo "➜ Restarting service..."
 systemctl restart "$SERVICE_NAME"
