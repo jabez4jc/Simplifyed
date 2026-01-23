@@ -149,6 +149,38 @@
   border-color: rgba(245, 158, 11, 0.3) !important;
 }
 
+[data-theme="dark"] .badge-buy,
+[data-theme="dark"] .badge-success {
+  background-color: rgba(16, 185, 129, 0.15) !important;
+  color: #10B981 !important;
+  border: 1px solid rgba(16, 185, 129, 0.2) !important;
+}
+
+[data-theme="dark"] .badge-sell,
+[data-theme="dark"] .badge-error {
+  background-color: rgba(239, 68, 68, 0.15) !important;
+  color: #EF4444 !important;
+  border: 1px solid rgba(239, 68, 68, 0.2) !important;
+}
+
+[data-theme="dark"] .badge-warning {
+  background-color: rgba(245, 158, 11, 0.15) !important;
+  color: #F59E0B !important;
+  border: 1px solid rgba(245, 158, 11, 0.2) !important;
+}
+
+[data-theme="dark"] .badge-info {
+  background-color: rgba(59, 130, 246, 0.15) !important;
+  color: #3B82F6 !important;
+  border: 1px solid rgba(59, 130, 246, 0.2) !important;
+}
+
+[data-theme="dark"] .badge-neutral {
+  background-color: rgba(161, 161, 170, 0.15) !important;
+  color: #A1A1AA !important;
+  border: 1px solid rgba(161, 161, 170, 0.2) !important;
+}
+
 /* Operations Pages Overrides */
 [data-theme="dark"] .ops-header {
   background: var(--color-surface) !important;
@@ -5300,6 +5332,7 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
 /* ========== Settings Specific Overrides ========== */
 .settings-sub-panel {
   background-color: var(--color-surface);
@@ -5356,12 +5389,12 @@ body {
   border-color: var(--color-border) !important;
 }
 
-[data-theme="dark"] .text-primary-900, 
+[data-theme="dark"] .text-primary-900,
 [data-theme="dark"] .text-primary-800 {
   color: var(--color-info) !important;
 }
 
-[data-theme="dark"] .text-success-900, 
+[data-theme="dark"] .text-success-900,
 [data-theme="dark"] .text-success-800 {
   color: var(--color-profit) !important;
 }
@@ -5378,4 +5411,47 @@ body {
 [data-theme="dark"] .text-neutral-700,
 [data-theme="dark"] .text-neutral-800 {
   color: var(--color-neutral-800) !important;
+}
+
+/* ========== Modal Theme Overrides ========== */
+.modal-sub-panel {
+  background-color: #ffffff;
+  border: 1px solid var(--color-neutral-200);
+}
+
+.modal-section-bg {
+  background-color: var(--color-neutral-50);
+}
+
+.modal-selectable-item:hover {
+  background-color: var(--color-neutral-50);
+}
+
+[data-theme="dark"] .modal-sub-panel {
+  background-color: var(--color-surface-alt) !important;
+  border-color: var(--color-border) !important;
+  box-shadow: none !important;
+}
+
+[data-theme="dark"] .modal-section-bg {
+  background-color: var(--color-surface) !important;
+  border-color: var(--color-border) !important;
+}
+
+[data-theme="dark"] .modal-selectable-item:hover {
+  background-color: var(--color-surface-alt) !important;
+}
+
+[data-theme="dark"] .modal-body .text-neutral-600,
+[data-theme="dark"] .modal-body .text-neutral-500 {
+  color: var(--color-neutral-600) !important;
+}
+
+.bulk-actions-bg {
+  background-color: var(--color-neutral-50);
+}
+
+[data-theme="dark"] .bulk-actions-bg {
+  background-color: var(--color-surface) !important;
+  border-color: var(--color-border) !important;
 }

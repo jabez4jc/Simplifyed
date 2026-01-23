@@ -1833,7 +1833,7 @@ class DashboardApp {
         </div>
 
         <!-- Bulk Actions Bar -->
-        <div id="bulk-actions-bar" class="p-4 bg-neutral-50 border-b border-neutral-200" style="display: none;">
+        <div id="bulk-actions-bar" class="p-4 bulk-actions-bg border-b border-neutral-200" style="display: none;">
           <div class="flex items-center gap-4">
             <span id="selected-count" class="text-sm font-medium">0 selected</span>
             <div class="flex gap-2">
@@ -5441,7 +5441,7 @@ class DashboardApp {
 
     const autoExitFieldsHtml = this.autoExitModes
       .map((modeConfig) => `
-        <div class="border rounded-lg p-3 bg-white shadow-sm">
+        <div class="border rounded-lg p-3 modal-sub-panel shadow-sm">
           <div class="text-sm font-semibold mb-2">${modeConfig.label} auto exits</div>
         <div class="grid gap-2 sm:grid-cols-4">
           <div class="form-group">
@@ -5490,7 +5490,7 @@ class DashboardApp {
             Choose which trade modes should be enabled for <strong>${Utils.escapeHTML(symbolData.tradingsymbol || symbolData.symbol)}</strong>.
           </p>
           <form id="symbol-config-form" class="space-y-4">
-            <div class="p-3 border rounded-lg bg-neutral-50">
+            <div class="p-3 border rounded-lg modal-section-bg">
               <div class="flex items-center justify-between">
                 <div>
                   <p class="font-semibold">${Utils.escapeHTML(symbolData.tradingsymbol || symbolData.symbol)}</p>
@@ -5503,21 +5503,21 @@ class DashboardApp {
             </div>
 
             <div class="space-y-3">
-              <label class="flex items-center gap-3 p-3 border rounded cursor-pointer hover:bg-neutral-50">
+              <label class="flex items-center gap-3 p-3 border rounded cursor-pointer modal-selectable-item">
                 <input type="checkbox" name="tradable_equity" ${tradableEquityChecked ? 'checked' : ''}>
                 <div>
                   <p class="font-semibold">Enable Direct Trading</p>
                   <p class="text-sm text-neutral-600">Use BUY/SELL/EXIT buttons directly for this symbol (spot, futures, or options).</p>
                 </div>
               </label>
-              <label class="flex items-center gap-3 p-3 border rounded cursor-pointer hover:bg-neutral-50">
+              <label class="flex items-center gap-3 p-3 border rounded cursor-pointer modal-selectable-item">
                 <input type="checkbox" name="tradable_futures" ${tradableFuturesChecked ? 'checked' : ''}>
                 <div>
                   <p class="font-semibold">Enable Futures Trading</p>
                   <p class="text-sm text-neutral-600">Route BUY/SELL/EXIT to futures contracts.</p>
                 </div>
               </label>
-              <label class="flex items-center gap-3 p-3 border rounded cursor-pointer hover:bg-neutral-50">
+              <label class="flex items-center gap-3 p-3 border rounded cursor-pointer modal-selectable-item">
                 <input type="checkbox" name="tradable_options" ${tradableOptionsChecked ? 'checked' : ''}>
                 <div>
                   <p class="font-semibold">Enable Options Trading</p>
@@ -5544,7 +5544,7 @@ class DashboardApp {
                 Added/subtracted from bid/ask or LTP when placing LIMIT orders.
               </p>
             </div>
-            <div class="border rounded-lg bg-neutral-50 p-4 space-y-3">
+            <div class="border rounded-lg modal-section-bg p-4 space-y-3">
               <p class="text-sm font-semibold text-neutral-600">
                 Optional auto-exit thresholds (points)
               </p>
@@ -5739,7 +5739,7 @@ class DashboardApp {
           </p>
           <div class="space-y-2" id="instance-checkboxes">
             ${allInstances.map(inst => `
-              <label class="flex items-center gap-3 p-2 border rounded hover:bg-neutral-50 cursor-pointer">
+              <label class="flex items-center gap-3 p-2 border rounded modal-selectable-item cursor-pointer">
                 <input type="checkbox"
                        class="instance-checkbox"
                        data-instance-id="${inst.id}"
