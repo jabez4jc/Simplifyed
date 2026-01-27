@@ -22,6 +22,7 @@ import db from '../core/database.js';
 import { extractAveragePrice, extractLtp } from '../utils/price-extraction.js';
 import openalgoWsService from './openalgo-ws.service.js';
 import { isGeneralEndpointBlackout, isQuoteEndpointBlackout } from './instance-health.service.js';
+import marketCalendarService from './market-calendar.service.js';
 
 const DEFAULT_QUOTE_INTERVAL = 5000;               // 5 seconds for quote refresh (WS primary; REST uses TTL)
 const DEFAULT_QUOTE_TTL_IDLE_MS = 15000;
@@ -41,6 +42,8 @@ const MULTI_QUOTE_COOLDOWN_ACTIVE_MS = 10000;
 const MULTI_QUOTE_COOLDOWN_IDLE_MS = 15000;
 const MULTI_QUOTE_SYMBOL_LIMIT = 50;
 const FEED_STAGGER_MS = 2000;
+const WS_SYMBOL_STALE_MS = 10 * 60 * 1000;
+const DEFAULT_DEPTH_LEVEL = 5;
 
 class MarketDataFeedService extends EventEmitter {
   constructor() {
@@ -99,6 +102,11 @@ class MarketDataFeedService extends EventEmitter {
     this.lastGlobalSymbolList = [];
     this.wsRoundRobinCursor = new Map(); // key: EXCHANGE|SYMBOL -> next index
     this.wsQuoteRecency = new Map(); // key: instanceId|EXCHANGE|SYMBOL -> fetchedAt
+    this.depthCache = new Map(); // key: EXCHANGE|SYMBOL -> { depth, fetchedAt, instanceId, source }
+    this.symbolWsFingerprint = new Map(); // key -> fingerprint
+    this.symbolWsLastChangeAt = new Map(); // key -> ts
+    this.symbolWsLastUpdateAt = new Map(); // key -> ts
+    this.symbolRefreshPausedUntil = new Map(); // key -> ts
 
     // Track whether there are open positions for dynamic refresh interval
     this.hasOpenPositions = false;
@@ -135,6 +143,21 @@ class MarketDataFeedService extends EventEmitter {
         this.setQuoteSnapshot(instanceId, [enriched]);
       } catch (err) {
         log.warn('Failed to cache WS quote', { error: err.message });
+      }
+    });
+    openalgoWsService.on('depth', ({ instanceId, depth }) => {
+      try {
+        const enriched = {
+          ...depth,
+          _source_instance_id: instanceId,
+          _source: 'ws_depth',
+        };
+        this.setDepthSnapshot(enriched.exchange, enriched.symbol, enriched, {
+          instanceId,
+          source: 'ws',
+        });
+      } catch (err) {
+        log.warn('Failed to cache WS depth', { error: err.message });
       }
     });
 
@@ -282,25 +305,34 @@ class MarketDataFeedService extends EventEmitter {
       // Sync WS subscriptions (if enabled)
       this._syncWsSubscriptions();
 
-      if (openalgoWsService.hasActiveConnections()) {
+      if (symbolList.length === 0) {
+        log.debug('No tracked symbols. Skipping quote refresh.');
+        return;
+      }
+
+      const { missing } = this.getCachedQuotesForSymbols(symbolList, { orderCritical: false });
+      if (openalgoWsService.hasActiveConnections() && missing.length === 0) {
         return;
       }
 
       const marketDataInstances = (await marketDataInstanceService.getPoolForEndpoint('multiquotes'))
         .filter(inst => !this._isInstanceUnhealthy(inst.id));
 
-      if (symbolList.length === 0 || marketDataInstances.length === 0) {
-        log.debug('No tracked symbols or no market data instances. Skipping quote refresh.');
+      if (marketDataInstances.length === 0) {
+        log.debug('No market data instances available. Skipping quote refresh.');
         return;
       }
 
       const supportPool = marketDataInstances.filter(inst => inst.supports_multiquotes && !inst.disable_multiquotes && inst.multiquotes_ok);
       const regularPool = marketDataInstances.filter(inst => !inst.supports_multiquotes);
 
-      let pendingSymbols = [...symbolList];
+      let pendingSymbols = await this._filterSymbolsByMarketOpen(missing);
+      if (pendingSymbols.length === 0) {
+        return;
+      }
       let collectedQuotes = [];
 
-      if (supportPool.length > 0) {
+      if (pendingSymbols.length > 0 && supportPool.length > 0) {
         const multiResult = await this._fetchViaMultiQuotes(pendingSymbols, supportPool);
         collectedQuotes = collectedQuotes.concat(multiResult.quotes);
         pendingSymbols = multiResult.pendingSymbols;
@@ -400,10 +432,29 @@ class MarketDataFeedService extends EventEmitter {
         const recencyKey = `${q._source_instance_id}|${key}`;
         this.wsQuoteRecency.set(recencyKey, snapshot.fetchedAt);
       }
+      if (q?._source === 'ws' || q?._source_instance_id) {
+        this._recordWsSymbolUpdate(q.exchange, q.symbol, this._fingerprintQuote(q), snapshot.fetchedAt);
+      }
     });
     this.emit('quotes:update', { instanceId, data: snapshot.data });
     // Persist snapshot asynchronously for warm restarts
     this._persistQuoteSnapshot(instanceId, snapshot.data, snapshot.fetchedAt);
+  }
+
+  setDepthSnapshot(exchange, symbol, depth, options = {}) {
+    const key = this._symbolKey(exchange, symbol);
+    if (!key) return;
+    const snapshot = {
+      depth,
+      fetchedAt: options.fetchedAt || Date.now(),
+      instanceId: options.instanceId || null,
+      source: options.source || null,
+    };
+    this.depthCache.set(key, snapshot);
+    if (depth?._source === 'ws_depth' || options.source === 'ws') {
+      const fingerprint = this._fingerprintDepth(depth);
+      this._recordWsSymbolUpdate(exchange, symbol, fingerprint, snapshot.fetchedAt);
+    }
   }
 
   /**
@@ -465,8 +516,223 @@ class MarketDataFeedService extends EventEmitter {
     return { cached, missing };
   }
 
+  getCachedDepthEntry(exchange, symbol, ttlMs) {
+    const key = this._symbolKey(exchange, symbol);
+    if (!key) return null;
+    const entry = this.depthCache.get(key);
+    if (!entry?.fetchedAt) return null;
+    if (ttlMs && Date.now() - entry.fetchedAt > ttlMs) return null;
+    return entry;
+  }
+
+  _extractBestBidAskFromDepth(depth) {
+    const buy = depth?.depth?.buy || depth?.buy || depth?.data?.buy || [];
+    const sell = depth?.depth?.sell || depth?.sell || depth?.data?.sell || [];
+    const bid = Number(buy?.[0]?.price ?? 0);
+    const ask = Number(sell?.[0]?.price ?? 0);
+    return {
+      bid: Number.isFinite(bid) && bid > 0 ? bid : null,
+      ask: Number.isFinite(ask) && ask > 0 ? ask : null,
+    };
+  }
+
+  async _waitForWsDepth(exchange, symbol, { retries = 5, delayMs = 200, targetInstanceId = null } = {}) {
+    if (!exchange || !symbol) return null;
+    const key = this._symbolKey(exchange, symbol);
+    const startTs = Date.now();
+    for (let attempt = 0; attempt < retries; attempt += 1) {
+      const entry = this.depthCache.get(key);
+      if (entry && entry.fetchedAt && entry.fetchedAt >= startTs) {
+        if (targetInstanceId && entry.instanceId !== targetInstanceId) {
+          await this._sleep(delayMs);
+          continue;
+        }
+        return { depth: entry.depth, fetchedAt: entry.fetchedAt, attempts: attempt + 1, instanceId: entry.instanceId };
+      }
+      await this._sleep(delayMs);
+    }
+    return null;
+  }
+
+  async fetchDepthForSymbol(exchange, symbol, options = {}) {
+    const {
+      depthLevel = DEFAULT_DEPTH_LEVEL,
+      staleMs = this.QUOTE_TTL_ORDER_MS,
+      wsRetries = 5,
+      wsRetryDelayMs = 200,
+      maxInstances = 3,
+    } = options;
+
+    const exchangeOpen = await marketCalendarService.isExchangeOpen(exchange);
+    if (!exchangeOpen) {
+      const cachedClosed = this.getCachedDepthEntry(exchange, symbol, staleMs);
+      if (cachedClosed) {
+        const { bid, ask } = this._extractBestBidAskFromDepth(cachedClosed.depth);
+        return { ...cachedClosed, bid, ask, source: cachedClosed.source || 'cache_closed' };
+      }
+      return null;
+    }
+
+    if (isQuoteEndpointBlackout()) {
+      const cached = this.getCachedDepthEntry(exchange, symbol, staleMs);
+      if (cached) {
+        const { bid, ask } = this._extractBestBidAskFromDepth(cached.depth);
+        return { ...cached, bid, ask, source: cached.source || 'cache' };
+      }
+      return null;
+    }
+
+    // Prefer WS depth when available
+    if (openalgoWsService.hasActiveConnections()) {
+      const connectedIds = openalgoWsService.getConnectedInstanceIds();
+      const symbolKey = this._symbolKey(exchange, symbol);
+      const orderedIds = this._orderWsInstancesRoundRobin(
+        symbolKey,
+        this._preferRecentWsInstances(symbolKey, connectedIds)
+      );
+      const limit = Math.min(maxInstances, orderedIds.length);
+      for (let idx = 0; idx < limit; idx += 1) {
+        const instanceId = orderedIds[idx];
+        const subscribed = openalgoWsService.subscribeDepth(instanceId, { exchange, symbol }, depthLevel);
+        if (!subscribed) continue;
+        const wsResult = await this._waitForWsDepth(exchange, symbol, {
+          retries: wsRetries,
+          delayMs: wsRetryDelayMs,
+          targetInstanceId: instanceId,
+        });
+        if (wsResult?.depth) {
+          const { bid, ask } = this._extractBestBidAskFromDepth(wsResult.depth);
+          if (bid || ask) {
+            return {
+              depth: wsResult.depth,
+              fetchedAt: wsResult.fetchedAt,
+              bid,
+              ask,
+              source: 'ws',
+              instanceId,
+            };
+          }
+        }
+      }
+    }
+
+    const cached = this.getCachedDepthEntry(exchange, symbol, staleMs);
+    if (cached) {
+      const { bid, ask } = this._extractBestBidAskFromDepth(cached.depth);
+      if (bid || ask) {
+        return { ...cached, bid, ask, source: cached.source || 'cache' };
+      }
+    }
+
+    // REST fallback
+    try {
+      const pool = await marketDataInstanceService.getMarketDataPool();
+      if (pool.length === 0) return null;
+      for (const inst of pool) {
+        try {
+          const depth = await openalgoClient.getDepth(inst, exchange, symbol);
+          if (!depth) continue;
+          const snapshot = { depth, fetchedAt: Date.now(), instanceId: inst.id, source: 'rest' };
+          this.depthCache.set(this._symbolKey(exchange, symbol), snapshot);
+          const { bid, ask } = this._extractBestBidAskFromDepth(depth);
+          return { ...snapshot, bid, ask };
+        } catch (err) {
+          log.warn('REST depth fetch failed', { instance: inst.name, error: err.message });
+        }
+      }
+    } catch (err) {
+      log.warn('Depth REST fallback failed', { error: err.message });
+    }
+
+    return null;
+  }
+
   _getQuoteTtlMs() {
     return this.hasOpenPositions ? this.quoteTtlActiveMs : this.quoteTtlIdleMs;
+  }
+
+  _fingerprintQuote(quote) {
+    const ltp = this._extractLtpFromQuote(quote);
+    const bid = Number(quote?.bid ?? quote?.best_bid ?? quote?.bestBid ?? quote?.bp ?? 0);
+    const ask = Number(quote?.ask ?? quote?.best_ask ?? quote?.bestAsk ?? quote?.ap ?? 0);
+    return `${ltp || 0}|${bid || 0}|${ask || 0}`;
+  }
+
+  _fingerprintDepth(depth) {
+    if (!depth) return '';
+    const buy = depth?.depth?.buy || depth?.buy || depth?.data?.buy || [];
+    const sell = depth?.depth?.sell || depth?.sell || depth?.data?.sell || [];
+    const bestBid = Number(buy?.[0]?.price ?? 0);
+    const bestAsk = Number(sell?.[0]?.price ?? 0);
+    return `${bestBid || 0}|${bestAsk || 0}`;
+  }
+
+  _recordWsSymbolUpdate(exchange, symbol, fingerprint, timestamp = Date.now()) {
+    const key = this._symbolKey(exchange, symbol);
+    if (!key) return;
+    const prev = this.symbolWsFingerprint.get(key);
+    if (!prev || prev !== fingerprint) {
+      this.symbolWsFingerprint.set(key, fingerprint);
+      this.symbolWsLastChangeAt.set(key, timestamp);
+      // Clear any pause if data started changing again
+      this.symbolRefreshPausedUntil.delete(key);
+    }
+    this.symbolWsLastUpdateAt.set(key, timestamp);
+  }
+
+  async _getNextSessionOpen(exchange, now = new Date()) {
+    try {
+      return await marketCalendarService.getNextSessionOpen(exchange, now);
+    } catch (err) {
+      log.warn('Failed to resolve next session open from calendar', {
+        exchange,
+        error: err.message,
+      });
+      return null;
+    }
+  }
+
+  async _applySymbolRefreshPauses(now = Date.now()) {
+    for (const [key, lastChangeAt] of this.symbolWsLastChangeAt.entries()) {
+      const lastUpdateAt = this.symbolWsLastUpdateAt.get(key);
+      if (!lastUpdateAt) continue;
+      if (now - lastChangeAt < WS_SYMBOL_STALE_MS) continue;
+      if (this.symbolRefreshPausedUntil.has(key)) continue;
+
+      const [exchange] = key.split('|');
+      const pauseUntil = await this._getNextSessionOpen(exchange, new Date(now));
+      if (pauseUntil) {
+        this.symbolRefreshPausedUntil.set(key, pauseUntil);
+        log.info('Paused symbol refresh after prolonged WS staleness', {
+          symbol: key,
+          pauseUntil,
+        });
+      }
+    }
+  }
+
+  _filterPausedSymbols(symbols = []) {
+    const now = Date.now();
+    return symbols.filter((s) => {
+      const key = this._symbolKey(s.exchange, s.symbol);
+      if (!key) return false;
+      const pausedUntil = this.symbolRefreshPausedUntil.get(key);
+      if (!pausedUntil) return true;
+      if (now >= pausedUntil) {
+        this.symbolRefreshPausedUntil.delete(key);
+        return true;
+      }
+      return false;
+    });
+  }
+
+  async _filterSymbolsByMarketOpen(symbols = []) {
+    try {
+      return await marketCalendarService.filterOpenSymbols(symbols);
+    } catch (err) {
+      log.warn('Market calendar filter failed; returning original symbols', { error: err.message });
+      return symbols;
+    }
   }
 
   /**
@@ -492,9 +758,10 @@ class MarketDataFeedService extends EventEmitter {
 
     // Check cache first with appropriate TTL
     const { cached, missing } = this.getCachedQuotesForSymbols(unique, { ttlMs, orderCritical });
+    const openMissing = await this._filterSymbolsByMarketOpen(missing);
 
     // Return cached if all symbols are fresh
-    if (missing.length === 0) {
+    if (openMissing.length === 0) {
       log.debug('All quotes served from cache', { count: cached.length });
       return cached;
     }
@@ -509,7 +776,7 @@ class MarketDataFeedService extends EventEmitter {
     const regularPool = pool.filter(inst => !inst.supports_multiquotes);
 
     let fetchedQuotes = [];
-    let pendingSymbols = [...missing];
+    let pendingSymbols = [...openMissing];
 
     if (supportPool.length > 0) {
       const multiResult = await this._fetchViaMultiQuotes(pendingSymbols, supportPool);
@@ -932,6 +1199,7 @@ class MarketDataFeedService extends EventEmitter {
    */
   async _buildGlobalSymbolList() {
     try {
+      await this._applySymbolRefreshPauses();
       let trackedSymbols = await watchlistService.getTrackedSymbols({
         onlyActiveWatchlists: true,
         onlyEnabledSymbols: true,
@@ -988,7 +1256,8 @@ class MarketDataFeedService extends EventEmitter {
         }
       });
 
-      return symbolList;
+      const openSymbols = await this._filterSymbolsByMarketOpen(symbolList);
+      return this._filterPausedSymbols(openSymbols);
     } catch (error) {
       log.warn('Failed to build global symbol list', { error: error.message });
       return [];
@@ -1539,6 +1808,24 @@ class MarketDataFeedService extends EventEmitter {
       wsRetries = 5,
       wsRetryDelayMs = 200,
     } = options;
+
+    const exchangeOpen = await marketCalendarService.isExchangeOpen(exchange);
+    if (!exchangeOpen) {
+      if (!bypassCache) {
+        const { cached } = this.getCachedQuotesForSymbols(
+          [{ exchange, symbol }],
+          { orderCritical: true }
+        );
+        if (cached.length > 0) {
+          const quote = cached[0];
+          const ltp = this._extractLtpFromQuote(quote);
+          if (ltp && ltp > 0) {
+            return { ltp, quote, source: 'cache_closed', attempts: 0 };
+          }
+        }
+      }
+      throw new Error(`Market closed for ${exchange}:${symbol}`);
+    }
 
     if (isQuoteEndpointBlackout()) {
       throw new Error('Market closed for quotes (02:00-08:45 IST)');

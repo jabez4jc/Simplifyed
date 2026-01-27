@@ -683,6 +683,7 @@ class QuickOrderService {
 
       for (const instance of remaining) {
         try {
+          await this._cancelAllOrdersForRetry(instance, symbol, orderParams);
           const result = await this._closePositions(instance, symbol, orderParams, {
             useCachedPositions: false, // Use live positions for retry
           });
@@ -723,6 +724,27 @@ class QuickOrderService {
     }
 
     return results;
+  }
+
+  async _cancelAllOrdersForRetry(instance, symbol, orderParams) {
+    if (!instance?.id) return;
+    const strategies = new Set();
+    if (orderParams?.strategy) strategies.add(orderParams.strategy);
+    if (symbol?.watchlist_name) strategies.add(symbol.watchlist_name);
+    if (instance?.strategy_tag) strategies.add(instance.strategy_tag);
+    if (strategies.size === 0) strategies.add('default');
+
+    for (const tag of strategies) {
+      try {
+        await orderService.cancelAllOrders(instance.id, tag);
+      } catch (error) {
+        log.warn('Failed to cancel open orders before close/exit retry', {
+          instance_id: instance.id,
+          strategy: tag,
+          error: error.message,
+        });
+      }
+    }
   }
 
   /**

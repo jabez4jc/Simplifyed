@@ -21,11 +21,10 @@ class SettingsHandler {
     this.permissionFilter = '';
     this.userFilter = '';
     this.userRoleFilter = 'all';
-    this.allowedCategories = ['polling', 'market_data_feed', 'instance_health', 'instance_health_tests', 'market_hours', 'trading', 'brokerage', 'system'];
+    this.allowedCategories = ['polling', 'market_data_feed', 'instance_health', 'instance_health_tests', 'market_hours', 'trading', 'brokerage'];
     this.allowedSettings = {
       polling: [
         'polling.instance_interval_ms',
-        'polling.market_data_interval_ms',
         'polling.health_check_interval_ms',
       ],
       streaming: [
@@ -64,9 +63,6 @@ class SettingsHandler {
         'brokerage.default',
         'brokerage.by_broker',
       ],
-      system: [
-        'settings.cache_duration_ms',
-      ],
     };
     this.displaySettings = {};
     this.displayCategories = [];
@@ -84,10 +80,6 @@ class SettingsHandler {
       'streaming': {
         icon: '📡',
         description: 'WebSocket streaming for live data updates'
-      },
-      'system': {
-        icon: '🧠',
-        description: 'Runtime cache and internal configuration'
       },
       'openalgo': {
         icon: '📡',
@@ -1972,7 +1964,6 @@ class SettingsHandler {
     const overrides = {
       'server.port': 'Server Port',
       'polling.instance_interval_ms': 'Instance Polling Interval (ms)',
-      'polling.market_data_interval_ms': 'Market Data Poll Interval (ms)',
       'openalgo.request_timeout_ms': 'OpenAlgo Request Timeout (ms)',
       'openalgo.critical.max_retries': 'OpenAlgo Critical Retry Count',
       'openalgo.critical.retry_delay_ms': 'OpenAlgo Critical Retry Delay (ms)',
@@ -1983,7 +1974,6 @@ class SettingsHandler {
       'rate_limit.max_requests': 'Rate Limit Max Requests',
       'logging.level': 'Logging Level',
       'test_mode.enabled': 'Test Mode Enabled',
-      'polling.market_data_interval_ms': 'Market Data Interval (ms)',
       'streaming.enabled': 'Live Streaming (WebSocket)',
     };
 
@@ -1997,7 +1987,6 @@ class SettingsHandler {
   getSettingHelpText(key) {
     const help = {
       'polling.instance_interval_ms': 'Controls how often instance P&L is refreshed. Lower values increase load.',
-      'polling.market_data_interval_ms': 'Used for non-streaming market data refresh cadence.',
       'streaming.enabled': 'Streams quotes/positions/funds via WebSocket when supported; stored per browser.',
       'polling.health_check_interval_ms': 'Interval for OpenAlgo endpoint capability/health checks.',
       'instance_health.ping_healthy_interval_ms': 'Ping cadence while instances are healthy.',
@@ -2020,7 +2009,6 @@ class SettingsHandler {
       'market_hours.general_blackout_start': 'Other OpenAlgo endpoints are blocked starting this time (IST).',
       'market_hours.general_blackout_end': 'Other OpenAlgo endpoints resume after this time (IST).',
       'trading_sessions': 'Defines session windows in IST used for session P&L baselines and auto cutoffs.',
-      'settings.cache_duration_ms': 'Cache duration for settings reads in config (ms).',
     };
 
     return help[key] || '';

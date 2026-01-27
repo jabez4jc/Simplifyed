@@ -6,6 +6,7 @@ import instanceService from './instance.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import db from '../core/database.js';
 import { toISTDate, toISTISOString } from '../utils/time.js';
+import marketCalendarService from './market-calendar.service.js';
 
 async function createNotification(title, body, severity = 'warn') {
   try {
@@ -185,22 +186,49 @@ class InstanceHealthService {
 
     const cfg = await getTestConfig();
     const instances = await instanceService.getAllInstances({ is_active: true });
+    const exchangeOpenCache = new Map();
+    const isExchangeOpen = async (exchange) => {
+      const ex = (exchange || '').toUpperCase();
+      if (!ex) return false;
+      if (!exchangeOpenCache.has(ex)) {
+        exchangeOpenCache.set(ex, await marketCalendarService.isExchangeOpen(ex));
+      }
+      return exchangeOpenCache.get(ex);
+    };
+    const filterByOpenExchange = async (tests = []) => {
+      const filtered = [];
+      for (const t of tests) {
+        const ex = t.exchange || t.brexchange || t.exch;
+        if (!ex) continue;
+        if (await isExchangeOpen(ex)) filtered.push(t);
+      }
+      return filtered;
+    };
 
     for (const inst of instances) {
-      const quoted = await testQuotes(inst, cfg.quotes || DEFAULT_TESTS.quotes);
-      await updateInstanceEndpoint(inst, 'quotes', quoted.ok, quoted.reason);
-
-      const mquoted = await testMultiQuotes(inst, cfg.multiquotes || DEFAULT_TESTS.multiquotes);
-      await updateInstanceEndpoint(inst, 'multiquotes', mquoted.ok, mquoted.reason);
-
-      const ocResults = [];
-      for (const t of cfg.optionchain || DEFAULT_TESTS.optionchain) {
-        const r = await testOptionChain(inst, t);
-        ocResults.push(r);
+      const quoteTests = await filterByOpenExchange(cfg.quotes || DEFAULT_TESTS.quotes);
+      if (quoteTests.length > 0) {
+        const quoted = await testQuotes(inst, quoteTests);
+        await updateInstanceEndpoint(inst, 'quotes', quoted.ok, quoted.reason);
       }
-      const ocOk = ocResults.some((r) => r.ok);
-      const ocReason = ocOk ? null : ocResults.map((r) => r.reason).join('; ');
-      await updateInstanceEndpoint(inst, 'optionchain', ocOk, ocReason);
+
+      const multiTests = await filterByOpenExchange(cfg.multiquotes || DEFAULT_TESTS.multiquotes);
+      if (multiTests.length > 0) {
+        const mquoted = await testMultiQuotes(inst, multiTests);
+        await updateInstanceEndpoint(inst, 'multiquotes', mquoted.ok, mquoted.reason);
+      }
+
+      const optionTests = await filterByOpenExchange(cfg.optionchain || DEFAULT_TESTS.optionchain);
+      if (optionTests.length > 0) {
+        const ocResults = [];
+        for (const t of optionTests) {
+          const r = await testOptionChain(inst, t);
+          ocResults.push(r);
+        }
+        const ocOk = ocResults.some((r) => r.ok);
+        const ocReason = ocOk ? null : ocResults.map((r) => r.reason).join('; ');
+        await updateInstanceEndpoint(inst, 'optionchain', ocOk, ocReason);
+      }
     }
 
     log.info('Instance health checks completed');

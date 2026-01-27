@@ -129,6 +129,7 @@ class OrderRetryService {
     const remainingAfterPending = remainingNeeded === null
       ? null
       : Math.max(remainingNeeded - pendingQty, 0);
+    const remainingForRetry = remainingNeeded;
 
     if (remainingAfterPending !== null && remainingAfterPending <= 0) {
       await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
@@ -274,23 +275,46 @@ class OrderRetryService {
       }
     }
 
-    await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
+    await this._cancelAllForRetry(instance, payload, strategy);
+
+    let depthBasePrice = null;
+    let depthPriceSource = null;
+    try {
+      const depthResult = await marketDataFeedService.fetchDepthForSymbol(exchange, symbol);
+      const depthBid = this._parseNumber(depthResult?.bid);
+      const depthAsk = this._parseNumber(depthResult?.ask);
+      if ((side || '').toUpperCase() === 'BUY' && Number.isFinite(depthAsk) && depthAsk > 0) {
+        depthBasePrice = depthAsk;
+        depthPriceSource = 'depth_ask';
+      } else if ((side || '').toUpperCase() === 'SELL' && Number.isFinite(depthBid) && depthBid > 0) {
+        depthBasePrice = depthBid;
+        depthPriceSource = 'depth_bid';
+      }
+    } catch (error) {
+      log.warn('Retry depth fetch failed; falling back to LTP', {
+        instance_id: instance.id,
+        order_id: orderId,
+        error: error.message,
+      });
+    }
 
     const retryPrice = this._applyBufferAndTick({
       ltp,
+      basePrice: depthBasePrice,
       side,
       bufferPoints,
       bufferPct,
       tickSize,
     });
+    const retryPriceSource = depthPriceSource || 'ltp';
 
     const retryPayload = {
       ...payload,
       pricetype: 'LIMIT',
       price: retryPrice,
     };
-    const cappedQty = remainingAfterPending !== null
-      ? remainingAfterPending
+    const cappedQty = remainingForRetry !== null
+      ? remainingForRetry
       : null;
     const finalQty = retryQuantity !== null
       ? (cappedQty !== null ? Math.min(retryQuantity, cappedQty) : retryQuantity)
@@ -311,6 +335,7 @@ class OrderRetryService {
       instance_id: instance.id,
       order_id: orderId,
       retry_price: retryPrice,
+      retry_price_source: retryPriceSource,
     });
 
     const retryResult = await orderPlacementService.placeSmartOrder(instance, retryPayload, {
@@ -486,6 +511,19 @@ class OrderRetryService {
       order_id: orderId,
       status: normalizedStatus,
     });
+  }
+
+  async _cancelAllForRetry(instance, payload, strategy) {
+    if (!instance?.id) return;
+    const strategies = new Set();
+    if (strategy) strategies.add(strategy);
+    if (payload?.strategy) strategies.add(payload.strategy);
+    if (instance?.strategy_tag) strategies.add(instance.strategy_tag);
+    if (strategies.size === 0) strategies.add('default');
+
+    for (const tag of strategies) {
+      await this._cancelAll(instance.id, tag);
+    }
   }
 
   async _cancelAll(instanceId, strategy) {
@@ -752,16 +790,17 @@ class OrderRetryService {
     return Number.isFinite(num) ? num : null;
   }
 
-  _applyBufferAndTick({ ltp, side, bufferPoints, bufferPct, tickSize }) {
+  _applyBufferAndTick({ ltp, basePrice = null, side, bufferPoints, bufferPct, tickSize }) {
+    const priceBase = Number.isFinite(basePrice) && basePrice > 0 ? basePrice : ltp;
     let buffer = Number(bufferPoints) || 0;
     if ((!buffer || buffer <= 0) && Number.isFinite(bufferPct) && bufferPct > 0) {
-      buffer = ltp * (bufferPct / 100);
+      buffer = priceBase * (bufferPct / 100);
     }
     let price = (side || '').toUpperCase() === 'BUY'
-      ? ltp + buffer
-      : ltp - buffer;
+      ? priceBase + buffer
+      : priceBase - buffer;
     if (!Number.isFinite(price) || price <= 0) {
-      price = ltp;
+      price = priceBase;
     }
     const tick = typeof tickSize === 'string' ? parseFloat(tickSize) : tickSize;
     if (!Number.isFinite(tick) || tick <= 0) {

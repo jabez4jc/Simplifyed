@@ -18,13 +18,28 @@ function msUntilQuoteBlackoutEnds() {
   return Math.max(0, msUntil + extraMs);
 }
 
-function serializeSubscribe(symbols) {
+function serializeSubscribeQuotes(symbols) {
   return symbols.map((s) => ({
     action: 'subscribe',
     symbol: s.symbol,
     exchange: s.exchange,
     mode: 2, // Quote mode (includes LTP)
   }));
+}
+
+function serializeSubscribeDepth(entries) {
+  return entries.map((s) => {
+    const payload = {
+      action: 'subscribe',
+      symbol: s.symbol,
+      exchange: s.exchange,
+      mode: 3, // Depth mode
+    };
+    if (s.depth_level) {
+      payload.depth_level = s.depth_level;
+    }
+    return payload;
+  });
 }
 
 function buildWsUrl(instance) {
@@ -47,9 +62,11 @@ class OpenAlgoWsConnection {
     this.instance = instance;
     this.onQuote = onQuote;
     this.onStatus = onStatus;
+    this.onDepth = null;
     this.ws = null;
     this.connected = false;
     this.desired = new Set();
+    this.depthDesired = new Map(); // key -> { exchange, symbol, depth_level }
     this._connect();
   }
 
@@ -94,12 +111,17 @@ class OpenAlgoWsConnection {
       const msg = JSON.parse(raw.toString());
       if (msg.type === 'market_data' && msg.data) {
         const q = msg.data;
-        this.onQuote?.(this.instance.id, {
+        const payload = {
           ...q,
           exchange: (q.exchange || '').toUpperCase(),
           symbol: (q.symbol || '').toUpperCase(),
           mode: msg.mode,
-        });
+        };
+        if (msg.mode === 3 || q?.depth) {
+          this.onDepth?.(this.instance.id, payload);
+        } else {
+          this.onQuote?.(this.instance.id, payload);
+        }
       }
       if (msg.type === 'auth' && msg.status !== 'success') {
         log.warn('OpenAlgo WS auth failed', { instance: this.instance.name || this.instance.id, message: msg.message });
@@ -135,13 +157,29 @@ class OpenAlgoWsConnection {
     this._syncSubscriptions();
   }
 
+  setDepthSubscription(symbol, depthLevel = 5) {
+    const exchange = (symbol?.exchange || '').toUpperCase();
+    const sym = (symbol?.symbol || '').toUpperCase();
+    if (!exchange || !sym) return;
+    const key = `${exchange}|${sym}`;
+    this.depthDesired.set(key, { exchange, symbol: sym, depth_level: depthLevel });
+    this._syncSubscriptions();
+  }
+
   _syncSubscriptions() {
-    if (!this.connected || this.desired.size === 0) return;
+    if (!this.connected) return;
+    if (this.desired.size === 0 && this.depthDesired.size === 0) return;
     const symbols = Array.from(this.desired).map((key) => {
       const [exchange, symbol] = key.split('|');
       return { exchange, symbol };
     });
-    serializeSubscribe(symbols).forEach((msg) => this._send(msg));
+    if (symbols.length > 0) {
+      serializeSubscribeQuotes(symbols).forEach((msg) => this._send(msg));
+    }
+    if (this.depthDesired.size > 0) {
+      const depthEntries = Array.from(this.depthDesired.values());
+      serializeSubscribeDepth(depthEntries).forEach((msg) => this._send(msg));
+    }
   }
 }
 
@@ -164,6 +202,8 @@ class OpenAlgoWsService extends EventEmitter {
             (instanceId, status) => this.emit('status', { instanceId, status })
           )
         );
+        const conn = this.connections.get(inst.id);
+        conn.onDepth = (instanceId, depth) => this.emit('depth', { instanceId, depth });
       }
     });
   }
@@ -262,6 +302,13 @@ class OpenAlgoWsService extends EventEmitter {
     const key = `${exchange}|${sym}`;
     conn.desired.add(key);
     conn._syncSubscriptions();
+    return true;
+  }
+
+  subscribeDepth(instanceId, symbol, depthLevel = 5) {
+    const conn = this.connections.get(instanceId);
+    if (!conn || !conn.connected) return false;
+    conn.setDepthSubscription(symbol, depthLevel);
     return true;
   }
 

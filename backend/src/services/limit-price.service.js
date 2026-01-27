@@ -50,20 +50,44 @@ class LimitPriceService {
       // Fall back to config/env defaults if setting is missing.
     }
 
-    const { quote, fetchedAt } = await this._getFreshQuote(
-      normalizedExchange,
-      normalizedSymbol,
-      staleMs
-    );
+    let depthBid = null;
+    let depthAsk = null;
+    let depthAgeMs = null;
 
-    const ageMs = fetchedAt ? Date.now() - fetchedAt : null;
+    if (!forceLtp) {
+      const depthResult = await marketDataFeedService.fetchDepthForSymbol(
+        normalizedExchange,
+        normalizedSymbol,
+        { staleMs }
+      );
+      if (depthResult) {
+        depthBid = this._parsePrice(depthResult.bid);
+        depthAsk = this._parsePrice(depthResult.ask);
+        depthAgeMs = depthResult.fetchedAt ? Date.now() - depthResult.fetchedAt : null;
+      }
+    }
+
+    const depthReady = depthBid && depthAsk;
+    let quote = null;
+    let fetchedAt = null;
+    if (!depthReady) {
+      const quoteResult = await this._getFreshQuote(
+        normalizedExchange,
+        normalizedSymbol,
+        staleMs
+      );
+      quote = quoteResult.quote;
+      fetchedAt = quoteResult.fetchedAt;
+    }
+
+    const ageMs = fetchedAt ? Date.now() - fetchedAt : depthAgeMs;
     if (ageMs !== null && ageMs > staleMs) {
       throw new ValidationError(`Quote is stale for ${normalizedExchange}:${normalizedSymbol}`);
     }
 
-    const bid = this._parsePrice(quote?.bid ?? quote?.best_bid ?? quote?.bestBid ?? quote?.bp);
-    const ask = this._parsePrice(quote?.ask ?? quote?.best_ask ?? quote?.bestAsk ?? quote?.ap);
-    const ltp = extractLtp(quote);
+    const bid = depthBid ?? this._parsePrice(quote?.bid ?? quote?.best_bid ?? quote?.bestBid ?? quote?.bp);
+    const ask = depthAsk ?? this._parsePrice(quote?.ask ?? quote?.best_ask ?? quote?.bestAsk ?? quote?.ap);
+    const ltp = quote ? extractLtp(quote) : null;
 
     let basePrice = null;
     let priceSource = null;

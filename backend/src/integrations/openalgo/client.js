@@ -652,9 +652,12 @@ class OpenAlgoClient extends EventEmitter {
    */
   async request(instance, endpoint, data = {}, method = 'POST', options = {}) {
     const endpointKey = (endpoint || '').toLowerCase();
-    const isQuoteEndpoint = endpointKey.includes('quotes') || endpointKey.includes('optionchain');
+    const isQuoteEndpoint =
+      endpointKey.includes('quotes') ||
+      endpointKey.includes('optionchain') ||
+      endpointKey.includes('depth');
     const inBlackout = isQuoteEndpoint ? isQuoteEndpointBlackout() : isGeneralEndpointBlackout();
-    if (inBlackout) {
+    if (inBlackout && !options?.skipMarketCheck) {
       const err = new Error(
         isQuoteEndpoint
           ? 'Market closed (Quotes/MultiQuotes/OptionChain/WebSocket calls paused 02:00-08:45 IST)'
@@ -2139,6 +2142,52 @@ class OpenAlgoClient extends EventEmitter {
       symbol,
     });
     return response.data;
+  }
+
+  /**
+   * Get market timings for a specific date
+   * @param {Object} instance - Instance configuration
+   * @param {string} date - YYYY-MM-DD (IST)
+   * @returns {Promise<Array>} - Timings array
+   */
+  async getMarketTimings(instance, date) {
+    const response = await this.request(
+      instance,
+      'market/timings',
+      { date },
+      'POST',
+      { skipMarketCheck: true }
+    );
+    return response.data || [];
+  }
+
+  /**
+   * Get market holidays for a year or date
+   * @param {Object} instance - Instance configuration
+   * @param {string|number} yearOrDate - Year (YYYY) or date (YYYY-MM-DD)
+   * @returns {Promise<Array>} - Holidays array
+   */
+  async getMarketHolidays(instance, yearOrDate) {
+    const payload = {};
+    if (yearOrDate !== undefined && yearOrDate !== null) {
+      const val = String(yearOrDate).trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(val)) {
+        payload.date = val;
+      } else if (/^\d{4}$/.test(val)) {
+        payload.year = val;
+      } else {
+        payload.year = val;
+      }
+    }
+
+    const response = await this.request(
+      instance,
+      'market/holidays',
+      payload,
+      'POST',
+      { skipMarketCheck: true }
+    );
+    return response.data || [];
   }
 
   /**
