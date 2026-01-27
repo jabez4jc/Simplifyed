@@ -73,10 +73,10 @@ class OrderRepository {
         watchlist_id, symbol_id, instance_id, underlying, symbol, exchange,
         action, trade_mode, options_leg, quantity, product, order_type,
         price, trigger_price, resolved_symbol, strike_price, option_type,
-        expiry_date, status, order_id, message,
+        expiry_date, status, order_id, message, error_details, metadata,
         user_id, source, trigger_type, request_id, correlation_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
       [
         params.watchlist_id,
         params.symbol_id,
@@ -99,6 +99,8 @@ class OrderRepository {
         params.status,
         params.order_id,
         params.message,
+        params.error_details || null,
+        params.metadata ? JSON.stringify(params.metadata) : null,
         params.user_id || null,
         params.source || null,
         params.trigger_type || null,

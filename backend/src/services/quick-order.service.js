@@ -568,6 +568,12 @@ class QuickOrderService {
           instance_id: instance.id,
           symbol_id: symbol.id,
         });
+        await this._recordFailedQuickOrder({
+          instance,
+          symbol,
+          orderParams,
+          error,
+        });
 
         instanceResult.success = false;
         if (isServerFailure) {
@@ -705,6 +711,13 @@ class QuickOrderService {
 
           if (attempt === maxRetries) {
             // Final attempt failed - record failure
+            await this._recordFailedQuickOrder({
+              instance,
+              symbol,
+              orderParams,
+              error,
+              attempt,
+            });
             results.push({
               success: false,
               instance_id: instance.id,
@@ -2453,6 +2466,93 @@ class QuickOrderService {
     } catch (error) {
       log.error('Failed to record quick order', error);
       // Non-fatal - order was still placed
+    }
+  }
+
+  _buildFailurePayloadSummary(orderParams = {}, symbol = {}) {
+    return {
+      action: orderParams.action,
+      trade_mode: orderParams.tradeMode,
+      order_type: orderParams.orderType || 'LIMIT',
+      quantity: orderParams.quantity ?? null,
+      product: orderParams.product ?? null,
+      price: orderParams.price ?? null,
+      expiry: orderParams.expiry ?? null,
+      options_leg: orderParams.optionsLeg ?? symbol.options_strike_selection ?? null,
+      operating_mode: orderParams.operatingMode ?? null,
+      strike_policy: orderParams.strikePolicy ?? null,
+      step_lots: orderParams.stepLots ?? null,
+      trigger_type: orderParams.triggerType ?? null,
+    };
+  }
+
+  _extractErrorCode(error) {
+    if (!error) return null;
+    return (
+      error.code ||
+      error.errorCode ||
+      error.statusCode ||
+      error.name ||
+      null
+    );
+  }
+
+  async _recordFailedQuickOrder({ instance, symbol, orderParams, error, attempt = null }) {
+    try {
+      const errorCode = this._extractErrorCode(error);
+      const statusCode = Number.isFinite(error?.statusCode) ? error.statusCode : null;
+      const payloadSummary = this._buildFailurePayloadSummary(orderParams, symbol);
+      const metadata = {
+        payload_summary: payloadSummary,
+        instance: {
+          id: instance?.id ?? null,
+          name: instance?.name ?? null,
+        },
+        error_code: errorCode,
+        status_code: statusCode,
+        attempt,
+      };
+
+      await this._recordQuickOrder({
+        watchlist_id: symbol?.watchlist_id ?? null,
+        symbol_id: symbol?.id ?? null,
+        instance_id: instance?.id,
+        underlying: symbol?.underlying_symbol || symbol?.symbol || 'UNKNOWN',
+        symbol: symbol?.symbol || 'UNKNOWN',
+        exchange: symbol?.exchange || 'UNKNOWN',
+        action: orderParams?.action || 'UNKNOWN',
+        trade_mode: orderParams?.tradeMode || 'UNKNOWN',
+        options_leg: orderParams?.optionsLeg ?? symbol?.options_strike_selection ?? null,
+        quantity: orderParams?.quantity ?? 0,
+        product: orderParams?.product ?? null,
+        order_type: orderParams?.orderType || 'LIMIT',
+        price: orderParams?.price ?? null,
+        trigger_price: null,
+        resolved_symbol: null,
+        strike_price: null,
+        option_type: null,
+        expiry_date: orderParams?.expiry ?? null,
+        status: 'failed',
+        order_id: null,
+        message: error?.message || 'Order failed',
+        error_details: JSON.stringify({
+          code: errorCode,
+          statusCode,
+          message: error?.message || null,
+        }),
+        metadata,
+        user_id: orderParams?.userId ?? null,
+        source: orderParams?.source ?? null,
+        trigger_type: orderParams?.triggerType ?? null,
+        request_id: orderParams?.requestId ?? null,
+        correlation_id: orderParams?.correlationId ?? null,
+      });
+    } catch (recordError) {
+      log.warn('Failed to persist failed quick order', {
+        instance_id: instance?.id,
+        symbol_id: symbol?.id,
+        error: recordError?.message,
+      });
     }
   }
 
