@@ -3105,9 +3105,31 @@ class DashboardApp {
     const keys = this.extractQuoteKeys(quote);
     if (!keys.length) return hydrated;
 
-    const hasLtp = typeof hydrated.ltp === 'number' && !Number.isNaN(hydrated.ltp);
-    if (hasLtp) {
-      this.cacheQuoteLtp(keys, hydrated.ltp, receivedAt);
+    const ltpCandidates = [
+      hydrated.ltp,
+      hydrated.last_price,
+      hydrated.lastPrice,
+      hydrated.last_traded_price,
+      hydrated.lastTradedPrice,
+    ];
+    let ltpValue = null;
+    for (const candidate of ltpCandidates) {
+      if (typeof candidate === 'number' && !Number.isNaN(candidate)) {
+        ltpValue = candidate;
+        break;
+      }
+      if (typeof candidate === 'string' && candidate.trim() !== '') {
+        const parsed = parseFloat(candidate);
+        if (!Number.isNaN(parsed)) {
+          ltpValue = parsed;
+          break;
+        }
+      }
+    }
+
+    if (typeof ltpValue === 'number' && !Number.isNaN(ltpValue)) {
+      hydrated.ltp = ltpValue;
+      this.cacheQuoteLtp(keys, ltpValue, receivedAt);
       hydrated.ltpTs = receivedAt;
       return hydrated;
     }

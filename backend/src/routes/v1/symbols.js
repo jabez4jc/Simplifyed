@@ -140,9 +140,20 @@ router.post('/quotes', async (req, res, next) => {
     if (missing.length > 0) {
       if (instanceId) {
         const instance = await instanceService.getInstanceById(parseInt(instanceId, 10));
-        const quotes = await openalgoClient.getQuotes(instance, missing);
-        marketDataFeedService.setQuoteSnapshot(instance.id, quotes);
-        liveQuotes = quotes;
+        const quoteResult = await openalgoClient.getQuotes(instance, missing, { returnErrors: true });
+        const quotes = Array.isArray(quoteResult?.quotes) ? quoteResult.quotes : [];
+        const failed = Array.isArray(quoteResult?.failed) ? quoteResult.failed : [];
+        if (quotes.length > 0) {
+          marketDataFeedService.setQuoteSnapshot(instance.id, quotes);
+          liveQuotes = liveQuotes.concat(quotes);
+        }
+        if (failed.length > 0) {
+          const fallbackSymbols = failed.map((f) => ({ exchange: f.exchange, symbol: f.symbol }));
+          const fallbackQuotes = await marketDataFeedService.fetchQuotesForSymbols(fallbackSymbols);
+          if (fallbackQuotes.length > 0) {
+            liveQuotes = liveQuotes.concat(fallbackQuotes);
+          }
+        }
       } else {
         liveQuotes = await marketDataFeedService.fetchQuotesForSymbols(missing);
       }
