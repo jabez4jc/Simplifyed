@@ -12,6 +12,7 @@ import orderRepository from './order-repository.js';
 import telegramService from './telegram.service.js';
 import limitPriceService from './limit-price.service.js';
 import pnlSnapshotService from './pnl-snapshot.service.js';
+import brokerCapabilitiesService from './broker-capabilities.service.js';
 import {
   NotFoundError,
   ValidationError,
@@ -51,6 +52,9 @@ class OrderService {
       request_id = null,
       correlation_id = null,
     } = params;
+
+    let finalOrderType = pricetype;
+    let finalOrderPrice = price;
 
     try {
       // Validate instance
@@ -99,16 +103,25 @@ class OrderService {
         bufferPoints = 0;
       }
 
-      const limitResult = await limitPriceService.resolveLimitPrice({
-        exchange: normalized.exchange,
-        symbol: normalized.symbol,
-        side: normalized.action,
-        bufferPoints,
-        tickSize,
-      });
+      const supportsMarketOrders = await brokerCapabilitiesService.supportsMarketOrders(instance.broker);
+      if (supportsMarketOrders) {
+        normalized.pricetype = 'MARKET';
+        normalized.price = 0;
+      } else {
+        const limitResult = await limitPriceService.resolveLimitPrice({
+          exchange: normalized.exchange,
+          symbol: normalized.symbol,
+          side: normalized.action,
+          bufferPoints,
+          tickSize,
+        });
 
-      normalized.pricetype = 'LIMIT';
-      normalized.price = limitResult.price;
+        normalized.pricetype = 'LIMIT';
+        normalized.price = limitResult.price;
+      }
+
+      finalOrderType = normalized.pricetype;
+      finalOrderPrice = normalized.price;
 
       const currentPosition = await this._getLivePosition(instance, normalized);
       const repeatUntilClosed = this._shouldRepeatToTarget(
@@ -164,9 +177,9 @@ class OrderService {
         symbol: normalized.symbol,
         side: normalized.action,
         quantity: normalized.quantity,
-        orderType: normalized.pricetype,
+        orderType: finalOrderType,
         productType: normalized.product,
-        price: normalized.price,
+        price: finalOrderPrice,
         trigger_price: normalized.trigger_price,
         status: 'pending',
         orderId,
@@ -227,9 +240,9 @@ class OrderService {
             symbol,
             action,
             quantity,
-            pricetype,
-            product,
-            price,
+          finalOrderType ?? pricetype,
+          product,
+          finalOrderPrice ?? price,
             trigger_price,
             'failed',
             error.message,

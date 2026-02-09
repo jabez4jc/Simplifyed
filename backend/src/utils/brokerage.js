@@ -37,3 +37,34 @@ export function resolveBrokerageValue(broker, map, defaultValue) {
   }
   return defaultValue;
 }
+
+export function buildMarketOrderSupportMap(value) {
+  let source = value;
+  if (typeof source === 'string') {
+    try {
+      source = JSON.parse(source);
+    } catch (error) {
+      source = {};
+    }
+  }
+
+  const map = {};
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    return map;
+  }
+
+  Object.entries(source).forEach(([key, supported]) => {
+    const normalizedKey = normalizeBrokerKey(key);
+    if (!normalizedKey) return;
+    const normalizedValue = supported === true || supported === 'true' || supported === 1;
+    map[normalizedKey] = normalizedValue;
+  });
+
+  return map;
+}
+
+export function resolveMarketOrderSupport(broker, map) {
+  const normalizedKey = normalizeBrokerKey(broker);
+  if (!normalizedKey) return false;
+  return !!(map && map[normalizedKey] === true);
+}

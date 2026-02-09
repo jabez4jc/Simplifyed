@@ -598,6 +598,7 @@ class WatchlistService {
           apikey,
           rateLimit: null,
           instance_id: instance.id,
+          broker: instance.broker,
           is_analyzer_mode: instance.is_analyzer_mode,
           multiplier: instance.multiplier,
         };

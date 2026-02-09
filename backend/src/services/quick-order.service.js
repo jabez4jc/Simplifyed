@@ -19,6 +19,7 @@ import orderService from './order.service.js';
 import telegramService from './telegram.service.js';
 import limitPriceService from './limit-price.service.js';
 import pnlSnapshotService from './pnl-snapshot.service.js';
+import brokerCapabilitiesService from './broker-capabilities.service.js';
 import { ValidationError, NotFoundError } from '../core/errors.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
 import instrumentsService from './instruments.service.js';
@@ -99,7 +100,6 @@ class QuickOrderService {
       userId = null,
       source = null,
     } = params;
-    const effectiveOrderType = 'LIMIT';
 
     log.info('Placing quick order', {
       symbolId,
@@ -162,6 +162,7 @@ class QuickOrderService {
 
     // Get instances (single or all assigned)
     const instances = await this._getTargetInstances(instanceId, symbol.watchlist_id);
+    const effectiveOrderType = await this._resolveBroadcastOrderType(instances);
 
     const resolvedProduct = this._resolveProductForOrder(product, tradeMode, symbol);
 
@@ -451,6 +452,25 @@ class QuickOrderService {
     }
 
     throw new ValidationError(`Unsupported action/tradeMode combination: ${action}/${tradeMode}`);
+  }
+
+  async _resolveOrderTypeForInstance(instance) {
+    const supportsMarketOrders = await brokerCapabilitiesService.supportsMarketOrders(instance?.broker);
+    return supportsMarketOrders ? 'MARKET' : 'LIMIT';
+  }
+
+  async _resolveBroadcastOrderType(instances) {
+    if (!Array.isArray(instances) || instances.length === 0) {
+      return 'LIMIT';
+    }
+
+    const supportFlags = await Promise.all(
+      instances.map((instance) => brokerCapabilitiesService.supportsMarketOrders(instance?.broker))
+    );
+
+    if (supportFlags.every(Boolean)) return 'MARKET';
+    if (supportFlags.some(Boolean)) return 'MIXED';
+    return 'LIMIT';
   }
 
   /**
@@ -1005,6 +1025,17 @@ class QuickOrderService {
       exchange: finalExchange,
     });
 
+    const orderType = await this._resolveOrderTypeForInstance(instance);
+    const orderPrice = orderType === 'LIMIT'
+      ? (await limitPriceService.resolveLimitPrice({
+        exchange: finalExchange,
+        symbol: finalSymbol,
+        side: algoAction,
+        bufferPoints: symbol.limit_buffer_points || 0,
+        tickSize: resolvedTickSize,
+      })).price
+      : 0;
+
     const orderPayload = orderPayloadFactory.buildEquityOrder({
       strategy: symbol.watchlist_name || 'default',
       exchange: finalExchange,
@@ -1013,14 +1044,8 @@ class QuickOrderService {
       quantity: orderQuantity,
       position_size: targetPosition,
       product: finalProduct,
-      pricetype: 'LIMIT',
-      price: (await limitPriceService.resolveLimitPrice({
-        exchange: finalExchange,
-        symbol: finalSymbol,
-        side: algoAction,
-        bufferPoints: symbol.limit_buffer_points || 0,
-        tickSize: resolvedTickSize,
-      })).price,
+      pricetype: orderType,
+      price: orderPrice,
     });
 
     // Best-effort capture of entry LTP for manual orders (fallback for auto-exit)
@@ -1084,7 +1109,7 @@ class QuickOrderService {
       trade_mode: tradeMode,
       quantity: tradeQuantity,
       product: finalProduct,
-      order_type: 'LIMIT',
+      order_type: orderType,
       price: orderPayload.price,
       order_id: orderResult.orderid,
       status: orderResult.status,
@@ -1130,6 +1155,7 @@ class QuickOrderService {
     } = orderParams;
     const { preloadedPositions } = options;
     const bufferPoints = Number.isFinite(symbol.limit_buffer_points) ? symbol.limit_buffer_points : 0;
+    const orderType = await this._resolveOrderTypeForInstance(instance);
     const instanceMultiplier = Math.min(
       Math.max(parseIntSafe(instance.multiplier, 1), 1),
       999
@@ -1327,6 +1353,7 @@ class QuickOrderService {
         });
       }
 
+      const orderType = await this._resolveOrderTypeForInstance(instance);
       const orderPromises = ordersToPlace.map(async order => {
         const floatProduct = this._resolveProductForOrder(
           product,
@@ -1337,6 +1364,16 @@ class QuickOrderService {
         // Capture fallback entry price per strike (best effort)
         this._captureFallbackEntryPrice(instance, derivativeExchange, order.symbol).catch(() => {});
 
+        const orderPrice = orderType === 'LIMIT'
+          ? (await limitPriceService.resolveLimitPrice({
+            exchange: derivativeExchange,
+            symbol: order.symbol,
+            side: order.action,
+            bufferPoints,
+            tickSize: optionSymbol?.tick_size || symbol.tick_size,
+          })).price
+          : 0;
+
         const orderDataToSend = orderPayloadFactory.buildOptionsOrder({
           strategy: symbol.watchlist_name || 'default',
           exchange: derivativeExchange,
@@ -1345,14 +1382,8 @@ class QuickOrderService {
           quantity: order.quantity,
           position_size: order.position_size,
           product: floatProduct,
-          pricetype: 'LIMIT',
-          price: (await limitPriceService.resolveLimitPrice({
-            exchange: derivativeExchange,
-            symbol: order.symbol,
-            side: order.action,
-            bufferPoints,
-            tickSize: optionSymbol?.tick_size || symbol.tick_size,
-          })).price,
+          pricetype: orderType,
+          price: orderPrice,
         });
 
         log.info('FLOAT_OFS: Placing order for strike', {
@@ -1406,7 +1437,7 @@ class QuickOrderService {
           options_leg: symbol.options_strike_selection,
           quantity: order.quantity,
           product: floatProduct,
-          order_type: 'LIMIT',
+          order_type: orderType,
           price: orderDataToSend.price,
           resolved_symbol: optionSymbol.symbol,
           strike_price: order.strike,
@@ -1601,6 +1632,16 @@ class QuickOrderService {
     const repeatUntilClosed = this._shouldRepeatToTarget(currentPosition, targetPosition);
 
     // Prepare order data for OpenAlgo
+    const orderPrice = orderType === 'LIMIT'
+      ? (await limitPriceService.resolveLimitPrice({
+        exchange: derivativeExchange,
+        symbol: optionSymbol.symbol,
+        side: algoAction,
+        bufferPoints,
+        tickSize: optionSymbol.tick_size || symbol.tick_size,
+      })).price
+      : 0;
+
     const orderDataToSend = orderPayloadFactory.buildOptionsOrder({
       strategy: symbol.watchlist_name || 'default',
       exchange: derivativeExchange,
@@ -1609,14 +1650,8 @@ class QuickOrderService {
       quantity,
       position_size: targetPosition,
       product: finalProduct,
-      pricetype: 'LIMIT',
-      price: (await limitPriceService.resolveLimitPrice({
-        exchange: derivativeExchange,
-        symbol: optionSymbol.symbol,
-        side: algoAction,
-        bufferPoints,
-        tickSize: optionSymbol.tick_size || symbol.tick_size,
-      })).price,
+      pricetype: orderType,
+      price: orderPrice,
     });
 
     log.info('Data being sent to OpenAlgo placesmartorder', orderDataToSend);
@@ -1667,7 +1702,7 @@ class QuickOrderService {
       options_leg: symbol.options_strike_selection,
       quantity,
       product: finalProduct,
-      order_type: 'LIMIT',
+      order_type: orderType,
       price: orderDataToSend.price,
       resolved_symbol: optionSymbol.symbol,
       strike_price: strike,
@@ -1766,6 +1801,7 @@ class QuickOrderService {
     } = orderParams;
     const { useCachedPositions = false } = options;
     const bufferPoints = Number.isFinite(symbol.limit_buffer_points) ? symbol.limit_buffer_points : 0;
+    const orderType = await this._resolveOrderTypeForInstance(instance);
 
     let underlying = this._getUnderlyingForClosing(symbol);
 
@@ -1930,15 +1966,8 @@ class QuickOrderService {
 
         // For EXIT/EXIT_ALL, position_size should be 0 to close completely
         const strategyTag = orderParams.strategy || symbol.watchlist_name || 'default';
-        const orderPayload = orderPayloadFactory.buildExitOrder({
-          strategy: strategyTag,
-          exchange: position.exchange,
-          symbol: position.symbol,
-          action: closeAction,
-          quantity: closeQuantity,
-          product,
-          pricetype: 'LIMIT',
-          price: (await limitPriceService.resolveLimitPrice({
+        const orderPrice = orderType === 'LIMIT'
+          ? (await limitPriceService.resolveLimitPrice({
             exchange: position.exchange,
             symbol: position.symbol,
             side: closeAction,
@@ -1946,7 +1975,18 @@ class QuickOrderService {
             tickSize: symbol.tick_size,
             bypassSpreadCheck: true,
             forceLtp: true,
-          })).price,
+          })).price
+          : 0;
+
+        const orderPayload = orderPayloadFactory.buildExitOrder({
+          strategy: strategyTag,
+          exchange: position.exchange,
+          symbol: position.symbol,
+          action: closeAction,
+          quantity: closeQuantity,
+          product,
+          pricetype: orderType,
+          price: orderPrice,
         });
         const orderResult = await orderPlacementService.placeSmartOrder(instance, orderPayload, {
           request_type: 'EXIT_POSITION',
@@ -1983,7 +2023,7 @@ class QuickOrderService {
           trade_mode: tradeMode,
           quantity: closeQuantity,
           product,
-          order_type: 'LIMIT',
+          order_type: orderType,
           price: orderPayload.price,
           order_id: orderResult.orderid,
           status: orderResult.status,
@@ -2050,6 +2090,7 @@ class QuickOrderService {
   async _reconcileOptionsPositions(instance, positions, side, optionType, product, strategy, correlationId = null) {
     const positionsToClose = [];
     const bufferPoints = 0;
+    const orderType = await this._resolveOrderTypeForInstance(instance);
 
     if (side === 'BUY') {
       // Closing all short positions (negative quantity)
@@ -2066,15 +2107,8 @@ class QuickOrderService {
         const closeAction = position.quantity > 0 ? 'SELL' : 'BUY';
         const closeQuantity = Math.abs(position.quantity);
 
-        const orderPayload = orderPayloadFactory.buildExitOrder({
-          strategy: strategy || 'default',
-          exchange: position.exchange,
-          symbol: position.symbol,
-          action: closeAction,
-          quantity: closeQuantity,
-          product,
-          pricetype: 'LIMIT',
-          price: (await limitPriceService.resolveLimitPrice({
+        const orderPrice = orderType === 'LIMIT'
+          ? (await limitPriceService.resolveLimitPrice({
             exchange: position.exchange,
             symbol: position.symbol,
             side: closeAction,
@@ -2082,7 +2116,18 @@ class QuickOrderService {
             tickSize: null,
             bypassSpreadCheck: true,
             forceLtp: true,
-          })).price,
+          })).price
+          : 0;
+
+        const orderPayload = orderPayloadFactory.buildExitOrder({
+          strategy: strategy || 'default',
+          exchange: position.exchange,
+          symbol: position.symbol,
+          action: closeAction,
+          quantity: closeQuantity,
+          product,
+          pricetype: orderType,
+          price: orderPrice,
         });
         const orderResult = await orderPlacementService.placeSmartOrder(instance, orderPayload, {
           request_type: 'OPTIONS_RECONCILE',

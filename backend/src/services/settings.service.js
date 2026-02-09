@@ -190,6 +190,13 @@ const ESSENTIAL_SETTINGS = [
     dataType: 'json',
   },
   {
+    key: 'brokerage.market_order_support',
+    value: JSON.stringify({}),
+    description: 'Market order support mapped by broker key (lowercase).',
+    category: 'brokerage',
+    dataType: 'json',
+  },
+  {
     key: 'trading_sessions',
     value: JSON.stringify([
       { label: 'Session 1', start: '09:00', end: '11:30' },
@@ -623,6 +630,7 @@ class SettingsService extends EventEmitter {
       'market_data_feed.funds_interval_ms': '180000',
       'market_data_feed.max_order_spread_pct': '0.02',
       'settings.cache_duration_ms': '5000',
+      'brokerage.market_order_support': JSON.stringify({}),
       'trading_sessions': JSON.stringify([
         { label: 'Session 1', start: '09:00', end: '11:30' },
         { label: 'Session 2', start: '12:30', end: '15:10' },

@@ -11,6 +11,7 @@ import instrumentsService from './instruments.service.js';
 import pnlSnapshotService from './pnl-snapshot.service.js';
 import orderRetryService from './order-retry.service.js';
 import instanceService from './instance.service.js';
+import brokerCapabilitiesService from './broker-capabilities.service.js';
 
 const DEFAULT_PAYLOAD = {
   pricetype: 'MARKET',
@@ -202,23 +203,22 @@ class TradingviewBroadcastService {
       throw new ValidationError('No broadcast targets configured for this watchlist');
     }
 
-    const payloadToSend = await this._ensureLimitPricing(normalizedPayload, watchlist);
-
     log.info('[TV Webhook] Broadcasting signal', {
-      strategy: payloadToSend.strategy,
-      action: payloadToSend.action,
-      exchange: payloadToSend.exchange,
-      symbol: payloadToSend.symbol,
-      quantity: payloadToSend.quantity,
-      position_size: payloadToSend.position_size,
+      strategy: normalizedPayload.strategy,
+      action: normalizedPayload.action,
+      exchange: normalizedPayload.exchange,
+      symbol: normalizedPayload.symbol,
+      quantity: normalizedPayload.quantity,
+      position_size: normalizedPayload.position_size,
       targets: targets.length,
       watchlist: watchlist ? watchlist.id : null,
     });
 
     const results = await Promise.allSettled(
-      targets.map((target) => {
+      targets.map(async (target) => {
         const rawMultiplier = parseIntSafe(target.multiplier, 1);
         const instanceMultiplier = Math.min(Math.max(rawMultiplier, 1), 999);
+        const payloadToSend = await this._ensureLimitPricing(normalizedPayload, watchlist, target);
         const targetPayload = {
           ...payloadToSend,
           quantity: payloadToSend.quantity * instanceMultiplier,
@@ -246,7 +246,7 @@ class TradingviewBroadcastService {
       ? `Broadcast delivered to ${okCount}/${summary.length} target(s)`
       : 'All downstream requests failed';
 
-    const actionSide = payloadToSend.action === 'BUY' ? 'BUY' : 'SELL';
+    const actionSide = normalizedPayload.action === 'BUY' ? 'BUY' : 'SELL';
     const signalCounts = actionSide === 'BUY'
       ? { webhook_buy_signals: 1 }
       : { webhook_sell_signals: 1 };
@@ -291,9 +291,27 @@ class TradingviewBroadcastService {
     };
   }
 
-  async _ensureLimitPricing(payload, watchlist = null) {
+  async _ensureLimitPricing(payload, watchlist = null, target = null) {
     if (!payload || payload.pricetype !== 'MARKET') {
       return payload;
+    }
+
+    let broker = target?.broker || null;
+    if (!broker && target?.instance_id) {
+      try {
+        const instance = await instanceService.getInstanceById(target.instance_id);
+        broker = instance?.broker || null;
+      } catch {
+        broker = null;
+      }
+    }
+
+    const supportsMarketOrders = await brokerCapabilitiesService.supportsMarketOrders(broker);
+    if (supportsMarketOrders) {
+      return {
+        ...payload,
+        price: 0,
+      };
     }
 
     const exchange = payload.exchange;

@@ -62,6 +62,7 @@ class SettingsHandler {
       brokerage: [
         'brokerage.default',
         'brokerage.by_broker',
+        'brokerage.market_order_support',
       ],
     };
     this.displaySettings = {};
@@ -972,6 +973,9 @@ class SettingsHandler {
     if (key === 'brokerage.by_broker') {
       return this.renderBrokerageTable(key, value);
     }
+    if (key === 'brokerage.market_order_support') {
+      return this.renderMarketOrderSupportTable(key, value);
+    }
 
     switch (dataType) {
       case 'boolean':
@@ -1092,6 +1096,7 @@ class SettingsHandler {
               data-key="${key}"
               data-type="json"
               data-broker="${Utils.escapeHTML(broker)}"
+              data-skip-setting-change="true"
               value="${rate}"
               oninput="settings.handleBrokerageChange(this)"
             />
@@ -1105,11 +1110,11 @@ class SettingsHandler {
         <div class="flex flex-wrap gap-2 items-end mb-3">
           <div class="flex-1 min-w-[180px]">
             <label class="form-label text-xs mb-1">Broker key</label>
-            <input type="text" class="form-input" id="brokerage-new-key" placeholder="e.g. fivepaisa">
+            <input type="text" class="form-input" id="brokerage-new-key" placeholder="e.g. fivepaisa" data-skip-setting-change="true">
           </div>
           <div class="w-[160px]">
             <label class="form-label text-xs mb-1">Brokerage</label>
-            <input type="number" class="form-input" id="brokerage-new-rate" placeholder="20">
+            <input type="number" class="form-input" id="brokerage-new-rate" placeholder="20" data-skip-setting-change="true">
           </div>
           <button type="button" class="btn btn-neutral btn-outline btn-sm" onclick="settings.addBrokerageEntry()">
             Add Broker
@@ -1133,6 +1138,79 @@ class SettingsHandler {
     `;
   }
 
+  renderMarketOrderSupportTable(key, value) {
+    let supportMap = {};
+    try {
+      supportMap = typeof value === 'string' ? JSON.parse(value) : value;
+      if (!supportMap || typeof supportMap !== 'object') supportMap = {};
+    } catch (e) {
+      supportMap = {};
+    }
+
+    const brokerageSetting = this.displaySettings?.brokerage?.['brokerage.by_broker']
+      || this.settings?.brokerage?.['brokerage.by_broker']
+      || {};
+    let brokers = {};
+    try {
+      const source = brokerageSetting.pendingValue ?? brokerageSetting.rawValue ?? brokerageSetting.value;
+      brokers = typeof source === 'string' ? JSON.parse(source) : source;
+      if (!brokers || typeof brokers !== 'object') brokers = {};
+    } catch (e) {
+      brokers = {};
+    }
+
+    const rows = Object.keys(brokers)
+      .sort((a, b) => a.localeCompare(b))
+      .map((broker) => {
+        const rawSupport = supportMap?.[broker];
+        const isSupported = rawSupport === true || rawSupport === 'true' || rawSupport === 1;
+        return `
+          <tr>
+            <td class="text-sm font-medium">${Utils.escapeHTML(broker)}</td>
+            <td>
+              <label class="settings-toggle">
+                <input
+                  type="checkbox"
+                  class="settings-toggle-input"
+                  data-key="${key}"
+                  data-type="json"
+                  data-broker="${Utils.escapeHTML(broker)}"
+                  data-skip-setting-change="true"
+                  data-toggle-label="yesno"
+                  ${isSupported ? 'checked' : ''}
+                  onchange="settings.handleMarketOrderSupportChange(this)"
+                />
+                <span class="settings-toggle-track">
+                  <span class="settings-toggle-thumb"></span>
+                </span>
+                <span class="settings-toggle-label">${isSupported ? 'Yes' : 'No'}</span>
+              </label>
+            </td>
+          </tr>
+        `;
+      })
+      .join('');
+
+    return `
+      <div class="settings-brokerage-table">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Broker</th>
+              <th>Market orders</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows || '<tr><td colspan="2" class="text-neutral-500">No brokers configured.</td></tr>'}
+          </tbody>
+        </table>
+        <div class="text-xs text-neutral-500 mt-2">
+          Enable market orders only for brokers that support them. Limit-order pacing is used otherwise.
+        </div>
+      </div>
+    `;
+  }
+
   /**
    * Initialize category tabs
    */
@@ -1140,6 +1218,9 @@ class SettingsHandler {
     // Add change event listeners to all inputs
     const inputs = document.querySelectorAll('#settings-content input, #settings-content select, .settings-search-results input');
     inputs.forEach(input => {
+      if (input?.dataset?.skipSettingChange === 'true') {
+        return;
+      }
       input.addEventListener('change', (e) => {
         this.handleSettingChange(e.target);
       });
@@ -1151,7 +1232,12 @@ class SettingsHandler {
       input.addEventListener('change', (e) => {
         const label = e.target.closest('.settings-toggle').querySelector('.settings-toggle-label');
         if (label) {
-          label.textContent = e.target.checked ? 'Enabled' : 'Disabled';
+          const mode = e.target.dataset.toggleLabel || '';
+          if (mode === 'yesno') {
+            label.textContent = e.target.checked ? 'Yes' : 'No';
+          } else {
+            label.textContent = e.target.checked ? 'Enabled' : 'Disabled';
+          }
         }
       });
     });
@@ -1202,6 +1288,9 @@ class SettingsHandler {
    * Handle setting change
    */
   handleSettingChange(input) {
+    if (input?.dataset?.skipSettingChange === 'true') {
+      return;
+    }
     const key = input.dataset.key;
     const dataType = input.dataset.type;
     const category = this.getSettingCategory(key);
@@ -1289,6 +1378,34 @@ class SettingsHandler {
       this.settings[category][key] = { dataType: 'json', isSensitive: false };
     }
     this.settings[category][key].pendingValue = JSON.stringify(brokers);
+  }
+
+  handleMarketOrderSupportChange(input) {
+    const key = input.dataset.key;
+    const broker = input.dataset.broker || '';
+    const category = this.getSettingCategory(key);
+    const setting = this.settings[category]?.[key] || {};
+
+    let supportMap = {};
+    try {
+      const source = setting.pendingValue ?? setting.rawValue ?? setting.value;
+      supportMap = typeof source === 'string' ? JSON.parse(source) : source;
+      if (!supportMap || typeof supportMap !== 'object') supportMap = {};
+    } catch (e) {
+      supportMap = {};
+    }
+
+    if (broker) {
+      supportMap[broker] = input.checked === true;
+    }
+
+    if (!this.settings[category]) {
+      this.settings[category] = {};
+    }
+    if (!this.settings[category][key]) {
+      this.settings[category][key] = { dataType: 'json', isSensitive: false };
+    }
+    this.settings[category][key].pendingValue = JSON.stringify(supportMap);
   }
 
   addBrokerageEntry() {
@@ -1975,6 +2092,7 @@ class SettingsHandler {
       'logging.level': 'Logging Level',
       'test_mode.enabled': 'Test Mode Enabled',
       'streaming.enabled': 'Live Streaming (WebSocket)',
+      'brokerage.market_order_support': 'Market Order Support (by broker)',
     };
 
     if (overrides[key]) {
@@ -2009,6 +2127,7 @@ class SettingsHandler {
       'market_hours.general_blackout_start': 'Other OpenAlgo endpoints are blocked starting this time (IST).',
       'market_hours.general_blackout_end': 'Other OpenAlgo endpoints resume after this time (IST).',
       'trading_sessions': 'Defines session windows in IST used for session P&L baselines and auto cutoffs.',
+      'brokerage.market_order_support': 'When enabled for a broker, all orders will be sent as MARKET orders.',
     };
 
     return help[key] || '';

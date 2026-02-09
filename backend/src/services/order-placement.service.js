@@ -11,6 +11,7 @@ import { ValidationError } from '../core/errors.js';
 import orderRetryService from './order-retry.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import { extractLtp } from '../utils/price-extraction.js';
+import brokerCapabilitiesService from './broker-capabilities.service.js';
 
 class OrderPlacementService {
   constructor() {
@@ -30,6 +31,8 @@ class OrderPlacementService {
   async placeSmartOrder(instance, payload, context = {}) {
     // CRITICAL: Validate order parameters before placing order
     try {
+      const supportsMarketOrders = await brokerCapabilitiesService.supportsMarketOrders(instance?.broker);
+
       // Validate required fields
       orderValidation.validateSymbol(payload.symbol);
       orderValidation.validateExchange(payload.exchange);
@@ -43,8 +46,25 @@ class OrderPlacementService {
 
       // Validate price based on order type
       // Default to MARKET if pricetype is undefined (per order-payload.factory.js defaults)
-      let effectivePriceType = payload.pricetype || 'MARKET';
-      if (effectivePriceType === 'MARKET') {
+      let effectivePriceType = (payload.pricetype || 'MARKET').toUpperCase();
+
+      if (supportsMarketOrders && effectivePriceType === 'LIMIT') {
+        payload = {
+          ...payload,
+          pricetype: 'MARKET',
+          price: '0',
+        };
+        effectivePriceType = 'MARKET';
+      }
+
+      if (supportsMarketOrders && effectivePriceType === 'MARKET') {
+        payload = {
+          ...payload,
+          price: '0',
+        };
+      }
+
+      if (!supportsMarketOrders && effectivePriceType === 'MARKET') {
         payload = await this._convertMarketToLimit(payload, context);
         effectivePriceType = payload.pricetype || 'LIMIT';
       }
