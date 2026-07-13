@@ -1740,11 +1740,22 @@ class QuickOrderHandler {
     // Remove common suffixes and extract base symbol
     // Examples: BANKNIFTY25NOV2558000CE -> BANKNIFTY
     //           NIFTY25DEC50FUT -> NIFTY
+    //           NATGASMINI28JUL26FUT -> NATGASMINI
 
-    // Try to match pattern with numbers/dates
     if (!symbol) return symbol;
     const upper = String(symbol).toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (!upper) return symbol;
+
+    // Broker symbols embed a DDMMMYY-style expiry (e.g. 28JUL26) followed by an optional strike
+    // and a CE/PE/FUT suffix. Naive trailing-digit stripping breaks on this because the suffix
+    // is letters (CE/PE/FUT), not digits - split on the date pattern instead to recover the
+    // plain underlying name regardless of what follows it.
+    const dateMatch = upper.match(/^([A-Z]+)\d{1,2}[A-Z]{3}\d{2,4}/);
+    if (dateMatch) {
+      return dateMatch[1];
+    }
+
+    // Fallback for symbols with no recognizable date pattern (legacy behavior).
     return upper.replace(/\d+$/, '');
   }
 

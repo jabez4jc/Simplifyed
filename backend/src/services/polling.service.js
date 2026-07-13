@@ -249,11 +249,14 @@ class PollingService {
       }
       const startTime = Date.now();
 
-      // Get all instances (including inactive)
-      const instances = await instanceService.getAllInstances();
+      // Only active instances need health checks - an intentionally disabled instance isn't
+      // in use, so pinging it wastes shared broker-request concurrency (and, if its host is
+      // stale/unreachable, ties up retries) for no benefit. Re-activating an instance triggers
+      // its own on-demand refresh.
+      const instances = await instanceService.getAllInstances({ is_active: true });
 
       if (instances.length === 0) {
-        log.debug('No instances for health check');
+        log.debug('No active instances for health check');
         return;
       }
 

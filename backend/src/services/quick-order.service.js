@@ -10,12 +10,13 @@ import optionsResolutionService from './options-resolution.service.js';
 import expiryManagementService from './expiry-management.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import marketDataInstanceService from './market-data-instance.service.js';
-import derivativeResolutionService, { NSE_INDEX_UNDERLYINGS, BSE_INDEX_UNDERLYINGS } from './derivative-resolution.service.js';
+import derivativeResolutionService from './derivative-resolution.service.js';
 import orderPlacementService from './order-placement.service.js';
 import orderPayloadFactory from './order-payload.factory.js';
 import openalgoClient from '../integrations/openalgo/client.js';
-import orderRepository from './order-repository.js';
 import orderService from './order.service.js';
+import quickOrderHistoryService from './quick-order-history.service.js';
+import quickOrderQuotesService from './quick-order-quotes.service.js';
 import telegramService from './telegram.service.js';
 import limitPriceService from './limit-price.service.js';
 import pnlSnapshotService from './pnl-snapshot.service.js';
@@ -24,14 +25,28 @@ import { ValidationError, NotFoundError } from '../core/errors.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
 import instrumentsService from './instruments.service.js';
 import { toISTDate, toISTISOString } from '../utils/time.js';
+import {
+  getUnderlyingQuoteExchange,
+  getUnderlyingQuoteSymbol,
+  getUnderlyingForClosing,
+  parseFuturesSymbol,
+  getFuturesUnderlying,
+  getSymbolExpiryVariants,
+  expiryMatchesSymbol,
+  constructOptionSymbol,
+  parseOptionSymbol,
+  normalizeSymbolKey,
+  normalizeExchange,
+  normalizeProduct,
+  normalizeExpiryInput,
+  getOptionTypeFromAction,
+} from '../utils/symbol-parsing.util.js';
 
 class QuickOrderService {
   constructor() {
     this.symbolResolutionCache = new Map();
     this.symbolResolutionCacheTtl = 5 * 60 * 1000; // 5 minutes
     this.symbolResolutionCacheMaxSize = 2000; // bounded cache
-    this.optionChainQuoteCache = new Map(); // key: inst|exch|underlying|expiry -> { map, fetchedAt }
-    this.optionChainQuoteTtlMs = 20000; // retain option chain quotes for 20s to avoid blanks
     this.optionPreviewQuoteCache = new Map(); // key: exch::symbol -> { ltp, changePercent, fetchedAt }
     this.optionPreviewQuoteTtlMs = 60000; // keep last-good preview quotes for 60s
     this.optionPreviewStaleMs = 15000; // mark UI as stale after 15s
@@ -2409,662 +2424,94 @@ class QuickOrderService {
     }
   }
 
-  /**
-   * Get underlying LTP using primary/secondary market data instances with failover
-   * Uses the designated primary or secondary instance for market data, not the order instance
-   * @private
-   */
+  // Delegated to quick-order-quotes.service.js (LTP/quote fetch+cache cluster, owns its own
+  // optionChainQuoteCache) - names/signatures kept identical so every existing internal call
+  // site keeps working unmodified.
   async _getUnderlyingLTPWithFallback(instance, underlying, exchange) {
-    const marketDataInstanceService = (await import('./market-data-instance.service.js')).default;
-
-    try {
-      // Get the designated market data instance (primary with failover to secondary)
-      const marketDataInstance = await marketDataInstanceService.getMarketDataInstance();
-
-      log.debug('Using market data instance for LTP', {
-        order_instance_id: instance.id,
-        order_instance_name: instance.name,
-        market_data_instance_id: marketDataInstance.id,
-        market_data_instance_name: marketDataInstance.name,
-        market_data_role: marketDataInstance.market_data_role,
-        underlying,
-        exchange,
-      });
-
-      // Fetch LTP from the market data instance
-      const ltp = await this._getUnderlyingLTP(marketDataInstance, underlying, exchange);
-
-      log.debug('Successfully fetched LTP from market data instance', {
-        market_data_instance: marketDataInstance.name,
-        market_data_role: marketDataInstance.market_data_role,
-        underlying,
-        ltp,
-      });
-
-      return ltp;
-    } catch (error) {
-      log.error('Failed to get LTP from market data instances', {
-        order_instance_id: instance.id,
-        order_instance_name: instance.name,
-        underlying,
-        exchange,
-        error: error.message,
-      });
-      throw error;
-    }
+    return quickOrderQuotesService.getUnderlyingLTPWithFallback(instance, underlying, exchange);
   }
 
-  /**
-   * Get underlying LTP with aggressive retry logic
-   * LTP is critical for order placement and derivatives resolution
-   * @private
-   */
   async _getUnderlyingLTP(instance, underlying, exchange) {
-    try {
-      log.debug('Fetching LTP for underlying', {
-        instance_id: instance.id,
-        instance_name: instance.name,
-        underlying,
-        exchange,
-      });
-
-      const result = await marketDataFeedService.fetchLtpForSymbol(exchange, underlying, {
-        maxRounds: 2,
-      });
-
-      if (result?.ltp && result.ltp > 0) {
-        log.debug('LTP fetched successfully', {
-          instance_id: instance.id,
-          underlying,
-          ltp: result.ltp,
-          source: result.source,
-          attempts: result.attempts,
-        });
-        return result.ltp;
-      }
-
-      throw new Error('No LTP returned');
-    } catch (error) {
-      log.error('Failed to get underlying LTP after retries', error, {
-        instance_id: instance.id,
-        instance_name: instance.name,
-        underlying,
-        exchange,
-      });
-      throw new ValidationError(`Unable to get LTP for ${underlying}: ${error.message}`);
-    }
+    return quickOrderQuotesService.getUnderlyingLTP(instance, underlying, exchange);
   }
 
   /**
    * Record quick order in database
    * @private
    */
+  // Delegated to quick-order-history.service.js (pure DB CRUD + summary-formatting helpers, no
+  // shared state with the rest of this class) - names/signatures kept identical so every
+  // existing internal and external call site keeps working unmodified.
   async _recordQuickOrder(orderData) {
-    try {
-      await orderRepository.insertQuickOrder(orderData);
-
-      log.debug('Quick order recorded in database', {
-        order_id: orderData.order_id,
-        symbol: orderData.symbol,
-      });
-
-    } catch (error) {
-      log.error('Failed to record quick order', error);
-      // Non-fatal - order was still placed
-    }
+    return quickOrderHistoryService.recordQuickOrder(orderData);
   }
 
   _buildFailurePayloadSummary(orderParams = {}, symbol = {}) {
-    return {
-      action: orderParams.action,
-      trade_mode: orderParams.tradeMode,
-      order_type: orderParams.orderType || 'LIMIT',
-      quantity: orderParams.quantity ?? null,
-      product: orderParams.product ?? null,
-      price: orderParams.price ?? null,
-      expiry: orderParams.expiry ?? null,
-      options_leg: orderParams.optionsLeg ?? symbol.options_strike_selection ?? null,
-      operating_mode: orderParams.operatingMode ?? null,
-      strike_policy: orderParams.strikePolicy ?? null,
-      step_lots: orderParams.stepLots ?? null,
-      trigger_type: orderParams.triggerType ?? null,
-    };
+    return quickOrderHistoryService.buildFailurePayloadSummary(orderParams, symbol);
   }
 
   _extractErrorCode(error) {
-    if (!error) return null;
-    return (
-      error.code ||
-      error.errorCode ||
-      error.statusCode ||
-      error.name ||
-      null
-    );
+    return quickOrderHistoryService.extractErrorCode(error);
   }
 
-  async _recordFailedQuickOrder({ instance, symbol, orderParams, error, attempt = null }) {
-    try {
-      const errorCode = this._extractErrorCode(error);
-      const statusCode = Number.isFinite(error?.statusCode) ? error.statusCode : null;
-      const payloadSummary = this._buildFailurePayloadSummary(orderParams, symbol);
-      const metadata = {
-        payload_summary: payloadSummary,
-        instance: {
-          id: instance?.id ?? null,
-          name: instance?.name ?? null,
-        },
-        error_code: errorCode,
-        status_code: statusCode,
-        attempt,
-      };
-
-      await this._recordQuickOrder({
-        watchlist_id: symbol?.watchlist_id ?? null,
-        symbol_id: symbol?.id ?? null,
-        instance_id: instance?.id,
-        underlying: symbol?.underlying_symbol || symbol?.symbol || 'UNKNOWN',
-        symbol: symbol?.symbol || 'UNKNOWN',
-        exchange: symbol?.exchange || 'UNKNOWN',
-        action: orderParams?.action || 'UNKNOWN',
-        trade_mode: orderParams?.tradeMode || 'UNKNOWN',
-        options_leg: orderParams?.optionsLeg ?? symbol?.options_strike_selection ?? null,
-        quantity: orderParams?.quantity ?? 0,
-        product: orderParams?.product ?? null,
-        order_type: orderParams?.orderType || 'LIMIT',
-        price: orderParams?.price ?? null,
-        trigger_price: null,
-        resolved_symbol: null,
-        strike_price: null,
-        option_type: null,
-        expiry_date: orderParams?.expiry ?? null,
-        status: 'failed',
-        order_id: null,
-        message: error?.message || 'Order failed',
-        error_details: JSON.stringify({
-          code: errorCode,
-          statusCode,
-          message: error?.message || null,
-        }),
-        metadata,
-        user_id: orderParams?.userId ?? null,
-        source: orderParams?.source ?? null,
-        trigger_type: orderParams?.triggerType ?? null,
-        request_id: orderParams?.requestId ?? null,
-        correlation_id: orderParams?.correlationId ?? null,
-      });
-    } catch (recordError) {
-      log.warn('Failed to persist failed quick order', {
-        instance_id: instance?.id,
-        symbol_id: symbol?.id,
-        error: recordError?.message,
-      });
-    }
+  async _recordFailedQuickOrder(params) {
+    return quickOrderHistoryService.recordFailedQuickOrder(params);
   }
 
-  /**
-   * Map action/button to a human-friendly BUY/SELL side for summaries.
-   */
   _deriveSideForSummary(action = '') {
-    const act = (action || '').toUpperCase();
-    const buyActions = new Set([
-      'BUY',
-      'COVER', // close short -> buy
-      'BUY_CE',
-      'BUY_PE',
-      'INCREASE_CE',
-      'INCREASE_PE',
-    ]);
-    const sellActions = new Set([
-      'SELL',
-      'SHORT',
-      'EXIT', // flatten -> sell from perspective of summary
-      'EXIT_ALL',
-      'CLOSE_ALL_CE',
-      'CLOSE_ALL_PE',
-      'REDUCE_CE',
-      'REDUCE_PE',
-      'SELL_CE',
-      'SELL_PE',
-    ]);
-
-    if (buyActions.has(act)) return 'BUY';
-    if (sellActions.has(act)) return 'SELL';
-    return act || 'UNKNOWN';
+    return quickOrderHistoryService.deriveSideForSummary(action);
   }
 
-  /**
-   * Pick the best symbol/exchange to display in the summary.
-   * Priority:
-   * 1) first success with resolved_symbol
-   * 2) first success with symbol
-   * 3) any result with resolved_symbol
-   * 4) any result with symbol
-   * 5) fallback to watchlist symbol/exchange
-   */
   _pickSummaryInstrument(results, fallbackSymbol, fallbackExchange) {
-    const pick = (arr, key) => {
-      const hit = arr.find(r => r && r[key]);
-      return hit ? hit[key] : null;
-    };
-
-    const successes = results.filter(r => r && r.success);
-    const any = results || [];
-
-    const symResolvedSuccess = pick(successes, 'resolved_symbol');
-    const symSuccess = pick(successes, 'symbol');
-    const symResolvedAny = pick(any, 'resolved_symbol');
-    const symAny = pick(any, 'symbol');
-
-    const exchResolvedSuccess = pick(successes, 'exchange');
-    const exchSuccess = pick(successes, 'exchange');
-    const exchResolvedAny = pick(any, 'exchange');
-    const exchAny = pick(any, 'exchange');
-
-    return {
-      summarySymbol: symResolvedSuccess || symSuccess || symResolvedAny || symAny || fallbackSymbol,
-      summaryExchange: exchResolvedSuccess || exchSuccess || exchResolvedAny || exchAny || fallbackExchange,
-    };
+    return quickOrderHistoryService.pickSummaryInstrument(results, fallbackSymbol, fallbackExchange);
   }
 
-  /**
-   * Get quick orders with filters
-   * @param {Object} filters - Query filters
-   * @param {number} filters.instanceId - Filter by instance ID
-   * @param {string} filters.symbol - Filter by symbol
-   * @param {string} filters.tradeMode - Filter by trade mode
-   * @param {string} filters.action - Filter by action
-   * @param {number} filters.limit - Limit results
-   * @param {number} filters.offset - Offset for pagination
-   * @returns {Promise<Array<Object>>} Quick orders
-   */
   async getQuickOrders(filters = {}) {
-    try {
-      let query = 'SELECT * FROM quick_orders WHERE 1=1';
-      const params = [];
-
-      if (filters.instanceId) {
-        query += ' AND instance_id = ?';
-        params.push(filters.instanceId);
-      }
-
-      if (filters.symbol) {
-        query += ' AND underlying = ?';
-        params.push(filters.symbol);
-      }
-
-      if (filters.tradeMode) {
-        query += ' AND trade_mode = ?';
-        params.push(filters.tradeMode);
-      }
-
-      if (filters.action) {
-        query += ' AND action = ?';
-        params.push(filters.action);
-      }
-
-      if (filters.exchange) {
-        query += ' AND exchange = ?';
-        params.push(filters.exchange);
-      }
-
-      query += ' ORDER BY created_at DESC';
-
-      if (filters.limit) {
-        query += ' LIMIT ?';
-        params.push(filters.limit);
-      }
-
-      if (filters.offset) {
-        query += ' OFFSET ?';
-        params.push(filters.offset);
-      }
-
-      const orders = await db.all(query, params);
-
-      log.debug('Retrieved quick orders', {
-        count: orders.length,
-        filters,
-      });
-
-      return orders;
-    } catch (error) {
-      log.error('Failed to get quick orders', error);
-      throw error;
-    }
+    return quickOrderHistoryService.getQuickOrders(filters);
   }
 
-  async syncQuickOrdersForInstance(instanceId, { days = 7 } = {}) {
-    const parsedDays = Number.isFinite(days) ? days : parseInt(days, 10);
-    const windowDays = Number.isFinite(parsedDays) && parsedDays > 0 ? parsedDays : 7;
-    const snapshot = await marketDataFeedService.getOrderbookSnapshot(instanceId, { force: true });
-    const payload = snapshot?.data || [];
-    const orders = Array.isArray(payload) ? payload : payload.orders || payload.data || [];
-
-    const normalizeStatus = (value) => {
-      const normalized = (value || '').toString().toLowerCase();
-      if (!normalized) return null;
-      if (['open', 'pending'].includes(normalized)) return normalized;
-      if (['complete', 'completed', 'filled'].includes(normalized)) return 'complete';
-      if (['cancelled', 'canceled'].includes(normalized)) return 'cancelled';
-      if (['rejected'].includes(normalized)) return 'rejected';
-      return normalized;
-    };
-
-    const statusMap = new Map();
-    for (const order of orders) {
-      const orderId = order?.orderid || order?.order_id || order?.id;
-      if (!orderId) continue;
-      const rawStatus = order?.order_status || order?.status || order?.orderStatus || null;
-      statusMap.set(String(orderId), {
-        broker_status: rawStatus ? String(rawStatus) : null,
-        status: normalizeStatus(rawStatus),
-      });
-    }
-
-    const rows = await db.all(
-      `SELECT id, order_id, status
-       FROM quick_orders
-       WHERE instance_id = ?
-         AND order_id IS NOT NULL
-         AND created_at >= datetime('now', ?)`,
-      [instanceId, `-${windowDays} days`]
-    );
-
-    let updated = 0;
-    for (const row of rows) {
-      const entry = statusMap.get(String(row.order_id));
-      if (!entry) continue;
-      const nextStatus = entry.status || row.status;
-      await db.run(
-        `UPDATE quick_orders
-         SET broker_status = ?, status = ?, last_sync_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [entry.broker_status, nextStatus, row.id]
-      );
-      updated += 1;
-    }
-
-    return {
-      instance_id: instanceId,
-      total_checked: rows.length,
-      updated,
-      skipped: rows.length - updated,
-      fetched_at: snapshot?.fetchedAt || Date.now(),
-    };
+  async syncQuickOrdersForInstance(instanceId, options = {}) {
+    return quickOrderHistoryService.syncQuickOrdersForInstance(instanceId, options);
   }
 
-  /**
-   * Get quick order by ID
-   * @param {number} id - Quick order ID
-   * @returns {Promise<Object>} Quick order
-   */
   async getQuickOrderById(id) {
-    try {
-      const order = await db.get(
-        'SELECT * FROM quick_orders WHERE id = ?',
-        [id]
-      );
-
-      if (!order) {
-        throw new NotFoundError(`Quick order with ID ${id} not found`);
-      }
-
-      log.debug('Retrieved quick order', { id });
-
-      return order;
-    } catch (error) {
-      log.error('Failed to get quick order by ID', error);
-      throw error;
-    }
+    return quickOrderHistoryService.getQuickOrderById(id);
   }
 
-  /**
-   * Get quick order statistics
-   * @param {Object} filters - Query filters
-   * @param {number} filters.instanceId - Filter by instance ID
-   * @param {string} filters.symbol - Filter by symbol
-   * @param {number} filters.days - Number of days to include (default: 7)
-   * @returns {Promise<Object>} Statistics
-   */
   async getQuickOrderStats(filters = {}) {
-    try {
-      const days = filters.days || 7;
-      const sinceDate = toISTDate();
-      sinceDate.setDate(sinceDate.getDate() - days);
-      const sinceDateStr = toISTISOString(sinceDate);
-
-      let query = `
-        SELECT
-          COUNT(*) as total_orders,
-          SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successful_orders,
-          SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as failed_orders,
-          COUNT(DISTINCT instance_id) as instances_used,
-          COUNT(DISTINCT underlying) as unique_symbols,
-          trade_mode,
-          COUNT(*) as count
-        FROM quick_orders
-        WHERE created_at >= ?
-      `;
-      const params = [sinceDateStr];
-
-      if (filters.instanceId) {
-        query += ' AND instance_id = ?';
-        params.push(filters.instanceId);
-      }
-
-      if (filters.symbol) {
-        query += ' AND underlying = ?';
-        params.push(filters.symbol);
-      }
-
-      query += ' GROUP BY trade_mode';
-
-      const tradeModeCounts = await db.all(query, params);
-
-      // Get overall stats
-      let overallQuery = `
-        SELECT
-          COUNT(*) as total_orders,
-          SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successful_orders,
-          SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as failed_orders,
-          COUNT(DISTINCT instance_id) as instances_used,
-          COUNT(DISTINCT underlying) as unique_symbols
-        FROM quick_orders
-        WHERE created_at >= ?
-      `;
-      const overallParams = [sinceDateStr];
-
-      if (filters.instanceId) {
-        overallQuery += ' AND instance_id = ?';
-        overallParams.push(filters.instanceId);
-      }
-
-      if (filters.symbol) {
-        overallQuery += ' AND underlying = ?';
-        overallParams.push(filters.symbol);
-      }
-
-      const overall = await db.get(overallQuery, overallParams);
-
-      // Get action breakdown
-      let actionQuery = `
-        SELECT
-          action,
-          COUNT(*) as count,
-          SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as successful,
-          SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as failed
-        FROM quick_orders
-        WHERE created_at >= ?
-      `;
-      const actionParams = [sinceDateStr];
-
-      if (filters.instanceId) {
-        actionQuery += ' AND instance_id = ?';
-        actionParams.push(filters.instanceId);
-      }
-
-      if (filters.symbol) {
-        actionQuery += ' AND underlying = ?';
-        actionParams.push(filters.symbol);
-      }
-
-      actionQuery += ' GROUP BY action ORDER BY count DESC';
-
-      const actionBreakdown = await db.all(actionQuery, actionParams);
-
-      const stats = {
-        period: {
-          days,
-          since: sinceDateStr,
-        },
-        overall: {
-          total: overall.total_orders || 0,
-          successful: overall.successful_orders || 0,
-          failed: overall.failed_orders || 0,
-          successRate:
-            overall.total_orders > 0
-              ? ((overall.successful_orders / overall.total_orders) * 100).toFixed(2)
-              : '0.00',
-          instancesUsed: overall.instances_used || 0,
-          uniqueSymbols: overall.unique_symbols || 0,
-        },
-        byTradeMode: tradeModeCounts.map(tm => ({
-          tradeMode: tm.trade_mode,
-          count: tm.count,
-        })),
-        byAction: actionBreakdown.map(ab => ({
-          action: ab.action,
-          count: ab.count,
-          successful: ab.successful,
-          failed: ab.failed,
-          successRate: ab.count > 0 ? ((ab.successful / ab.count) * 100).toFixed(2) : '0.00',
-        })),
-      };
-
-      log.debug('Retrieved quick order stats', { days, filters });
-
-      return stats;
-    } catch (error) {
-      log.error('Failed to get quick order stats', error);
-      throw error;
-    }
+    return quickOrderHistoryService.getQuickOrderStats(filters);
   }
 
-  /**
-   * Map cash market exchange to derivative exchange
-   * @private
-   */
+  // Delegated to utils/symbol-parsing.util.js (pure functions, no shared state) - names/
+  // signatures kept identical so every existing internal call site keeps working unmodified.
+  // MCX note: _getUnderlyingQuoteSymbol's MCX branch is load-bearing for the MCX options
+  // workaround - see the doc comment on the util module before touching it.
   _getUnderlyingQuoteExchange(symbol = {}) {
-    const exchange = (symbol.exchange || '').toUpperCase();
-    const instrumentType = (symbol.instrumenttype || symbol.symbol_type || '').toUpperCase();
-    const brexchange = (symbol.brexchange || '').toUpperCase();
-    const underlying = derivativeResolutionService.getDerivativeUnderlying(symbol);
-
-    if (BSE_INDEX_UNDERLYINGS.has(underlying)) {
-      return 'BSE_INDEX';
-    }
-    if (NSE_INDEX_UNDERLYINGS.has(underlying)) {
-      return 'NSE_INDEX';
-    }
-
-    if (exchange === 'BSE_INDEX' || brexchange === 'BSE_INDEX') {
-      return 'BSE_INDEX';
-    }
-    if (exchange === 'NSE_INDEX' || brexchange === 'NSE_INDEX') {
-      return 'NSE_INDEX';
-    }
-
-    if (instrumentType === 'INDEX') {
-      return brexchange && brexchange.startsWith('BSE') ? 'BSE_INDEX' : 'NSE_INDEX';
-    }
-
-    if (symbol.exchange?.toUpperCase().includes('MCX') || brexchange === 'MCX' || instrumentType === 'COMMODITY') {
-      return 'MCX';
-    }
-
-    if (exchange === 'BFO') return 'BSE';
-    if (exchange === 'NFO') return 'NSE';
-
-    return exchange || brexchange || 'NSE';
+    return getUnderlyingQuoteExchange(symbol);
   }
 
   _getUnderlyingQuoteSymbol(symbol = {}) {
-    const exchange = (symbol.exchange || '').toUpperCase();
-    if (exchange === 'MCX') {
-      return (symbol.symbol || symbol.trading_symbol || '').toUpperCase();
-    }
-
-    return (symbol.underlying_symbol || symbol.symbol || symbol.name || '').toUpperCase();
+    return getUnderlyingQuoteSymbol(symbol);
   }
 
   _getUnderlyingForClosing(symbol = {}) {
-    return derivativeResolutionService.getUnderlyingForClosing(symbol);
+    return getUnderlyingForClosing(symbol);
   }
 
-  /**
-   * Parse futures symbol to extract underlying and expiry
-   * Format: SYMBOL + DDMMMYY + FUT (e.g., NATGASMINI24NOV25FUT)
-   * @private
-   */
   _parseFuturesSymbol(symbolStr) {
-    if (!symbolStr) {
-      return { underlying: null, expiry: null };
-    }
-
-    const MONTH_NAMES = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-
-    // Normalize: uppercase, remove exchange prefix
-    let normalized = symbolStr.toUpperCase();
-    if (normalized.includes(':')) {
-      normalized = normalized.split(':').pop();
-    }
-
-    // Match: UNDERLYING + DDMMMYY + FUT
-    const match = normalized.match(/^([A-Z][A-Z0-9\-]*)(\d{2})([A-Z]{3})(\d{2})FUT$/);
-    if (!match) {
-      return { underlying: null, expiry: null };
-    }
-
-    const [, underlying, day, monthStr, year] = match;
-
-    const monthIndex = MONTH_NAMES.indexOf(monthStr);
-    if (monthIndex === -1) {
-      return { underlying: null, expiry: null };
-    }
-
-    // 2-digit year assumed to be 2000-2099
-    const expiry = `20${year}-${String(monthIndex + 1).padStart(2, '0')}-${day}`;
-
-    return { underlying, expiry };
+    return parseFuturesSymbol(symbolStr);
   }
 
   _getFuturesUnderlying(symbol = {}) {
-    const parsed = this._parseFuturesSymbol(symbol.symbol || symbol.trading_symbol || symbol.name);
-    return parsed.underlying || derivativeResolutionService.getDerivativeUnderlying(symbol);
+    return getFuturesUnderlying(symbol);
   }
 
   _getSymbolExpiryVariants(symbol = {}) {
-    const variants = new Set();
-    const direct = symbol.expiry;
-    if (direct) {
-      derivativeResolutionService.expandExpiryFormats(direct)
-        .forEach((value) => variants.add(value));
-    }
-    const parsed = this._parseFuturesSymbol(symbol.symbol || symbol.trading_symbol || symbol.name);
-    if (parsed.expiry) {
-      derivativeResolutionService.expandExpiryFormats(parsed.expiry)
-        .forEach((value) => variants.add(value));
-    }
-    return variants;
+    return getSymbolExpiryVariants(symbol);
   }
 
   _expiryMatchesSymbol(expiry, symbol = {}) {
-    const selected = derivativeResolutionService.expandExpiryFormats(expiry);
-    if (!selected.length) {
-      return false;
-    }
-    const symbolVariants = this._getSymbolExpiryVariants(symbol);
-    return selected.some((value) => symbolVariants.has(value));
+    return expiryMatchesSymbol(expiry, symbol);
   }
 
   /**
@@ -3197,7 +2644,12 @@ class QuickOrderService {
     const { action, expiry: userExpiry, optionsLeg: userOptionsLeg } = orderParams;
     const optionType = this._getOptionTypeFromAction(action);
 
-    const underlying = symbol.underlying_symbol || symbol.symbol;
+    // Use the shared, normalized underlying derivation (strips embedded date/strike/CE/PE/FUT
+    // suffixes) rather than a raw underlying_symbol||symbol fallback - watchlist rows for
+    // commodity/futures contracts often have underlying_symbol populated with the full contract
+    // identifier rather than the plain name, which would otherwise break expiry/option-chain
+    // lookups (this is what "MCX options not resolving" traced back to).
+    const underlying = derivativeResolutionService.getDerivativeUnderlying(symbol);
     const derivativeExchange = derivativeResolutionService.getDerivativeExchange(symbol.exchange);
     const baseExchange = this._getUnderlyingQuoteExchange(symbol);
     const quoteSymbol = this._getUnderlyingQuoteSymbol(symbol);
@@ -3736,23 +3188,8 @@ class QuickOrderService {
    * @returns {Promise<Array>} - Array of positions with symbol, strike, and quantity
    * @private
    */
-  /**
-   * Construct option symbol from components (OpenAlgo format)
-   * Format: UNDERLYING + DDMMMYY + STRIKE + CE/PE
-   * Example: NIFTY + 18NOV25 + 26000 + CE → NIFTY18NOV2526000CE
-   * @see https://docs.openalgo.in/symbol-format
-   * @private
-   */
   _constructOptionSymbol(underlying, expiry, optionType, strike) {
-    // Parse expiry YYYY-MM-DD
-    const date = new Date(expiry);
-    const day = String(date.getDate()).padStart(2, '0');
-    const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-    const month = months[date.getMonth()];
-    const year = String(date.getFullYear()).slice(-2);  // Use 2-digit year (OpenAlgo format)
-
-    // Construct symbol: NIFTY18NOV2526000CE (OpenAlgo format: SYMBOL + DATE + STRIKE + TYPE)
-    return `${underlying}${day}${month}${year}${strike}${optionType}`;
+    return constructOptionSymbol(underlying, expiry, optionType, strike);
   }
 
   async _getAllOpenPositions(instance, underlying, expiry, optionType, product) {
@@ -3836,63 +3273,8 @@ class QuickOrderService {
     }
   }
 
-  /**
-   * Parse option symbol string to extract components
-   * Example: "NIFTY05DEC25C22450" → { underlying: "NIFTY", expiry: "2025-12-05", type: "CE", strike: 22450 }
-   * @param {string} symbol - Option symbol string
-   * @returns {Object} - Parsed components
-   * @private
-   */
   _parseOptionSymbol(symbol) {
-    if (!symbol) {
-      return {
-        underlying: null,
-        expiry: null,
-        type: null,
-        strike: null,
-      };
-    }
-
-    // Normalize symbol: uppercase, drop exchange prefixes (e.g., NFO:, MCX:)
-    let normalized = symbol.toUpperCase();
-    if (normalized.includes(':')) {
-      normalized = normalized.split(':').pop();
-    }
-
-    // Expected format: UNDERLYING + DDMMMYY + STRIKE + CE/PE
-    const match = normalized.match(/^([A-Z]+)(\d{2}[A-Z]{3}\d{2})(\d+)([CP]E?)$/);
-    if (!match) {
-      log.warn('Failed to parse option symbol', { symbol });
-      return {
-        underlying: null,
-        expiry: null,
-        type: null,
-        strike: null,
-      };
-    }
-
-    const [, underlying, dateStr, strikeStr, rawType] = match;
-
-    const monthMap = {
-      JAN: '01', FEB: '02', MAR: '03', APR: '04',
-      MAY: '05', JUN: '06', JUL: '07', AUG: '08',
-      SEP: '09', OCT: '10', NOV: '11', DEC: '12',
-    };
-
-    const day = dateStr.substring(0, 2);
-    const monthAbbr = dateStr.substring(2, 5);
-    const year = '20' + dateStr.substring(5, 7);
-    const month = monthMap[monthAbbr] || '01';
-    const expiry = `${year}-${month}-${day}`;
-
-    const type = rawType.startsWith('C') ? 'CE' : 'PE';
-
-    return {
-      underlying,
-      expiry,
-      type,
-      strike: parseInt(strikeStr, 10),
-    };
+    return parseOptionSymbol(symbol);
   }
 
   /**
@@ -4118,252 +3500,42 @@ class QuickOrderService {
     }, 0);
   }
 
+  // Delegated to quick-order-quotes.service.js - names/signatures kept identical so every
+  // existing internal call site keeps working unmodified.
   _mergeQuoteMaps(primary, secondary) {
-    const merged = new Map();
-    if (secondary) {
-      secondary.forEach((value, key) => merged.set(key, value));
-    }
-    if (primary) {
-      primary.forEach((value, key) => {
-        const existing = merged.get(key);
-        const hasExistingLtp = existing && this._extractLtpFromQuote(existing) !== null;
-        const hasNewLtp = this._extractLtpFromQuote(value) !== null;
-
-        // Prefer the option chain quote when it has an LTP; otherwise keep the richer entry
-        if (!existing || (hasNewLtp || !hasExistingLtp)) {
-          merged.set(key, value);
-        }
-      });
-    }
-    return merged;
+    return quickOrderQuotesService.mergeQuoteMaps(primary, secondary);
   }
 
   _hasAllQuotes(map, keys = [], requirePrice = false) {
-    if (!keys || keys.length === 0) return true;
-    if (!map || typeof map.get !== 'function') return false;
-    return keys.every((k) => {
-      const q = map.get(k);
-      if (!q) return false;
-      if (!requirePrice) return true;
-      return this._extractLtpFromQuote(q) !== null;
-    });
+    return quickOrderQuotesService.hasAllQuotes(map, keys, requirePrice);
   }
 
-  async _getOptionChainQuotesMap({
-    instance,
-    underlying,
-    expiry,
-    exchange,
-    minStrikeCount = 5,
-  }) {
-    if (!instance || !instance.supports_option_chain) {
-      return null;
-    }
-
-    const cacheKey = `${instance.id || 'INSTANCE'}|${(exchange || '').toUpperCase()}|${(underlying || '').toUpperCase()}|${expiry || ''}`;
-    const cached = this.optionChainQuoteCache.get(cacheKey);
-    const now = Date.now();
-    if (cached && now - cached.fetchedAt <= this.optionChainQuoteTtlMs) {
-      return cached.map;
-    }
-
-    try {
-      const strikeCount = Math.max(parseIntSafe(minStrikeCount) || 0, 5);
-      const chain = await openalgoClient.getOptionChain(
-        instance,
-        underlying,
-        expiry,
-        exchange,
-        { strikeCount, skipBackoff: true }
-      );
-
-      const quotes = this._extractQuotesFromOptionChain(chain, exchange);
-      const map = this._quotesArrayToMap(quotes, now);
-      this.optionChainQuoteCache.set(cacheKey, { map, fetchedAt: now });
-      return map;
-    } catch (error) {
-      log.warn('Option chain quote fetch failed; falling back to multiquotes', {
-        instance_id: instance?.id,
-        underlying,
-        expiry,
-        exchange,
-        error: error?.message,
-      });
-      if (cached) {
-        return cached.map;
-      }
-      return null;
-    }
+  async _getOptionChainQuotesMap(params) {
+    return quickOrderQuotesService.getOptionChainQuotesMap(params);
   }
 
   _extractQuotesFromOptionChain(chainData, exchange) {
-    const rows = Array.isArray(chainData?.chain) ? chainData.chain : [];
-    const quotes = [];
-
-    for (const row of rows) {
-      const strike = parseFloatSafe(row.strike, null);
-      const ce = row.ce || row.CE;
-      const pe = row.pe || row.PE;
-
-      if (ce && ce.symbol) {
-        quotes.push({
-          exchange,
-          symbol: ce.symbol || ce.trading_symbol || ce.tradingsymbol,
-          strike,
-          option_type: 'CE',
-          ltp: this._extractLtpFromQuote(ce),
-          changePercent: this._extractChangePercentFromQuote(ce),
-        });
-      }
-
-      if (pe && pe.symbol) {
-        quotes.push({
-          exchange,
-          symbol: pe.symbol || pe.trading_symbol || pe.tradingsymbol,
-          strike,
-          option_type: 'PE',
-          ltp: this._extractLtpFromQuote(pe),
-          changePercent: this._extractChangePercentFromQuote(pe),
-        });
-      }
-    }
-
-    return quotes;
+    return quickOrderQuotesService.extractQuotesFromOptionChain(chainData, exchange);
   }
 
   _quotesArrayToMap(quotes = [], fetchedAt = Date.now()) {
-    const map = new Map();
-    for (const quote of quotes) {
-      const key = this._buildQuoteMatchKey(quote.exchange, quote.symbol);
-      if (!key) continue;
-      map.set(key, { ...quote, fetchedAt });
-    }
-    return map;
+    return quickOrderQuotesService.quotesArrayToMap(quotes, fetchedAt);
   }
 
   async _getQuotesFromCache(instance, requests = []) {
-    if (!Array.isArray(requests) || requests.length === 0) {
-      return new Map();
-    }
-
-    const results = new Map();
-    const missing = [];
-    const snapshot = marketDataFeedService.getQuoteSnapshot(instance.id);
-
-    for (const request of requests) {
-      const key = this._buildQuoteMatchKey(request.exchange, request.symbol);
-      if (!key) continue;
-
-      const cachedQuote = this._findQuoteInSnapshot(snapshot, request.exchange, request.symbol);
-      if (cachedQuote) {
-        const withTimestamp = snapshot?.fetchedAt
-          ? { ...cachedQuote, fetchedAt: snapshot.fetchedAt }
-          : cachedQuote;
-        results.set(key, withTimestamp);
-      } else {
-        missing.push({
-          exchange: request.exchange,
-          symbol: request.symbol,
-        });
-      }
-    }
-
-    if (missing.length > 0) {
-      const liveQuotes = await openalgoClient.getQuotes(instance, missing);
-      if (Array.isArray(liveQuotes)) {
-        const fetchedAt = Date.now();
-        const merged = Array.isArray(snapshot?.data) ? [...snapshot.data] : [];
-        for (const quote of liveQuotes) {
-          const key = this._buildQuoteMatchKey(
-            quote.exchange || quote.exch,
-            quote.symbol || quote.trading_symbol || quote.tradingsymbol
-          );
-          if (key) {
-            const enriched = { ...quote, fetchedAt };
-            results.set(key, enriched);
-            merged.push(enriched);
-          }
-        }
-        // Update cache so resolved futures/options become part of global polling
-        marketDataFeedService.setQuoteSnapshot(instance.id, merged, { fetchedAt });
-      }
-    }
-
-    return results;
+    return quickOrderQuotesService.getQuotesFromCache(instance, requests);
   }
 
   async _getQuotesPreferWs(requests = []) {
-    if (!Array.isArray(requests) || requests.length === 0) {
-      return new Map();
-    }
-
-    const results = new Map();
-    const now = Date.now();
-
-    await Promise.all(requests.map(async (request) => {
-      try {
-        const res = await marketDataFeedService.fetchLtpForSymbol(
-          request.exchange,
-          request.symbol,
-          { maxRounds: 1 }
-        );
-        if (!res) return;
-        const quote = res.quote || {
-          exchange: request.exchange,
-          symbol: request.symbol,
-          ltp: res.ltp,
-        };
-        if (!quote._source && res.source) {
-          quote._source = res.source;
-        }
-        const key = this._buildQuoteMatchKey(
-          quote.exchange || quote.exch || request.exchange,
-          quote.symbol || quote.trading_symbol || quote.tradingsymbol || request.symbol
-        );
-        if (key) {
-          const fetchedAt = quote.fetchedAt || now;
-          results.set(key, { ...quote, fetchedAt });
-        }
-      } catch (_) {
-        // best effort; fallback handled by callers
-      }
-    }));
-
-    return results;
+    return quickOrderQuotesService.getQuotesPreferWs(requests);
   }
 
   _findQuoteInSnapshot(snapshot, exchange, symbol) {
-    if (!snapshot?.data || snapshot.data.length === 0) {
-      return null;
-    }
-
-    const targetKey = this._buildQuoteMatchKey(exchange, symbol);
-    if (!targetKey) {
-      return null;
-    }
-
-    for (const quote of snapshot.data) {
-      const candidateKey = this._buildQuoteMatchKey(
-        quote.exchange || quote.exch,
-        quote.symbol || quote.trading_symbol || quote.tradingsymbol
-      );
-
-      if (candidateKey && candidateKey === targetKey) {
-        return quote;
-      }
-    }
-
-    return null;
+    return quickOrderQuotesService.findQuoteInSnapshot(snapshot, exchange, symbol);
   }
 
   _buildQuoteMatchKey(exchange, symbol) {
-    const normalizedSymbol = this._normalizeSymbolKey(symbol);
-    if (!normalizedSymbol) {
-      return null;
-    }
-
-    const normalizedExchange = this._normalizeExchange(exchange) || 'DEFAULT';
-    return `${normalizedExchange}::${normalizedSymbol}`;
+    return quickOrderQuotesService.buildQuoteMatchKey(exchange, symbol);
   }
 
   _shouldRepeatToTarget(currentPosition, targetPosition) {
@@ -4382,62 +3554,23 @@ class QuickOrderService {
   }
 
   _normalizeSymbolKey(symbol) {
-    if (!symbol) return null;
-    return String(symbol)
-      .trim()
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '');
+    return normalizeSymbolKey(symbol);
   }
 
   _normalizeExchange(exchange) {
-    if (!exchange) return null;
-    return String(exchange).trim().toUpperCase();
+    return normalizeExchange(exchange);
   }
 
   _normalizeProduct(product) {
-    if (!product) return null;
-    return String(product).trim().toUpperCase();
+    return normalizeProduct(product);
   }
 
   _extractLtpFromQuote(quote) {
-    if (!quote) return null;
-    const candidates = [
-      quote.ltp,
-      quote.LTP,
-      quote.last_price,
-      quote.lastPrice,
-      quote.last_traded_price,
-      quote.lastTradedPrice,
-      quote.close,
-    ];
-
-    for (const value of candidates) {
-      const parsed = parseFloatSafe(value, null);
-      if (parsed !== null && !Number.isNaN(parsed) && parsed !== 0) {
-        return parsed;
-      }
-    }
-
-    return null;
+    return quickOrderQuotesService.extractLtpFromQuote(quote);
   }
 
   _extractChangePercentFromQuote(quote) {
-    if (!quote) return null;
-    const candidates = [
-      quote.percent_change,
-      quote.pchange,
-      quote.change_percent,
-      quote.change,
-    ];
-
-    for (const value of candidates) {
-      const parsed = parseFloatSafe(value, null);
-      if (parsed !== null && !Number.isNaN(parsed)) {
-        return parsed;
-      }
-    }
-
-    return null;
+    return quickOrderQuotesService.extractChangePercentFromQuote(quote);
   }
 
   _resolveProductForOrder(product, tradeMode, symbol) {
@@ -4457,55 +3590,12 @@ class QuickOrderService {
     return normalizedProduct;
   }
 
-  /**
-   * Normalize expiry input to YYYY-MM-DD
-   * @private
-   */
   _normalizeExpiryInput(expiry) {
-    if (!expiry) return null;
-    const trimmed = String(expiry).trim().toUpperCase();
-
-    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-      return trimmed;
-    }
-
-    if (/^\d{2}-[A-Z]{3}-\d{2}$/.test(trimmed)) {
-      const [day, monthStr, year] = trimmed.split('-');
-      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
-                          'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-      const monthIndex = monthNames.indexOf(monthStr);
-      if (monthIndex === -1) {
-        throw new ValidationError(`Unknown expiry month: ${monthStr}`);
-      }
-      const paddedMonth = String(monthIndex + 1).padStart(2, '0');
-      return `20${year}-${paddedMonth}-${day}`;
-    }
-
-    return trimmed;
+    return normalizeExpiryInput(expiry);
   }
 
-  /**
-   * Determine option type (CE/PE) based on action keyword
-   * @private
-   */
   _getOptionTypeFromAction(action = '') {
-    const ceActions = new Set([
-      'BUY_CE', 'SELL_CE',
-      'REDUCE_CE', 'INCREASE_CE',
-      'CLOSE_ALL_CE',
-    ]);
-
-    const peActions = new Set([
-      'BUY_PE', 'SELL_PE',
-      'REDUCE_PE', 'INCREASE_PE',
-      'CLOSE_ALL_PE',
-    ]);
-
-    if (ceActions.has(action)) return 'CE';
-    if (peActions.has(action)) return 'PE';
-
-    // EXIT_ALL should not rely on option type, default to CE for compatibility
-    return 'CE';
+    return getOptionTypeFromAction(action);
   }
 }
 

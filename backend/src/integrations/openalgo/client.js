@@ -39,6 +39,14 @@ class OpenAlgoClient extends EventEmitter {
     this.instanceTimeoutOverrides = this._loadInstanceTimeoutOverrides();
     this.fastSnapshotMode = process.env.OPENALGO_FAST_SNAPSHOT_MODE !== 'false';
 
+    // Per-symbol quote failure cooldown: a symbol that's invalid/unlisted on a given instance
+    // (e.g. bad or expired contract) fails every time it's requested, and since a failed quote
+    // never populates the caller's cache, every subsequent "missing symbol" check re-triggers a
+    // live fetch - without this, that produces an unbounded retry flood against the broker.
+    this._quoteFailureCache = new Map(); // key: `${instanceId}|${exchange}|${symbol}` -> { count, lastFailAt }
+    this.QUOTE_FAILURE_THRESHOLD = 3;
+    this.QUOTE_FAILURE_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+
     // Default dispatcher with HTTP/2 support and connection reuse
     // Conservative timeouts to avoid ECONNRESET from stale connections
     this.dispatcher = new Agent({
@@ -746,8 +754,9 @@ class OpenAlgoClient extends EventEmitter {
           success: true,
         });
 
-        // Metrics hook: successful OpenAlgo request
-        log.info('metrics.openalgo_request', {
+        // Metrics hook: successful OpenAlgo request - debug-level since this fires on every
+        // successful broker call (high volume); failures are still logged at warn/error below.
+        log.debug('metrics.openalgo_request', {
           endpoint,
           instance_id: instance.id,
           instance_name: instance.name,
@@ -928,14 +937,27 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   async _waitForConcurrency(instKey, endpoint, isOrderPlacement = false) {
+    const delay = 50;
+    let waited = 0;
+    let logged = false;
     while (this.currentTasks >= this.maxConcurrentTasks) {
-      const delay = 50;
-      log.warn('Throttling due to concurrent task limit', {
-        endpoint,
-        instKey,
-        currentTasks: this.currentTasks,
-      });
+      // Log once per wait (not once per 50ms poll iteration) to avoid flooding the log when
+      // the global concurrency pool is briefly saturated - a common, often benign occurrence.
+      if (!logged) {
+        log.warn('Throttling due to concurrent task limit', {
+          endpoint,
+          instKey,
+          currentTasks: this.currentTasks,
+        });
+        logged = true;
+      }
       await sleep(delay);
+      waited += delay;
+      if (waited % 2000 === 0) {
+        log.warn('Still throttled by concurrent task limit', {
+          endpoint, instKey, currentTasks: this.currentTasks, waitedMs: waited,
+        });
+      }
     }
     this.currentTasks += 1;
 
@@ -1608,6 +1630,23 @@ class OpenAlgoClient extends EventEmitter {
     // HTTP/2 multiplexing allows these to share a single TCP connection
     // This dramatically reduces latency compared to sequential requests
     const quotePromises = symbols.map(async ({ exchange, symbol }) => {
+      const failureKey = `${instanceMeta.instance_id}|${exchange}|${symbol}`;
+      const failureState = this._quoteFailureCache.get(failureKey);
+      if (
+        failureState &&
+        failureState.count >= this.QUOTE_FAILURE_THRESHOLD &&
+        Date.now() - failureState.lastFailAt < this.QUOTE_FAILURE_COOLDOWN_MS
+      ) {
+        return {
+          success: false,
+          exchange,
+          symbol,
+          error: 'Skipped: symbol in quote-failure cooldown after repeated errors',
+          errorCode: 'COOLDOWN',
+          fetchedAt: Date.now(),
+        };
+      }
+
       try {
         const response = await this.request(
           instance,
@@ -1616,6 +1655,10 @@ class OpenAlgoClient extends EventEmitter {
           'POST',
           { skipRateLimit: true }
         );
+
+        if (failureState) {
+          this._quoteFailureCache.delete(failureKey);
+        }
 
         // Return quote data with exchange and symbol for matching
         return {
@@ -1626,6 +1669,13 @@ class OpenAlgoClient extends EventEmitter {
           fetchedAt: Date.now(),
         };
       } catch (error) {
+        const nextCount = (failureState?.count || 0) + 1;
+        this._quoteFailureCache.set(failureKey, { count: nextCount, lastFailAt: Date.now() });
+        if (nextCount === this.QUOTE_FAILURE_THRESHOLD) {
+          log.warn('Quote fetch entering cooldown after repeated failures', {
+            exchange, symbol, count: nextCount, cooldownMs: this.QUOTE_FAILURE_COOLDOWN_MS, ...instanceMeta,
+          });
+        }
         log.warn('Failed to fetch quote', { exchange, symbol, error: error.message, ...instanceMeta });
         return {
           success: false,
@@ -2639,6 +2689,117 @@ class OpenAlgoClient extends EventEmitter {
       positions,
     });
     return response.data;
+  }
+
+  // ==========================================
+  // GTT (Good Till Triggered) APIs
+  // ==========================================
+
+  /**
+   * Place a GTT (broker-side conditional) order
+   * @param {Object} instance - Instance configuration
+   * @param {Object} params - { strategy, trigger_type ('SINGLE'|'OCO'), exchange, symbol, action,
+   *   product ('CNC'|'NRML' - MIS not supported by GTT), quantity, pricetype, price,
+   *   triggerprice_sl, triggerprice_tg, stoploss, target }
+   * @returns {Promise<Object>} - { status, trigger_id }
+   */
+  async placeGttOrder(instance, params) {
+    const response = await this.request(instance, 'placegttorder', params, 'POST', {
+      isCritical: true,
+    });
+    return response;
+  }
+
+  /**
+   * List active GTT orders (triggered/cancelled/expired are excluded by the broker)
+   * @param {Object} instance - Instance configuration
+   * @returns {Promise<Array>} - Active GTT orders
+   */
+  async getGttOrderBook(instance) {
+    const response = await this.request(instance, 'gttorderbook');
+    return response.data || [];
+  }
+
+  /**
+   * Cancel an active GTT order
+   * @param {Object} instance - Instance configuration
+   * @param {Object} params - { strategy, trigger_id }
+   * @returns {Promise<Object>}
+   */
+  async cancelGttOrder(instance, params) {
+    const response = await this.request(instance, 'cancelgttorder', params, 'POST', {
+      isCritical: true,
+    });
+    return response;
+  }
+
+  // ==========================================
+  // Basket Order API
+  // ==========================================
+
+  /**
+   * Place multiple orders in a single broker call
+   * @param {Object} instance - Instance configuration
+   * @param {Object} params - { strategy, orders: [{symbol, exchange, action, quantity,
+   *   pricetype, product, price, trigger_price}, ...] }
+   * @returns {Promise<Object>} - { status, results: [{symbol, status, orderid, message}, ...] }
+   *   Note: top-level status is "success" if AT LEAST ONE order succeeded - callers must check
+   *   each entry in `results` individually, partial failure is expected/normal.
+   */
+  async placeBasketOrder(instance, params) {
+    const response = await this.request(instance, 'basketorder', params, 'POST', {
+      isCritical: true,
+    });
+    return response;
+  }
+
+  // ==========================================
+  // Order Status API
+  // ==========================================
+
+  /**
+   * Look up a single order's live status (lighter than fetching the whole orderbook when only
+   * one specific order needs checking)
+   * @param {Object} instance - Instance configuration
+   * @param {Object} params - { orderid, strategy? }
+   * @returns {Promise<Object>} - order detail (orderid, symbol, exchange, action, quantity,
+   *   price, trigger_price, pricetype, product, order_status, average_price, timestamp)
+   */
+  async getOrderStatus(instance, params) {
+    const response = await this.request(instance, 'orderstatus', params);
+    return response.data;
+  }
+
+  // ==========================================
+  // Option Greeks APIs
+  // ==========================================
+
+  /**
+   * Get Greeks for a single option symbol
+   * @param {Object} instance - Instance configuration
+   * @param {Object} params - { symbol, exchange (NFO/BFO/CDS/MCX/CRYPTO), interest_rate?,
+   *   underlying_symbol?, underlying_exchange?, forward_price?, expiry_time? }
+   * @returns {Promise<Object>} - { symbol, exchange, underlying, strike, option_type,
+   *   expiry_date, days_to_expiry, spot_price, option_price, implied_volatility,
+   *   greeks: {delta, gamma, theta, vega, rho} }
+   */
+  async getOptionGreeks(instance, params) {
+    const response = await this.request(instance, 'optiongreeks', params);
+    return response;
+  }
+
+  /**
+   * Get Greeks for up to 50 option symbols in one call
+   * @param {Object} instance - Instance configuration
+   * @param {Object} params - { symbols: [{symbol, exchange, underlying_symbol?, underlying_exchange?}, ...],
+   *   interest_rate?, expiry_time? }
+   * @returns {Promise<Object>} - { status, data: [{status, symbol, exchange, implied_volatility, greeks}, ...], summary }
+   */
+  async getMultiOptionGreeks(instance, params) {
+    const response = await this.request(instance, 'multioptiongreeks', params, 'POST', {
+      isCritical: false,
+    });
+    return response;
   }
 
   // ==========================================

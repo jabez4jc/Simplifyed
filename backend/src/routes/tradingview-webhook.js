@@ -1,5 +1,6 @@
 import express from 'express';
 import tradingviewBroadcastService from '../services/tradingview-broadcast.service.js';
+import strategyService from '../services/strategy.service.js';
 import idempotencyService from '../services/idempotency.service.js';
 import { ValidationError } from '../core/errors.js';
 
@@ -17,6 +18,32 @@ router.post('/broadcast/:slug?', async (req, res, next) => {
     const parsedBody = tradingviewBroadcastService.parseRequestBody(req);
     if (!parsedBody) {
       throw new ValidationError('Request body must be valid JSON');
+    }
+
+    // Strategy webhooks use their own slug namespace and a different execution path (multi-leg,
+    // basket-batched) rather than the watchlist broadcast-to-many-instances path. instanceId is
+    // optional here too - when omitted, targets every active, order-enabled instance assigned to
+    // the strategy's watchlist; pass ?instanceId= to override and target just one.
+    const slugParam = req.params.slug || req.query.watchlistSlug || req.query.watchlist || null;
+    if (slugParam) {
+      const strategy = await strategyService.findByWebhookSlug(slugParam);
+      if (strategy) {
+        const instanceIdRaw = req.query.instanceId || parsedBody?.instance_id;
+        const instanceId = instanceIdRaw ? parseInt(instanceIdRaw, 10) : null;
+        // action defaults to ENTRY (executeStrategy) for backward compatibility with existing
+        // webhook configs that never sent an action field - EXIT/EXIT_ALL closes every leg that's
+        // still open instead, symmetric with the EXIT/EXIT_ALL actions regular (non-strategy)
+        // watchlist webhook alerts already support.
+        const action = String(req.query.action || parsedBody?.action || 'ENTRY').toUpperCase();
+        const isExit = action === 'EXIT' || action === 'EXIT_ALL';
+        const result = isExit
+          ? await strategyService.exitStrategy(strategy.id, { instanceId, source: 'strategy_webhook' })
+          : await strategyService.executeStrategy(strategy.id, { instanceId, source: 'strategy_webhook' });
+        return res.status(result.success ? 200 : 502).json({
+          status: result.success ? 'ok' : 'error',
+          data: result,
+        });
+      }
     }
 
     const requestIdHeader = req.get('X-Request-Id');

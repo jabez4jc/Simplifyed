@@ -53,8 +53,7 @@ class ExpiryManagementService {
    */
   async _getNearestExpiryFromCache(underlying, exchange) {
     try {
-      const now = toISTDate();
-      const todayStr = now.toISOString().split('T')[0];
+      const todayStr = this._formatDate(new Date());
 
       const result = await db.get(
         `SELECT expiry_date FROM expiry_calendar
@@ -232,7 +231,12 @@ class ExpiryManagementService {
    * @private
    */
   _formatDate(date) {
-    return toISTDate(date).toISOString().split('T')[0];
+    // toISOString() always renders in UTC - for a midnight-IST timestamp (00:00 IST =
+    // 18:30 UTC the previous day) that truncates to the wrong, earlier calendar date.
+    // Build the date string from the IST-local components instead.
+    const d = toISTDate(date);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   }
 
   /**

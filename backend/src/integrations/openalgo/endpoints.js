@@ -59,15 +59,25 @@ export const ENDPOINTS = {
   INDEXLIST: 'indexlist',
   INDEXCONSTITUENTS: 'indexconstituents',
 
-  // GTT - Good Till Triggered (3 endpoints)
-  PLACEGTT: 'placegtt',
-  GTTORDERS: 'gttorders',
-  CANCELGTT: 'cancelgtt',
+  // GTT - Good Till Triggered (4 endpoints)
+  // Note: these were previously mis-named ('placegtt'/'gttorders'/'cancelgtt') and never called -
+  // corrected to match the actual OpenAlgo v1 paths documented at
+  // https://github.com/marketcalls/openalgo-docs/blob/main/api-documentation/v1/orders-api/
+  PLACEGTT: 'placegttorder',
+  GTTORDERS: 'gttorderbook',
+  CANCELGTT: 'cancelgttorder',
 
   // SIP - Systematic Investment Plan (3 endpoints)
   PLACESIP: 'placesip',
   SIPORDERS: 'siporders',
   CANCELSIP: 'cancelsip',
+
+  // Order status (single-order lookup)
+  ORDERSTATUS: 'orderstatus',
+
+  // Option Greeks
+  OPTIONGREEKS: 'optiongreeks',
+  MULTIOPTIONGREEKS: 'multioptiongreeks',
 };
 
 /**

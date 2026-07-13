@@ -218,13 +218,23 @@ export const log = {
    * Log HTTP request
    */
   http: (req, res, duration) => {
-    logger.info('http_request', sanitizeMeta({
+    const meta = sanitizeMeta({
       method: req.method,
       path: req.url,
       status: res.statusCode,
       duration_ms: duration,
       trace_id: req.correlationId || req.headers['x-request-id'],
-    }));
+    });
+    // Routine successful requests (2xx/3xx - the overwhelming majority of traffic on a
+    // frequently-polling dashboard) are debug-level noise, not troubleshooting signal - only
+    // client/server errors are logged at a visible level by default.
+    if (res.statusCode >= 500) {
+      logger.error('http_request', meta);
+    } else if (res.statusCode >= 400) {
+      logger.warn('http_request', meta);
+    } else {
+      logger.debug('http_request', meta);
+    }
   },
 
   /**

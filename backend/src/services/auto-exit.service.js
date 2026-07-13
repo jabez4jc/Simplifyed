@@ -10,6 +10,7 @@ import watchlistService from './watchlist.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import quickOrderService from './quick-order.service.js';
 import riskControlsService from './risk-controls.service.js';
+import riskEventsService from './risk-events.service.js';
 import { extractLtp, extractAveragePrice } from '../utils/price-extraction.js';
 import { normalizeTradebookEntry } from '../utils/tradebook-utils.js';
 import { toISTDate } from '../utils/time.js';
@@ -233,13 +234,17 @@ class AutoExitService {
       return;
     }
 
-    const evaluation = riskControlsService.evaluateExit({
+    const evaluation = await riskControlsService.evaluateExit({
       key,
       side,
       currentPrice,
       entryPrice,
       configEntry,
       symbol: positionSymbol,
+      instanceId: instance.id,
+      watchlistId: configEntry.watchlist_id,
+      symbolId: configEntry.id,
+      exchange: positionExchange,
     });
     if (!evaluation) {
       return;
@@ -277,6 +282,15 @@ class AutoExitService {
       if (exitSuccess) {
         this.pendingExits.set(key, Date.now());
         this.exitConfirmations.delete(key);
+        riskEventsService.record({
+          instanceId: instance.id,
+          watchlistId: configEntry.watchlist_id,
+          symbolId: configEntry.id,
+          exchange: positionExchange,
+          symbol: positionSymbol,
+          eventType: exitReason === 'TARGET_MET' ? 'TARGET_HIT' : 'STOP_HIT',
+          metadata: { reason: exitReason, entryPrice, currentPrice, side },
+        }).catch(() => {});
       } else {
         // Allow immediate retry on next tick if broker rejected/failed
         this.exitConfirmations.delete(key);

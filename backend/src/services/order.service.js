@@ -613,6 +613,23 @@ class OrderService {
   }
 
   /**
+   * On-demand single-order status lookup - lighter than fetching the whole orderbook when only
+   * one specific order needs checking. Does NOT replace syncOrderStatus's bulk reconciliation:
+   * with many pending orders, one orderstatus call per order would be MORE broker calls than one
+   * whole-orderbook fetch, so this is for targeted checks only (e.g. right after placing an order).
+   * @param {number} instanceId
+   * @param {string} orderId
+   * @returns {Promise<Object>} - broker order detail
+   */
+  async getOrderStatus(instanceId, orderId) {
+    const instance = await db.get('SELECT * FROM instances WHERE id = ?', [instanceId]);
+    if (!instance) {
+      throw new NotFoundError('Instance');
+    }
+    return openalgoClient.getOrderStatus(instance, { orderid: orderId });
+  }
+
+  /**
    * Update order status from OpenAlgo orderbook
    * @param {number} instanceId - Instance ID
    * @returns {Promise<Object>} - Update summary
@@ -628,15 +645,21 @@ class OrderService {
         throw new NotFoundError('Instance');
       }
 
-      // Get orderbook from OpenAlgo
-      const orderbook = await openalgoClient.getOrderBook(instance);
-
-      // Get pending orders from database
+      // Get pending orders from database first (cheap local query) - only hit the broker's
+      // orderbook endpoint if there's actually something to reconcile. Avoids an unconditional
+      // broker call every poll cycle for instances with no open orders.
       const pendingOrders = await db.all(
         `SELECT * FROM watchlist_orders
          WHERE instance_id = ? AND status IN ('pending', 'open')`,
         [instanceId]
       );
+
+      if (!pendingOrders.length) {
+        return { checked: 0, updated: 0, skipped: 'no_pending_orders' };
+      }
+
+      // Get orderbook from OpenAlgo
+      const orderbook = await openalgoClient.getOrderBook(instance);
 
       let updatedCount = 0;
 

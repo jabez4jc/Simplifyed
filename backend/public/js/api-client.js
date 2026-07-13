@@ -302,6 +302,72 @@ class APIClient {
     return this.request(`/watchlists/${id}/symbols`);
   }
 
+  // --- Strategy Builder ---
+
+  async getStrategies(watchlistId) {
+    return this.request(`/strategies?watchlist_id=${watchlistId}`);
+  }
+
+  async getStrategy(id) {
+    return this.request(`/strategies/${id}`);
+  }
+
+  async createStrategy(data) {
+    return this.request('/strategies', { method: 'POST', body: data });
+  }
+
+  async updateStrategy(id, data) {
+    return this.request(`/strategies/${id}`, { method: 'PUT', body: data });
+  }
+
+  async deleteStrategy(id) {
+    return this.request(`/strategies/${id}`, { method: 'DELETE' });
+  }
+
+  async addStrategyLeg(strategyId, data) {
+    return this.request(`/strategies/${strategyId}/legs`, { method: 'POST', body: data });
+  }
+
+  async updateStrategyLeg(legId, data) {
+    return this.request(`/strategies/legs/${legId}`, { method: 'PUT', body: data });
+  }
+
+  async deleteStrategyLeg(legId) {
+    return this.request(`/strategies/legs/${legId}`, { method: 'DELETE' });
+  }
+
+  // instanceId is optional - omit to target every instance assigned to the strategy's watchlist.
+  async executeStrategy(id, instanceId = null) {
+    return this.request(`/strategies/${id}/execute`, {
+      method: 'POST',
+      body: instanceId ? { instanceId } : {},
+    });
+  }
+
+  async previewStrategyLeg(legId, instanceId) {
+    return this.request(`/strategies/legs/${legId}/preview?instanceId=${instanceId}`);
+  }
+
+  // instanceId is optional - omit to close every still-open leg across every instance assigned
+  // to the strategy's watchlist.
+  async exitStrategy(id, instanceId = null) {
+    return this.request(`/strategies/${id}/exit`, {
+      method: 'POST',
+      body: instanceId ? { instanceId } : {},
+    });
+  }
+
+  async getStrategyStatus(id) {
+    return this.request(`/strategies/${id}/status`);
+  }
+
+  async getOptionGreeks({ symbol, exchange, instanceId, underlyingSymbol, underlyingExchange }) {
+    const params = new URLSearchParams({ symbol, exchange, instanceId });
+    if (underlyingSymbol) params.set('underlyingSymbol', underlyingSymbol);
+    if (underlyingExchange) params.set('underlyingExchange', underlyingExchange);
+    return this.request(`/symbols/greeks?${params}`);
+  }
+
   async addSymbol(watchlistId, data) {
     return this.request(`/watchlists/${watchlistId}/symbols`, {
       method: 'POST',

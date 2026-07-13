@@ -5,6 +5,7 @@
 
 import { log } from '../core/logger.js';
 import db from '../core/database.js';
+import riskEventsService from './risk-events.service.js';
 
 class RiskControlsService {
   constructor() {
@@ -12,7 +13,7 @@ class RiskControlsService {
     this.hydrated = false;
   }
 
-  evaluateExit({ key, side, currentPrice, entryPrice, configEntry, symbol }) {
+  async evaluateExit({ key, side, currentPrice, entryPrice, configEntry, symbol, instanceId, watchlistId, symbolId, exchange }) {
     if (!configEntry || !symbol || !currentPrice || !entryPrice) {
       return null;
     }
@@ -31,13 +32,14 @@ class RiskControlsService {
       ? entryPrice - direction * thresholds.stoplossPoints
       : null;
 
-    const trailingHit = this._evaluateTrailing(
+    const trailingHit = await this._evaluateTrailing(
       key,
       side,
       currentPrice,
       entryPrice,
       thresholds.trailingPoints,
-      thresholds.trailingActivationPoints
+      thresholds.trailingActivationPoints,
+      { instanceId, watchlistId, symbolId, exchange, symbol }
     );
 
     const targetHit = targetPrice && (
@@ -69,7 +71,7 @@ class RiskControlsService {
     this.hydrated = false;
   }
 
-  _evaluateTrailing(key, side, currentPrice, entryPrice, trailingPoints, activationPoints) {
+  async _evaluateTrailing(key, side, currentPrice, entryPrice, trailingPoints, activationPoints, context = {}) {
     if (!trailingPoints) return false;
     if (!entryPrice || entryPrice <= 0) return false;
 
@@ -81,6 +83,7 @@ class RiskControlsService {
       highest: currentPrice,
       lowest: currentPrice,
       activated: !activationPoints,
+      stopPrice: null,
     };
     state.highest = Math.max(state.highest, currentPrice);
     state.lowest = Math.min(state.lowest, currentPrice);
@@ -100,21 +103,58 @@ class RiskControlsService {
       return false;
     }
 
-    if (side === 'LONG') {
-      const trigger = state.highest - trailingPoints;
+    // Ratchet: stopPrice only ever moves in the favorable direction, never retreats,
+    // even if highest/lowest later swing back. This is the AFL-style trailing behavior.
+    const candidateStop = side === 'LONG'
+      ? state.highest - trailingPoints
+      : state.lowest + trailingPoints;
+
+    const previousStop = state.stopPrice;
+    const isMoreFavorable = previousStop == null ||
+      (side === 'LONG' ? candidateStop > previousStop : candidateStop < previousStop);
+
+    if (isMoreFavorable) {
+      state.stopPrice = candidateStop;
       this.trailingState.set(key, state);
-      return currentPrice <= trigger;
+      // Await so concurrent ticks for the same key can't race the persisted stop_price out of order.
+      await this.persistState(key, state);
+      if (previousStop != null) {
+        await riskEventsService.record({
+          instanceId: context.instanceId,
+          watchlistId: context.watchlistId,
+          symbolId: context.symbolId,
+          exchange: context.exchange,
+          symbol: context.symbol,
+          eventType: 'STOP_RATCHET',
+          previousValue: previousStop,
+          newValue: candidateStop,
+          metadata: { side, currentPrice, entryPrice, trailingPoints },
+        });
+      } else {
+        await riskEventsService.record({
+          instanceId: context.instanceId,
+          watchlistId: context.watchlistId,
+          symbolId: context.symbolId,
+          exchange: context.exchange,
+          symbol: context.symbol,
+          eventType: 'TRAIL_ACTIVATED',
+          newValue: candidateStop,
+          metadata: { side, currentPrice, entryPrice, trailingPoints, activationPoints },
+        });
+      }
+    } else {
+      this.trailingState.set(key, state);
     }
 
-    const trigger = state.lowest + trailingPoints;
-    this.trailingState.set(key, state);
-    return currentPrice >= trigger;
+    return side === 'LONG'
+      ? currentPrice <= state.stopPrice
+      : currentPrice >= state.stopPrice;
   }
 
   async hydrateFromDb() {
     if (this.hydrated) return;
     try {
-      const rows = await db.all('SELECT instance_id, exchange, symbol, side, highest, lowest, activated, last_seen_ts, entry_price, entry_source FROM trailing_state');
+      const rows = await db.all('SELECT instance_id, exchange, symbol, side, highest, lowest, activated, last_seen_ts, entry_price, entry_source, stop_price FROM trailing_state');
       for (const row of rows) {
         const key = this._key(row.instance_id, row.exchange, row.symbol, row.side);
         this.trailingState.set(key, {
@@ -124,6 +164,7 @@ class RiskControlsService {
           lastSeen: row.last_seen_ts ?? Date.now(),
           entryPrice: row.entry_price ?? null,
           entrySource: row.entry_source ?? null,
+          stopPrice: row.stop_price ?? null,
         });
       }
       this.hydrated = true;
@@ -141,8 +182,8 @@ class RiskControlsService {
       const now = Date.now();
       await db.run(
         `
-          INSERT INTO trailing_state (instance_id, exchange, symbol, side, highest, lowest, activated, last_seen_ts, entry_price, entry_source, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          INSERT INTO trailing_state (instance_id, exchange, symbol, side, highest, lowest, activated, last_seen_ts, entry_price, entry_source, stop_price, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(instance_id, exchange, symbol, side) DO UPDATE SET
             highest=excluded.highest,
             lowest=excluded.lowest,
@@ -150,6 +191,7 @@ class RiskControlsService {
             last_seen_ts=excluded.last_seen_ts,
             entry_price=excluded.entry_price,
             entry_source=excluded.entry_source,
+            stop_price=excluded.stop_price,
             updated_at=excluded.updated_at
         `,
         [
@@ -163,6 +205,7 @@ class RiskControlsService {
           state.lastSeen ?? now,
           state.entryPrice ?? null,
           state.entrySource ?? null,
+          state.stopPrice ?? null,
           now,
         ]
       );

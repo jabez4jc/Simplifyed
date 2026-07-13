@@ -27,7 +27,11 @@ import { calculateTradebookPnL, calculateTradebookPnLForAppExits } from '../util
 import { buildBrokerageMap, resolveBrokerageValue } from '../utils/brokerage.js';
 
 const INSTANCE_REQUEST_DELAY_MS = 300;
-const DEFAULT_ANALYZER_TTL_MS = 15 * 1000;
+// Must be meaningfully longer than the 15s instance poll cadence (polling.service.js), otherwise
+// the TTL check never actually hits cache (elapsed time is always >= poll interval) and this
+// fires a broker call every single poll cycle instead of being throttled. Analyzer mode is a
+// rarely/manually toggled setting, so a longer staleness window is imperceptible to users.
+const DEFAULT_ANALYZER_TTL_MS = 60 * 1000;
 const DEFAULT_PING_HEALTHY_MS = 5 * 60 * 1000;
 const DEFAULT_PING_UNHEALTHY_MS = 3 * 60 * 1000;
 const DEFAULT_MAX_UNHEALTHY_PINGS = 5;

@@ -22,13 +22,10 @@ import db from './src/core/database.js';
 import pollingService from './src/services/polling.service.js';
 import marketDataFeedService from './src/services/market-data-feed.service.js';
 import autoExitService from './src/services/auto-exit.service.js';
-// Order monitor service removed - no longer needed after target/stoploss removal
-// import orderMonitorService from './src/services/order-monitor.service.js';
 import telegramService from './src/services/telegram.service.js';
 import openalgoClient from './src/integrations/openalgo/client.js';
 import settingsService from './src/services/settings.service.js';
 import instanceHealthService, { isGeneralEndpointBlackout, isQuoteEndpointBlackout } from './src/services/instance-health.service.js';
-import authLocalService from './src/services/auth-local.service.js';
 import wsGatewayService from './src/services/ws-gateway.service.js';
 import instanceService from './src/services/instance.service.js';
 import tradingviewWebhookRoutes from './src/routes/tradingview-webhook.js';
@@ -48,28 +45,36 @@ let servicesStarted = false;
 
 async function startBackgroundServices() {
   if (servicesStarted) return;
-  await marketDataFeedService.start({
-    quoteInterval: config.polling.marketDataInterval || undefined,
-  });
-  log.info('Market data feed service started');
-
-  await autoExitService.start();
-  log.info('Auto exit service started');
-
-  await pollingService.start();
-  log.info('Polling service started');
-
-  await telegramService.startPolling();
-  log.info('Telegram polling started');
-
+  // Set the guard before any awaits so concurrent requests racing in here (optionalAuth calls
+  // this on every authenticated request) can't all pass the `if (servicesStarted) return` check
+  // during the async startup window and redundantly re-run the whole sequence.
   servicesStarted = true;
+
+  try {
+    await marketDataFeedService.start({
+      quoteInterval: config.polling.marketDataInterval || undefined,
+    });
+    log.info('Market data feed service started');
+
+    await autoExitService.start();
+    log.info('Auto exit service started');
+
+    await pollingService.start();
+    log.info('Polling service started');
+
+    // Telegram integration is webhook-based (see routes/v1/telegram.js POST /webhook), not
+    // polling-based - telegramService has no startPolling/stopPolling methods to call here.
+  } catch (err) {
+    servicesStarted = false;
+    log.error('Failed to start background services', err);
+    throw err;
+  }
 }
 
 function stopBackgroundServices() {
   try {
     marketDataFeedService.stop && marketDataFeedService.stop();
     pollingService.stop && pollingService.stop();
-    telegramService.stopPolling && telegramService.stopPolling();
   } catch (err) {
     log.warn('Error stopping background services', { error: err.message });
   }
@@ -196,33 +201,8 @@ app.use('/webhook/tradingview', auditLogger);
 // API v1
 app.use('/api/v1', apiV1Routes);
 
-// Auth routes (local)
-app.post('/auth/signup', async (req, res, next) => {
-  try {
-    const { email, password } = req.body;
-    const user = await authLocalService.createUser({ email, password });
-    req.session.userId = user.id;
-    req.user = user;
-    await startBackgroundServices();
-    res.json({ status: 'success', data: user });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post('/auth/login', async (req, res, next) => {
-  try {
-    const { email, password } = req.body;
-    const user = await authLocalService.authenticate({ email, password });
-    req.session.userId = user.id;
-    req.user = user;
-    await startBackgroundServices();
-    res.json({ status: 'success', data: user });
-  } catch (error) {
-    next(error);
-  }
-});
-
+// Auth: Supabase is the sole login/signup path (see public/login.html) - the API only
+// needs a logout endpoint to clear the local session cookie used for WS gateway auth.
 app.post('/auth/logout', (req, res, next) => {
   try {
     const sessionId = req.sessionID;
@@ -405,7 +385,7 @@ async function startServer() {
       console.log(`║    - Instance Updates:  Every ${(config.polling.instanceInterval / 1000).toString()}s ║`.padEnd(62) + '║');
       console.log(`║    - Market Data:       Every ${(config.polling.marketDataInterval / 1000).toString()}s (when active) ║`.padEnd(62) + '║');
       console.log('║    - Health Checks:     Every 5m                           ║');
-      console.log('║    - Telegram Polling:  Every 2s                           ║');
+      console.log('║    - Telegram:          Webhook-driven (no polling)        ║');
       console.log('║                                                            ║');
       console.log('╚════════════════════════════════════════════════════════════╝');
       console.log('');
@@ -428,13 +408,8 @@ async function shutdown() {
   log.info('Shutting down server...');
 
   try {
-    // Stop Telegram polling
-    telegramService.stopPolling();
-    log.info('Telegram polling stopped');
-
-    // Order monitor service removed - no longer needed after target/stoploss removal
-    // orderMonitorService.stop();
-    // log.info('Order monitor service stopped');
+    // Telegram is webhook-based, not polling-based - no stopPolling method to call here
+    // (see the matching note at startup, ~line 66).
 
     // Stop polling service
     pollingService.stop();

@@ -23,6 +23,7 @@ import { extractAveragePrice, extractLtp } from '../utils/price-extraction.js';
 import openalgoWsService from './openalgo-ws.service.js';
 import { isGeneralEndpointBlackout, isQuoteEndpointBlackout } from './instance-health.service.js';
 import marketCalendarService from './market-calendar.service.js';
+import marketDataCircuitBreakerService from './market-data-circuit-breaker.service.js';
 
 const DEFAULT_QUOTE_INTERVAL = 5000;               // 5 seconds for quote refresh (WS primary; REST uses TTL)
 const DEFAULT_QUOTE_TTL_IDLE_MS = 15000;
@@ -53,10 +54,6 @@ class MarketDataFeedService extends EventEmitter {
     this.fundsCache = new Map();
     this.intervals = [];
     this.isRunning = false;
-    this.failureState = new Map(); // key instanceId:feed -> state
-    this.failureThreshold = 3;
-    this.cooldownMs = 60000; // 1 minute default
-    this.cooldownJitterMs = 5000;
     this.lastQuoteRefreshAt = 0;
     this.positionRefreshTimestamps = new Map();
     this.fundsRefreshTimestamps = new Map();
@@ -848,9 +845,12 @@ class MarketDataFeedService extends EventEmitter {
     try {
       const instances = await instanceService.getAllInstances({ is_active: true });
       for (const inst of instances) {
-        await this.refreshPositionsForInstance(inst.id, { force });
-        // Per-instance jitter to smooth RPS
-        await this._sleep(Math.floor(Math.random() * FEED_STAGGER_MS) + FEED_STAGGER_MS);
+        const madeLiveCall = await this.refreshPositionsForInstance(inst.id, { force });
+        // Per-instance jitter to smooth RPS - only needed when a real broker call happened;
+        // idle/cached instances just no-op and shouldn't stall the batch loop.
+        if (madeLiveCall) {
+          await this._sleep(Math.floor(Math.random() * FEED_STAGGER_MS) + FEED_STAGGER_MS);
+        }
       }
     } catch (error) {
       log.warn('refreshPositions failed to load instances', { error: error.message });
@@ -867,28 +867,33 @@ class MarketDataFeedService extends EventEmitter {
     this._updateOpenPositionState(instanceId, positions);
   }
 
+  /**
+   * @returns {Promise<boolean>} true if a live broker call was actually made (used by the batch
+   *   loop in refreshPositions() to skip the inter-instance jitter sleep for instances that were
+   *   idle/cached and made no network call).
+   */
   async refreshPositionsForInstance(instanceId, { force = false } = {}) {
     try {
       if (isGeneralEndpointBlackout()) {
-        return;
+        return false;
       }
       if (this._isInstanceUnhealthy(instanceId)) {
         log.warn('Skipping positions refresh - instance unhealthy', { instanceId });
-        return;
+        return false;
       }
       if (!force && !this._hasActiveRisk(instanceId)) {
-        return;
+        return false;
       }
       const circuitKey = this._getCircuitKey(instanceId, 'positions');
       if (this._shouldSkipPolling(circuitKey)) {
-        return;
+        return false;
       }
       const now = Date.now();
       const last = this.positionRefreshTimestamps.get(instanceId) || 0;
       const ttlMs = this._getStatefulTtlMs('positions', instanceId);
       if (!force && now - last < ttlMs) {
         log.debug('Skipping position refresh (TTL)', { instanceId, elapsedMs: now - last, ttlMs });
-        return;
+        return false;
       }
       this.positionRefreshTimestamps.set(instanceId, now);
       const instance = await instanceService.getInstanceById(instanceId);
@@ -896,10 +901,12 @@ class MarketDataFeedService extends EventEmitter {
       this._seedFallbackEntriesFromPositionBook(instanceId, positionBook);
       this.setPositionSnapshot(instanceId, positionBook);
       this._resetFailureState(circuitKey);
+      return true;
     } catch (error) {
       log.warn('Failed to refresh positions for instance', { instanceId, error: error.message });
       const circuitKey = this._getCircuitKey(instanceId, 'positions');
       this._recordFailure(circuitKey, error);
+      return true;
     }
   }
 
@@ -1133,8 +1140,10 @@ class MarketDataFeedService extends EventEmitter {
     try {
       const instances = await instanceService.getAllInstances({ is_active: true });
       for (const inst of instances) {
-        await this.refreshFundsForInstance(inst.id, { force });
-        await this._sleep(Math.floor(Math.random() * FEED_STAGGER_MS) + FEED_STAGGER_MS);
+        const madeLiveCall = await this.refreshFundsForInstance(inst.id, { force });
+        if (madeLiveCall) {
+          await this._sleep(Math.floor(Math.random() * FEED_STAGGER_MS) + FEED_STAGGER_MS);
+        }
       }
     } catch (error) {
       log.warn('refreshFunds failed to load instances', { error: error.message });
@@ -1150,40 +1159,46 @@ class MarketDataFeedService extends EventEmitter {
     this.emit('funds:update', { instanceId, data: funds });
   }
 
+  /**
+   * @returns {Promise<boolean>} true if a live broker call was actually made (see
+   *   refreshPositionsForInstance for why the batch loop needs this).
+   */
   async refreshFundsForInstance(instanceId, { force = false } = {}) {
     // Skip if non-critical polling is paused (LTP operations in progress)
     if (!force && this._isNonCriticalPaused()) {
       log.debug('Skipping funds refresh for instance - non-critical polling paused', { instanceId });
-      return;
+      return false;
     }
     if (isGeneralEndpointBlackout()) {
-      return;
+      return false;
     }
     if (this._isInstanceUnhealthy(instanceId)) {
       log.warn('Skipping funds refresh - instance unhealthy', { instanceId });
-      return;
+      return false;
     }
 
     try {
       const circuitKey = this._getCircuitKey(instanceId, 'funds');
       if (this._shouldSkipPolling(circuitKey)) {
-        return;
+        return false;
       }
       const now = Date.now();
       const last = this.fundsRefreshTimestamps.get(instanceId) || 0;
       if (!force && now - last < this.FUNDS_TTL_MS) {
         log.debug('Skipping funds refresh (TTL)', { instanceId, elapsedMs: now - last });
-        return;
+        return false;
       }
       this.fundsRefreshTimestamps.set(instanceId, now);
       const instance = await instanceService.getInstanceById(instanceId);
       const funds = await openalgoClient.getFunds(instance);
       this.setFundsSnapshot(instanceId, funds);
       this._resetFailureState(circuitKey);
+      return true;
     } catch (error) {
       log.warn('Failed to refresh funds for instance', { instanceId, error: error.message });
       const circuitKey = this._getCircuitKey(instanceId, 'funds');
       this._recordFailure(circuitKey, error);
+      return true;
     }
   }
 
@@ -1354,7 +1369,7 @@ class MarketDataFeedService extends EventEmitter {
   }
 
   _getCircuitKey(instanceId, feed) {
-    return `${instanceId}:${feed}`;
+    return marketDataCircuitBreakerService.getCircuitKey(instanceId, feed);
   }
 
   _isInstanceUnhealthy(instanceId) {
@@ -1456,18 +1471,7 @@ class MarketDataFeedService extends EventEmitter {
   }
 
   getCircuitState(instanceId, feed) {
-    const key = this._getCircuitKey(instanceId, feed);
-    const state = this.failureState.get(key);
-    if (!state || !state.cooldownUntil) {
-      return { open: false, resumeInMs: null, lastError: null };
-    }
-
-    const remaining = state.cooldownUntil - Date.now();
-    return {
-      open: remaining > 0,
-      resumeInMs: remaining > 0 ? remaining : null,
-      lastError: state.lastErrorMessage || null,
-    };
+    return marketDataCircuitBreakerService.getCircuitState(instanceId, feed);
   }
 
   _chunkSymbols(symbols = [], chunkSize = 5) {
@@ -1677,55 +1681,15 @@ class MarketDataFeedService extends EventEmitter {
   }
 
   _shouldSkipPolling(key) {
-    const state = this.failureState.get(key);
-    if (!state) return false;
-    if (state.cooldownUntil && state.cooldownUntil > Date.now()) {
-      if (!state.notified) {
-        log.warn('Skipping feed refresh due to upstream cooldown', {
-          key,
-          resumeInMs: state.cooldownUntil - Date.now(),
-          lastError: state.lastErrorMessage,
-        });
-        state.notified = true;
-      }
-      return true;
-    }
-    return false;
+    return marketDataCircuitBreakerService.shouldSkipPolling(key);
   }
 
   _recordFailure(key, error) {
-    const state = this.failureState.get(key) || {
-      failures: 0,
-      cooldownUntil: null,
-      lastErrorMessage: null,
-      notified: false,
-    };
-
-    state.failures += 1;
-    state.lastErrorMessage = error?.message;
-    state.notified = false;
-
-    const isHtml = error?.isHtmlResponse;
-
-    if (state.failures >= this.failureThreshold || isHtml) {
-      const jitter = Math.floor(Math.random() * this.cooldownJitterMs);
-      state.cooldownUntil = Date.now() + this.cooldownMs + jitter;
-      state.failures = 0;
-      log.warn('Opened circuit breaker for feed polling', {
-        key,
-        cooldownMs: this.cooldownMs + jitter,
-        reason: isHtml ? 'html_response' : 'excess_failures',
-        error: error?.message,
-      });
-    }
-
-    this.failureState.set(key, state);
+    return marketDataCircuitBreakerService.recordFailure(key, error);
   }
 
   _resetFailureState(key) {
-    if (this.failureState.has(key)) {
-      this.failureState.delete(key);
-    }
+    return marketDataCircuitBreakerService.resetFailureState(key);
   }
 
   /**
@@ -1824,6 +1788,31 @@ class MarketDataFeedService extends EventEmitter {
           }
         }
       }
+
+      // No live/cached tick available while the market is closed - fall back to the broker's
+      // last snapshot (close/prev_close), which quote endpoints typically still serve outside
+      // trading hours. This is only ever used as a REFERENCE price for strike/ATM selection when
+      // previewing or resolving legs outside market hours - it never sets an actual order price,
+      // and a real order attempt is still subject to the broker's own closed-market rejection.
+      try {
+        const pool = await marketDataInstanceService.getMarketDataPool();
+        if (pool.length > 0) {
+          const closedResult = await openalgoClient.getLtpWithRetry(pool, exchange, symbol, {
+            maxRounds: 1,
+            baseDelayMs: 50,
+          });
+          if (closedResult?.ltp > 0) {
+            if (closedResult.quote) {
+              const key = this._symbolKey(exchange, symbol);
+              this.symbolQuoteCache.set(key, { quote: closedResult.quote, fetchedAt: Date.now() });
+            }
+            return { ...closedResult, source: 'closed_market_snapshot' };
+          }
+        }
+      } catch (fallbackError) {
+        log.debug('Closed-market snapshot fallback also failed', { exchange, symbol, error: fallbackError.message });
+      }
+
       throw new Error(`Market closed for ${exchange}:${symbol}`);
     }
 
@@ -2317,7 +2306,7 @@ class MarketDataFeedService extends EventEmitter {
     }
 
     // Ensure circuits without cache entries are still surfaced
-    for (const [key, state] of this.failureState.entries()) {
+    for (const [key, state] of marketDataCircuitBreakerService.failureState.entries()) {
       const [instanceId, feed] = key.split(':');
       const alreadyRecorded = entries.some(
         (e) => String(e.instanceId) === instanceId && e.feed === feed

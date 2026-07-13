@@ -26,24 +26,47 @@ class DerivativeResolutionService {
     return exchangeMap[exchange] || exchange;
   }
 
+  /**
+   * Strip a trading symbol/name down to its plain underlying, e.g.
+   * "NATURALGAS 28 JUL 26 FUT" -> "NATURALGAS", "BANKNIFTY25NOV2558000CE" -> "BANKNIFTY".
+   * Broker symbols/names embed a DDMMMYY-style expiry (e.g. 28JUL26) followed by an optional
+   * strike and a CE/PE/FUT suffix - naive trailing-digit stripping breaks on this because the
+   * suffix is letters, not digits, so this matches the date pattern directly instead.
+   * (Mirrors extractUnderlying() in public/js/quick-order.js - keep both in sync.)
+   */
+  _normalizeToUnderlying(value) {
+    const upper = String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!upper) return '';
+    const dateMatch = upper.match(/^([A-Z]+)\d{1,2}[A-Z]{3}\d{2,4}/);
+    if (dateMatch) {
+      return dateMatch[1];
+    }
+    return upper.replace(/\d+$/, '');
+  }
+
   getDerivativeUnderlying(symbol = {}) {
     const exchange = (symbol.exchange || '').toUpperCase();
-    const base = (symbol.underlying_symbol || symbol.symbol || symbol.name || '').trim();
+
+    // Normalize underlying_symbol too, not just the raw-symbol fallback: it's supposed to be a
+    // clean, human-curated name, but some watchlist rows (notably MCX ones added before this fix)
+    // have it populated with a full contract identifier instead (e.g. "NATURALGAS 28 Jul 26 FUT"
+    // instead of "NATURALGAS"). Normalizing is a safe no-op for genuinely clean names - it only
+    // changes anything when a recognizable date/strike/CE/PE/FUT pattern is actually present.
+    if (symbol.underlying_symbol) {
+      const cleaned = this._normalizeToUnderlying(symbol.underlying_symbol);
+      return cleaned || String(symbol.underlying_symbol).trim().toUpperCase();
+    }
+
+    const base = (symbol.symbol || symbol.name || '').trim();
     if (!base) {
       return '';
     }
 
-    const normalize = (value) => value
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '')
-      .replace(/\d+$/, '');
-
     if ((symbol.symbol_type || '').toUpperCase() === 'INDEX' || exchange.endsWith('_INDEX')) {
-      const cleaned = normalize(symbol.symbol || base);
-      return cleaned || normalize(base);
+      return this._normalizeToUnderlying(symbol.symbol || base) || this._normalizeToUnderlying(base);
     }
 
-    return base.toUpperCase();
+    return this._normalizeToUnderlying(base) || base.toUpperCase();
   }
 
   getUnderlyingForClosing(symbol = {}) {
@@ -52,7 +75,7 @@ class DerivativeResolutionService {
       return derived;
     }
     const candidate = (symbol.symbol || symbol.trading_symbol || symbol.name || '').toUpperCase();
-    return candidate.replace(/[^A-Z0-9]/g, '').replace(/\d+$/, '') || candidate;
+    return this._normalizeToUnderlying(candidate) || candidate;
   }
 
   convertExpiryToOpenAlgoFormat(expiry) {

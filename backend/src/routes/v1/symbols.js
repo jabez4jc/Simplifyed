@@ -17,6 +17,7 @@ import { ValidationError } from '../../core/errors.js';
 import { sanitizeString } from '../../utils/sanitizers.js';
 import marketDataFeedService from '../../services/market-data-feed.service.js';
 import symbolResolutionService from '../../services/symbol-resolution.service.js';
+import optionGreeksService from '../../services/option-greeks.service.js';
 
 const router = express.Router();
 
@@ -697,6 +698,43 @@ router.post('/quotes/subscribe', async (req, res, next) => {
         additional: additionalSymbols.length,
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/symbols/greeks?symbol=&exchange=&instanceId=&underlyingSymbol=&underlyingExchange=
+ */
+router.get('/greeks', async (req, res, next) => {
+  try {
+    const { symbol, exchange, instanceId, underlyingSymbol, underlyingExchange } = req.query;
+    if (!instanceId) {
+      throw new ValidationError('instanceId query param is required');
+    }
+    const data = await optionGreeksService.getGreeks(parseInt(instanceId, 10), {
+      symbol, exchange, underlyingSymbol, underlyingExchange,
+    });
+    res.json({ status: 'success', data });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/symbols/greeks/batch
+ * Body: { instanceId, symbols: [{symbol, exchange, underlyingSymbol?, underlyingExchange?}, ...] (max 50), interestRate?, expiryTime? }
+ */
+router.post('/greeks/batch', async (req, res, next) => {
+  try {
+    const { instanceId, symbols, interestRate, expiryTime } = req.body;
+    if (!instanceId) {
+      throw new ValidationError('instanceId is required');
+    }
+    const data = await optionGreeksService.getMultiGreeks(parseInt(instanceId, 10), {
+      symbols, interestRate, expiryTime,
+    });
+    res.json({ status: 'success', data });
   } catch (error) {
     next(error);
   }

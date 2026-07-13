@@ -257,6 +257,10 @@ class WatchlistSymbolService {
 
     normalized.is_enabled = parseBooleanSafe(data.is_enabled, true) ? 1 : 0;
 
+    if (!isPartial || data.margin_sizing_enabled !== undefined) {
+      normalized.margin_sizing_enabled = parseBooleanSafe(data.margin_sizing_enabled, false) ? 1 : 0;
+    }
+
     const numericalFields = [
       'target_points_direct',
       'stoploss_points_direct',
@@ -271,6 +275,8 @@ class WatchlistSymbolService {
       'trailing_stoploss_points_options',
       'trailing_activation_points_options',
       'limit_buffer_points',
+      'margin_utilization_pct',
+      'max_margin_per_trade',
     ];
 
     for (const field of numericalFields) {

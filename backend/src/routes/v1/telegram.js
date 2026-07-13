@@ -46,28 +46,4 @@ router.post('/test', requireAuth, async (req, res, next) => {
   }
 });
 
-/**
- * POST /api/v1/telegram/link
- * Generate linking code
- */
-router.post('/link', async (req, res, next) => {
-  try {
-    // Deprecated in UI; keep 410 to signal gone
-    res.status(410).json({ status: 'error', message: 'Telegram linking is disabled' });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
- * GET /api/v1/telegram/status
- * Check if Telegram is linked
- */
-router.get('/status', async (req, res, next) => {
-  try {
-    res.status(410).json({ status: 'error', message: 'Telegram linking is disabled' });
-  } catch (error) {
-    next(error);
-  }
-});
 export default router;

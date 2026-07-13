@@ -428,4 +428,18 @@ router.post('/sync/:instanceId', async (req, res, next) => {
   }
 });
 
+/**
+ * GET /api/v1/orders/:instanceId/:orderId/status
+ * On-demand single-order status lookup (lighter than /sync for checking just one order).
+ */
+router.get('/:instanceId/:orderId/status', async (req, res, next) => {
+  try {
+    const instanceId = parseInt(req.params.instanceId, 10);
+    const result = await orderService.getOrderStatus(instanceId, req.params.orderId);
+    res.json({ status: 'success', data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
 export default router;

@@ -6,10 +6,59 @@
 import express from 'express';
 import quickOrderService from '../../services/quick-order.service.js';
 import idempotencyService from '../../services/idempotency.service.js';
+import marginSizingService from '../../services/margin-sizing.service.js';
+import instanceService from '../../services/instance.service.js';
 import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';
 import db from '../../core/database.js';
+
+const OPTIONS_ACTION_SIDE = {
+  BUY_CE: 'BUY', SELL_CE: 'SELL', BUY_PE: 'BUY', SELL_PE: 'SELL',
+  INCREASE_CE: 'BUY', INCREASE_PE: 'BUY', REDUCE_CE: 'SELL', REDUCE_PE: 'SELL',
+};
+
+/**
+ * Resolve quantity for a MARGIN_BASED watchlist symbol via margin-sizing.service.js.
+ * Requires an explicit single instanceId — margin-based sizing is instance-specific
+ * (each broker account has its own available margin), so broadcast-to-all is not supported here.
+ */
+async function resolveMarginBasedQuantity({ symbolId, instanceId, action }) {
+  const symbolConfig = await db.get('SELECT * FROM watchlist_symbols WHERE id = ?', [symbolId]);
+  if (!symbolConfig) {
+    throw new ValidationError('Symbol not found');
+  }
+  if (symbolConfig.qty_type !== 'MARGIN_BASED') {
+    return null;
+  }
+  if (!instanceId) {
+    throw new ValidationError('instanceId is required for MARGIN_BASED quantity sizing (cannot broadcast to all instances)');
+  }
+
+  const instance = await instanceService.getInstanceById(instanceId);
+  if (!instance) {
+    throw new ValidationError('Instance not found');
+  }
+
+  const { quantity } = await marginSizingService.computeLotQuantity({
+    instance,
+    symbolConfig,
+    orderContext: {
+      exchange: symbolConfig.exchange,
+      symbol: symbolConfig.symbol,
+      action: OPTIONS_ACTION_SIDE[action] || action,
+      product: symbolConfig.product_type,
+      orderType: symbolConfig.order_type,
+    },
+    watchlistId: symbolConfig.watchlist_id,
+  });
+
+  if (!quantity || quantity <= 0) {
+    throw new ValidationError('Insufficient margin to size an order for this symbol');
+  }
+
+  return quantity;
+}
 
 const router = express.Router();
 router.use(requireAuth);
@@ -127,12 +176,23 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
       }
     }
 
+    // MARGIN_BASED symbols may omit quantity and have it computed from available margin
+    let resolvedQuantity = quantity ? parseInt(quantity, 10) : undefined;
+    const parsedInstanceId = instanceId ? parseInt(instanceId, 10) : undefined;
+    if (!resolvedQuantity) {
+      resolvedQuantity = await resolveMarginBasedQuantity({
+        symbolId: parsedSymbolId,
+        instanceId: parsedInstanceId,
+        action,
+      }) || undefined;
+    }
+
     log.info('Placing quick order', {
       symbolId: parsedSymbolId,
       action,
       tradeMode,
       optionsLeg,
-      quantity,
+      quantity: resolvedQuantity,
       instanceId,
       expiry,
       operatingMode,
@@ -146,8 +206,8 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
       action,
       tradeMode,
       optionsLeg,
-      quantity: quantity ? parseInt(quantity, 10) : undefined,
-      instanceId: instanceId ? parseInt(instanceId, 10) : undefined,
+      quantity: resolvedQuantity,
+      instanceId: parsedInstanceId,
       product: product || 'MIS',
       strategy: strategy || 'quickorder',
       expiry: expiry || null,

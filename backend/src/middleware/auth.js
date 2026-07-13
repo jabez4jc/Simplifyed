@@ -147,30 +147,15 @@ async function ensureLocalUserFromToken(payload) {
   return attachRoleAndPermissions(user.id);
 }
 
-// Optional auth: attaches req.user if session exists or test mode enabled
+// Optional auth: Supabase is the sole login source (see public/login.html). Attaches req.user
+// from a verified Supabase bearer token, or from test mode when enabled. The Express session
+// (configureSession) is unrelated to this - it only backs WS gateway cookie auth.
 export async function optionalAuth(req, res, next) {
   try {
     const testModeEnabled =
       config.auth.enableTestMode === true ||
       process.env.ENABLE_TEST_MODE === 'true' ||
       config.testMode?.enabled === true;
-
-    // Session-based auth (local login)
-    if (req.session?.userId) {
-      try {
-        const user = await attachRoleAndPermissions(req.session.userId);
-        if (user) {
-          req.user = user;
-          req.isAuthenticated = () => true;
-          if (req.app?.locals?.startServices) {
-            await req.app.locals.startServices();
-          }
-          return next();
-        }
-      } catch (err) {
-        log.warn('Failed to attach session user', { error: err.message });
-      }
-    }
 
     if (testModeEnabled) {
       req.user = {
@@ -230,7 +215,9 @@ export async function optionalAuth(req, res, next) {
 
         const user = await ensureLocalUserFromToken(payload);
         if (user) {
-          log.info('User authenticated successfully', { userId: user.id, email: user.email, role: user.role });
+          // Successful auth is routine on every single request - not troubleshooting signal.
+          // Failures (below, "Token verification failed") stay visible.
+          log.debug('User authenticated successfully', { userId: user.id, email: user.email, role: user.role });
           req.user = user;
           req.isAuthenticated = () => true;
           if (req.app?.locals?.startServices) {

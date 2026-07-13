@@ -12,6 +12,7 @@ import pnlSnapshotService from './pnl-snapshot.service.js';
 import orderRetryService from './order-retry.service.js';
 import instanceService from './instance.service.js';
 import brokerCapabilitiesService from './broker-capabilities.service.js';
+import marginSizingService from './margin-sizing.service.js';
 
 const DEFAULT_PAYLOAD = {
   pricetype: 'MARKET',
@@ -219,9 +220,17 @@ class TradingviewBroadcastService {
         const rawMultiplier = parseIntSafe(target.multiplier, 1);
         const instanceMultiplier = Math.min(Math.max(rawMultiplier, 1), 999);
         const payloadToSend = await this._ensureLimitPricing(normalizedPayload, watchlist, target);
+        let quantity = payloadToSend.quantity * instanceMultiplier;
+
+        // Sentinel: quantity === 0 on a MARGIN_BASED watchlist symbol means "size from margin"
+        // for this specific target instance, instead of a fixed TradingView-supplied quantity.
+        if (payloadToSend.quantity === 0 && watchlist?.id && target?.instance_id) {
+          quantity = await this._resolveMarginBasedWebhookQuantity(payloadToSend, watchlist, target) ?? quantity;
+        }
+
         const targetPayload = {
           ...payloadToSend,
-          quantity: payloadToSend.quantity * instanceMultiplier,
+          quantity,
           position_size: payloadToSend.position_size * instanceMultiplier,
         };
         return this._dispatchToTarget(target, targetPayload, instanceMultiplier, watchlist);
@@ -440,6 +449,44 @@ class TradingviewBroadcastService {
     }
 
     return response;
+  }
+
+  async _resolveMarginBasedWebhookQuantity(payload, watchlist, target) {
+    try {
+      const symbolRow = await watchlistSymbolService.findSymbolByWatchlist(
+        watchlist.id,
+        payload.exchange,
+        payload.symbol
+      );
+      if (!symbolRow || symbolRow.qty_type !== 'MARGIN_BASED') {
+        return null;
+      }
+
+      const instance = await instanceService.getInstanceById(target.instance_id);
+      if (!instance) {
+        return null;
+      }
+
+      const { quantity } = await marginSizingService.computeLotQuantity({
+        instance,
+        symbolConfig: symbolRow,
+        orderContext: {
+          exchange: payload.exchange,
+          symbol: payload.symbol,
+          action: payload.action,
+          product: payload.product,
+          orderType: payload.pricetype,
+        },
+        watchlistId: watchlist.id,
+      });
+      return quantity > 0 ? quantity : null;
+    } catch (error) {
+      log.warn('[TV Webhook] Margin-based quantity resolution failed, falling back to payload quantity', {
+        target: target.name,
+        error: error.message,
+      });
+      return null;
+    }
   }
 
   async _scheduleRetryForTarget({ target, payload, response, watchlist }) {

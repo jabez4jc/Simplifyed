@@ -13,10 +13,19 @@ import openalgoClient from '../integrations/openalgo/client.js';
 
 const STRIKES_PER_SIDE = 7; // 7 above + 7 below + ATM = 15 max
 
+// Broker option-chain calls that fail predictably (e.g. an instance that doesn't actually
+// support the endpoint despite supports_option_chain=1) get retried on every quote/preview
+// poll tick otherwise - this cooldown stops hammering a call that's essentially guaranteed
+// to keep failing, mirroring the quote-failure cooldown already used in openalgo/client.js.
+const CHAIN_FAILURE_THRESHOLD = 3;
+const CHAIN_FAILURE_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+
 class OptionsResolutionService {
   constructor() {
     // Cache the last locked ATM per underlying/expiry to add hysteresis and avoid flip-flops
     this.atmLocks = new Map();
+    // key: `${instanceId}|${exchange}|${underlying}|${expiry}` -> { count, lastFailAt }
+    this._chainFailureCache = new Map();
   }
 
   _buildAtmLockKey(underlying, exchange, expiry) {
@@ -183,7 +192,14 @@ class OptionsResolutionService {
    */
   async _getOptionChain(underlying, exchange, expiry, instance) {
     // Prefer broker option-chain API when supported by instance (limited strikes with LTP)
-    if (instance?.supports_option_chain) {
+    const chainFailureKey = `${instance?.id || ''}|${(exchange || '').toUpperCase()}|${(underlying || '').toUpperCase()}|${expiry || ''}`;
+    const failureState = this._chainFailureCache.get(chainFailureKey);
+    const inCooldown =
+      failureState &&
+      failureState.count >= CHAIN_FAILURE_THRESHOLD &&
+      Date.now() - failureState.lastFailAt < CHAIN_FAILURE_COOLDOWN_MS;
+
+    if (instance?.supports_option_chain && !inCooldown) {
       try {
         const brokerChain = await openalgoClient.getOptionChain(
           instance,
@@ -194,15 +210,30 @@ class OptionsResolutionService {
         );
         const normalized = this._buildOptionChainFromBroker(brokerChain, exchange);
         if (normalized) {
+          this._chainFailureCache.delete(chainFailureKey);
           return normalized;
         }
       } catch (error) {
-        log.warn('Broker option chain fetch failed, falling back to cache', {
-          underlying,
-          expiry,
-          exchange,
-          error: error.message,
-        });
+        const nextCount = (failureState?.count || 0) + 1;
+        this._chainFailureCache.set(chainFailureKey, { count: nextCount, lastFailAt: Date.now() });
+        // Only log the first few failures at warn - once cooldown kicks in, stay silent until
+        // it's retried again so a broken instance doesn't flood the logs every poll tick.
+        if (nextCount <= CHAIN_FAILURE_THRESHOLD) {
+          log.warn('Broker option chain fetch failed, falling back to cache', {
+            underlying,
+            expiry,
+            exchange,
+            error: error.message,
+          });
+          if (nextCount === CHAIN_FAILURE_THRESHOLD) {
+            log.warn('Broker option chain repeatedly failing, entering cooldown', {
+              underlying,
+              expiry,
+              exchange,
+              cooldownMs: CHAIN_FAILURE_COOLDOWN_MS,
+            });
+          }
+        }
       }
     }
 

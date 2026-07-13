@@ -8,6 +8,10 @@ import { extractLtp } from '../utils/price-extraction.js';
 const RETRY_DELAY_MS = 5000;
 const FINAL_CHECK_DELAY_MS = 5000;
 const MAX_SLIPPAGE_PCT = 0.005;
+// Hard cap on cancel-and-replace cycles: bounds worst-case duplicate exposure to at most
+// (1 original + MAX_RETRY_ATTEMPTS) orders even if a race condition slips past the order-status
+// check below, instead of the retry<->final-check ping-pong repeating indefinitely.
+const MAX_RETRY_ATTEMPTS = 1;
 
 class OrderRetryService {
   constructor() {
@@ -28,6 +32,7 @@ class OrderRetryService {
     allowPartialRetry = true,
     repeatUntilClosed = null,
     ignoreSlippage = null,
+    attempt = 0,
   }) {
     if (!instance?.id || !orderId || !payload) return;
     if ((payload.pricetype || '').toUpperCase() !== 'LIMIT') return;
@@ -50,6 +55,7 @@ class OrderRetryService {
         allowPartialRetry,
         repeatUntilClosed,
         ignoreSlippage,
+        attempt,
       }).catch((error) => {
         log.warn('Order retry failed', { order_id: orderId, error: error.message });
       });
@@ -71,7 +77,17 @@ class OrderRetryService {
     allowPartialRetry,
     repeatUntilClosed,
     ignoreSlippage,
+    attempt = 0,
   }) {
+    // Hard cap: never place more than (1 original + MAX_RETRY_ATTEMPTS) orders for the same
+    // intended trade, regardless of how the position/orderbook checks below resolve.
+    if (attempt >= MAX_RETRY_ATTEMPTS) {
+      log.info('Retry skipped - max retry attempts reached', {
+        instance_id: instance.id, order_id: orderId, attempt,
+      });
+      return;
+    }
+
     const snapshot = await marketDataFeedService.getOrderbookSnapshot(instance.id, { force: true });
     const raw = snapshot?.data || [];
     const orders = Array.isArray(raw) ? raw : raw.orders || raw.data || [];
@@ -81,6 +97,29 @@ class OrderRetryService {
     });
 
     if (!order) {
+      // An order missing from the open-orders list almost always means it reached a terminal
+      // state (filled, rejected, or cancelled) - NOT that it silently vanished and still needs
+      // placing. Confirm via the order's own status before ever placing a replacement: inferring
+      // "not yet filled" from a live position-book snapshot is unreliable (broker-side position
+      // updates can lag a fill by more than this retry's poll interval), and treating that lag as
+      // "still needs placing" is exactly what caused duplicate full-quantity orders here before.
+      // Mirrors AlgoMirror's principle: an uncertain/timeout outcome is never auto-retried,
+      // because retrying an order that actually went through risks a duplicate fill.
+      const confirmedStatus = await this._confirmOrderStatus(instance, orderId, strategy);
+      if (confirmedStatus === 'filled') {
+        log.info('Retry skipped - order status confirms already filled', {
+          instance_id: instance.id, order_id: orderId,
+        });
+        return;
+      }
+      if (confirmedStatus === 'uncertain') {
+        log.warn('Retry skipped - could not confirm order status, avoiding possible duplicate', {
+          instance_id: instance.id, order_id: orderId,
+        });
+        return;
+      }
+      // confirmedStatus === 'rejected' (or 'cancelled') from here on - genuinely safe to retry.
+
       if (repeatUntilClosed && payload) {
         const positionMatch = await this._positionMatchesTarget(instance, payload);
         if (positionMatch) {
@@ -359,6 +398,7 @@ class OrderRetryService {
       allowPartialRetry,
       repeatUntilClosed: resolvedRepeat,
       ignoreSlippage: resolvedIgnore,
+      attempt: attempt + 1,
     });
   }
 
@@ -375,6 +415,7 @@ class OrderRetryService {
     allowPartialRetry = true,
     repeatUntilClosed = false,
     ignoreSlippage = false,
+    attempt = 0,
   }) {
     if (!instance?.id || !orderId) return;
     const key = `${instance.id}:${orderId}:final`;
@@ -395,6 +436,7 @@ class OrderRetryService {
         allowPartialRetry,
         repeatUntilClosed,
         ignoreSlippage,
+        attempt,
       }).catch((error) => {
         log.warn('Final retry check failed', { order_id: orderId, error: error.message });
       });
@@ -416,6 +458,7 @@ class OrderRetryService {
     allowPartialRetry,
     repeatUntilClosed,
     ignoreSlippage,
+    attempt = 0,
   }) {
     const snapshot = await marketDataFeedService.getOrderbookSnapshot(instance.id, { force: true });
     const raw = snapshot?.data || [];
@@ -453,6 +496,7 @@ class OrderRetryService {
           allowPartialRetry,
           repeatUntilClosed,
           ignoreSlippage,
+          attempt,
         });
         return;
       }
@@ -501,6 +545,7 @@ class OrderRetryService {
         allowPartialRetry,
         repeatUntilClosed,
         ignoreSlippage,
+        attempt,
       });
       return;
     }
@@ -534,6 +579,30 @@ class OrderRetryService {
         instance_id: instanceId,
         error: error.message,
       });
+    }
+  }
+
+  /**
+   * Authoritative check for a specific order_id, used only when the order has already dropped
+   * out of the open-orders list (so "still open" isn't an option). Returns 'filled' (definite -
+   * do not retry), 'rejected' (definite - safe to place a replacement), or 'uncertain' (API
+   * failure or an unrecognized/ambiguous status - do not retry, since retrying an order that
+   * actually filled would duplicate it).
+   */
+  async _confirmOrderStatus(instance, orderId, strategy) {
+    try {
+      const response = await openalgoClient.getOrderStatus(instance, {
+        orderid: orderId,
+        strategy: strategy || undefined,
+      });
+      const statusRaw = (response?.order_status || response?.status || '').toString().toLowerCase();
+      const normalized = this._normalizeStatus(statusRaw);
+      if (normalized === 'complete') return 'filled';
+      if (normalized === 'rejected' || normalized === 'cancelled') return 'rejected';
+      return 'uncertain';
+    } catch (error) {
+      log.warn('Order status confirmation failed', { instance_id: instance?.id, order_id: orderId, error: error.message });
+      return 'uncertain';
     }
   }
 
