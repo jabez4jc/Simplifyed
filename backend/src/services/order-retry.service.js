@@ -4,6 +4,7 @@ import orderPlacementService from './order-placement.service.js';
 import orderService from './order.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import { extractLtp } from '../utils/price-extraction.js';
+import { normalizeSymbolKey, normalizeExchange, normalizeProduct } from '../utils/symbol-parsing.util.js';
 
 const RETRY_DELAY_MS = 5000;
 const FINAL_CHECK_DELAY_MS = 5000;
@@ -839,18 +840,15 @@ class OrderRetryService {
   }
 
   _normalizeSymbol(symbol) {
-    if (!symbol) return null;
-    return String(symbol).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    return normalizeSymbolKey(symbol);
   }
 
   _normalizeExchange(exchange) {
-    if (!exchange) return null;
-    return String(exchange).trim().toUpperCase();
+    return normalizeExchange(exchange);
   }
 
   _normalizeProduct(product) {
-    if (!product) return null;
-    return String(product).trim().toUpperCase();
+    return normalizeProduct(product);
   }
 
   _parseNumber(value) {

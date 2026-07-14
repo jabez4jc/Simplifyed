@@ -12,6 +12,8 @@ import { toISTISOString } from '../../utils/time.js';
 import { maskApiKey } from '../../utils/sanitizers.js';
 import settingsService from '../../services/settings.service.js';
 import { isGeneralEndpointBlackout, isQuoteEndpointBlackout } from '../../services/instance-health.service.js';
+import instanceHealthTrackerService from './instance-health-tracker.service.js';
+import resolutionCacheService from './resolution-cache.service.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -115,274 +117,43 @@ class OpenAlgoClient extends EventEmitter {
       reloadPromise: null,  // Promise-based lock for concurrent reload calls
     };
 
-    // Symbol resolution cache for futures/options (bounded to prevent memory growth)
-    this.symbolResolutionCache = new Map(); // key: underlying|exchange|expiry -> { symbol, resolvedAt }
-    this.symbolResolutionTtl = 5 * 60 * 1000; // 5 minutes
-    this.symbolResolutionCacheMaxSize = 1000; // Max entries to prevent unbounded growth
-
-    // Lot size cache (bounded to prevent memory growth)
-    this.lotSizeCache = new Map(); // key: exchange|symbol -> { lotSize, cachedAt }
-    this.lotSizeCacheTtl = 24 * 60 * 60 * 1000; // 24 hours (lot sizes rarely change)
-    this.lotSizeCacheMaxSize = 500; // Max entries to prevent unbounded growth
-
-    // Instance health tracking for circuit breaker pattern
-    // Tracks instances that return HTML/error responses and puts them in cooldown
-    // DNS/HTML errors: Immediate cooldown, max 3 retries (6 mins), then require manual refresh
-    // Non-critical errors (5xx, rate-limit): Standard cooldown with exponential backoff, auto-recovers
-    this.instanceHealth = new Map(); // key: instanceId -> { failures, cooldownUntil, lastError, isHtml, isDnsError, dnsRetryCount, cooldownCount, requiresManualRefresh }
-    this.instanceHealthConfig = {
-      failureThreshold: 3,             // 3 consecutive failures before cooldown (for non-critical errors only)
-      cooldownMs: 5 * 60 * 1000,       // 5 minutes cooldown for non-critical repeated failures
-      dnsCooldownMs: 2 * 60 * 1000,    // 2 minutes cooldown for DNS/HTML errors
-      htmlCooldownMs: 2 * 60 * 1000,   // 2 minutes cooldown for HTML responses
-      maxCooldownMs: 30 * 60 * 1000,   // 30 minutes max cooldown (with exponential backoff for non-critical)
-      maxDnsRetries: 3,                // Max 3 retries for DNS/HTML errors before requiring manual refresh (6 mins total)
-    };
+    // Symbol resolution cache and lot-size cache moved to resolution-cache.service.js
+    // (fully self-contained, zero coupling to anything else in this file).
+    // Instance health/circuit-breaker tracking moved to instance-health-tracker.service.js
+    // (the "circuit breaker disabled" override below is the one piece of state that couldn't
+    // move with it - see the wrapper methods further down for why).
   }
 
-  /**
-   * Check if an instance is healthy (not in cooldown or requiring manual refresh)
-   * @param {number|string} instanceId - Instance ID
-   * @returns {boolean} - True if healthy, false if in cooldown or requires manual refresh
-   */
+  // Delegated to instance-health-tracker.service.js - names/signatures kept identical so every
+  // existing internal and external call site keeps working unmodified. circuitBreakerDisabled
+  // (set in _loadRateLimitSettings below, which stayed in this file) is passed explicitly rather
+  // than read from shared state, so the tracker service stays fully self-contained.
   isInstanceHealthy(instanceId) {
-    // If circuit breaker is disabled, always return healthy
-    if (this.circuitBreakerDisabled) {
-      return true;
-    }
-
-    const health = this.instanceHealth.get(instanceId);
-    if (!health) return true;
-
-    // Instance requires manual refresh (DNS/HTML errors only) - don't auto-recover
-    if (health.requiresManualRefresh) {
-      return false;
-    }
-
-    const now = Date.now();
-    if (health.cooldownUntil && now < health.cooldownUntil) {
-      return false;
-    }
-
-    // Cooldown expired - check if this was a DNS/HTML error that needs retry tracking
-    const hasCriticalError = health.isDnsError || health.isHtml;
-    if (hasCriticalError && health.dnsRetryCount >= this.instanceHealthConfig.maxDnsRetries) {
-      // Mark as requiring manual refresh for DNS/HTML errors only
-      health.requiresManualRefresh = true;
-      health.cooldownUntil = null; // No more auto-cooldowns
-      this.instanceHealth.set(instanceId, health);
-
-      log.warn('Instance requires manual refresh - max DNS/HTML retries reached', {
-        instanceId,
-        dnsRetryCount: health.dnsRetryCount,
-        isDnsError: health.isDnsError,
-        isHtmlError: health.isHtml,
-        lastError: health.lastError,
-      });
-      return false;
-    }
-
-    // For non-critical errors, auto-recover when cooldown expires
-    if (!hasCriticalError && health.cooldownUntil && now >= health.cooldownUntil) {
-      // Cooldown expired for non-critical error, clear health state
-      this.instanceHealth.delete(instanceId);
-      log.debug('Instance health auto-recovered after cooldown', { instanceId });
-      return true;
-    }
-
-    // Cooldown expired and retries remaining, allow next attempt
-    return true;
+    return instanceHealthTrackerService.isInstanceHealthy(instanceId, this.circuitBreakerDisabled);
   }
 
-  /**
-   * Check if instance requires manual refresh
-   * @param {number|string} instanceId - Instance ID
-   * @returns {boolean} - True if instance requires manual refresh
-   */
   instanceRequiresManualRefresh(instanceId) {
-    const health = this.instanceHealth.get(instanceId);
-    return health?.requiresManualRefresh === true;
+    return instanceHealthTrackerService.instanceRequiresManualRefresh(instanceId);
   }
 
-  /**
-   * Get instance health status for display
-   * @param {number|string} instanceId - Instance ID
-   * @returns {Object|null} - Health status or null if healthy
-   */
   getInstanceHealthStatus(instanceId) {
-    const health = this.instanceHealth.get(instanceId);
-    if (!health) return null;
-
-    const now = Date.now();
-    const cooldownRemaining = health.cooldownUntil ? Math.max(0, health.cooldownUntil - now) : 0;
-
-    return {
-      isHealthy: this.isInstanceHealthy(instanceId),
-      requiresManualRefresh: health.requiresManualRefresh || false,
-      dnsRetryCount: health.dnsRetryCount || 0,
-      maxDnsRetries: this.instanceHealthConfig.maxDnsRetries,
-      cooldownRemaining,
-      cooldownUntil: health.cooldownUntil,
-      lastError: health.lastError,
-      isDnsError: health.isDnsError || false,
-      isHtmlError: health.isHtml || false,
-    };
+    return instanceHealthTrackerService.getInstanceHealthStatus(instanceId, this.circuitBreakerDisabled);
   }
 
-  /**
-   * Get remaining cooldown time for an instance
-   * @param {number|string} instanceId - Instance ID
-   * @returns {number} - Remaining cooldown in ms, or 0 if healthy
-   */
   getInstanceCooldownRemaining(instanceId) {
-    const health = this.instanceHealth.get(instanceId);
-    if (!health || !health.cooldownUntil) return 0;
-
-    const remaining = health.cooldownUntil - Date.now();
-    return remaining > 0 ? remaining : 0;
+    return instanceHealthTrackerService.getInstanceCooldownRemaining(instanceId);
   }
 
-  /**
-   * Record an instance failure and potentially put it in cooldown
-   *
-   * Two different behaviors based on error type:
-   * 1. DNS/HTML errors (critical): Immediate 2-min cooldown, max 3 retries, then require manual refresh
-   * 2. Non-critical errors (5xx, rate-limit): 3 failures before cooldown, exponential backoff, auto-recovers
-   *
-   * @param {number|string} instanceId - Instance ID
-   * @param {Error} error - The error that occurred
-   * @param {Object} options - Additional options
-   * @param {boolean} options.isHtml - Whether the response was HTML (instance likely down)
-   * @param {boolean} options.isDnsError - Whether this is a DNS resolution error
-   */
   recordInstanceFailure(instanceId, error, options = {}) {
-    const { isHtml = false, isDnsError = false } = options;
-    const now = Date.now();
-    const { failureThreshold, cooldownMs, htmlCooldownMs, dnsCooldownMs, maxCooldownMs, maxDnsRetries } = this.instanceHealthConfig;
-
-    // Check if this is a critical error (DNS or HTML) that requires immediate cooldown
-    const isCriticalError = isHtml || isDnsError;
-
-    let health = this.instanceHealth.get(instanceId) || {
-      failures: 0,
-      cooldownUntil: null,
-      lastError: null,
-      isHtml: false,
-      isDnsError: false,
-      dnsRetryCount: 0,           // Only for DNS/HTML errors - triggers manual refresh
-      cooldownCount: 0,           // For non-critical errors - exponential backoff
-      requiresManualRefresh: false,
-    };
-
-    health.failures += 1;
-    health.lastError = error?.message || 'Unknown error';
-    health.lastFailureAt = now;
-
-    // For critical errors (DNS/HTML), immediately enter cooldown with retry tracking
-    if (isCriticalError) {
-      // Mark the error type (sticky - once set, stays set until manual refresh)
-      health.isHtml = isHtml || health.isHtml;
-      health.isDnsError = isDnsError || health.isDnsError;
-      health.dnsRetryCount += 1;
-
-      // Check if max retries reached
-      if (health.dnsRetryCount >= maxDnsRetries) {
-        health.requiresManualRefresh = true;
-        health.cooldownUntil = null; // No more automatic retries
-
-        log.error('Instance marked unhealthy - requires manual refresh', {
-          instanceId,
-          dnsRetryCount: health.dnsRetryCount,
-          reason: isDnsError ? 'dns_error' : 'html_response',
-          lastError: health.lastError,
-          message: 'Instance will not be retried until user performs manual refresh',
-        });
-      } else {
-        // Enter 2-minute cooldown for next retry
-        const baseCooldown = isDnsError ? dnsCooldownMs : htmlCooldownMs;
-        health.cooldownUntil = now + baseCooldown;
-
-        log.warn('Instance entered cooldown - will retry (DNS/HTML error)', {
-          instanceId,
-          cooldownMs: baseCooldown,
-          dnsRetryCount: health.dnsRetryCount,
-          maxDnsRetries,
-          retriesRemaining: maxDnsRetries - health.dnsRetryCount,
-          reason: isDnsError ? 'dns_error' : 'html_response',
-          lastError: health.lastError,
-          resumeAt: toISTISOString(health.cooldownUntil),
-        });
-      }
-
-      health.failures = 0; // Reset failure counter after entering cooldown
-    } else if (health.failures >= failureThreshold) {
-      // For non-critical repeated failures, use exponential backoff cooldown
-      // These auto-recover - do NOT set requiresManualRefresh
-
-      // Calculate cooldown with exponential backoff
-      const backoffExponent = Math.min(health.cooldownCount, 3); // Cap at 8x multiplier
-      const backoffMultiplier = Math.pow(2, backoffExponent);
-      const calculatedCooldown = Math.min(cooldownMs * backoffMultiplier, maxCooldownMs);
-
-      health.cooldownUntil = now + calculatedCooldown;
-      health.cooldownCount += 1;
-      health.failures = 0;
-
-      log.warn('Instance entered cooldown due to repeated failures (auto-recovers)', {
-        instanceId,
-        cooldownMs: calculatedCooldown,
-        cooldownCount: health.cooldownCount,
-        lastError: health.lastError,
-        resumeAt: toISTISOString(health.cooldownUntil),
-      });
-    }
-
-    this.instanceHealth.set(instanceId, health);
+    return instanceHealthTrackerService.recordInstanceFailure(instanceId, error, options);
   }
 
-  /**
-   * Reset instance health after successful request
-   * Only resets if instance doesn't require manual refresh
-   * @param {number|string} instanceId - Instance ID
-   */
   resetInstanceHealth(instanceId) {
-    const health = this.instanceHealth.get(instanceId);
-    if (!health) return;
-
-    // Don't auto-reset if instance requires manual refresh
-    if (health.requiresManualRefresh) {
-      log.debug('Instance requires manual refresh - not auto-resetting', { instanceId });
-      return;
-    }
-
-    this.instanceHealth.delete(instanceId);
-    log.debug('Instance health reset after successful request', { instanceId });
+    return instanceHealthTrackerService.resetInstanceHealth(instanceId);
   }
 
-  /**
-   * Force reset instance health (called on manual refresh by user)
-   * This clears all health state including requiresManualRefresh flag
-   * @param {number|string} instanceId - Instance ID
-   */
   forceResetInstanceHealth(instanceId) {
-    const hadHealth = this.instanceHealth.has(instanceId);
-    const previousState = this.instanceHealth.get(instanceId);
-
-    this.instanceHealth.delete(instanceId);
-
-    if (hadHealth) {
-      log.info('Instance health force reset via manual refresh', {
-        instanceId,
-        previousState: previousState ? {
-          requiresManualRefresh: previousState.requiresManualRefresh,
-          dnsRetryCount: previousState.dnsRetryCount,
-          cooldownCount: previousState.cooldownCount,
-          lastError: previousState.lastError,
-          isDnsError: previousState.isDnsError,
-          isHtml: previousState.isHtml,
-        } : null,
-      });
-    }
+    return instanceHealthTrackerService.forceResetInstanceHealth(instanceId);
   }
 
   /**
@@ -514,138 +285,23 @@ class OpenAlgoClient extends EventEmitter {
    * @param {Object} resolved - Resolved symbol data
    */
   cacheResolvedSymbol(underlying, exchange, expiry, resolved) {
-    const key = `${underlying}|${exchange}|${expiry}`;
-
-    // Evict oldest entries if cache is at max size
-    if (this.symbolResolutionCache.size >= this.symbolResolutionCacheMaxSize) {
-      this._evictOldestEntries(this.symbolResolutionCache, 'resolvedAt', 100);
-    }
-
-    this.symbolResolutionCache.set(key, {
-      ...resolved,
-      resolvedAt: Date.now(),
-    });
+    return resolutionCacheService.cacheResolvedSymbol(underlying, exchange, expiry, resolved);
   }
 
-  /**
-   * Get cached resolved symbol if still valid
-   * @param {string} underlying - Underlying symbol
-   * @param {string} exchange - Exchange
-   * @param {string} expiry - Expiry date
-   * @returns {Object|null} - Resolved symbol or null if not cached/expired
-   */
   getCachedResolvedSymbol(underlying, exchange, expiry) {
-    const key = `${underlying}|${exchange}|${expiry}`;
-    const cached = this.symbolResolutionCache.get(key);
-    if (cached && (Date.now() - cached.resolvedAt) < this.symbolResolutionTtl) {
-      return cached;
-    }
-    return null;
+    return resolutionCacheService.getCachedResolvedSymbol(underlying, exchange, expiry);
   }
 
-  /**
-   * Cache lot size for a symbol with bounded size
-   * Evicts oldest entries when cache exceeds max size
-   * @param {string} exchange - Exchange
-   * @param {string} symbol - Symbol
-   * @param {number} lotSize - Lot size
-   */
   cacheLotSize(exchange, symbol, lotSize) {
-    const key = `${exchange}|${symbol}`;
-
-    // Evict oldest entries if cache is at max size
-    if (this.lotSizeCache.size >= this.lotSizeCacheMaxSize) {
-      this._evictOldestEntries(this.lotSizeCache, 'cachedAt', 50);
-    }
-
-    this.lotSizeCache.set(key, {
-      lotSize,
-      cachedAt: Date.now(),
-    });
+    return resolutionCacheService.cacheLotSize(exchange, symbol, lotSize);
   }
 
-  /**
-   * Get cached lot size
-   * @param {string} exchange - Exchange
-   * @param {string} symbol - Symbol
-   * @returns {number|null} - Lot size or null if not cached
-   */
   getCachedLotSize(exchange, symbol) {
-    const key = `${exchange}|${symbol}`;
-    const cached = this.lotSizeCache.get(key);
-    if (cached && (Date.now() - cached.cachedAt) < this.lotSizeCacheTtl) {
-      return cached.lotSize;
-    }
-    return null;
+    return resolutionCacheService.getCachedLotSize(exchange, symbol);
   }
 
-  /**
-   * Pre-load lot sizes for multiple symbols
-   * @param {Array<{exchange: string, symbol: string, lotSize: number}>} symbols
-   */
   preloadLotSizes(symbols) {
-    for (const { exchange, symbol, lotSize } of symbols) {
-      if (lotSize && lotSize > 0) {
-        this.cacheLotSize(exchange, symbol, lotSize);
-      }
-    }
-    log.debug('Pre-loaded lot sizes', { count: symbols.length });
-  }
-
-  /**
-   * Evict oldest entries from a cache Map
-   * Removes entries with the oldest timestamp values
-   * @private
-   * @param {Map} cache - The cache Map to evict from
-   * @param {string} timestampKey - The key in cache values containing the timestamp
-   * @param {number} count - Number of entries to evict
-   */
-  _evictOldestEntries(cache, timestampKey, count) {
-    // CRITICAL FIX: More efficient cache eviction
-    // Old: O(n log n) sort on every eviction
-    // New: O(n) for large deletions, O(n * count) for small deletions (better for typical use)
-    const toDelete = Math.min(count, cache.size);
-
-    if (toDelete === 0) return;
-
-    // Strategy: If deleting >30%, sort is worth it. Otherwise, iterate to find oldest.
-    const deletionRatio = toDelete / cache.size;
-
-    if (deletionRatio > 0.3 || cache.size < 100) {
-      // For large deletions or small caches, sorting is efficient
-      const entries = [...cache.entries()]
-        .sort((a, b) => (a[1][timestampKey] || 0) - (b[1][timestampKey] || 0));
-
-      for (let i = 0; i < toDelete; i++) {
-        cache.delete(entries[i][0]);
-      }
-    } else {
-      // For small deletions in large cache, find oldest iteratively (avoids full sort)
-      for (let i = 0; i < toDelete; i++) {
-        let oldestKey = null;
-        let oldestTimestamp = Infinity;
-
-        for (const [key, value] of cache.entries()) {
-          const ts = value[timestampKey] || 0;
-          if (ts < oldestTimestamp) {
-            oldestTimestamp = ts;
-            oldestKey = key;
-          }
-        }
-
-        if (oldestKey !== null) {
-          cache.delete(oldestKey);
-        } else {
-          break;
-        }
-      }
-    }
-
-    log.debug('Cache eviction performed', {
-      evicted: toDelete,
-      remainingSize: cache.size,
-      strategy: deletionRatio > 0.3 ? 'sorted' : 'iterative'
-    });
+    return resolutionCacheService.preloadLotSizes(symbols);
   }
 
   /**
@@ -1945,10 +1601,9 @@ class OpenAlgoClient extends EventEmitter {
       if (healthyThisRound.length === 0) {
         if (round === 0) {
           // Find first instance that doesn't require manual refresh
-          const firstAvailableInstance = instances.find(inst => {
-            const health = this.instanceHealth.get(inst.id);
-            return !health?.requiresManualRefresh;
-          });
+          const firstAvailableInstance = instances.find(inst =>
+            !this.instanceRequiresManualRefresh(inst.id)
+          );
 
           if (firstAvailableInstance) {
             // Only force on first round if instance doesn't require manual refresh

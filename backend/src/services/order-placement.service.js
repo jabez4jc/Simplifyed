@@ -12,6 +12,7 @@ import orderRetryService from './order-retry.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import { extractLtp } from '../utils/price-extraction.js';
 import brokerCapabilitiesService from './broker-capabilities.service.js';
+import { normalizeSymbolKey, normalizeExchange, normalizeProduct } from '../utils/symbol-parsing.util.js';
 
 class OrderPlacementService {
   constructor() {
@@ -474,18 +475,15 @@ class OrderPlacementService {
   }
 
   _normalizeSymbol(symbol) {
-    if (!symbol) return null;
-    return String(symbol).trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    return normalizeSymbolKey(symbol);
   }
 
   _normalizeExchange(exchange) {
-    if (!exchange) return null;
-    return String(exchange).trim().toUpperCase();
+    return normalizeExchange(exchange);
   }
 
   _normalizeProduct(product) {
-    if (!product) return null;
-    return String(product).trim().toUpperCase();
+    return normalizeProduct(product);
   }
 
   _normalizeStatus(status) {

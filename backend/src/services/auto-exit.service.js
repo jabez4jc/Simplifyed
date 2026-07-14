@@ -13,7 +13,7 @@ import riskControlsService from './risk-controls.service.js';
 import riskEventsService from './risk-events.service.js';
 import { extractLtp, extractAveragePrice } from '../utils/price-extraction.js';
 import { normalizeTradebookEntry } from '../utils/tradebook-utils.js';
-import { toISTDate } from '../utils/time.js';
+import { isGeneralEndpointBlackout } from './instance-health.service.js';
 
 const TRADE_MODE_MAP = {
   direct: 'EQUITY',
@@ -688,28 +688,6 @@ class AutoExitService {
   }
 }
 
-function isGeneralEndpointBlackout() {
-  const ist = toISTDate();
-  const start = parseTimeWindow(config.marketHours?.generalBlackoutStart, { hour: 3, minute: 0 });
-  const end = parseTimeWindow(config.marketHours?.generalBlackoutEnd, { hour: 8, minute: 0 });
-  return isWithinWindow(ist, start.hour, start.minute, end.hour, end.minute);
-}
-
-function parseTimeWindow(value, fallback) {
-  if (!value || typeof value !== 'string') return fallback;
-  const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
-  if (!match) return fallback;
-  const hour = Math.min(23, Math.max(0, parseInt(match[1], 10)));
-  const minute = Math.min(59, Math.max(0, parseInt(match[2], 10)));
-  return { hour, minute };
-}
-
-function isWithinWindow(istDate, startHour, startMinute, endHour, endMinute) {
-  const minutes = istDate.getHours() * 60 + istDate.getMinutes();
-  const start = startHour * 60 + startMinute;
-  const end = endHour * 60 + endMinute;
-  return minutes >= start && minutes < end;
-}
 
 const autoExitService = new AutoExitService();
 export default autoExitService;
