@@ -308,7 +308,14 @@
       console.log('[Cache] ✅ All caches cleared!');
     })();
   </script>
-  <script src="/js/api-client.js?v=20260713-2300"></script>
+  <!-- Supabase JS SDK - keeps a live client for the whole dashboard session so the SDK's
+       background token refresh actually has something to refresh (previously only login.html
+       had a client instance, torn down on navigation - see supabase-auth.js). -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.2/dist/umd/supabase.min.js"
+    integrity="sha384-fHA3aDUXCIxySoZcUhq38IKiSI0PxdCsiwF9+rmAnKi2yOVX7xtMuxl60vCNJxKC" crossorigin="anonymous">
+    </script>
+  <script src="/js/supabase-auth.js?v=20260714-1600"></script>
+  <script src="/js/api-client.js?v=20260714-1600"></script>
   <script src="/js/utils.js?v=20251204-0800"></script>
   <script src="/js/quick-order-core.js?v=20260714-0200"></script>
   <script src="/js/quick-order-expansion.js?v=20260714-0200"></script>
