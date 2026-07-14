@@ -20,7 +20,15 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       })),
     ]);
 
-    this.instances = instancesRes.data;
+    // This view intentionally does NOT write to the shared this.instances (which
+    // ensureInstancesLoaded()/_buildPanelInstances() elsewhere treat as "active instances only,
+    // already loaded, skip refetch") - the admin table needs to show and manage inactive
+    // instances too, so it keeps its own local list instead of clobbering the shared cache.
+    // (Previously this did `this.instances = instancesRes.data` here, which silently poisoned
+    // the shared active-only cache with inactive instances for the rest of the session as soon
+    // as an admin visited this page - causing Orders/Trades, which merge against this.instances,
+    // to show inactive instances too.)
+    let allInstances = instancesRes.data;
     const metrics = metricsRes.data;
 
     // Merge fund balance data into active instances only
@@ -36,7 +44,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     });
 
     // Add fund data to active instances
-    this.instances = this.instances.map(instance => ({
+    allInstances = allInstances.map(instance => ({
       ...instance,
       ...(instance.is_active && fundsMap.has(instance.id)
         ? fundsMap.get(instance.id)
@@ -49,7 +57,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     }));
 
     const searchValue = (this.instanceSearchQuery || '').toLowerCase();
-    const filteredInstances = this.instances.filter(instance => {
+    const filteredInstances = allInstances.filter(instance => {
       const haystack = [
         instance.name,
         instance.broker,

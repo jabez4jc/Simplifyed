@@ -20,16 +20,17 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     this.stopPositionsPolling();
 
     try {
-      // Fetch watchlists + instances in parallel to reduce latency
-      const [watchlistsRes, instancesRes] = await Promise.all([
-        api.getWatchlists(),
-        api.getInstances(),
-      ]);
+      // Note: this used to also fetch api.getInstances() (unfiltered) here and store it on
+      // this.instances "to warm the cache" - but nothing in the watchlists views actually reads
+      // this.instances, and writing an unfiltered instance list there silently poisoned the
+      // shared "active instances only" cache that Orders/Trades/Positions-fallback trust via
+      // ensureInstancesLoaded(), causing inactive instances to leak into those views as soon as
+      // a user visited Watchlists. Removed - see the same fix in dashboard-instances.js.
+      const watchlistsRes = await api.getWatchlists();
       this.watchlists = watchlistsRes.data;
       this.resetWatchlistSymbolIndex();
       // Default to collapsed watchlists; user opt-in to load quotes/expansions
       this.expandedWatchlists = new Set();
-      this.instances = instancesRes.data;
     } catch (error) {
       console.error('Failed to load watchlists view:', error);
       contentArea.innerHTML = `
