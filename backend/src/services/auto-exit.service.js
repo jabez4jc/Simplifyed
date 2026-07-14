@@ -14,6 +14,7 @@ import riskEventsService from './risk-events.service.js';
 import { extractLtp, extractAveragePrice } from '../utils/price-extraction.js';
 import { normalizeTradebookEntry } from '../utils/tradebook-utils.js';
 import { isGeneralEndpointBlackout } from './instance-health.service.js';
+import { normalizeSymbolKey, normalizeExchange } from '../utils/symbol-parsing.util.js';
 
 const TRADE_MODE_MAP = {
   direct: 'EQUITY',
@@ -678,13 +679,11 @@ class AutoExitService {
   }
 
   _normalizeSymbol(symbol) {
-    if (!symbol) return null;
-    return symbol.replace(/\s+/g, '').toUpperCase();
+    return normalizeSymbolKey(symbol);
   }
 
   _normalizeExchange(exchange) {
-    if (!exchange) return null;
-    return exchange.replace(/\s+/g, '').toUpperCase();
+    return normalizeExchange(exchange);
   }
 }
 

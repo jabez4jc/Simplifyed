@@ -36,7 +36,7 @@ class SymbolResolutionService {
     if (!sym || !exch) return { valid: false, message: 'symbol/exchange required' };
 
     try {
-      const match = await instrumentsService.findInstrument(sym, exch);
+      const match = await instrumentsService.getInstrument(sym, exch);
       if (match) {
         return { valid: true, instrument: match };
       }

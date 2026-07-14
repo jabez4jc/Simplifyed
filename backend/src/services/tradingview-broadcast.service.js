@@ -381,7 +381,7 @@ class TradingviewBroadcastService {
 
   async _resolveTickSize(exchange, symbol) {
     try {
-      const instrument = await instrumentsService.findInstrument(symbol, exchange);
+      const instrument = await instrumentsService.getInstrument(symbol, exchange);
       const tick = instrument?.tick_size || instrument?.tickSize;
       return Number.isFinite(tick) && tick > 0 ? tick : null;
     } catch {

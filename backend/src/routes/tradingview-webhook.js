@@ -36,9 +36,17 @@ router.post('/broadcast/:slug?', async (req, res, next) => {
         // watchlist webhook alerts already support.
         const action = String(req.query.action || parsedBody?.action || 'ENTRY').toUpperCase();
         const isExit = action === 'EXIT' || action === 'EXIT_ALL';
+        // leg_tag is optional - a TradingView alert can't reference an internal numeric leg id,
+        // so legs are addressed by this user-editable tag instead (set on the leg, see
+        // strategy-builder.js). Omit it to keep the existing enter-every-leg/exit-every-leg
+        // behavior.
+        const legTagRaw = req.query.leg_tag || parsedBody?.leg_tag || null;
+        const legId = legTagRaw
+          ? await strategyService._resolveLegId(strategy.id, { legTag: legTagRaw })
+          : null;
         const result = isExit
-          ? await strategyService.exitStrategy(strategy.id, { instanceId, source: 'strategy_webhook' })
-          : await strategyService.executeStrategy(strategy.id, { instanceId, source: 'strategy_webhook' });
+          ? await strategyService.exitStrategy(strategy.id, { instanceId, legId, source: 'strategy_webhook' })
+          : await strategyService.executeStrategy(strategy.id, { instanceId, legId, source: 'strategy_webhook' });
         return res.status(result.success ? 200 : 502).json({
           status: result.success ? 'ok' : 'error',
           data: result,

@@ -12,6 +12,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       const response = await api.getWatchlistById(id);
       const watchlist = response.data;
       const isBroadcast = this.isBroadcastWatchlist(watchlist);
+      const isStrategy = this.isStrategyWatchlist(watchlist);
       const webhookUrl = watchlist.webhook_url || `${window.location.origin.replace(/\/$/, '')}/webhook/tradingview/broadcast/${watchlist.webhook_slug || ''}`;
 
       const modal = document.createElement('div');
@@ -35,12 +36,16 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
                 <label class="form-label">Type</label>
                 <div class="flex flex-col gap-2">
                   <label class="form-radio">
-                    <input type="radio" name="type" value="standard" ${isBroadcast ? '' : 'checked'}>
+                    <input type="radio" name="type" value="standard" ${(isBroadcast || isStrategy) ? '' : 'checked'}>
                     <span>Standard (symbols + quick orders)</span>
                   </label>
                   <label class="form-radio">
                     <input type="radio" name="type" value="broadcast" ${isBroadcast ? 'checked' : ''}>
                     <span>Broadcast (TradingView webhook fan-out)</span>
+                  </label>
+                  <label class="form-radio">
+                    <input type="radio" name="type" value="strategy" ${isStrategy ? 'checked' : ''}>
+                    <span>Strategy (multi-leg strategies, manual or TradingView webhook)</span>
                   </label>
                 </div>
               </div>
@@ -163,6 +168,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       const watchlist = watchlistResponse.data;
       const symbols = symbolsResponse.data || [];
       const isBroadcast = this.isBroadcastWatchlist(watchlist);
+      const isStrategy = this.isStrategyWatchlist(watchlist);
       const webhookUrl = watchlist.webhook_url || `${window.location.origin.replace(/\/$/, '')}/webhook/tradingview/broadcast/${watchlist.webhook_slug || ''}`;
 
       const modal = document.createElement('div');
@@ -187,7 +193,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
                 </div>
                 <div>
                   <span class="text-neutral-600">Type:</span>
-                  <strong>${isBroadcast ? 'Broadcast' : 'Standard'}</strong>
+                  <strong>${isBroadcast ? 'Broadcast' : isStrategy ? 'Strategy' : 'Standard'}</strong>
                 </div>
                 <div>
                   <span class="text-neutral-600">Created:</span>

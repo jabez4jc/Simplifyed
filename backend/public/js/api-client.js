@@ -337,10 +337,11 @@ class APIClient {
   }
 
   // instanceId is optional - omit to target every instance assigned to the strategy's watchlist.
-  async executeStrategy(id, instanceId = null) {
+  // legId is optional - omit to enter every leg, pass it to enter just that one.
+  async executeStrategy(id, { instanceId = null, legId = null } = {}) {
     return this.request(`/strategies/${id}/execute`, {
       method: 'POST',
-      body: instanceId ? { instanceId } : {},
+      body: { ...(instanceId ? { instanceId } : {}), ...(legId ? { legId } : {}) },
     });
   }
 
@@ -349,11 +350,12 @@ class APIClient {
   }
 
   // instanceId is optional - omit to close every still-open leg across every instance assigned
-  // to the strategy's watchlist.
-  async exitStrategy(id, instanceId = null) {
+  // to the strategy's watchlist. legId is optional - omit to close every open leg, pass it to
+  // close just that one.
+  async exitStrategy(id, { instanceId = null, legId = null } = {}) {
     return this.request(`/strategies/${id}/exit`, {
       method: 'POST',
-      body: instanceId ? { instanceId } : {},
+      body: { ...(instanceId ? { instanceId } : {}), ...(legId ? { legId } : {}) },
     });
   }
 

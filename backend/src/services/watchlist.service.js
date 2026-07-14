@@ -245,7 +245,7 @@ class WatchlistService {
       });
 
       // Clone symbols
-      if (!this._isBroadcast(source)) {
+      if (!this._isBroadcast(source) && !this._isStrategy(source)) {
         for (const symbol of source.symbols) {
           await watchlistSymbolService.addSymbol(cloned.id, { ...symbol });
         }
@@ -281,8 +281,8 @@ class WatchlistService {
   async addSymbol(watchlistId, symbolData) {
     try {
       const watchlist = await this.getWatchlistById(watchlistId);
-      if (this._isBroadcast(watchlist)) {
-        throw new ValidationError('Broadcast watchlists do not support symbols');
+      if (this._isBroadcast(watchlist) || this._isStrategy(watchlist)) {
+        throw new ValidationError('This watchlist type does not support symbols');
       }
       return await watchlistSymbolService.addSymbol(watchlistId, symbolData);
     } catch (error) {
@@ -307,8 +307,8 @@ class WatchlistService {
   async updateSymbol(symbolId, updates) {
     try {
       const watchlist = await this._getWatchlistForSymbol(symbolId);
-      if (this._isBroadcast(watchlist)) {
-        throw new ValidationError('Broadcast watchlists do not support symbols');
+      if (this._isBroadcast(watchlist) || this._isStrategy(watchlist)) {
+        throw new ValidationError('This watchlist type does not support symbols');
       }
       return await watchlistSymbolService.updateSymbol(symbolId, updates);
     } catch (error) {
@@ -327,8 +327,8 @@ class WatchlistService {
   async removeSymbol(symbolId) {
     try {
       const watchlist = await this._getWatchlistForSymbol(symbolId);
-      if (this._isBroadcast(watchlist)) {
-        throw new ValidationError('Broadcast watchlists do not support symbols');
+      if (this._isBroadcast(watchlist) || this._isStrategy(watchlist)) {
+        throw new ValidationError('This watchlist type does not support symbols');
       }
       await watchlistSymbolService.removeSymbol(symbolId);
     } catch (error) {
@@ -670,10 +670,10 @@ class WatchlistService {
       normalized.is_active = parseBooleanSafe(data.is_active, true);
     }
 
-    // Type (standard|broadcast)
+    // Type (standard|broadcast|strategy)
     if (data.type !== undefined) {
       const type = sanitizeString(data.type).toLowerCase();
-      const allowed = ['standard', 'broadcast'];
+      const allowed = ['standard', 'broadcast', 'strategy'];
       if (!allowed.includes(type)) {
         errors.push({ field: 'type', message: `type must be one of: ${allowed.join(', ')}` });
       } else {
@@ -722,6 +722,11 @@ class WatchlistService {
       watchlist.is_broadcast ||
       (typeof watchlist.type === 'string' && watchlist.type.toLowerCase() === 'broadcast')
     );
+  }
+
+  _isStrategy(watchlist) {
+    if (!watchlist) return false;
+    return typeof watchlist.type === 'string' && watchlist.type.toLowerCase() === 'strategy';
   }
 
   _generateSlug() {

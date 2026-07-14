@@ -12,9 +12,10 @@ import crypto from 'crypto';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { NotFoundError, ValidationError } from '../core/errors.js';
-import { sanitizeSymbol, sanitizeExchange, parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
+import { sanitizeSymbol, sanitizeExchange, sanitizeStrategyTag, parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
 import watchlistSymbolService from './watchlist-symbol.service.js';
 import watchlistService from './watchlist.service.js';
+import symbolValidationService from './symbol-validation.service.js';
 import quickOrderService from './quick-order.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import marginSizingService from './margin-sizing.service.js';
@@ -74,30 +75,73 @@ class StrategyService {
     }
     const entryTrigger = VALID_ENTRY_TRIGGERS.includes(data.entry_trigger) ? data.entry_trigger : 'MANUAL';
 
+    const watchlist = await watchlistService.getWatchlistById(watchlistId);
+    if (!watchlist) {
+      throw new NotFoundError('Watchlist');
+    }
+    // Strategies live exclusively on strategy-type watchlists - standard watchlists are for
+    // symbols/quick-orders, broadcast watchlists are for raw single-order TradingView fan-out.
+    const isStrategyWatchlist = watchlistService._isStrategy(watchlist);
+    if (!isStrategyWatchlist) {
+      throw new ValidationError('Strategies can only be created on strategy-type watchlists');
+    }
+
     let webhookSlug = null;
     if (entryTrigger === 'WEBHOOK') {
-      // Webhook entry only makes sense on a watchlist that's actually wired to receive
-      // TradingView alerts - mirrors the same gate regular (non-strategy) webhook alerts
-      // already enforce in watchlistService.getBroadcastTargets.
-      const watchlist = await watchlistService.getWatchlistById(watchlistId);
-      if (!watchlist) {
-        throw new NotFoundError('Watchlist');
-      }
-      if (!watchlistService._isBroadcast(watchlist)) {
-        throw new ValidationError(
-          'Only TradingView-webhook-enabled watchlists can use WEBHOOK entry trigger'
-        );
-      }
       webhookSlug = await this._generateUniqueSlug();
     }
 
+    // executeStrategy/previewLeg resolve every leg off an "anchor" watchlist_symbols row for
+    // this underlying. A strategy-type watchlist can never have one added through the normal
+    // add-symbol path (watchlistService.addSymbol rejects it), so it's auto-seeded here via
+    // watchlistSymbolService.addSymbol directly (bypassing that guard, the same seam
+    // _upsertLegExitConfig already uses for leg-exit rows) if it doesn't exist yet.
+    const existingAnchor = await watchlistSymbolService.findSymbolByWatchlist(watchlistId, exchange, underlying);
+    if (!existingAnchor) {
+      const resolved = await symbolValidationService.validateSymbol(underlying, exchange, null);
+      await watchlistSymbolService.addSymbol(watchlistId, {
+        exchange,
+        symbol: underlying,
+        token: resolved.token,
+        symbol_type: resolved.symbol_type || resolved.symbolType,
+        instrumenttype: resolved.instrumenttype,
+        name: resolved.name,
+        lotsize: resolved.lotsize,
+        tick_size: resolved.tick_size,
+        brsymbol: resolved.brsymbol,
+        brexchange: resolved.brexchange,
+        // Permissive by design, unlike the manual Add Symbol flow's conservative defaults -
+        // this row exists solely to let this strategy's legs resolve as derivatives; it never
+        // surfaces in the watchlist's own symbols UI (strategy watchlists render their own
+        // Strategies section instead, regardless of how many watchlist_symbols rows exist) and
+        // doesn't cause any order to be placed on its own.
+        tradable_futures: true,
+        tradable_options: true,
+      });
+    }
+
+    let brokerTag = sanitizeStrategyTag(data.broker_tag);
+    if (brokerTag) {
+      const collision = await db.get('SELECT id FROM strategies WHERE broker_tag = ?', [brokerTag]);
+      if (collision) {
+        throw new ValidationError(`Broker tag "${brokerTag}" is already used by another strategy`);
+      }
+    }
+
     const result = await db.run(
-      `INSERT INTO strategies (watchlist_id, name, underlying, exchange, is_active, entry_trigger, webhook_slug)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [watchlistId, name, underlying, exchange, 1, entryTrigger, webhookSlug]
+      `INSERT INTO strategies (watchlist_id, name, underlying, exchange, is_active, entry_trigger, webhook_slug, broker_tag)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [watchlistId, name, underlying, exchange, 1, entryTrigger, webhookSlug, brokerTag]
     );
 
-    log.info('Strategy created', { id: result.lastID, name, watchlistId });
+    if (!brokerTag) {
+      // id wasn't known until after insert - fall back to the same strategy-<id> default this
+      // column replaces, so behavior is unchanged for anyone who doesn't set a custom tag.
+      brokerTag = `strategy-${result.lastID}`;
+      await db.run('UPDATE strategies SET broker_tag = ? WHERE id = ?', [brokerTag, result.lastID]);
+    }
+
+    log.info('Strategy created', { id: result.lastID, name, watchlistId, brokerTag });
     return this.getStrategyWithLegs(result.lastID);
   }
 
@@ -107,8 +151,6 @@ class StrategyService {
       throw new NotFoundError('Strategy');
     }
 
-    // entry_trigger is intentionally not editable here - if that changes, re-apply the same
-    // broadcast-watchlist gate createStrategy enforces before allowing WEBHOOK.
     const fields = [];
     const values = [];
 
@@ -119,6 +161,46 @@ class StrategyService {
     if (updates.is_active !== undefined) {
       fields.push('is_active = ?');
       values.push(updates.is_active ? 1 : 0);
+    }
+    if (updates.entry_trigger !== undefined && updates.entry_trigger !== existing.entry_trigger) {
+      if (!VALID_ENTRY_TRIGGERS.includes(updates.entry_trigger)) {
+        throw new ValidationError(`entry_trigger must be one of: ${VALID_ENTRY_TRIGGERS.join(', ')}`);
+      }
+      if (updates.entry_trigger === 'WEBHOOK') {
+        // Same gate createStrategy enforces before allowing WEBHOOK.
+        const watchlist = await watchlistService.getWatchlistById(existing.watchlist_id);
+        if (!watchlist) {
+          throw new NotFoundError('Watchlist');
+        }
+        if (!watchlistService._isStrategy(watchlist)) {
+          throw new ValidationError(
+            'Only TradingView-webhook-enabled watchlists can use WEBHOOK entry trigger'
+          );
+        }
+        fields.push('entry_trigger = ?', 'webhook_slug = ?');
+        values.push('WEBHOOK', await this._generateUniqueSlug());
+      } else {
+        // Switching back to MANUAL revokes the old webhook URL - switching to WEBHOOK again
+        // later generates a fresh slug rather than reusing a URL that may already have been
+        // shared/pasted into TradingView believing it was retired.
+        fields.push('entry_trigger = ?', 'webhook_slug = ?');
+        values.push('MANUAL', null);
+      }
+    }
+    if (updates.broker_tag !== undefined) {
+      const brokerTag = sanitizeStrategyTag(updates.broker_tag);
+      if (!brokerTag) {
+        throw new ValidationError('broker_tag cannot be empty');
+      }
+      const collision = await db.get(
+        'SELECT id FROM strategies WHERE broker_tag = ? AND id != ?',
+        [brokerTag, strategyId]
+      );
+      if (collision) {
+        throw new ValidationError(`Broker tag "${brokerTag}" is already used by another strategy`);
+      }
+      fields.push('broker_tag = ?');
+      values.push(brokerTag);
     }
 
     if (!fields.length) {
@@ -150,13 +232,23 @@ class StrategyService {
     const legOrder = parseIntSafe(legData.leg_order, null);
     const resolvedOrder = legOrder ?? (await this._nextLegOrder(strategyId));
 
+    if (normalized.leg_tag) {
+      const collision = await db.get(
+        'SELECT id FROM strategy_legs WHERE strategy_id = ? AND leg_tag = ?',
+        [strategyId, normalized.leg_tag]
+      );
+      if (collision) {
+        throw new ValidationError(`Leg tag "${normalized.leg_tag}" is already used by another leg on this strategy`);
+      }
+    }
+
     const result = await db.run(
       `INSERT INTO strategy_legs (
         strategy_id, leg_order, option_type, action, strike_policy, strike_offset,
         qty_type, qty_value, product_type,
         target_points, stoploss_points, trailing_stoploss_points, trailing_activation_points,
-        exit_mechanism
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        exit_mechanism, leg_tag
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         strategyId,
         resolvedOrder,
@@ -172,6 +264,7 @@ class StrategyService {
         normalized.trailing_stoploss_points,
         normalized.trailing_activation_points,
         normalized.exit_mechanism,
+        normalized.leg_tag,
       ]
     );
 
@@ -185,12 +278,22 @@ class StrategyService {
     }
     const normalized = this._normalizeLegData({ ...existing, ...updates });
 
+    if (normalized.leg_tag) {
+      const collision = await db.get(
+        'SELECT id FROM strategy_legs WHERE strategy_id = ? AND leg_tag = ? AND id != ?',
+        [existing.strategy_id, normalized.leg_tag, legId]
+      );
+      if (collision) {
+        throw new ValidationError(`Leg tag "${normalized.leg_tag}" is already used by another leg on this strategy`);
+      }
+    }
+
     await db.run(
       `UPDATE strategy_legs SET
         option_type = ?, action = ?, strike_policy = ?, strike_offset = ?,
         qty_type = ?, qty_value = ?, product_type = ?,
         target_points = ?, stoploss_points = ?, trailing_stoploss_points = ?, trailing_activation_points = ?,
-        exit_mechanism = ?,
+        exit_mechanism = ?, leg_tag = ?,
         updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [
@@ -206,6 +309,7 @@ class StrategyService {
         normalized.trailing_stoploss_points,
         normalized.trailing_activation_points,
         normalized.exit_mechanism,
+        normalized.leg_tag,
         legId,
       ]
     );
@@ -223,6 +327,35 @@ class StrategyService {
 
   async findByWebhookSlug(slug) {
     return db.get('SELECT * FROM strategies WHERE webhook_slug = ?', [slug]);
+  }
+
+  /**
+   * Resolve a leg id for scoping a single-leg execute/exit, either directly (validating it
+   * belongs to this strategy) or via its leg_tag (for webhook alerts, which can't reference an
+   * internal numeric id). Returns null if neither is provided - callers treat that as "every leg".
+   */
+  async _resolveLegId(strategyId, { legId = null, legTag = null } = {}) {
+    if (legTag) {
+      const leg = await db.get(
+        'SELECT id FROM strategy_legs WHERE strategy_id = ? AND leg_tag = ?',
+        [strategyId, legTag]
+      );
+      if (!leg) {
+        throw new NotFoundError(`Strategy leg with leg_tag "${legTag}"`);
+      }
+      return leg.id;
+    }
+    if (legId !== null && legId !== undefined) {
+      const leg = await db.get(
+        'SELECT id FROM strategy_legs WHERE strategy_id = ? AND id = ?',
+        [strategyId, legId]
+      );
+      if (!leg) {
+        throw new NotFoundError('Strategy leg');
+      }
+      return leg.id;
+    }
+    return null;
   }
 
   /**
@@ -261,13 +394,22 @@ class StrategyService {
    * legs for a given instance are placed in a single openalgoClient.placeBasketOrder call instead
    * of N sequential placeQuickOrder calls.
    */
-  async executeStrategy(strategyId, { instanceId = null, userId = null, source = 'strategy' } = {}) {
+  // legId is optional - when omitted, every leg is entered (existing behavior). When provided,
+  // only that leg is entered; the double-entry guard inside _executeStrategyForInstance still
+  // applies (skips it if it already has an open execution for a given instance).
+  async executeStrategy(strategyId, { instanceId = null, legId = null, userId = null, source = 'strategy' } = {}) {
     const strategy = await this.getStrategyWithLegs(strategyId);
     if (!strategy.legs.length) {
       throw new ValidationError('Strategy has no legs configured');
     }
     if (!strategy.is_active) {
       throw new ValidationError('Strategy is not active');
+    }
+
+    let legsToExecute = strategy.legs;
+    if (legId !== null && legId !== undefined) {
+      const resolvedLegId = await this._resolveLegId(strategyId, { legId });
+      legsToExecute = strategy.legs.filter((leg) => leg.id === resolvedLegId);
     }
 
     // Anchor symbol: the underlying must already exist as a watchlist symbol in this watchlist
@@ -288,11 +430,12 @@ class StrategyService {
       ? [await this._getSingleActiveInstance(instanceId)]
       : await this._getWatchlistInstances(strategy.watchlist_id);
 
-    const executionId = `strategy-${strategyId}-${Date.now()}`;
+    const executionId = `${strategy.broker_tag || `strategy-${strategyId}`}-${Date.now()}`;
+    const strategyForExecution = { ...strategy, legs: legsToExecute };
 
     const settled = await Promise.allSettled(
       instances.map((instance) =>
-        this._executeStrategyForInstance({ strategy, anchorSymbol, instance, executionId, userId, source })
+        this._executeStrategyForInstance({ strategy: strategyForExecution, anchorSymbol, instance, executionId, userId, source })
       )
     );
 
@@ -328,15 +471,22 @@ class StrategyService {
    * strategy's watchlist. Reuses quickOrderService.closePosition (the same square-off path the
    * regular EXIT/EXIT_ALL watchlist buttons already use) rather than placing new orders by hand.
    */
-  async exitStrategy(strategyId, { instanceId = null, userId = null, source = 'strategy' } = {}) {
+  // legId is optional - when omitted, every still-open leg is closed (existing behavior). When
+  // provided, only that leg's open position (if any) is closed.
+  async exitStrategy(strategyId, { instanceId = null, legId = null, userId = null, source = 'strategy' } = {}) {
     const strategy = await this.getStrategyWithLegs(strategyId);
+
+    let resolvedLegId = null;
+    if (legId !== null && legId !== undefined) {
+      resolvedLegId = await this._resolveLegId(strategyId, { legId });
+    }
 
     const instances = instanceId
       ? [await this._getSingleActiveInstance(instanceId)]
       : await this._getWatchlistInstances(strategy.watchlist_id);
 
     const settled = await Promise.allSettled(
-      instances.map((instance) => this._exitStrategyForInstance({ strategy, instance, userId, source }))
+      instances.map((instance) => this._exitStrategyForInstance({ strategy, instance, legId: resolvedLegId, userId, source }))
     );
 
     const instanceResults = settled.map((result, idx) => {
@@ -363,11 +513,12 @@ class StrategyService {
     };
   }
 
-  async _exitStrategyForInstance({ strategy, instance, userId, source }) {
+  async _exitStrategyForInstance({ strategy, instance, legId = null, userId, source }) {
+    const legFilter = legId !== null && legId !== undefined ? ' AND strategy_leg_id = ?' : '';
     const openExecutions = await db.all(
       `SELECT * FROM strategy_leg_executions
-       WHERE strategy_id = ? AND instance_id = ? AND entry_status = 'PLACED' AND closed_at IS NULL`,
-      [strategy.id, instance.id]
+       WHERE strategy_id = ? AND instance_id = ? AND entry_status = 'PLACED' AND closed_at IS NULL${legFilter}`,
+      legFilter ? [strategy.id, instance.id, legId] : [strategy.id, instance.id]
     );
 
     if (!openExecutions.length) {
@@ -386,7 +537,7 @@ class StrategyService {
           {
             product: execRow.product,
             tradeMode: leg?.option_type ? 'OPTIONS' : 'FUTURES',
-            strategy: `strategy-${strategy.id}`,
+            strategy: strategy.broker_tag || `strategy-${strategy.id}`,
           }
         );
         // closePosition -> _closePositions returns {message, closed_count, details:[{success,
@@ -551,9 +702,29 @@ class StrategyService {
    * placeQuickOrder path.
    */
   async _executeStrategyForInstance({ strategy, anchorSymbol, instance, executionId, userId, source }) {
+    // Skip legs that already have an open execution for this instance - prevents duplicate
+    // orders if Execute (whole-strategy or single-leg) is called again while a leg is still
+    // live, e.g. a repeated webhook fire or clicking Execute twice.
+    const openLegIds = new Set(
+      (await db.all(
+        `SELECT strategy_leg_id FROM strategy_leg_executions
+         WHERE strategy_id = ? AND instance_id = ? AND entry_status = 'PLACED' AND closed_at IS NULL`,
+        [strategy.id, instance.id]
+      )).map((row) => row.strategy_leg_id)
+    );
+    const skippedOutcomes = strategy.legs
+      .filter((leg) => openLegIds.has(leg.id))
+      .map((leg) => ({
+        legId: leg.id,
+        success: true,
+        skipped: true,
+        error: null,
+        message: 'Leg already has an open position - skipped to avoid a duplicate order',
+      }));
+
     // Resolve phase - no order placement yet.
     const resolved = [];
-    for (const leg of strategy.legs) {
+    for (const leg of strategy.legs.filter((leg) => !openLegIds.has(leg.id))) {
       try {
         const r = await this._resolveLeg({ leg, anchorSymbol, instance });
         resolved.push({ leg, ...r, error: null });
@@ -584,9 +755,11 @@ class StrategyService {
     const unresolved = resolved.filter((r) => r.error);
 
     if (!orderable.length) {
+      const failedOutcomes = resolved.map((r) => ({ legId: r.leg.id, success: false, error: r.error }));
+      const allOutcomes = [...skippedOutcomes, ...failedOutcomes];
       return {
-        success: false,
-        legs: resolved.map((r) => ({ legId: r.leg.id, success: false, error: r.error })),
+        success: allOutcomes.length > 0 && allOutcomes.every((l) => l.success),
+        legs: allOutcomes,
       };
     }
 
@@ -619,7 +792,7 @@ class StrategyService {
     }));
 
     const basketResponse = await openalgoClient.placeBasketOrder(instance, {
-      strategy: `strategy-${strategy.id}`,
+      strategy: strategy.broker_tag || `strategy-${strategy.id}`,
       orders: basketOrders,
     });
     const basketResults = Array.isArray(basketResponse?.results) ? basketResponse.results : [];
@@ -727,10 +900,12 @@ class StrategyService {
       legOutcomes.push({ legId: u.leg.id, success: false, error: u.error });
     }
 
+    const allOutcomes = [...skippedOutcomes, ...legOutcomes];
+
     return {
-      success: legOutcomes.every((l) => l.success),
+      success: allOutcomes.every((l) => l.success),
       marginPreview,
-      legs: legOutcomes,
+      legs: allOutcomes,
     };
   }
 
@@ -819,7 +994,7 @@ class StrategyService {
     }
 
     try {
-      const status = await openalgoClient.getOrderStatus(instance, { orderid: orderId, strategy: `strategy-${strategy.id}` });
+      const status = await openalgoClient.getOrderStatus(instance, { orderid: orderId, strategy: strategy.broker_tag || `strategy-${strategy.id}` });
       const entryPrice = parseFloatSafe(status?.average_price, null);
       if (!entryPrice || entryPrice <= 0) {
         log.warn('Skipping GTT exit - could not resolve fill price', { strategyId: strategy.id, legId: leg.id, orderId });
@@ -827,7 +1002,7 @@ class StrategyService {
       }
 
       await gttService.placeExitGtt(instance, {
-        strategy: `strategy-${strategy.id}`,
+        strategy: strategy.broker_tag || `strategy-${strategy.id}`,
         exchange,
         symbol,
         action: leg.action,
@@ -935,6 +1110,7 @@ class StrategyService {
       trailing_stoploss_points: parseFloatSafe(data.trailing_stoploss_points, null),
       trailing_activation_points: parseFloatSafe(data.trailing_activation_points, null),
       exit_mechanism: exitMechanism,
+      leg_tag: sanitizeStrategyTag(data.leg_tag),
     };
   }
 }

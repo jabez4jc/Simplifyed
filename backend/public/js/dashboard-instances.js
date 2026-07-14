@@ -608,6 +608,10 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
                   <input type="radio" name="type" value="broadcast">
                   <span>Broadcast (TradingView webhook fan-out; no symbols)</span>
                 </label>
+                <label class="form-radio">
+                  <input type="radio" name="type" value="strategy">
+                  <span>Strategy (multi-leg strategies, manual or TradingView webhook)</span>
+                </label>
               </div>
             </div>
 

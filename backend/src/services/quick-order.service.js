@@ -2194,7 +2194,7 @@ class QuickOrderService {
   async _resolveLotSize(symbol, exchange, fallbackLotSize, instance = null) {
     const fallback = fallbackLotSize && fallbackLotSize > 0 ? fallbackLotSize : 1;
     try {
-      const instrument = await instrumentsService.findInstrument(symbol, exchange);
+      const instrument = await instrumentsService.getInstrument(symbol, exchange);
       if (instrument) {
         const resolved =
           instrument.lot_size ||

@@ -62,10 +62,15 @@ class StrategyBuilder {
           </button>
           <div class="strategy-row__info">
             <span class="strategy-row__name">${Utils.escapeHTML(strategy.name)}</span>
-            <span class="strategy-row__meta">${Utils.escapeHTML(strategy.exchange)}:${Utils.escapeHTML(strategy.underlying)} • ${legCount} leg(s)</span>
+            <span class="strategy-row__meta">${Utils.escapeHTML(strategy.exchange)}:${Utils.escapeHTML(strategy.underlying)} • ${legCount} leg(s) • Tag: ${Utils.escapeHTML(strategy.broker_tag || `strategy-${strategy.id}`)}</span>
             ${triggerBadge}
           </div>
           <div class="strategy-row__actions">
+            <button class="btn-icon-compact" onclick="strategyBuilder.showEditStrategyModal(${strategy.id}, ${watchlistId})" title="Edit">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+            </button>
             <button class="btn-icon-compact" onclick="strategyBuilder.showAddLegModal(${strategy.id}, ${watchlistId})" title="Add Leg">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
@@ -137,6 +142,7 @@ class StrategyBuilder {
     if (leg.trailing_stoploss_points != null) exitParts.push(`TSL:${leg.trailing_stoploss_points}`);
     const exitMechanismLabel = leg.exit_mechanism === 'GTT' ? ' (GTT)' : '';
     const exitSummary = (exitParts.length ? exitParts.join(' ') : 'No exit config') + exitMechanismLabel;
+    const tagSuffix = leg.leg_tag ? ` • Tag: ${Utils.escapeHTML(leg.leg_tag)}` : '';
 
     const greeksButton = leg.option_type
       ? `<button class="btn-icon-compact" onclick="strategyBuilder.showGreeks(${leg.id}, ${watchlistId}, this)" title="Preview Greeks (fetches live, on demand)">Δ</button>`
@@ -146,11 +152,17 @@ class StrategyBuilder {
       <div class="strategy-leg-row" data-leg-id="${leg.id}">
         <div class="strategy-leg-row__info">
           <span class="strategy-leg-row__instrument">${Utils.escapeHTML(instrument)}</span>
-          <span class="strategy-leg-row__meta">${Utils.escapeHTML(qty)} • ${Utils.escapeHTML(leg.product_type || 'MIS')} • ${Utils.escapeHTML(exitSummary)}</span>
+          <span class="strategy-leg-row__meta">${Utils.escapeHTML(qty)} • ${Utils.escapeHTML(leg.product_type || 'MIS')} • ${Utils.escapeHTML(exitSummary)}${tagSuffix}</span>
           <span class="strategy-leg-row__greeks" id="leg-greeks-${leg.id}"></span>
         </div>
         <div class="strategy-leg-row__actions">
           ${greeksButton}
+          <button class="btn btn-buy btn-sm" onclick="strategyBuilder.showExecuteLegModal(${leg.id}, ${strategyId}, ${watchlistId})" title="Enter just this leg">
+            Enter
+          </button>
+          <button class="btn btn-sell btn-sm" onclick="strategyBuilder.showExitLegModal(${leg.id}, ${strategyId}, ${watchlistId})" title="Exit just this leg">
+            Exit
+          </button>
           <button class="btn-icon-compact" onclick="strategyBuilder.showEditLegModal(${leg.id}, ${strategyId}, ${watchlistId})" title="Edit Leg">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -283,38 +295,10 @@ class StrategyBuilder {
   }
 
   async showCreateStrategyModal(watchlistId) {
-    let symbols = [];
-    try {
-      const res = await api.getWatchlistSymbols(watchlistId);
-      symbols = Array.isArray(res?.data) ? res.data : [];
-    } catch (error) {
-      Utils.showToast('Failed to load watchlist symbols', 'error');
-      return;
-    }
-
-    if (!symbols.length) {
-      Utils.showToast('Add a symbol (e.g. NIFTY) to this watchlist before creating a strategy', 'warning');
-      return;
-    }
-
-    // Underlying is picked from the watchlist's existing symbols (not free-typed) so the
-    // strategy's exchange always exactly matches the symbol row it will resolve legs against
-    // (e.g. index underlyings are stored as NSE_INDEX, not NSE).
-    const options = symbols
-      .map((s) => `<option value="${s.id}">${Utils.escapeHTML(s.symbol)} (${Utils.escapeHTML(s.exchange)}, ${Utils.escapeHTML(s.symbol_type || '-')})</option>`)
-      .join('');
-
-    // Webhook entry only makes sense on a TradingView-alert-enabled (broadcast) watchlist -
-    // mirrors the server-side gate in strategyService.createStrategy.
-    const watchlist = (window.app?.watchlists || []).find((w) => w.id === watchlistId);
-    const isBroadcast = window.app?.isBroadcastWatchlist ? window.app.isBroadcastWatchlist(watchlist) : false;
-    const triggerOptionsHtml = isBroadcast
-      ? `<option value="MANUAL">Manual</option><option value="WEBHOOK">TradingView Webhook</option>`
-      : `<option value="MANUAL">Manual</option>`;
-    const triggerHint = isBroadcast
-      ? ''
-      : '<p class="text-sm text-neutral-500" style="margin-top: 4px;">Enable TradingView Alerts on this watchlist to use webhook entry.</p>';
-
+    // Strategies live exclusively on strategy-type watchlists (never standard/broadcast), which
+    // never have pre-existing watchlist_symbols rows - createStrategy auto-seeds the anchor row
+    // server-side from whatever underlying/exchange is submitted here, so this is always a
+    // free-text input rather than a dropdown of existing symbols.
     const modal = document.createElement('div');
     modal.className = 'modal-overlay strategy-modal';
     modal.innerHTML = `
@@ -326,13 +310,30 @@ class StrategyBuilder {
             <input type="text" id="strategy-name-input" class="form-input" placeholder="e.g. NIFTY Short Straddle">
           </div>
           <div class="form-group">
-            <label class="form-label">Underlying</label>
-            <select id="strategy-underlying-select" class="form-input">${options}</select>
+            <label class="form-label">Underlying Symbol</label>
+            <input type="text" id="strategy-underlying-input" class="form-input" placeholder="e.g. NIFTY, NATURALGAS">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Exchange</label>
+            <select id="strategy-exchange-select" class="form-input">
+              <option value="NSE_INDEX">NSE_INDEX</option>
+              <option value="NSE">NSE</option>
+              <option value="BSE_INDEX">BSE_INDEX</option>
+              <option value="BSE">BSE</option>
+              <option value="MCX">MCX</option>
+            </select>
           </div>
           <div class="form-group">
             <label class="form-label">Entry Trigger</label>
-            <select id="strategy-trigger-input" class="form-input">${triggerOptionsHtml}</select>
-            ${triggerHint}
+            <select id="strategy-trigger-input" class="form-input">
+              <option value="MANUAL">Manual</option>
+              <option value="WEBHOOK">TradingView Webhook</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Broker Tag (optional)</label>
+            <input type="text" id="strategy-broker-tag-input" class="form-input" placeholder="Auto: strategy-&lt;id&gt;">
+            <p class="text-sm text-neutral-500" style="margin-top: 4px;">Shown as the "strategy" field in OpenAlgo order/logs and as the Order History correlation id prefix. Leave blank to auto-generate.</p>
           </div>
         </div>
         <div class="modal-footer">
@@ -343,17 +344,17 @@ class StrategyBuilder {
     `;
     document.body.appendChild(modal);
     this.activeModal = modal;
-    this.activeModalSymbols = symbols;
     document.getElementById('strategy-name-input').focus();
   }
 
   async submitCreateStrategy(watchlistId) {
     const name = document.getElementById('strategy-name-input').value.trim();
-    const selectedSymbolId = parseInt(document.getElementById('strategy-underlying-select').value, 10);
     const entryTrigger = document.getElementById('strategy-trigger-input').value;
-    const selectedSymbol = (this.activeModalSymbols || []).find((s) => s.id === selectedSymbolId);
+    const brokerTag = document.getElementById('strategy-broker-tag-input').value.trim();
+    const underlying = document.getElementById('strategy-underlying-input').value.trim();
+    const exchange = document.getElementById('strategy-exchange-select').value;
 
-    if (!name || !selectedSymbol) {
+    if (!name || !underlying || !exchange) {
       Utils.showToast('Name and underlying are required', 'warning');
       return;
     }
@@ -362,15 +363,134 @@ class StrategyBuilder {
       await api.createStrategy({
         watchlist_id: watchlistId,
         name,
-        underlying: selectedSymbol.symbol,
-        exchange: selectedSymbol.exchange,
+        underlying,
+        exchange,
         entry_trigger: entryTrigger,
+        ...(brokerTag ? { broker_tag: brokerTag } : {}),
       });
       Utils.showToast('Strategy created', 'success');
       this.closeModal();
       await this.refreshSection(watchlistId);
     } catch (error) {
       Utils.showToast(error.message || 'Failed to create strategy', 'error');
+    }
+  }
+
+  showEditStrategyModal(strategyId, watchlistId) {
+    const strategy = (this.strategiesByWatchlist.get(watchlistId) || []).find((s) => s.id === strategyId);
+    if (!strategy) {
+      Utils.showToast('Strategy not found', 'error');
+      return;
+    }
+
+    // Every strategy lives on a strategy-type watchlist, which unconditionally supports both
+    // trigger kinds - no per-watchlist gating needed here.
+    const triggerOptionsHtml = `<option value="MANUAL" ${strategy.entry_trigger === 'MANUAL' ? 'selected' : ''}>Manual</option><option value="WEBHOOK" ${strategy.entry_trigger === 'WEBHOOK' ? 'selected' : ''}>TradingView Webhook</option>`;
+    const triggerHint = '<p class="text-sm text-neutral-500" style="margin-top: 4px;">Switching to Manual revokes the current webhook URL - switching back to Webhook later generates a new one.</p>';
+
+    const webhookUrl = strategy.webhook_slug
+      ? `${window.location.origin.replace(/\/$/, '')}/webhook/tradingview/broadcast/${strategy.webhook_slug}`
+      : null;
+    // Unlike a watchlist's own broadcast webhook, a strategy webhook needs no symbol/exchange/
+    // quantity fields at all - the strategy's legs already define every order to place, so the
+    // request body only ever needs (optionally) an action.
+    const entryPayload = '{\n  "action": "ENTRY"\n}';
+    const exitPayload = '{\n  "action": "EXIT_ALL"\n}';
+    const legPayload = '{\n  "action": "ENTRY",\n  "leg_tag": "put_leg"\n}';
+    const escapeForCopy = (str) => str.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/"/g, '\\"');
+    const webhookCardHtml = (strategy.entry_trigger === 'WEBHOOK' && strategy.webhook_slug) ? `
+      <div class="form-group">
+        <label class="form-label">Webhook</label>
+        <div class="border border-base-200 rounded-lg p-3 space-y-2 bg-base-100">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p class="text-xs text-neutral-500">Slug</p>
+              <code class="code-inline">${Utils.escapeHTML(strategy.webhook_slug)}</code>
+            </div>
+            <button class="btn btn-neutral btn-sm" type="button" onclick="Utils.copyToClipboard('${strategy.webhook_slug}')">Copy</button>
+          </div>
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p class="text-xs text-neutral-500">Webhook URL</p>
+              <code class="code-inline">${Utils.escapeHTML(webhookUrl)}</code>
+            </div>
+            <button class="btn btn-neutral btn-sm" type="button" onclick="Utils.copyToClipboard('${webhookUrl}')">Copy URL</button>
+          </div>
+          <p class="text-xs text-neutral-500">Send TradingView alerts with header <code>X-Webhook-Token</code>. No symbol/exchange/quantity fields needed - this strategy's legs already define what to trade.</p>
+          <div class="flex items-center justify-between">
+            <p class="text-xs text-neutral-500">Sample Payload - Entry (default action if omitted)</p>
+            <button class="btn btn-neutral btn-sm" type="button" onclick="Utils.copyToClipboard('${escapeForCopy(entryPayload)}')">Copy JSON</button>
+          </div>
+          <pre class="code-block" style="white-space: pre-wrap;">${entryPayload}</pre>
+          <div class="flex items-center justify-between">
+            <p class="text-xs text-neutral-500">Sample Payload - Exit (closes every open leg)</p>
+            <button class="btn btn-neutral btn-sm" type="button" onclick="Utils.copyToClipboard('${escapeForCopy(exitPayload)}')">Copy JSON</button>
+          </div>
+          <pre class="code-block" style="white-space: pre-wrap;">${exitPayload}</pre>
+          <div class="flex items-center justify-between">
+            <p class="text-xs text-neutral-500">Sample Payload - Single Leg (add a Leg Tag on a leg to target just it)</p>
+            <button class="btn btn-neutral btn-sm" type="button" onclick="Utils.copyToClipboard('${escapeForCopy(legPayload)}')">Copy JSON</button>
+          </div>
+          <pre class="code-block" style="white-space: pre-wrap;">${legPayload}</pre>
+        </div>
+      </div>
+    ` : '';
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay strategy-modal';
+    modal.innerHTML = `
+      <div class="modal-content" style="max-width: 480px;">
+        <div class="modal-header"><h3>Edit Strategy</h3></div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label class="form-label">Name</label>
+            <input type="text" id="strategy-edit-name-input" class="form-input" value="${Utils.escapeHTML(strategy.name)}">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Entry Trigger</label>
+            <select id="strategy-edit-trigger-input" class="form-input">${triggerOptionsHtml}</select>
+            ${triggerHint}
+          </div>
+          ${webhookCardHtml}
+          <div class="form-group">
+            <label class="form-label">Broker Tag</label>
+            <input type="text" id="strategy-edit-broker-tag-input" class="form-input" value="${Utils.escapeHTML(strategy.broker_tag || `strategy-${strategy.id}`)}">
+            <p class="text-sm text-neutral-500" style="margin-top: 4px;">Shown as the "strategy" field in OpenAlgo order/logs and as the Order History correlation id prefix. Must be unique across strategies.</p>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-neutral btn-outline" onclick="strategyBuilder.closeModal()">Cancel</button>
+          <button class="btn btn-buy" onclick="strategyBuilder.submitEditStrategy(${strategyId}, ${watchlistId})">Save</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    this.activeModal = modal;
+    document.getElementById('strategy-edit-name-input').focus();
+  }
+
+  async submitEditStrategy(strategyId, watchlistId) {
+    const name = document.getElementById('strategy-edit-name-input').value.trim();
+    const entryTrigger = document.getElementById('strategy-edit-trigger-input').value;
+    const brokerTag = document.getElementById('strategy-edit-broker-tag-input').value.trim();
+
+    if (!name || !brokerTag) {
+      Utils.showToast('Name and broker tag are required', 'warning');
+      return;
+    }
+
+    try {
+      await api.updateStrategy(strategyId, { name, entry_trigger: entryTrigger, broker_tag: brokerTag });
+      Utils.showToast('Strategy updated', 'success');
+      this.closeModal();
+      await this.refreshSection(watchlistId);
+      // Reopen so a newly-generated (or just-revoked) webhook slug/URL is visible immediately
+      // without a second manual click, per the switch just made above.
+      if (entryTrigger === 'WEBHOOK') {
+        this.showEditStrategyModal(strategyId, watchlistId);
+      }
+    } catch (error) {
+      Utils.showToast(error.message || 'Failed to update strategy', 'error');
     }
   }
 
@@ -437,6 +557,11 @@ class StrategyBuilder {
           <option value="GTT" ${leg.exit_mechanism === 'GTT' ? 'selected' : ''}>Broker GTT (requires NRML/CNC, not MIS)</option>
         </select>
       </div>
+      <div class="form-group">
+        <label class="form-label">Leg Tag (optional)</label>
+        <input type="text" id="leg-tag-input" class="form-input" placeholder="e.g. put_leg" value="${Utils.escapeHTML(leg.leg_tag || '')}">
+        <p class="text-sm text-neutral-500" style="margin-top: 4px;">Lets a TradingView webhook alert target just this leg (<code>leg_tag</code> field) instead of the whole strategy. Must be unique within this strategy.</p>
+      </div>
     `;
   }
 
@@ -445,6 +570,7 @@ class StrategyBuilder {
     const target = document.getElementById('leg-target-input').value;
     const stoploss = document.getElementById('leg-stoploss-input').value;
     const trailing = document.getElementById('leg-trailing-input').value;
+    const legTag = document.getElementById('leg-tag-input').value.trim();
     return {
       action: document.getElementById('leg-action-input').value,
       option_type: optionType,
@@ -456,6 +582,7 @@ class StrategyBuilder {
       trailing_stoploss_points: trailing ? parseFloat(trailing) : null,
       product_type: document.getElementById('leg-product-type-input').value,
       exit_mechanism: document.getElementById('leg-exit-mechanism-input').value,
+      leg_tag: legTag || null,
     };
   }
 
@@ -645,6 +772,127 @@ class StrategyBuilder {
       }
     } catch (error) {
       Utils.showToast(error.message || 'Strategy exit failed', 'error');
+    }
+  }
+
+  // Same convention as showExecuteModal, scoped to a single leg - places a live order for just
+  // this leg against every instance assigned to the watchlist (the already-open-leg guard on the
+  // backend still applies, so re-entering an already-live leg is a safe no-op, not a duplicate).
+  async showExecuteLegModal(legId, strategyId, watchlistId) {
+    let watchlist;
+    try {
+      const res = await api.getWatchlistById(watchlistId);
+      watchlist = res?.data;
+    } catch (error) {
+      Utils.showToast('Failed to load watchlist instances', 'error');
+      return;
+    }
+
+    const instances = Array.isArray(watchlist?.instances) ? watchlist.instances : [];
+    if (!instances.length) {
+      Utils.showToast('No active instances are assigned to this watchlist - assign one first', 'warning');
+      return;
+    }
+
+    const instanceList = instances.map((i) => `<li>${Utils.escapeHTML(i.name)}</li>`).join('');
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay strategy-modal';
+    modal.innerHTML = `
+      <div class="modal-content" style="max-width: 420px;">
+        <div class="modal-header"><h3>Enter Leg</h3></div>
+        <div class="modal-body">
+          <p class="text-neutral-600 text-sm">This places a live order for just this leg against <strong>all ${instances.length} instance(s)</strong> assigned to this watchlist:</p>
+          <ul style="margin: var(--space-2) 0; padding-left: var(--space-5);">${instanceList}</ul>
+          <p class="text-neutral-600 text-sm">Instances where this leg is already open are skipped, not duplicated.</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-neutral btn-outline" onclick="strategyBuilder.closeModal()">Cancel</button>
+          <button class="btn btn-buy" onclick="strategyBuilder.submitExecuteLeg(${legId}, ${strategyId}, ${watchlistId})">Enter Leg on All ${instances.length}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    this.activeModal = modal;
+  }
+
+  async submitExecuteLeg(legId, strategyId, watchlistId) {
+    this.closeModal();
+    try {
+      const res = await api.executeStrategy(strategyId, { legId });
+      const data = res?.data;
+      const ok = data?.success;
+      const instanceSummaries = (data?.instances || []).map((inst) => {
+        const leg = (inst.legs || [])[0];
+        const label = leg?.skipped ? 'already open, skipped' : (leg?.success ? 'entered' : (leg?.error || 'failed'));
+        return `${inst.instanceName}: ${label}`;
+      });
+      Utils.showToast(
+        (ok ? 'Leg entered: ' : 'Leg entry had failures: ') + instanceSummaries.join(' | '),
+        ok ? 'success' : 'warning'
+      );
+      if (this.expandedStrategies.has(strategyId)) {
+        await this._loadAndRenderLegs(strategyId, watchlistId);
+      }
+    } catch (error) {
+      Utils.showToast(error.message || 'Leg entry failed', 'error');
+    }
+  }
+
+  // Same convention as showExitModal, scoped to a single leg.
+  async showExitLegModal(legId, strategyId, watchlistId) {
+    let watchlist;
+    try {
+      const res = await api.getWatchlistById(watchlistId);
+      watchlist = res?.data;
+    } catch (error) {
+      Utils.showToast('Failed to load watchlist instances', 'error');
+      return;
+    }
+
+    const instances = Array.isArray(watchlist?.instances) ? watchlist.instances : [];
+    const instanceList = instances.map((i) => `<li>${Utils.escapeHTML(i.name)}</li>`).join('');
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay strategy-modal';
+    modal.innerHTML = `
+      <div class="modal-content" style="max-width: 420px;">
+        <div class="modal-header"><h3>Exit Leg</h3></div>
+        <div class="modal-body">
+          <p class="text-neutral-600 text-sm">This closes just this leg's open position across <strong>all ${instances.length} instance(s)</strong> assigned to this watchlist:</p>
+          <ul style="margin: var(--space-2) 0; padding-left: var(--space-5);">${instanceList}</ul>
+          <p class="text-neutral-600 text-sm">Instances with no open position for this leg are skipped.</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-neutral btn-outline" onclick="strategyBuilder.closeModal()">Cancel</button>
+          <button class="btn btn-sell" onclick="strategyBuilder.submitExitLeg(${legId}, ${strategyId}, ${watchlistId})">Exit Leg on All ${instances.length}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    this.activeModal = modal;
+  }
+
+  async submitExitLeg(legId, strategyId, watchlistId) {
+    this.closeModal();
+    try {
+      const res = await api.exitStrategy(strategyId, { legId });
+      const data = res?.data;
+      const ok = data?.success;
+      const instanceSummaries = (data?.instances || []).map((inst) => {
+        const leg = (inst.legs || [])[0];
+        const label = leg ? (leg.success ? 'closed' : (leg.error || 'failed')) : 'no open position';
+        return `${inst.instanceName}: ${label}`;
+      });
+      Utils.showToast(
+        (ok ? 'Leg exited: ' : 'Leg exit had failures: ') + (instanceSummaries.join(' | ') || 'no open positions'),
+        ok ? 'success' : 'warning'
+      );
+      if (this.expandedStrategies.has(strategyId)) {
+        await this._loadAndRenderLegs(strategyId, watchlistId);
+      }
+    } catch (error) {
+      Utils.showToast(error.message || 'Leg exit failed', 'error');
     }
   }
 

@@ -114,11 +114,13 @@ router.get('/legs/:legId/preview', requirePermission('pages.watchlists.view'), a
 // instanceId is optional - when omitted, targets every active, order-enabled instance assigned
 // to the strategy's watchlist (same broadcast convention as manual quick orders and TradingView
 // webhooks). Pass instanceId to override and target just one instance.
+// legId is optional - when omitted, every leg is entered; pass it to enter just that leg.
 router.post('/:id/execute', requirePermission('orders.place'), async (req, res, next) => {
   try {
-    const { instanceId } = req.body;
+    const { instanceId, legId } = req.body;
     const result = await strategyService.executeStrategy(req.params.id, {
       instanceId: instanceId ? parseInt(instanceId, 10) : null,
+      legId: legId ? parseInt(legId, 10) : null,
       userId: req.user?.id || null,
       source: 'strategy_manual',
     });
@@ -130,12 +132,14 @@ router.post('/:id/execute', requirePermission('orders.place'), async (req, res, 
 
 // POST /api/v1/strategies/:id/exit
 // Closes every still-open leg (per the strategy_leg_executions ledger executeStrategy writes to)
-// - same optional instanceId override / all-watchlist-instances default as /execute.
+// - same optional instanceId override / all-watchlist-instances default as /execute. legId is
+// optional - when omitted, every open leg is closed; pass it to close just that leg.
 router.post('/:id/exit', requirePermission('orders.place'), async (req, res, next) => {
   try {
-    const { instanceId } = req.body;
+    const { instanceId, legId } = req.body;
     const result = await strategyService.exitStrategy(req.params.id, {
       instanceId: instanceId ? parseInt(instanceId, 10) : null,
+      legId: legId ? parseInt(legId, 10) : null,
       userId: req.user?.id || null,
       source: 'strategy_manual',
     });

@@ -9,8 +9,8 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
    */
   async showAddSymbolModal(watchlistId) {
     const watchlist = (this.watchlists || []).find((w) => w.id === watchlistId);
-    if (this.isBroadcastWatchlist(watchlist)) {
-      Utils.showToast('Broadcast watchlists do not support symbols. Assign instances and use the webhook.', 'warning');
+    if (this.isBroadcastWatchlist(watchlist) || this.isStrategyWatchlist(watchlist)) {
+      Utils.showToast('This watchlist type does not support symbols. Assign instances and use the webhook.', 'warning');
       return;
     }
 

@@ -13,6 +13,11 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       if (this.isBroadcastWatchlist(watchlist)) {
         return await this.renderBroadcastWatchlist(watchlistId);
       }
+      if (this.isStrategyWatchlist(watchlist)) {
+        // No symbols/quotes to show here - the Strategies section (a sibling wrapper in
+        // renderWatchlistCard) is this watchlist type's entire content.
+        return '';
+      }
 
       const response = await api.getWatchlistSymbols(watchlistId);
       const symbols = response.data;
@@ -330,7 +335,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
    */
   async startWatchlistPolling(watchlistId) {
     const watchlist = (this.watchlists || []).find((w) => w.id === watchlistId);
-    if (this.isBroadcastWatchlist(watchlist)) return;
+    if (this.isBroadcastWatchlist(watchlist) || this.isStrategyWatchlist(watchlist)) return;
     if (this.isPaused) return;
     // Stop existing poller if any
     this.stopWatchlistPolling(watchlistId);

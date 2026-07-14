@@ -185,16 +185,28 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     return Boolean(watchlist.is_broadcast || type === 'broadcast');
   }
 
+  isStrategyWatchlist(watchlist) {
+    if (!watchlist) return false;
+    return (watchlist.type || '').toLowerCase() === 'strategy';
+  }
+
   /**
    * Render individual watchlist card with compact layout
    */
   async renderWatchlistCard(wl, isExpanded) {
     const statusColor = wl.is_active ? 'success' : 'neutral';
     const isBroadcast = this.isBroadcastWatchlist(wl);
-    const typeBadge = isBroadcast ? '<span class="watchlist-card-compact__badge info">Broadcast</span>' : '';
+    const isStrategy = this.isStrategyWatchlist(wl);
+    const typeBadge = isBroadcast
+      ? '<span class="watchlist-card-compact__badge info">Broadcast</span>'
+      : isStrategy
+        ? '<span class="watchlist-card-compact__badge info">Strategy</span>'
+        : '';
     const metaText = isBroadcast
       ? `${wl.instance_count || 0} instances • TradingView webhook`
-      : `${wl.symbol_count || 0} symbols • ${wl.instance_count || 0} instances`;
+      : isStrategy
+        ? `${wl.instance_count || 0} instances • Manual or TradingView webhook strategies`
+        : `${wl.symbol_count || 0} symbols • ${wl.instance_count || 0} instances`;
 
     return `
       <article class="watchlist-card-compact" data-watchlist-id="${wl.id}">
@@ -224,7 +236,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             ${wl.description ? `<p class="watchlist-card-compact__desc">${Utils.escapeHTML(wl.description)}</p>` : ''}
           </div>
           <div class="watchlist-card-compact__actions">
-            ${isBroadcast ? '' : `
+            ${(isBroadcast || isStrategy) ? '' : `
               <button class="btn-icon-compact" onclick="app.showAddSymbolModal(${wl.id})" title="Add Symbol">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
@@ -253,11 +265,11 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           <div id="watchlist-symbols-${wl.id}">
             ${isExpanded ? await this.renderWatchlistSymbols(wl.id) : '<p class="text-neutral-600 text-sm p-3">Loading...</p>'}
           </div>
-          ${isBroadcast ? '' : `
+          ${isStrategy ? `
             <div id="watchlist-strategies-wrapper-${wl.id}">
               ${isExpanded ? await strategyBuilder.renderStrategiesSection(wl.id) : ''}
             </div>
-          `}
+          ` : ''}
         </div>
       </article>
     `;
@@ -366,14 +378,16 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         this.setupExpansionToggleListeners(watchlistId);
       }
 
-      // Render strategies section on first expansion (non-broadcast watchlists only)
+      // Render strategies section on first expansion (strategy watchlists only - the wrapper
+      // div itself only exists in the DOM for that type, see renderWatchlistCard)
       const strategiesWrapper = document.getElementById(`watchlist-strategies-wrapper-${watchlistId}`);
       if (strategiesWrapper && !strategiesWrapper.innerHTML.trim()) {
         strategiesWrapper.innerHTML = await strategyBuilder.renderStrategiesSection(watchlistId);
       }
 
-      // Start polling after DOM is ready
-      if (!this.isBroadcastWatchlist((this.watchlists || []).find((w) => w.id === watchlistId))) {
+      // Start polling after DOM is ready (broadcast/strategy watchlists have no quotable symbols)
+      const watchlist = (this.watchlists || []).find((w) => w.id === watchlistId);
+      if (!this.isBroadcastWatchlist(watchlist) && !this.isStrategyWatchlist(watchlist)) {
         this.startWatchlistPolling(watchlistId);
       }
     }
