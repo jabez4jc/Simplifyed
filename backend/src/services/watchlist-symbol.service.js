@@ -135,6 +135,29 @@ class WatchlistSymbolService {
     );
   }
 
+  /**
+   * Find a strategy's anchor row by underlying rather than exact symbol - on exchanges with no
+   * bare/index-style symbol (e.g. MCX commodities, where only dated contracts like
+   * NATGASMINI28JUL26FUT exist), the anchor's own `symbol` is a resolved dated contract, not the
+   * underlying name the strategy was created with, so a plain findSymbolByWatchlist(underlying)
+   * would never match it. Matches on `underlying_symbol` (set explicitly by
+   * strategyService.createStrategy's anchor auto-seed) OR `symbol` (covers the common case where
+   * they're the same, e.g. NIFTY/NSE_INDEX, and older anchor rows seeded before underlying_symbol
+   * was set here).
+   */
+  async findAnchorByWatchlist(watchlistId, exchange, underlying) {
+    const cleanExchange = sanitizeExchange(exchange);
+    const cleanUnderlying = sanitizeSymbol(underlying);
+    if (!watchlistId || !cleanExchange || !cleanUnderlying) return null;
+
+    return db.get(
+      `SELECT * FROM watchlist_symbols
+       WHERE watchlist_id = ? AND exchange = ? AND (underlying_symbol = ? OR symbol = ?)
+       LIMIT 1`,
+      [watchlistId, cleanExchange, cleanUnderlying, cleanUnderlying]
+    );
+  }
+
   async searchSymbolsByWatchlist(filters = {}) {
     const {
       watchlistId,

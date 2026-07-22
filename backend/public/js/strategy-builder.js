@@ -5,11 +5,62 @@
  * watchlist quick-order button conventions in quick-order.js.
  */
 
+const QUICK_TRADE_MODE_STORAGE_KEY = 'strategyQuickTradeMode';
+const ALLOW_SCALE_IN_STORAGE_KEY = 'strategyAllowScaleIn';
+
 class StrategyBuilder {
   constructor() {
     this.strategiesByWatchlist = new Map(); // watchlistId -> strategies[]
     this.expandedStrategies = new Set(); // strategyId
     this.legsByStrategy = new Map(); // strategyId -> legs[]
+  }
+
+  // Off by default - confirmation modals stay the safe default; a user opts into skipping them.
+  isQuickTradeMode() {
+    try {
+      return localStorage.getItem(QUICK_TRADE_MODE_STORAGE_KEY) === 'true';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  toggleQuickTradeMode(enabled) {
+    try {
+      localStorage.setItem(QUICK_TRADE_MODE_STORAGE_KEY, enabled ? 'true' : 'false');
+    } catch (_) {
+      // ignore localStorage errors (private mode, etc.)
+    }
+    Utils.showToast(
+      enabled
+        ? 'Quick Trade Mode on - Execute/Exit now fire immediately, no confirmation'
+        : 'Quick Trade Mode off - Execute/Exit will ask for confirmation again',
+      enabled ? 'warning' : 'info'
+    );
+  }
+
+  // Off by default - Execute normally skips any leg that already has an open position, to guard
+  // against an accidental double-click duplicating an order. Enabling this opts out of that
+  // guard so Execute clicks deliberately add to an already-open leg (scale in) instead.
+  isAllowScaleIn() {
+    try {
+      return localStorage.getItem(ALLOW_SCALE_IN_STORAGE_KEY) === 'true';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  toggleAllowScaleIn(enabled) {
+    try {
+      localStorage.setItem(ALLOW_SCALE_IN_STORAGE_KEY, enabled ? 'true' : 'false');
+    } catch (_) {
+      // ignore localStorage errors (private mode, etc.)
+    }
+    Utils.showToast(
+      enabled
+        ? 'Scale-In allowed - Execute will now add to an already-open leg instead of skipping it'
+        : 'Scale-In off - Execute will skip legs that already have an open position again',
+      enabled ? 'warning' : 'info'
+    );
   }
 
   async loadStrategies(watchlistId) {
@@ -31,10 +82,21 @@ class StrategyBuilder {
       ? strategies.map((s) => this._renderStrategyRow(watchlistId, s)).join('')
       : '<p class="text-neutral-600 text-sm p-2">No strategies yet.</p>';
 
+    const quickTradeChecked = this.isQuickTradeMode() ? 'checked' : '';
+    const allowScaleInChecked = this.isAllowScaleIn() ? 'checked' : '';
+
     return `
       <div class="strategies-section" id="strategies-section-${watchlistId}">
         <div class="strategies-section__header">
           <h5 class="strategies-section__title">Strategies</h5>
+          <label class="text-sm text-neutral-500" style="display: flex; align-items: center; gap: 6px; cursor: pointer;" title="When on, Execute/Exit (whole strategy and per-leg) fire immediately with no confirmation dialog.">
+            <input type="checkbox" class="form-checkbox" ${quickTradeChecked} onchange="strategyBuilder.toggleQuickTradeMode(this.checked)">
+            Quick Trade Mode
+          </label>
+          <label class="text-sm text-neutral-500" style="display: flex; align-items: center; gap: 6px; cursor: pointer;" title="When on, Execute adds to a leg that already has an open position instead of skipping it (scale in). Off by default to guard against accidental double-clicks duplicating an order.">
+            <input type="checkbox" class="form-checkbox" ${allowScaleInChecked} onchange="strategyBuilder.toggleAllowScaleIn(this.checked)">
+            Allow Scale-In
+          </label>
           <button class="btn btn-buy btn-sm" onclick="strategyBuilder.showCreateStrategyModal(${watchlistId})">
             + New Strategy
           </button>
@@ -655,6 +717,10 @@ class StrategyBuilder {
   // orders before the user commits (no live broker calls are made just to populate this dialog -
   // margin figures are shown after execution, as part of the result, not fetched up front).
   async showExecuteModal(strategyId, watchlistId) {
+    if (this.isQuickTradeMode()) {
+      Utils.showToast('Executing strategy...', 'info');
+      return this.submitExecute(strategyId, watchlistId);
+    }
     let watchlist;
     try {
       const res = await api.getWatchlistById(watchlistId);
@@ -671,6 +737,9 @@ class StrategyBuilder {
     }
 
     const instanceList = instances.map((i) => `<li>${Utils.escapeHTML(i.name)}</li>`).join('');
+    const scaleInWarning = this.isAllowScaleIn()
+      ? '<p class="text-sm" style="color: var(--color-warning, #d97706);">Allow Scale-In is on - any leg that already has an open position will get an <strong>additional</strong> order on top of it, not be skipped.</p>'
+      : '';
 
     const modal = document.createElement('div');
     modal.className = 'modal-overlay strategy-modal';
@@ -681,6 +750,7 @@ class StrategyBuilder {
           <p class="text-neutral-600 text-sm">This places live orders for every leg against <strong>all ${instances.length} instance(s)</strong> assigned to this watchlist:</p>
           <ul style="margin: var(--space-2) 0; padding-left: var(--space-5);">${instanceList}</ul>
           <p class="text-neutral-600 text-sm">Each instance's required margin is checked as part of execution and shown in the result.</p>
+          ${scaleInWarning}
         </div>
         <div class="modal-footer">
           <button class="btn btn-neutral btn-outline" onclick="strategyBuilder.closeModal()">Cancel</button>
@@ -695,7 +765,7 @@ class StrategyBuilder {
   async submitExecute(strategyId, watchlistId) {
     this.closeModal();
     try {
-      const res = await api.executeStrategy(strategyId);
+      const res = await api.executeStrategy(strategyId, { allowScaleIn: this.isAllowScaleIn() });
       const data = res?.data;
       const ok = data?.success;
       const instanceSummaries = (data?.instances || []).map((inst) => {
@@ -720,6 +790,10 @@ class StrategyBuilder {
   // Closes every still-open leg (per the strategy_leg_executions ledger) across every instance
   // assigned to the watchlist - same all-instances-at-once convention as Execute.
   async showExitModal(strategyId, watchlistId) {
+    if (this.isQuickTradeMode()) {
+      Utils.showToast('Exiting strategy...', 'info');
+      return this.submitExit(strategyId, watchlistId);
+    }
     let watchlist;
     try {
       const res = await api.getWatchlistById(watchlistId);
@@ -779,6 +853,10 @@ class StrategyBuilder {
   // this leg against every instance assigned to the watchlist (the already-open-leg guard on the
   // backend still applies, so re-entering an already-live leg is a safe no-op, not a duplicate).
   async showExecuteLegModal(legId, strategyId, watchlistId) {
+    if (this.isQuickTradeMode()) {
+      Utils.showToast('Entering leg...', 'info');
+      return this.submitExecuteLeg(legId, strategyId, watchlistId);
+    }
     let watchlist;
     try {
       const res = await api.getWatchlistById(watchlistId);
@@ -795,6 +873,10 @@ class StrategyBuilder {
     }
 
     const instanceList = instances.map((i) => `<li>${Utils.escapeHTML(i.name)}</li>`).join('');
+    const allowScaleIn = this.isAllowScaleIn();
+    const scaleInNote = allowScaleIn
+      ? '<p class="text-sm" style="color: var(--color-warning, #d97706);">Allow Scale-In is on - instances where this leg is already open will get an <strong>additional</strong> order on top of it, not be skipped.</p>'
+      : '<p class="text-neutral-600 text-sm">Instances where this leg is already open are skipped, not duplicated.</p>';
 
     const modal = document.createElement('div');
     modal.className = 'modal-overlay strategy-modal';
@@ -804,7 +886,7 @@ class StrategyBuilder {
         <div class="modal-body">
           <p class="text-neutral-600 text-sm">This places a live order for just this leg against <strong>all ${instances.length} instance(s)</strong> assigned to this watchlist:</p>
           <ul style="margin: var(--space-2) 0; padding-left: var(--space-5);">${instanceList}</ul>
-          <p class="text-neutral-600 text-sm">Instances where this leg is already open are skipped, not duplicated.</p>
+          ${scaleInNote}
         </div>
         <div class="modal-footer">
           <button class="btn btn-neutral btn-outline" onclick="strategyBuilder.closeModal()">Cancel</button>
@@ -819,7 +901,7 @@ class StrategyBuilder {
   async submitExecuteLeg(legId, strategyId, watchlistId) {
     this.closeModal();
     try {
-      const res = await api.executeStrategy(strategyId, { legId });
+      const res = await api.executeStrategy(strategyId, { legId, allowScaleIn: this.isAllowScaleIn() });
       const data = res?.data;
       const ok = data?.success;
       const instanceSummaries = (data?.instances || []).map((inst) => {
@@ -841,6 +923,10 @@ class StrategyBuilder {
 
   // Same convention as showExitModal, scoped to a single leg.
   async showExitLegModal(legId, strategyId, watchlistId) {
+    if (this.isQuickTradeMode()) {
+      Utils.showToast('Exiting leg...', 'info');
+      return this.submitExitLeg(legId, strategyId, watchlistId);
+    }
     let watchlist;
     try {
       const res = await api.getWatchlistById(watchlistId);

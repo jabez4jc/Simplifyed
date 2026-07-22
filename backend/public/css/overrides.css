@@ -121,8 +121,12 @@
 .strategies-section__header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--space-4);
   margin-bottom: var(--space-2);
+}
+
+.strategies-section__header .btn {
+  margin-left: auto;
 }
 
 .strategies-section__title {
@@ -141,7 +145,6 @@
 .strategy-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   background-color: var(--color-neutral-50);
@@ -170,6 +173,7 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  margin-left: auto;
 }
 
 .strategy-row-wrapper {

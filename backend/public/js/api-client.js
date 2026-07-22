@@ -347,10 +347,14 @@ class APIClient {
 
   // instanceId is optional - omit to target every instance assigned to the strategy's watchlist.
   // legId is optional - omit to enter every leg, pass it to enter just that one.
-  async executeStrategy(id, { instanceId = null, legId = null } = {}) {
+  async executeStrategy(id, { instanceId = null, legId = null, allowScaleIn = false } = {}) {
     return this.request(`/strategies/${id}/execute`, {
       method: 'POST',
-      body: { ...(instanceId ? { instanceId } : {}), ...(legId ? { legId } : {}) },
+      body: {
+        ...(instanceId ? { instanceId } : {}),
+        ...(legId ? { legId } : {}),
+        ...(allowScaleIn ? { allowScaleIn: true } : {}),
+      },
     });
   }
 

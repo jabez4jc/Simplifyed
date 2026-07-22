@@ -96,12 +96,47 @@ class StrategyService {
     // add-symbol path (watchlistService.addSymbol rejects it), so it's auto-seeded here via
     // watchlistSymbolService.addSymbol directly (bypassing that guard, the same seam
     // _upsertLegExitConfig already uses for leg-exit rows) if it doesn't exist yet.
-    const existingAnchor = await watchlistSymbolService.findSymbolByWatchlist(watchlistId, exchange, underlying);
+    const existingAnchor = await watchlistSymbolService.findAnchorByWatchlist(watchlistId, exchange, underlying);
     if (!existingAnchor) {
-      const resolved = await symbolValidationService.validateSymbol(underlying, exchange, null);
+      let resolved;
+      try {
+        resolved = await symbolValidationService.validateSymbol(underlying, exchange, null);
+      } catch (error) {
+        // Some exchanges (MCX commodities in particular) have no bare/index-style symbol - only
+        // dated contracts exist (e.g. NATGASMINI28JUL26FUT), so an exact-match lookup on the
+        // plain underlying name the user typed always fails. Fall back to the nearest
+        // non-expired FUT contract under this underlying from the local instruments cache.
+        const nearestFut = await db.get(
+          `SELECT * FROM instruments
+           WHERE underlying_key = ? AND exchange = ? AND instrumenttype = 'FUT' AND expiry >= date('now')
+           ORDER BY expiry ASC LIMIT 1`,
+          [underlying, exchange]
+        );
+        if (!nearestFut) {
+          throw new ValidationError(
+            `No tradable contract found for ${exchange}:${underlying} - check the symbol name or that instruments are synced`
+          );
+        }
+        resolved = {
+          token: nearestFut.token,
+          symbol_type: 'FUTURES',
+          instrumenttype: nearestFut.instrumenttype,
+          name: nearestFut.name,
+          lotsize: nearestFut.lotsize,
+          tick_size: nearestFut.tick_size,
+          brsymbol: nearestFut.brsymbol,
+          resolvedSymbol: nearestFut.symbol,
+        };
+      }
       await watchlistSymbolService.addSymbol(watchlistId, {
         exchange,
-        symbol: underlying,
+        symbol: resolved.resolvedSymbol || underlying,
+        // Explicit, always set (regardless of which resolution path above ran) - this is what
+        // findAnchorByWatchlist matches on, and what quickOrderService._resolveOptionSymbolForInstance
+        // /derivativeResolutionService use as the option chain's root name, so option legs keep
+        // dynamically resolving the current nearest expiry across monthly contract rollovers
+        // even though this row's own `symbol` is a point-in-time dated contract.
+        underlying_symbol: underlying,
         token: resolved.token,
         symbol_type: resolved.symbol_type || resolved.symbolType,
         instrumenttype: resolved.instrumenttype,
@@ -372,7 +407,7 @@ class StrategyService {
     if (!strategy) {
       throw new NotFoundError('Strategy');
     }
-    const anchorSymbol = await watchlistSymbolService.findSymbolByWatchlist(
+    const anchorSymbol = await watchlistSymbolService.findAnchorByWatchlist(
       strategy.watchlist_id, strategy.exchange, strategy.underlying
     );
     if (!anchorSymbol) {
@@ -397,7 +432,10 @@ class StrategyService {
   // legId is optional - when omitted, every leg is entered (existing behavior). When provided,
   // only that leg is entered; the double-entry guard inside _executeStrategyForInstance still
   // applies (skips it if it already has an open execution for a given instance).
-  async executeStrategy(strategyId, { instanceId = null, legId = null, userId = null, source = 'strategy' } = {}) {
+  // allowScaleIn opts out of the already-open-leg guard below (default: skip legs that already
+  // have a live position, to prevent an accidental double-click from duplicating an order) - set
+  // it when the user has deliberately chosen to add to an existing position.
+  async executeStrategy(strategyId, { instanceId = null, legId = null, allowScaleIn = false, userId = null, source = 'strategy' } = {}) {
     const strategy = await this.getStrategyWithLegs(strategyId);
     if (!strategy.legs.length) {
       throw new ValidationError('Strategy has no legs configured');
@@ -415,7 +453,7 @@ class StrategyService {
     // Anchor symbol: the underlying must already exist as a watchlist symbol in this watchlist
     // (with options/futures trading enabled as appropriate) - strategy execution resolves legs
     // off it rather than bootstrapping new underlying rows.
-    const anchorSymbol = await watchlistSymbolService.findSymbolByWatchlist(
+    const anchorSymbol = await watchlistSymbolService.findAnchorByWatchlist(
       strategy.watchlist_id,
       strategy.exchange,
       strategy.underlying
@@ -435,7 +473,7 @@ class StrategyService {
 
     const settled = await Promise.allSettled(
       instances.map((instance) =>
-        this._executeStrategyForInstance({ strategy: strategyForExecution, anchorSymbol, instance, executionId, userId, source })
+        this._executeStrategyForInstance({ strategy: strategyForExecution, anchorSymbol, instance, executionId, allowScaleIn, userId, source })
       )
     );
 
@@ -701,17 +739,20 @@ class StrategyService {
    * (exit-config upsert, risk-event logging, order-history row) as the previous per-leg
    * placeQuickOrder path.
    */
-  async _executeStrategyForInstance({ strategy, anchorSymbol, instance, executionId, userId, source }) {
+  async _executeStrategyForInstance({ strategy, anchorSymbol, instance, executionId, allowScaleIn = false, userId, source }) {
     // Skip legs that already have an open execution for this instance - prevents duplicate
     // orders if Execute (whole-strategy or single-leg) is called again while a leg is still
-    // live, e.g. a repeated webhook fire or clicking Execute twice.
-    const openLegIds = new Set(
-      (await db.all(
-        `SELECT strategy_leg_id FROM strategy_leg_executions
-         WHERE strategy_id = ? AND instance_id = ? AND entry_status = 'PLACED' AND closed_at IS NULL`,
-        [strategy.id, instance.id]
-      )).map((row) => row.strategy_leg_id)
-    );
+    // live, e.g. a repeated webhook fire or clicking Execute twice. allowScaleIn deliberately
+    // opts out of this (see executeStrategy) so the user can knowingly add to a position instead.
+    const openLegIds = allowScaleIn
+      ? new Set()
+      : new Set(
+          (await db.all(
+            `SELECT strategy_leg_id FROM strategy_leg_executions
+             WHERE strategy_id = ? AND instance_id = ? AND entry_status = 'PLACED' AND closed_at IS NULL`,
+            [strategy.id, instance.id]
+          )).map((row) => row.strategy_leg_id)
+        );
     const skippedOutcomes = strategy.legs
       .filter((leg) => openLegIds.has(leg.id))
       .map((leg) => ({
@@ -973,7 +1014,14 @@ class StrategyService {
 
     const lotSize = Number(anchorSymbol.lot_size) > 0 ? Number(anchorSymbol.lot_size) : 1;
     const qtyValue = Number(leg.qty_value) > 0 ? Number(leg.qty_value) : 1;
-    return leg.qty_type === 'FIXED' ? qtyValue : qtyValue * lotSize;
+    const baseQuantity = leg.qty_type === 'FIXED' ? qtyValue : qtyValue * lotSize;
+
+    // Same per-instance scaling quick orders already apply (quickOrderService's
+    // _executeFuturesOrder/_executeOptionsOrder) - not applied to MARGIN_BASED above, since
+    // that's already proportional to the instance's own capital via margin_utilization_pct and
+    // multiplying it further would double-count the scaling.
+    const instanceMultiplier = Math.min(Math.max(parseIntSafe(instance.multiplier, 1), 1), 999);
+    return baseQuantity * instanceMultiplier;
   }
 
   /**

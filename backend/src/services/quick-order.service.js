@@ -1733,42 +1733,38 @@ class QuickOrderService {
       correlation_id: correlationId,
     });
 
-    // Verify final position post-trade
-    let finalPosition = null;
-    try {
-      if (useTypeScope) {
-        finalPosition = await this._getAggregatedTypePosition(
-          instance,
-          underlying,
-          expiry,
-          optionType,
-          finalProduct
-        );
-      } else {
-        finalPosition = await this._getCurrentPositionSize(
-          instance,
-          optionSymbol.symbol,
-          derivativeExchange,
-          finalProduct,
-          { forceLive: true, failOnError: true }
-        );
-      }
-      if (finalPosition !== targetPosition) {
-        log.warn('Post-trade position mismatch (options)', {
+    // Verify final position post-trade (fire-and-forget to avoid blocking the response - this
+    // is a live forceLive position-book round trip whose only purpose is a mismatch warning log,
+    // same pattern already used in the futures/equity order path above).
+    const verifyFinalOptionsPosition = async () => {
+      try {
+        const finalPosition = useTypeScope
+          ? await this._getAggregatedTypePosition(instance, underlying, expiry, optionType, finalProduct)
+          : await this._getCurrentPositionSize(
+              instance,
+              optionSymbol.symbol,
+              derivativeExchange,
+              finalProduct,
+              { forceLive: true, failOnError: true }
+            );
+        if (finalPosition !== targetPosition) {
+          log.warn('Post-trade position mismatch (options)', {
+            instance_id: instance.id,
+            symbol: optionSymbol.symbol,
+            expected: targetPosition,
+            actual: finalPosition,
+            scope: useTypeScope ? 'TYPE' : 'LEG',
+          });
+        }
+      } catch (verifyErr) {
+        log.warn('Failed to verify final options position', {
           instance_id: instance.id,
           symbol: optionSymbol.symbol,
-          expected: targetPosition,
-          actual: finalPosition,
-          scope: useTypeScope ? 'TYPE' : 'LEG',
+          error: verifyErr.message,
         });
       }
-    } catch (verifyErr) {
-      log.warn('Failed to verify final options position', {
-        instance_id: instance.id,
-        symbol: optionSymbol.symbol,
-        error: verifyErr.message,
-      });
-    }
+    };
+    verifyFinalOptionsPosition().catch(() => {});
 
     this._invalidateInstanceCaches(instance.id);
 
@@ -1786,7 +1782,9 @@ class QuickOrderService {
       strike_policy: strikePolicy,
       current_position: currentPosition,
       target_position: targetPosition,
-      final_position: finalPosition,
+      // No longer available synchronously - verifyFinalOptionsPosition() above now runs
+      // fire-and-forget so this call doesn't wait on an extra live position-book round trip.
+      final_position: null,
       instance_name: instance.name,
     };
   }

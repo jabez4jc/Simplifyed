@@ -117,10 +117,11 @@ router.get('/legs/:legId/preview', requirePermission('pages.watchlists.view'), a
 // legId is optional - when omitted, every leg is entered; pass it to enter just that leg.
 router.post('/:id/execute', requirePermission('orders.place'), async (req, res, next) => {
   try {
-    const { instanceId, legId } = req.body;
+    const { instanceId, legId, allowScaleIn } = req.body;
     const result = await strategyService.executeStrategy(req.params.id, {
       instanceId: instanceId ? parseInt(instanceId, 10) : null,
       legId: legId ? parseInt(legId, 10) : null,
+      allowScaleIn: allowScaleIn === true,
       userId: req.user?.id || null,
       source: 'strategy_manual',
     });
