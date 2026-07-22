@@ -568,16 +568,23 @@ The settings UI intentionally hides internal-only or redundant configuration to 
 ## 11) Frontend Architecture
 
 ### 11.1 Pages
-- `public/login.html`: login screen.
+- `public/index.html`: marketing/landing page, links to `/login.html`.
+- `public/login.html`: login screen (local email/password and/or Supabase, see §4.1).
+- `public/access-pending.html`: shown to authenticated users with no role assigned yet (`ACCESS_PENDING`, see `requireAuth` in §4.2).
 - `public/dashboard.html`: main app shell.
-- `public/settings.html` (rendered via JS in dashboard): settings tabs.
+- Settings is a tab within the dashboard shell, not a separate page (rendered via `settings-*.js`).
 
 ### 11.2 Frontend JS Modules
-- `public/js/dashboard.js`: main app state, view switching, watchlists, instances, orders.
-- `public/js/quick-order.js`: watchlist row expansion and trade controls.
-- `public/js/settings.js`: settings UI, RBAC admin, import/export.
-- `public/js/api-client.js`: API wrapper for all endpoints.
-- `public/js/utils.js`: helper utilities for formatting and UI.
+No bundler - plain `<script>` tags loading small, feature-scoped files (naming convention: `<area>-<concern>.js`).
+- `dashboard-core.js` + `dashboard-init.js`: app state, view switching, bootstrap.
+- `dashboard-instances.js`, `dashboard-orders.js`, `dashboard-positions.js`, `dashboard-trades.js`, `dashboard-pnl.js`, `dashboard-overview.js`, `dashboard-notifications.js`, `dashboard-playground.js`: one file per dashboard section.
+- `dashboard-watchlists-core.js`, `-crud.js`, `-modals.js`, `-positions.js`, `-quotes.js`: watchlist view, split by concern.
+- `quick-order-core.js` + `quick-order-init.js`, `-controls.js`, `-expansion.js`, `-instruments.js`, `-option-chain.js`, `-place.js`, `-preview.js`, `-selectors.js`: watchlist row expansion and trade controls (see §7.2-7.4).
+- `settings-core.js` + `-init.js`, `-data.js`, `-general.js`, `-rbac.js`, `-status.js`: settings UI, RBAC admin, import/export.
+- `strategy-builder.js`: multi-leg strategy CRUD/execution UI (see §7.10).
+- `supabase-auth.js`: persistent Supabase client with background token refresh (see §4.1).
+- `api-client.js`: API wrapper for all endpoints, attaches the Bearer token.
+- `utils.js`: formatting/UI helpers.
 
 ### 11.3 Data Refresh Patterns
 - Watchlist view uses market data cache and background polling.
