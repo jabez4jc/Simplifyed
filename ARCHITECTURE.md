@@ -72,9 +72,12 @@ The server starts background services after a successful login/signup or during 
 ## 4) Authentication & Authorization
 
 ### 4.1 Auth Methods
-- **Session-based local auth**: email/password with `express-session`.
-- **Supabase JWT auth**: validates ES256 (JWKS) and HS256 tokens.
-- **Test mode**: optional bypass for local development.
+All methods issue/verify a Bearer JWT checked in `middleware/auth.js`'s `optionalAuth`; there is no server-side login session for users (see note below on `express-session`).
+- **Local email/password**: `POST /api/v1/auth/register` (bootstrap-only - closes once any user exists), `/login`, `/change-password`. Tokens are HS256, signed with `config.auth.jwtSecret` (env `JWT_SECRET`), 7-day expiry.
+- **Supabase JWT auth**: optional, gated on `SUPABASE_URL` being configured. Validates ES256 (JWKS, modern Supabase default) and HS256 (legacy/service-role) tokens.
+- **Test mode**: `ENABLE_TEST_MODE=true` bypasses auth entirely with a hardcoded admin user - never enable in production.
+- `optionalAuth` tries local-token verification first, then falls through to Supabase if that fails and `SUPABASE_URL` is set - both can be active simultaneously, and a user can have a Supabase identity, a local password, or both.
+- `express-session` + `connect-sqlite3` (`data/sessions.db`) is configured but **not used for user login** - it exists solely to back cookie auth for the WebSocket gateway.
 
 ### 4.2 RBAC
 - Roles, permissions, and user-role assignments are stored in DB.
@@ -111,8 +114,15 @@ Major tables (selected fields):
 - **symbol_cache / symbol_search_cache**: symbol lookup optimization.
 - **options_cache / expiry_calendar**: option chain and expiry utilities.
 
+### Strategies & GTT
+- **strategies**: named multi-leg strategy scoped to a watchlist, optional `webhook_slug` for TradingView-style triggering, `entry_trigger` (MANUAL/webhook).
+- **strategy_legs**: per-leg config (option_type, action, strike_policy/offset, qty, product, target/stoploss/trailing points, `exit_mechanism`).
+- **strategy_leg_executions**: one row per leg per instance execution - resolved symbol, entry/exit order IDs and status/prices, `opened_at`/`closed_at`.
+- **gtt_orders**: GTT-style trigger records placed for leg exits (see 7.x below), linked to `strategy_legs` via `strategy_leg_id`.
+
 ### Risk & Monitoring
 - **trailing_state**: trailing stop-loss state across instances and symbols.
+- **risk_events**: audit trail of risk-control actions (target/stop/trailing hits) with previous/new values.
 - **daily_instance_pnl_snapshots**: daily P&L snapshots.
 - **order_monitor_log**: order monitor history (for monitoring/analysis).
 - **notifications**: system and health notifications.
@@ -458,6 +468,15 @@ Key options features implemented in `QuickOrderService`:
 - Broadcast targets are resolved from watchlist assignments.
 - Orders are placed per target instance with rate-limiting buckets.
 
+### 7.10 Multi-Leg Strategies & GTT (`strategy.service.js`)
+
+A **strategy** is a named group of legs (e.g. sell ATM CE + sell ATM PE) scoped to a watchlist, manageable via `/api/v1/strategies` and executable via webhook (`findByWebhookSlug`) or the UI.
+
+- **Execution** (`executeStrategy`) resolves each leg's symbol/strike (once per broadcast for consistency, or per-instance for FLOAT_OFS reduce) and reuses `quickOrderService.placeQuickOrder` for the actual order - no separate order-placement path.
+- **Exit tracking**: rather than a bespoke exit engine, each leg's resolved trading symbol gets a `watchlist_symbols` row carrying that leg's own target/stoploss/trailing config, so exits ride the existing `AutoExitService`/`RiskControlsService` polling loop used for regular watchlist symbols. `_placeLegExitGtt` additionally records the exit as a `gtt_orders` row for visibility/cancellation via `/api/v1/gtt`.
+- **Status**: `GET /:id/status` (`getExecutionStatus`) aggregates `strategy_leg_executions` across instances for a strategy.
+- **Risk events**: target/stop/trailing hits during strategy or watchlist-symbol monitoring are recorded to `risk_events`, readable via `/api/v1/risk-events` (audit-only, no write endpoint).
+
 ## 8) Instance Management Architecture (Deep Detail)
 
 ### 8.1 Instance Creation
@@ -582,8 +601,12 @@ The settings UI intentionally hides internal-only or redundant configuration to 
 ## 13) API Surface Overview
 
 Route groups under `/api/v1` (by module):
+- **auth**: `register` (bootstrap-only), `login`, `change-password` - local email/password auth (see §4.1).
 - **instances**: instance CRUD, health, P&L commits, CSV import/export.
 - **watchlists**: watchlist CRUD, symbol management, instance assignments, CSV import/export.
+- **strategies**: multi-leg strategy CRUD, leg management, execute/exit, status (see §7.10).
+- **gtt**: list/cancel GTT-tracked exit triggers (see §7.10).
+- **risk-events**: read-only risk-control event log.
 - **quickorders**: watchlist trading actions (equity/futures/options) with idempotency support.
 - **orders**: manual order placement and order history.
 - **positions**: per-instance positions and aggregated P&L.
@@ -601,6 +624,7 @@ Route groups under `/api/v1` (by module):
 - **health-check / ready / health**: runtime and readiness probes.
 - **telemetry**: rate-limit and cache visibility.
 - **snapshots / pnl-snapshots**: cache snapshots and daily P&L export.
+- **public-config**: unauthenticated Supabase URL/anon-key + feed-timing config for the frontend bootstrap.
 
 Webhook routes (public token auth):
 - **/webhook/tradingview**: TradingView broadcast endpoints.

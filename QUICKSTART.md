@@ -9,7 +9,7 @@ Before you begin, ensure you have:
 - [ ] Ubuntu 20.04+ server with root/sudo access
 - [ ] Domain name pointing to your server's IP
 - [ ] Email address for SSL certificate notifications
-- [ ] (Optional) Google OAuth credentials
+- [ ] A Supabase project (URL, anon key, JWT secret) - **required** by the installer for login
 - [ ] (Optional) Telegram bot token
 
 ## Installation in 3 Steps
@@ -43,12 +43,14 @@ sudo ./install.sh
 
 The installer will ask you for:
 
-1. **Domain name** - Your fully qualified domain (e.g., admin.example.com)
-2. **Email address** - For Let's Encrypt SSL certificate notifications
-3. **Application port** - Press Enter for default (3000)
-4. **Installation directory** - Press Enter for default (/opt/simplifyed)
-5. **Google OAuth** - Press Enter to skip (TEST MODE) or enter credentials
-6. **Telegram bot** - Press Enter to skip or enter bot details
+1. **Instance identifier** - Optional, only needed for running multiple installs side by side (e.g., `prod`, `staging`); press Enter for a single default install
+2. **Domain name** - Your fully qualified domain (e.g., admin.example.com)
+3. **Email address** - For Let's Encrypt SSL certificate notifications
+4. **Application port** - Press Enter for default (3000)
+5. **Admin email** - The email that gets the Admin role on first login (must match the account you sign in with)
+6. **Installation directory** - Press Enter for default (/opt/simplifyed)
+7. **Supabase URL, anon key, JWT secret** - Required; create a free project at supabase.com first if you don't have one
+8. **Telegram bot** - Press Enter to skip or enter bot details
 
 That's it! The script handles everything else automatically.
 
@@ -73,15 +75,7 @@ Once installation completes, open your browser and visit:
 https://yourdomain.com
 ```
 
-### If you skipped Google OAuth (TEST MODE):
-- Application auto-logs you in
-- No password needed
-- For testing only - configure OAuth for production
-
-### If you configured Google OAuth:
-- Click "Sign in with Google"
-- Authorize the application
-- Access your dashboard
+Sign in with the Supabase project you configured (email/password or whichever providers you enabled there, e.g. Google). The email you gave the installer as "Admin email" is pre-granted the Admin role on first login - everyone else who signs in afterward gets no role until an admin assigns one from Settings.
 
 ## Quick Reference Commands
 
@@ -110,12 +104,8 @@ sudo nano /opt/simplifyed/backend/.env
    - Add your OpenAlgo broker instances
    - Configure watchlists
 
-2. **Set Up Google OAuth** (if skipped initially)
-   ```bash
-   sudo nano /opt/simplifyed/backend/.env
-   # Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET
-   sudo systemctl restart simplifyed
-   ```
+2. **Add a local password-only login** (optional, works alongside Supabase)
+   - Sign in once via Supabase, then call `POST /api/v1/auth/change-password` with just `newPassword` to attach a local password to your account - useful as a Supabase-outage fallback.
 
 3. **Import Instruments** (for options trading)
    ```bash
@@ -159,11 +149,13 @@ sudo netstat -tlnp | grep 3000
 
 - **Detailed Installation Guide**: See [INSTALL.md](INSTALL.md)
 - **Application Documentation**: See [README.md](README.md)
-- **Architecture Guide**: See [docs/application_architecture.md](docs/application_architecture.md)
+- **Architecture Guide**: See [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ---
 
 ## One-Command Installation (Advanced)
+
+Note: the installer still prompts interactively for domain, email, and Supabase credentials even when run this way - "one-command" refers to the download+execute step, not a fully unattended install.
 
 If you're confident with the defaults and have DNS configured:
 

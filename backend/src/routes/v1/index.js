@@ -4,6 +4,7 @@
  */
 
 import express from 'express';
+import authRoutes from './auth.js';
 import instanceRoutes from './instances.js';
 import watchlistRoutes from './watchlists.js';
 import strategyRoutes from './strategies.js';
@@ -35,6 +36,7 @@ import { config } from '../../core/config.js';
 const router = express.Router();
 
 // Mount route modules
+router.use('/auth', authRoutes);
 router.use('/instances', instanceRoutes);
 router.use('/watchlists', watchlistRoutes);
 router.use('/strategies', strategyRoutes);

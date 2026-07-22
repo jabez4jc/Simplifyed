@@ -1,6 +1,8 @@
 import assert from 'assert';
 import test from 'node:test';
 import instanceService from '../../src/services/instance.service.js';
+import settingsService from '../../src/services/settings.service.js';
+import { formatDateIST } from '../../src/utils/instance-session.util.js';
 
 function buildInstance(overrides = {}) {
   return {
@@ -20,16 +22,24 @@ function buildInstance(overrides = {}) {
   };
 }
 
+// computeSessionState calls the module-level getTradingSessions(), which reads
+// through settingsService.getSetting('trading_sessions') - stub that, not the
+// (now-removed) instanceService wrapper methods.
+function stubTradingSessions(sessions) {
+  const original = settingsService.getSetting;
+  settingsService.getSetting = async (key) =>
+    key === 'trading_sessions' ? { value: sessions } : original.call(settingsService, key);
+  return () => {
+    settingsService.getSetting = original;
+  };
+}
+
 test('session max-loss hits reset on new session key', async () => {
-  const originalSessions = instanceService._getTradingSessions;
   const now = new Date(2025, 0, 1, 10, 0, 0);
-  const today = instanceService._formatDateIST(now);
+  const today = formatDateIST(now);
+  const restore = stubTradingSessions([{ label: 'Session 1', start: '00:00', end: '23:59' }]);
 
   try {
-    instanceService._getTradingSessions = async () => [
-      { label: 'Session 1', start: '00:00', end: '23:59' },
-    ];
-
     const instance = buildInstance({
       session_max_loss_hits: 2,
       session_max_loss_hits_date: `${today}|Old Session`,
@@ -38,21 +48,17 @@ test('session max-loss hits reset on new session key', async () => {
     const result = await instanceService._computeSessionState(instance, 0, now);
     assert.equal(result.maxLossHits, 0);
   } finally {
-    instanceService._getTradingSessions = originalSessions;
+    restore();
   }
 });
 
 test('session target respects multiplier', async () => {
-  const originalSessions = instanceService._getTradingSessions;
   const now = new Date(2025, 0, 1, 10, 0, 0);
-  const today = instanceService._formatDateIST(now);
+  const today = formatDateIST(now);
   const sessionKey = `${today}|Session 1`;
+  const restore = stubTradingSessions([{ label: 'Session 1', start: '00:00', end: '23:59' }]);
 
   try {
-    instanceService._getTradingSessions = async () => [
-      { label: 'Session 1', start: '00:00', end: '23:59' },
-    ];
-
     const instance = buildInstance({
       session_baseline_total_pnl: 0,
       session_baseline_at: sessionKey,
@@ -63,6 +69,6 @@ test('session target respects multiplier', async () => {
     const result = await instanceService._computeSessionState(instance, 200, now);
     assert.equal(result.cutoffReason, 'SESSION_TARGET_PROFIT_REACHED');
   } finally {
-    instanceService._getTradingSessions = originalSessions;
+    restore();
   }
 });

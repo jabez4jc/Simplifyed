@@ -30,9 +30,12 @@ This guide walks you through installing Simplifyed Admin on an Ubuntu server wit
 - DNS A record pointing to your server's public IP address
 - Domain must be accessible and resolving before installation
 
+### Required Services
+
+- **Supabase project**: URL, anon key, and JWT secret - the installer requires these for login (create a free project at supabase.com if you don't have one)
+
 ### Optional Services
 
-- **Google OAuth**: Client ID and Secret (for user authentication)
 - **Telegram Bot**: Bot token and username (for notifications)
 
 ---
@@ -93,7 +96,15 @@ sudo ./install.sh
 
 The script will prompt you for the following information:
 
-#### 1. Domain Configuration
+#### 1. Instance Identifier (Optional)
+
+```
+Enter instance identifier (or press Enter to skip):
+```
+
+Only needed if you're running multiple installs on the same server (e.g. `prod`, `staging`, `dev`) - each gets its own install directory, system user, and systemd service. Press Enter for a single default install.
+
+#### 2. Domain Configuration
 
 ```
 Enter your domain name (e.g., admin.example.com):
@@ -101,7 +112,7 @@ Enter your domain name (e.g., admin.example.com):
 
 Enter your fully qualified domain name (FQDN).
 
-#### 2. Email Address
+#### 3. Email Address
 
 ```
 Enter your email address (for Let's Encrypt notifications):
@@ -109,7 +120,7 @@ Enter your email address (for Let's Encrypt notifications):
 
 This email receives SSL certificate expiration notices.
 
-#### 3. Application Port (Optional)
+#### 4. Application Port (Optional)
 
 ```
 Enter application port (default: 3000):
@@ -117,33 +128,35 @@ Enter application port (default: 3000):
 
 Press Enter to use the default port (3000), or specify a custom port.
 
-#### 4. Installation Directory (Optional)
+#### 5. Admin Email
 
 ```
-Enter installation directory (default: /opt/simplifyed):
+Enter admin user email (first login will be granted Admin):
+```
+
+The installer inserts this email into the database with the Admin role pre-assigned. Whoever signs in with this exact email (via Supabase) gets full admin access on first login.
+
+#### 6. Installation Directory (Optional)
+
+```
+Installation directory (default: /opt/simplifyed):
 ```
 
 Press Enter to use the default, or specify a custom path.
 
-#### 5. Google OAuth Configuration (Optional)
+#### 7. Supabase Auth Configuration (Required)
 
 ```
-Google OAuth Configuration (optional - press Enter to skip)
-Google Client ID:
-Google Client Secret:
+Supabase Project URL (e.g., https://xyz.supabase.co):
+Supabase anon key:
+Supabase JWT secret:
 ```
 
-- **Skip**: Press Enter to run in TEST MODE (no authentication required)
-- **Configure**: Enter your Google OAuth credentials
+These are required - the installer won't proceed without them. Create a free project at [supabase.com](https://supabase.com), then find these values under Project Settings → API (URL, anon key) and Project Settings → Auth → JWT Settings (JWT secret). See `backend/SUPABASE_AUTH_SETUP.md` for the full walkthrough, including email templates and redirect URLs.
 
-To obtain Google OAuth credentials:
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select existing
-3. Enable Google+ API
-4. Create OAuth 2.0 credentials
-5. Add authorized redirect URI: `https://yourdomain.com/auth/google/callback`
+A `JWT_SECRET` for the app's own local email/password login is also generated automatically (random, no prompt) - that login method works independently of Supabase; see [Local Login](#local-login-alternative) below.
 
-#### 6. Telegram Bot Configuration (Optional)
+#### 8. Telegram Bot Configuration (Optional)
 
 ```
 Telegram Bot Configuration (optional - press Enter to skip)
@@ -165,7 +178,7 @@ The script will automatically:
 2. ✓ Install system dependencies (Nginx, SQLite, Certbot, etc.)
 3. ✓ Create application user (`simplifyed`)
 4. ✓ Copy application files to `/opt/simplifyed`
-5. ✓ Generate secure session secret
+5. ✓ Generate secure session and JWT secrets
 6. ✓ Create `.env` configuration file
 7. ✓ Install NPM dependencies
 8. ✓ Build application CSS
@@ -193,17 +206,13 @@ Once installation completes, access your application at:
 https://yourdomain.com
 ```
 
-#### If Google OAuth is Configured
+Sign in with the Supabase project you configured during install (email/password, or any provider - e.g. Google - you enabled in that Supabase project's Auth settings). The email you gave the installer as "Admin email" is pre-granted the Admin role on first login.
 
-- Click "Sign in with Google"
-- Authorize the application
-- You'll be redirected to the dashboard
+#### Local Login (Alternative)
 
-#### If Running in TEST MODE
-
-- The application automatically logs you in
-- No authentication required (development only)
-- **Important**: Configure Google OAuth for production use
+Independent of Supabase, the app always accepts an email/password login it manages itself:
+- `POST /api/v1/auth/register` creates the first account as Admin - but the installer already inserts one user row (the admin email above), so this only works if you haven't logged in via Supabase yet on a fresh install.
+- Once any account exists, add a local password to it via `POST /api/v1/auth/change-password` (while authenticated through Supabase) - useful as a fallback if Supabase is ever unreachable.
 
 ### Service Management
 
@@ -296,13 +305,15 @@ BASE_URL=https://yourdomain.com
 # Database
 DATABASE_PATH=./database/simplifyed.db
 
-# Session security
+# Session secret (WS gateway cookie auth only, not user login) and
+# JWT secret (signs local email/password login tokens) - both auto-generated
 SESSION_SECRET=<auto-generated>
+JWT_SECRET=<auto-generated>
 
-# Google OAuth (optional)
-GOOGLE_CLIENT_ID=your-client-id
-GOOGLE_CLIENT_SECRET=your-client-secret
-GOOGLE_CALLBACK_URL=https://yourdomain.com/auth/google/callback
+# Supabase Auth (optional login method, required by the installer)
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_JWT_SECRET=your-jwt-secret
 
 # Polling intervals (milliseconds)
 INSTANCE_POLL_INTERVAL_MS=15000
@@ -313,21 +324,14 @@ TELEGRAM_BOT_TOKEN=your-bot-token
 TELEGRAM_BOT_USERNAME=your-bot-username
 ```
 
-### Adding Google OAuth After Installation
-
-If you skipped Google OAuth during installation:
+### Changing Supabase Credentials After Installation
 
 1. Edit the .env file:
    ```bash
    sudo nano /opt/simplifyed/backend/.env
    ```
 
-2. Add your credentials:
-   ```bash
-   GOOGLE_CLIENT_ID=your-actual-client-id
-   GOOGLE_CLIENT_SECRET=your-actual-client-secret
-   GOOGLE_CALLBACK_URL=https://yourdomain.com/auth/google/callback
-   ```
+2. Update `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_JWT_SECRET`.
 
 3. Restart the service:
    ```bash
@@ -600,7 +604,7 @@ The installation configures UFW with these rules:
    ```
 4. **Monitor logs regularly**
 5. **Keep backups** of database and configuration
-6. **Use strong Google OAuth** instead of TEST MODE in production
+6. **Never run with `ENABLE_TEST_MODE=true`** in production - it bypasses authentication entirely
 
 ---
 
@@ -611,15 +615,15 @@ For issues or questions:
 - Check the [Troubleshooting](#troubleshooting) section
 - Review application logs: `sudo journalctl -u simplifyed -f`
 - Check GitHub Issues: [Repository Issues](https://github.com/yourusername/simplifyed/issues)
-- Read the main documentation: `docs/application_architecture.md`
+- Read the main documentation: [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ---
 
 ## Additional Resources
 
 - [Main README](README.md)
-- [Application Architecture](docs/application_architecture.md)
-- [Market Data Feed Service](docs/market_data_feed_service.md)
+- [Application Architecture](ARCHITECTURE.md)
+- [Supabase Auth Setup](backend/SUPABASE_AUTH_SETUP.md)
 - [Let's Encrypt Documentation](https://letsencrypt.org/docs/)
 - [Nginx Documentation](https://nginx.org/en/docs/)
 - [Systemd Service Documentation](https://www.freedesktop.org/software/systemd/man/systemd.service.html)

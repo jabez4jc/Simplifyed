@@ -315,8 +315,9 @@ install_application() {
 configure_environment() {
     print_header "Configuring Environment Variables"
 
-    # Generate session secret
+    # Generate session secret and local-auth JWT signing secret
     SESSION_SECRET=$(generate_random_string)
+    JWT_SECRET=$(generate_random_string)
 
     # Collect Supabase credentials (required)
     echo ""
@@ -356,10 +357,13 @@ BASE_URL=https://$DOMAIN
 # Database
 DATABASE_PATH=./database/simplifyed.db
 
-# Session
+# Session (WS gateway cookie auth only - not used for login)
 SESSION_SECRET=$SESSION_SECRET
 
-# Supabase Auth (managed identity)
+# Local email/password auth (bootstrap admin via POST /api/v1/auth/register)
+JWT_SECRET=$JWT_SECRET
+
+# Supabase Auth (optional, additional login method)
 SUPABASE_URL=$SUPABASE_URL
 SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
 SUPABASE_JWT_SECRET=$SUPABASE_JWT_SECRET

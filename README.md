@@ -9,8 +9,10 @@ Simplifyed Admin is the control plane for running multiple OpenAlgo broker insta
 - **Unified dashboard** – Collapsible navigation, stacked watchlists, help affordances, and quick access to positions and orders.
 - **Buyer/Writer options workflow** – FLOAT_OFS strike selection, operating‑mode toggles, expiry management, option preview with auto‑resolved CE/PE symbols.
 - **Shared market‑data feed** – Quotes, positions, and funds are polled once per interval and cached for every admin session.
-- **SQLite + services layer** – Instruments cache, option chain builder, expiry calendar, quick‑order execution engine, and health monitoring.
-- **Docs as source of truth** – See `docs/application_architecture.md` for the in‑depth architecture guide and `docs/market_data_feed_service.md` for the rate‑limit strategy.
+- **Multi-leg strategies & GTT** – Webhook-triggerable strategies with per-leg risk config, exit orders tracked as GTT triggers.
+- **SQLite + services layer** – Instruments cache, option chain builder, expiry calendar, quick‑order execution engine, and health monitoring. One embedded database file, no external DB service.
+- **Local or Supabase auth** – Email/password login built into the app (`/api/v1/auth/register` bootstraps the first admin), or an optional Supabase project for managed identity. Neither is required to run the app.
+- **Docs as source of truth** – See [ARCHITECTURE.md](ARCHITECTURE.md) for the in‑depth architecture guide.
 
 ---
 
@@ -21,17 +23,17 @@ Simplifyed Admin is the control plane for running multiple OpenAlgo broker insta
 ├── backend/
 │   ├── public/                 # Front-end assets (dashboard.html, JS, CSS)
 │   ├── src/                    # Express server, routes, services, integrations
-│   ├── migrations/             # SQLite migrations
+│   ├── migrations/             # SQLite migrations (single squashed 000_initial_schema.js)
 │   ├── scripts/                # Utility scripts (imports, maintenance)
+│   ├── Test/                   # node:test unit/integration tests
 │   ├── package.json            # Backend dependencies + scripts
 │   └── server.js               # Entry point (starts feed service + Express)
-├── docs/                       # Living documentation (architecture, services, feeds)
-├── Requirements/               # Functional specs (options workflow, option-chain guide)
 ├── import-instruments*.sh/py   # Helpers for seeding instruments cache
+├── install.sh / uninstall-instance.sh  # Ubuntu production install/uninstall (Nginx + systemd + Let's Encrypt)
 └── README.md                   # This file
 ```
 
-> See `docs/application_architecture.md` for the complete component breakdown.
+> See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete component breakdown.
 
 ---
 
@@ -79,17 +81,22 @@ npm install
 
 #### 3. Configure environment
 
-Copy `.env.example` (if provided) to `.env` and populate:
+Create `backend/.env` (there's no `.env.example` yet - copy the keys below):
 
 ```
 PORT=3000
-SESSION_SECRET=replace-me
+SESSION_SECRET=replace-me       # WS gateway cookie auth only, not user login
+JWT_SECRET=replace-me           # signs local email/password login tokens
 DATABASE_PATH=./database/simplifyed.db
-OPENALGO_PROXY=          # optional
-GOOGLE_CLIENT_ID=...     # optional (required for OAuth login)
-GOOGLE_CLIENT_SECRET=...
-TELEGRAM_BOT_TOKEN=...   # optional (alerting)
+TELEGRAM_BOT_TOKEN=...          # optional (alerting)
+
+# Optional: only needed if you want Supabase as an additional login method
+SUPABASE_URL=...
+SUPABASE_ANON_KEY=...
+SUPABASE_JWT_SECRET=...
 ```
+
+No `.env` at all still works for local development - every value above has a (non-production-safe) default.
 
 #### 4. Run migrations
 
@@ -118,20 +125,22 @@ npm start            # production style
 npm run dev          # rebuilds CSS + restarts on change (if configured)
 ```
 
-The dashboard is available at `http://localhost:3000`. Login is handled via the configured auth strategy (local/session or Google OAuth depending on environment).
+The dashboard is available at `http://localhost:3000`. Since no users exist yet, `POST /api/v1/auth/register` (email + password, 8+ chars) creates the first account as Admin and closes itself - use that as your login, or configure Supabase for managed identity instead (see `backend/SUPABASE_AUTH_SETUP.md`).
 
 ---
 
 ## npm Scripts (backend)
 
-| Script              | Description |
-| ------------------- | ----------- |
-| `npm start`         | Runs `server.js` once (production style). |
-| `npm run dev`       | Starts the dev server with optional file watching (configure per need). |
-| `npm run migrate`   | Runs pending SQLite migrations (`backend/migrations`). |
-| `npm run build:css` | Builds Tailwind/DaisyUI CSS for `public/css`. |
-
-> Unit tests were removed in this branch; reintroduce them under `backend/tests/` if required.
+| Script                  | Description |
+| ----------------------- | ----------- |
+| `npm start`             | Runs `server.js` once (production style). |
+| `npm run dev`           | Restarts on file change (`node --watch`). |
+| `npm run migrate`       | Runs pending SQLite migrations (`backend/migrations`). |
+| `npm run migrate:rollback` | Rolls back the most recently applied migration. |
+| `npm run build:css`     | Builds Tailwind/DaisyUI CSS for `public/css`. |
+| `npm test`              | Runs the full `Test/` suite (`node --test`). |
+| `npm run test:unit` / `test:integration` | Runs just `Test/unit` or `Test/integration`. |
+| `npm run lint` / `npm run format` | ESLint / Prettier over `src/`. |
 
 ---
 
@@ -190,8 +199,8 @@ Logs stream to stdout via Winston; check the console for `[info]`/`[warn]`/`[err
 
 ## Additional Documentation
 
-- `docs/application_architecture.md` – Full architecture reference (frontend modules, backend services, database schema, workflows).
-- `docs/market_data_feed_service.md` – Shared feed design and rate-limit inventory.
-- `Requirements/Options_Mode_Implementation_Guide_v1.4.md` – Functional specs for FLOAT_OFS / Buyer‑Writer options workflows.
+- [ARCHITECTURE.md](ARCHITECTURE.md) – Full architecture reference (backend services, database schema, watchlist/strategy trading workflows, API surface).
+- [INSTALL.md](INSTALL.md) / [QUICKSTART.md](QUICKSTART.md) / [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) – Production install via `install.sh`.
+- `backend/SUPABASE_AUTH_SETUP.md` – Configuring Supabase as an optional login method.
 
-Keep these documents updated whenever you enhance the application—they are the canonical reference for new contributors. If you add new routes or services, document them under `docs/` and reference them here.
+Keep these documents updated whenever you enhance the application - they are the canonical reference for new contributors.

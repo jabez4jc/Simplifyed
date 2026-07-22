@@ -224,10 +224,17 @@ class Config {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     };
 
+    this.google = {
+      clientId: null,
+      clientSecret: null,
+      callbackUrl: getEnv('GOOGLE_CALLBACK_URL', 'http://localhost:3000/auth/google/callback'),
+    };
+
     this.auth = {
       googleClientId: null,
       googleClientSecret: null,
       enableTestMode: getEnvBool('ENABLE_TEST_MODE', false),
+      jwtSecret: getEnv('JWT_SECRET', 'dev-jwt-secret-change-in-production', true),
       supabaseUrl: getEnv('SUPABASE_URL', ''),
       supabaseAnonKey: getEnv('SUPABASE_ANON_KEY', ''),
       supabaseJwtSecret: getEnv('SUPABASE_JWT_SECRET', ''),

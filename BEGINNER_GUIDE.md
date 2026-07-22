@@ -196,7 +196,15 @@ sudo ./install.sh
 
 The installer will ask you several questions. Here's what to enter:
 
-#### 1. **Domain Name**
+#### 1. **Instance Identifier** (Just press Enter, unless you're running more than one install)
+```
+Enter instance identifier (or press Enter to skip):
+```
+Only needed if you want multiple installs on the same server (e.g. `prod`, `staging`, `dev` side by side). Press **Enter** for a normal single install.
+
+---
+
+#### 2. **Domain Name**
 ```
 Enter your domain name (e.g., admin.example.com):
 ```
@@ -212,7 +220,7 @@ It should show your server's IP address.
 
 ---
 
-#### 2. **Email Address**
+#### 3. **Email Address**
 ```
 Enter your email address (for Let's Encrypt notifications):
 ```
@@ -220,7 +228,7 @@ Enter your email. You'll receive notifications when your SSL certificate is abou
 
 ---
 
-#### 3. **Application Port** (Just press Enter)
+#### 4. **Application Port** (Just press Enter)
 ```
 Enter application port (default: 3000):
 ```
@@ -228,43 +236,45 @@ Just press **Enter** to use the default port 3000.
 
 ---
 
-#### 4. **Installation Directory** (Just press Enter)
+#### 5. **Admin Email**
+
 ```
-Enter installation directory (default: /opt/simplifyed):
+Enter admin user email (first login will be granted Admin):
+```
+
+Enter the email address you'll sign in with. The installer pre-grants this exact email the Admin role, so whoever logs in with it first gets full access.
+
+---
+
+#### 6. **Installation Directory** (Just press Enter)
+```
+Installation directory (default: /opt/simplifyed):
 ```
 Just press **Enter** to use the default `/opt/simplifyed`.
 
 ---
 
-#### 5. **Google OAuth Configuration** (Optional)
+#### 7. **Supabase Auth Configuration** (Required)
 
 ```
-Google OAuth Configuration (optional - press Enter to skip)
-Google Client ID:
+Supabase Project URL (e.g., https://xyz.supabase.co):
+Supabase anon key:
+Supabase JWT secret:
 ```
 
-**If you DON'T have Google OAuth yet:**
-- Just press **Enter** twice to skip
-- The app will run in TEST MODE (no login required)
-- You can add Google OAuth later
+The installer needs a Supabase project to handle login - there's no skip option here.
 
-**If you DO have Google OAuth:**
-- Enter your Google Client ID and press Enter
-- Enter your Google Client Secret and press Enter
+**If you don't have a Supabase project yet:**
+1. Go to https://app.supabase.com and create a free project
+2. Once created, go to **Settings → API** and copy the **Project URL** and **anon public key**
+3. Go to **Settings → Auth → JWT Settings** and copy the **JWT Secret**
+4. Paste each value in when the installer asks
 
-**To get Google OAuth credentials:**
-1. Go to https://console.cloud.google.com/
-2. Create a new project or select existing one
-3. Go to "APIs & Services" → "Credentials"
-4. Click "Create Credentials" → "OAuth client ID"
-5. Application type: "Web application"
-6. Authorized redirect URIs: `https://yourdomain.com/auth/google/callback`
-7. Click "Create"
-8. Copy the Client ID and Client Secret
+For full setup (email templates, redirect URLs, enabling Google/other providers inside Supabase), see `backend/SUPABASE_AUTH_SETUP.md` after installing.
 
 ---
 
-#### 6. **Telegram Bot Configuration** (Optional)
+#### 8. **Telegram Bot Configuration** (Optional)
 
 ```
 Telegram Bot Configuration (optional - press Enter to skip)
@@ -307,16 +317,7 @@ When installation completes, you'll see a success message with your application 
 https://yourdomain.com
 ```
 
-### If You Skipped Google OAuth (TEST MODE):
-- You'll be automatically logged in
-- No password needed
-- For testing only
-
-### If You Configured Google OAuth:
-- Click "Sign in with Google"
-- Choose your Google account
-- Authorize the app
-- You'll see the dashboard
+Sign in using the Supabase project you configured during install - email/password, or any provider (like Google) you turned on inside that Supabase project. Use the same email you gave the installer as "Admin email" to get full admin access on first login.
 
 ---
 
@@ -405,28 +406,19 @@ sudo journalctl -u simplifyed -n 50
 2. Click "Create New Watchlist"
 3. Add symbols you want to track
 
-### 3. Configure Google OAuth (if you skipped it)
+### 3. Add a Backup Local Password (optional)
 
-**Edit the configuration file:**
-```bash
-sudo nano /opt/simplifyed/backend/.env
-```
+Supabase is required for the first login, but you can add a password-only login on top of it as a fallback:
 
-Find these lines and add your credentials:
-```
-GOOGLE_CLIENT_ID=your-client-id-here
-GOOGLE_CLIENT_SECRET=your-client-secret-here
-```
-
-**Save and exit:**
-- Press `Ctrl + X`
-- Press `Y`
-- Press `Enter`
-
-**Restart the application:**
-```bash
-sudo systemctl restart simplifyed
-```
+1. Sign in through the dashboard once (via Supabase) so you have an active session.
+2. Call the change-password endpoint with just a new password (no current password needed the first time):
+   ```bash
+   curl -X POST https://yourdomain.com/api/v1/auth/change-password \
+     -H "Authorization: Bearer YOUR_SUPABASE_ACCESS_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{"newPassword": "something-at-least-8-characters"}'
+   ```
+3. From then on you can log in with `POST /api/v1/auth/login` using that email/password, even if Supabase is temporarily unreachable.
 
 ---
 
@@ -534,7 +526,7 @@ Installation location:
 2. **Get files** using git clone, SCP, or FileZilla
 3. **Verify files** with `ls -la install.sh`
 4. **Run installer** with `sudo ./install.sh`
-5. **Answer prompts** (domain, email, optional OAuth)
+5. **Answer prompts** (domain, email, admin email, Supabase credentials)
 6. **Wait 5-10 minutes** for installation
 7. **Access** at `https://yourdomain.com`
 

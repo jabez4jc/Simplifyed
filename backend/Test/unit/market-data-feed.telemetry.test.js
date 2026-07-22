@@ -1,6 +1,7 @@
 import assert from 'assert';
 import test from 'node:test';
 import marketDataFeedService from '../../src/services/market-data-feed.service.js';
+import marketDataCircuitBreakerService from '../../src/services/market-data-circuit-breaker.service.js';
 
 test('getCacheStatus marks stale quote cache entries', () => {
   const instanceId = 99999;
@@ -25,8 +26,10 @@ test('getCacheStatus marks stale quote cache entries', () => {
 });
 
 test('getCacheStatus surfaces circuit-only state', () => {
+  // Circuit-breaker state lives in marketDataCircuitBreakerService, not on
+  // marketDataFeedService itself - getCacheStatus() reads it from there.
   const key = '888:quotes';
-  marketDataFeedService.failureState.set(key, {
+  marketDataCircuitBreakerService.failureState.set(key, {
     cooldownUntil: Date.now() + 1000,
     lastErrorMessage: 'test error',
     failures: 1,
@@ -38,5 +41,5 @@ test('getCacheStatus surfaces circuit-only state', () => {
   assert.equal(entry.circuitOpen, true);
 
   // cleanup
-  marketDataFeedService.failureState.delete(key);
+  marketDataCircuitBreakerService.failureState.delete(key);
 });

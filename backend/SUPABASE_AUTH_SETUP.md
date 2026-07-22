@@ -2,6 +2,12 @@
 
 This guide will help you configure Supabase authentication for the Simplifyed Trading Dashboard.
 
+> **Supabase is optional.** The app also has a built-in email/password login that needs no external
+> service: `POST /api/v1/auth/register` bootstraps the first admin account, `POST /api/v1/auth/login`
+> signs in. Use Supabase if you want managed identity (magic links, social providers, hosted user
+> management); use local auth if you'd rather not depend on an external service. Both can be active
+> at once - see `middleware/auth.js`.
+
 ## Prerequisites
 
 - A Supabase account (sign up at <https://supabase.com> if you don't have one)
@@ -97,7 +103,7 @@ This guide will help you configure Supabase authentication for the Simplifyed Tr
 2. Update the Supabase configuration:
 
 ```bash
-# Supabase Auth (REQUIRED)
+# Supabase Auth (optional - only needed if you want Supabase as a login method)
 SUPABASE_URL=https://your-project-id.supabase.co
 SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 SUPABASE_JWT_SECRET=your-jwt-secret-here
@@ -146,7 +152,7 @@ By default, Supabase requires users to confirm their email before they can log i
 
 ## Step 7: Configure User Roles
 
-The first user to authenticate will automatically be assigned the **Admin** role with full permissions.
+The first user to authenticate will automatically be assigned the **Admin** role with full permissions. This applies across both auth methods sharing the same `users` table: if someone already registered via the local `/api/v1/auth/register` endpoint (or `install.sh` pre-seeded an admin email), that already-created row counts as "first user" and the next Supabase login won't get auto-admin.
 
 Subsequent users will be created without a role. You can assign roles through the admin panel once logged in.
 

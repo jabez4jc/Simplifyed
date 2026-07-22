@@ -2,12 +2,31 @@ import session from 'express-session';
 import connectSqlite3 from 'connect-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import jwksClient from 'jwks-rsa';
 import db from '../core/database.js';
 import { config } from '../core/config.js';
 import { log } from '../core/logger.js';
 import { UnauthorizedError, ForbiddenError } from '../core/errors.js';
+
+const LOCAL_TOKEN_TTL = '7d';
+
+export async function hashPassword(password) {
+  return bcrypt.hash(password, 10);
+}
+
+export async function verifyPassword(password, hash) {
+  if (!hash) return false;
+  return bcrypt.compare(password, hash);
+}
+
+export function signLocalToken(user) {
+  return jwt.sign({ sub: String(user.id), email: user.email }, config.auth.jwtSecret, {
+    algorithm: 'HS256',
+    expiresIn: LOCAL_TOKEN_TTL,
+  });
+}
 
 // JWKS client for Supabase ES256 JWT verification
 let jwksClientInstance = null;
@@ -172,9 +191,28 @@ export async function optionalAuth(req, res, next) {
       return next();
     }
 
-    // Bearer token from Supabase
+    // Bearer token: locally-issued JWT (email/password login) or Supabase
     const authHeader = req.headers.authorization || '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+    if (token) {
+      try {
+        const localPayload = jwt.verify(token, config.auth.jwtSecret, { algorithms: ['HS256'] });
+        const user = await attachRoleAndPermissions(parseInt(localPayload.sub, 10));
+        if (user) {
+          log.debug('User authenticated via local token', { userId: user.id, email: user.email });
+          req.user = user;
+          req.isAuthenticated = () => true;
+          if (req.app?.locals?.startServices) {
+            await req.app.locals.startServices();
+          }
+          return next();
+        }
+      } catch {
+        // Not a locally-issued token (or user was deleted) - fall through to Supabase below.
+      }
+    }
+
     if (token && config.auth.supabaseUrl) {
       try {
         log.debug('Attempting to verify Supabase token');
@@ -290,4 +328,7 @@ export default {
   requireAdmin,
   requirePermission,
   getUserWithRole,
+  hashPassword,
+  verifyPassword,
+  signLocalToken,
 };
