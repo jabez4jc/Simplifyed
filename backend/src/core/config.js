@@ -326,6 +326,12 @@ class Config {
       maxRequests: getEnvInt('RATE_LIMIT_MAX_REQUESTS', 100),
     };
 
+    this.telegram = {
+      botToken: getEnv('TELEGRAM_BOT_TOKEN', ''),
+      botUsername: getEnv('TELEGRAM_BOT_USERNAME', ''),
+      defaultChatId: getEnv('TELEGRAM_DEFAULT_CHAT_ID', '') || null,
+    };
+
     this.webhooks = {
       tradingviewBroadcast: {
         token: getEnv('WEBHOOK_TOKEN', ''),

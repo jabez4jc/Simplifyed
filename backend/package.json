@@ -10,7 +10,6 @@
     "build:css": "node build-css.js",
     "test": "node --test Test/**/*.test.js",
     "test:unit": "node --test Test/unit/**/*.test.js",
-    "test:integration": "node --test Test/integration/**/*.test.js",
     "test:coverage": "node --test --experimental-test-coverage Test/**/*.test.js",
     "test:watch": "node --test --watch Test/**/*.test.js",
     "migrate": "node migrations/migrate.js",

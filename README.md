@@ -139,7 +139,7 @@ The dashboard is available at `http://localhost:3000`. Since no users exist yet,
 | `npm run migrate:rollback` | Rolls back the most recently applied migration. |
 | `npm run build:css`     | Builds Tailwind/DaisyUI CSS for `public/css`. |
 | `npm test`              | Runs the full `Test/` suite (`node --test`). |
-| `npm run test:unit` / `test:integration` | Runs just `Test/unit` or `Test/integration`. |
+| `npm run test:unit` | Runs just `Test/unit`. |
 | `npm run lint` / `npm run format` | ESLint / Prettier over `src/`. |
 
 ---

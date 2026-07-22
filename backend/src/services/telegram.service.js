@@ -1,10 +1,11 @@
 import crypto from 'crypto';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
+import { config } from '../core/config.js';
 
-const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME;
-const DEFAULT_CHAT_ID = process.env.TELEGRAM_DEFAULT_CHAT_ID || null;
+const BOT_TOKEN = config.telegram.botToken;
+const BOT_USERNAME = config.telegram.botUsername;
+const DEFAULT_CHAT_ID = config.telegram.defaultChatId;
 const API_URL = BOT_TOKEN ? `https://api.telegram.org/bot${BOT_TOKEN}` : null;
 
 function ensureConfigured() {
