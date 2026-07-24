@@ -180,6 +180,13 @@ const Utils = {
     if (container) {
       container.appendChild(toast);
 
+      // Cap visible toasts so a burst of actions (bulk cancel, quote errors) can't stack up
+      // indefinitely - drop the oldest once we're over the limit.
+      const MAX_VISIBLE_TOASTS = 4;
+      while (container.children.length > MAX_VISIBLE_TOASTS) {
+        container.firstElementChild.remove();
+      }
+
       // Auto remove
       setTimeout(() => {
         toast.style.animation = 'slideOut 0.3s ease';
@@ -211,10 +218,10 @@ const Utils = {
       modal.innerHTML = `
         <div class="modal-content">
           <div class="modal-header">
-            <h3>${title}</h3>
+            <h3></h3>
           </div>
           <div class="modal-body">
-            <p>${message}</p>
+            <p></p>
           </div>
           <div class="modal-footer">
             <button class="btn btn-neutral btn-outline" data-action="cancel">Cancel</button>
@@ -222,6 +229,10 @@ const Utils = {
           </div>
         </div>
       `;
+      // Set via textContent (not interpolated into the innerHTML template above) so
+      // caller-supplied text - e.g. a live broker symbol - can never inject markup.
+      modal.querySelector('.modal-header h3').textContent = title;
+      modal.querySelector('.modal-body p').textContent = message;
 
       document.body.appendChild(modal);
 
@@ -247,8 +258,8 @@ const Utils = {
     }
     if (container) {
       container.innerHTML = `
-        <div class="loading-spinner">
-          <div class="loading-dots">
+        <div class="app-loading-spinner">
+          <div class="app-loading-dots">
             <span></span>
             <span></span>
             <span></span>
@@ -429,3 +440,21 @@ const Utils = {
     return badges[status] || `<span class="badge badge-neutral">${status}</span>`;
   },
 };
+
+// Escape closes the topmost open modal - every modal in this app shares the .modal-overlay
+// class and is appended directly to <body>, so the last one in the DOM is the topmost. If it
+// has a Cancel button (data-action="cancel", used by Utils.confirm()), click it so any pending
+// promise resolves the same way a real Cancel click would; otherwise just remove the overlay,
+// matching the `onclick="this.closest('.modal-overlay').remove()"` pattern used everywhere else.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const overlays = document.querySelectorAll('.modal-overlay');
+  if (!overlays.length) return;
+  const topmost = overlays[overlays.length - 1];
+  const cancelBtn = topmost.querySelector('[data-action="cancel"]');
+  if (cancelBtn) {
+    cancelBtn.click();
+  } else {
+    topmost.remove();
+  }
+});

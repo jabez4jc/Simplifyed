@@ -241,6 +241,40 @@
       color: var(--text-muted);
     }
 
+    .password-field-wrapper {
+      position: relative;
+    }
+
+    .password-field-wrapper .form-input {
+      padding-right: 2.75rem;
+    }
+
+    .password-toggle-btn {
+      position: absolute;
+      right: 0.5rem;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 2rem;
+      height: 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: none;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+      color: var(--text-muted);
+    }
+
+    .password-toggle-btn:hover {
+      color: var(--text-secondary);
+    }
+
+    .password-toggle-btn svg {
+      width: 18px;
+      height: 18px;
+    }
+
     .btn-block {
       width: 100%;
       justify-content: center;
@@ -372,8 +406,17 @@
           </div>
           <div class="form-group">
             <label class="form-label" for="login-password">Password</label>
-            <input id="login-password" class="form-input" type="password" placeholder="Enter your password"
-              autocomplete="current-password" required>
+            <div class="password-field-wrapper">
+              <input id="login-password" class="form-input" type="password" placeholder="Enter your password"
+                autocomplete="current-password" required>
+              <button type="button" class="password-toggle-btn" aria-label="Show password"
+                onclick="togglePasswordVisibility('login-password', this)">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" />
+                  <path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
+                </svg>
+              </button>
+            </div>
           </div>
           <button type="submit" class="btn-v btn-v-primary btn-block" id="login-btn">
             <span>Sign In</span>
@@ -391,8 +434,17 @@
           </div>
           <div class="form-group">
             <label class="form-label" for="signup-password">Password</label>
-            <input id="signup-password" class="form-input" type="password" placeholder="Create a strong password"
-              autocomplete="new-password" required minlength="6">
+            <div class="password-field-wrapper">
+              <input id="signup-password" class="form-input" type="password" placeholder="Create a strong password"
+                autocomplete="new-password" required minlength="6">
+              <button type="button" class="password-toggle-btn" aria-label="Show password"
+                onclick="togglePasswordVisibility('signup-password', this)">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                  <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" />
+                  <path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
+                </svg>
+              </button>
+            </div>
             <div class="password-requirements">
               <strong>Password requirements:</strong>
               <ul>
@@ -458,6 +510,14 @@
       setTimeout(() => {
         messageArea.innerHTML = '';
       }, 8000);
+    }
+
+    function togglePasswordVisibility(inputId, btn) {
+      const input = document.getElementById(inputId);
+      if (!input) return;
+      const showing = input.type === 'password';
+      input.type = showing ? 'text' : 'password';
+      btn.setAttribute('aria-label', showing ? 'Hide password' : 'Show password');
     }
 
     function setButtonLoading(buttonId, loading, originalText = '') {

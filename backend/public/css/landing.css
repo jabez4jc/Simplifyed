@@ -8,7 +8,7 @@
     --accent-dim: #2A2A2E;
     --text-primary: #FFFFFF;
     --text-secondary: #9CA3AF;
-    --text-muted: #4B5563;
+    --text-muted: #828A96; /* was #4B5563 (~2.7:1 on --bg-dark) - bumped to ~5.7:1 for WCAG AA */
     --font-main: 'Outfit', sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
     --grid-step: 8px;

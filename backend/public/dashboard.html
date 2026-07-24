@@ -7,12 +7,12 @@
   <title>Simplifyed Admin V2 - Trading Dashboard</title>
   <link rel="stylesheet" href="/css/tailwind.css?v=20251204-0800">
   <link rel="stylesheet" href="/css/tokens-base.css?v=20260714-0200">
-  <link rel="stylesheet" href="/css/components.css?v=20260714-0200">
-  <link rel="stylesheet" href="/css/quick-order.css?v=20260714-0200">
+  <link rel="stylesheet" href="/css/components.css?v=20260724-0900">
+  <link rel="stylesheet" href="/css/quick-order.css?v=20260723-0900">
   <link rel="stylesheet" href="/css/settings.css?v=20260714-0200">
-  <link rel="stylesheet" href="/css/watchlists.css?v=20260714-0200">
+  <link rel="stylesheet" href="/css/watchlists.css?v=20260723-0900">
   <link rel="stylesheet" href="/css/trading-controls.css?v=20260714-0200">
-  <link rel="stylesheet" href="/css/positions.css?v=20260714-0200">
+  <link rel="stylesheet" href="/css/positions.css?v=20260723-0900">
   <link rel="stylesheet" href="/css/operations.css?v=20260714-0200">
   <link rel="stylesheet" href="/css/overrides.css?v=20260714-0200">
   <link rel="stylesheet" href="/css/trading-buttons.css?v=20251204-0800">
@@ -44,7 +44,7 @@
 
 <body class="bg-base-200">
   <!-- Toast Container -->
-  <div id="toast-container"></div>
+  <div id="toast-container" aria-live="polite" role="status"></div>
 
   <div class="drawer lg:drawer-open">
     <input id="drawer-toggle" type="checkbox" class="drawer-toggle" />
@@ -283,29 +283,38 @@
 
   <!-- Scripts -->
   <script>
-    // Clear Service Workers and caches on page load
-    (async function clearAllCaches() {
-      console.log('[Cache] Clearing all caches and service workers...');
+    // One-time cleanup for browsers still holding a service worker/cache from a pre-removal
+    // deploy (this app no longer registers one - see grep across public/js turning up no
+    // `serviceWorker.register`). Was unconditionally re-running on every single page load,
+    // deleting all caches and forcing a full re-fetch of every script/stylesheet each time -
+    // flag it done in localStorage so it only runs once per browser.
+    (async function clearLegacyCachesOnce() {
+      const DONE_FLAG = 'legacySwCleanupDone';
+      try {
+        if (localStorage.getItem(DONE_FLAG) === 'true') return;
+      } catch (_) {
+        return; // no localStorage access (private mode) - skip rather than run every load
+      }
 
-      // Unregister service workers
       if ('serviceWorker' in navigator) {
         const registrations = await navigator.serviceWorker.getRegistrations();
-        for (let registration of registrations) {
+        for (const registration of registrations) {
           await registration.unregister();
-          console.log('[Cache] ✅ Service Worker unregistered:', registration.scope);
         }
       }
 
-      // Delete all caches
       if ('caches' in window) {
         const names = await caches.keys();
-        for (let name of names) {
+        for (const name of names) {
           await caches.delete(name);
-          console.log('[Cache] ✅ Deleted cache:', name);
         }
       }
 
-      console.log('[Cache] ✅ All caches cleared!');
+      try {
+        localStorage.setItem(DONE_FLAG, 'true');
+      } catch (_) {
+        // ignore - worst case this runs again next load
+      }
     })();
   </script>
   <!-- Supabase JS SDK - keeps a live client for the whole dashboard session so the SDK's
@@ -316,7 +325,7 @@
     </script>
   <script src="/js/supabase-auth.js?v=20260714-1600"></script>
   <script src="/js/api-client.js?v=20260714-1600"></script>
-  <script src="/js/utils.js?v=20251204-0800"></script>
+  <script src="/js/utils.js?v=20260724-0900"></script>
   <script src="/js/quick-order-core.js?v=20260714-0200"></script>
   <script src="/js/quick-order-expansion.js?v=20260714-0200"></script>
   <script src="/js/quick-order-controls.js?v=20260714-0200"></script>
@@ -324,7 +333,7 @@
   <script src="/js/quick-order-option-chain.js?v=20260714-0200"></script>
   <script src="/js/quick-order-preview.js?v=20260714-0200"></script>
   <script src="/js/quick-order-instruments.js?v=20260714-0200"></script>
-  <script src="/js/quick-order-place.js?v=20260714-0200"></script>
+  <script src="/js/quick-order-place.js?v=20260723-0900"></script>
   <script src="/js/quick-order-init.js?v=20260714-0200"></script>
   <script src="/js/strategy-builder.js?v=20260713-2400"></script>
   <script src="/js/settings-core.js?v=20260714-0200"></script>
@@ -336,7 +345,7 @@
   <script src="/js/dashboard-core.js?v=20260714-0100"></script>
   <script src="/js/dashboard-overview.js?v=20260714-0100"></script>
   <script src="/js/dashboard-instances.js?v=20260714-0300"></script>
-  <script src="/js/dashboard-watchlists-core.js?v=20260714-0300"></script>
+  <script src="/js/dashboard-watchlists-core.js?v=20260723-0900"></script>
   <script src="/js/dashboard-watchlists-quotes.js?v=20260714-0200"></script>
   <script src="/js/dashboard-watchlists-crud.js?v=20260714-0200"></script>
   <script src="/js/dashboard-watchlists-positions.js?v=20260714-0200"></script>
@@ -347,7 +356,7 @@
   <script src="/js/dashboard-notifications.js?v=20260714-0100"></script>
   <script src="/js/dashboard-pnl.js?v=20260714-0100"></script>
   <script src="/js/dashboard-playground.js?v=20260714-0100"></script>
-  <script src="/js/dashboard-init.js?v=20260714-0100"></script>
+  <script src="/js/dashboard-init.js?v=20260723-0900"></script>
 </body>
 
 </html>

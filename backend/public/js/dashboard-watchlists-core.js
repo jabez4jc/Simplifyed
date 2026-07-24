@@ -70,6 +70,9 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             <button class="btn btn-outline btn-sm" onclick="app.toggleSnapshotResync()" title="Toggle auto snapshot resync">
               Auto Resync: ${this.autoSnapshotResyncEnabled ? 'On' : 'Off'}
             </button>
+            <button class="btn btn-outline btn-sm" id="quick-trade-mode-btn" onclick="quickOrder.toggleQuickTradeMode()" title="When off (default), Buy/Sell asks for confirmation before firing a live order. Turn on to skip the confirmation once you've verified your setup.">
+              Quick Trade Mode: ${window.quickOrder && quickOrder.isQuickTradeMode() ? 'On' : 'Off'}
+            </button>
             <button class="btn-icon" onclick="app.renderWatchlistsView()" title="Refresh data">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h4M20 20v-5h-4M5 9a7 7 0 0112-4M19 15a7 7 0 01-12 4" />

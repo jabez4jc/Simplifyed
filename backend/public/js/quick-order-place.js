@@ -2,7 +2,36 @@
  * Simplifyed Admin V2 - Quick Order: placeOrder + getSymbolCapabilities.
  */
 
+const QUICK_ORDER_QUICK_TRADE_MODE_KEY = 'quickOrderQuickTradeMode';
+
 Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescriptors(class {
+  // Off by default - a confirm dialog stays the safe default before a live order fires; a
+  // trader opts into skipping it once they've verified their setup (mirrors strategy-builder.js).
+  isQuickTradeMode() {
+    try {
+      return localStorage.getItem(QUICK_ORDER_QUICK_TRADE_MODE_KEY) === 'true';
+    } catch (_) {
+      return false;
+    }
+  }
+
+  toggleQuickTradeMode() {
+    const enabled = !this.isQuickTradeMode();
+    try {
+      localStorage.setItem(QUICK_ORDER_QUICK_TRADE_MODE_KEY, enabled ? 'true' : 'false');
+    } catch (_) {
+      // ignore localStorage errors (private mode, etc.)
+    }
+    const btn = document.getElementById('quick-trade-mode-btn');
+    if (btn) btn.textContent = `Quick Trade Mode: ${enabled ? 'On' : 'Off'}`;
+    Utils.showToast(
+      enabled
+        ? 'Quick Trade Mode on - Buy/Sell now fire immediately, no confirmation'
+        : 'Quick Trade Mode off - Buy/Sell will ask for confirmation again',
+      enabled ? 'warning' : 'info'
+    );
+  }
+
   /**
    * Place quick order
    */
@@ -30,6 +59,15 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
       if (!quantity || quantity <= 0) {
         Utils.showToast('Quantity must be greater than 0', 'error');
         return;
+      }
+
+      if (!this.isQuickTradeMode()) {
+        const actionLabel = action.replace(/_/g, ' ');
+        const confirmed = await Utils.confirm(
+          `Place ${actionLabel} order for ${quantity} x ${symbol} (${tradeMode})?`,
+          'Confirm Order'
+        );
+        if (!confirmed) return;
       }
 
       const orderData = {
@@ -68,39 +106,29 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
         btn.disabled = true;
         btn.classList.remove('loading'); // avoid global .loading conflicts
         btn.classList.add('is-loading');
+        if (!btn.dataset.originalText) {
+          btn.dataset.originalText = btn.textContent;
+        }
+        btn.textContent = 'Placing...';
       });
 
-      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-      const maxRetries = 2;
-      let response = null;
-      let lastError = null;
-
-      const updateProgressLabel = (attempt) => {
-        actionButtons.forEach(btn => {
-          if (!btn.dataset.originalText) {
-            btn.dataset.originalText = btn.textContent;
-          }
-          btn.textContent = `Placing (${attempt}/${maxRetries})`;
-        });
-      };
-
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
-        updateProgressLabel(attempt);
-        try {
-          response = await api.placeQuickOrder(orderData);
-          lastError = null;
-          break;
-        } catch (err) {
-          lastError = err;
-          const status = err?.status ?? 0;
-          const transient = status === 0 || status >= 500;
-          if (attempt < maxRetries && transient) {
-            const backoff = Math.min(2000, 500 * Math.pow(2, attempt - 1)); // 0.5s, 1s
-            await sleep(backoff);
-            continue;
-          }
-          throw err;
+      // ponytail: no auto-retry on a lost/5xx response - we can't tell "order never reached the
+      // broker" apart from "order went through but the response was lost," so a silent retry
+      // risks placing a second live order. Surface it instead and let the trader check the order
+      // book before deciding to retry by hand.
+      let response;
+      try {
+        response = await api.placeQuickOrder(orderData);
+      } catch (err) {
+        const status = err?.status ?? 0;
+        if (status === 0 || status >= 500) {
+          Utils.showToast(
+            `Order status unknown (${err.message}). Check the order book before retrying - do not resubmit blindly.`,
+            'error'
+          );
+          return;
         }
+        throw err;
       }
 
       if (response && response.data && response.data.summary) {

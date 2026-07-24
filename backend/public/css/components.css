@@ -272,6 +272,7 @@
   width: 100%;
   border-collapse: collapse;
   font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
 }
 
 .table thead {
@@ -631,8 +632,12 @@
   color: var(--color-info);
 }
 
-/* ========== Loading Spinner ========== */
-.loading-spinner {
+/* ========== Loading Spinner ==========
+   Named app-loading-* (not loading-spinner/loading-dots) - those names are also daisyUI
+   utility classes baked into tailwind.css, and daisyUI's version applies a small SVG
+   mask-image meant for an empty <span>. Sharing the name meant that mask silently landed on
+   this component too, masking out almost all of the dots and the "Loading..." text. */
+.app-loading-spinner {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -640,14 +645,14 @@
   padding: var(--space-12);
 }
 
-.loading-dots {
+.app-loading-dots {
   display: flex;
   gap: var(--space-2);
   align-items: center;
   justify-content: center;
 }
 
-.loading-dots span {
+.app-loading-dots span {
   width: 10px;
   height: 10px;
   border-radius: 999px;
@@ -656,12 +661,12 @@
   opacity: 0.6;
 }
 
-.loading-dots span:nth-child(2) {
+.app-loading-dots span:nth-child(2) {
   animation-delay: 0.2s;
   background: var(--color-primary);
 }
 
-.loading-dots span:nth-child(3) {
+.app-loading-dots span:nth-child(3) {
   animation-delay: 0.4s;
   background: var(--color-success);
 }
@@ -813,162 +818,5 @@
 
 .text-right {
   text-align: right;
-}
-
-/* ========== Landing Page ========== */
-.landing-container {
-  display: flex;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
-  align-items: center;
-  justify-content: center;
-  min-height: 100vh;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-}
-
-.hero-highlights {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.landing-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  border-radius: 999px;
-  background: #eef2ff;
-  color: #4338ca;
-  font-weight: 600;
-  font-size: 13px;
-}
-
-.landing-pill.subtle {
-  background: #f8fafc;
-  color: #1f2937;
-  border: 1px solid #e5e7eb;
-}
-
-.stats-card .stat-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
-
-.stat-tag {
-  background: #0ea5e9;
-  color: white;
-  padding: 6px 10px;
-  border-radius: 10px;
-  font-weight: 700;
-  font-size: 12px;
-  letter-spacing: 0.01em;
-}
-
-.stat-metrics {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
-}
-
-.metric-label {
-  color: #6b7280;
-  font-weight: 600;
-  font-size: 13px;
-}
-
-.metric-value {
-  font-size: 28px;
-  font-weight: 800;
-  color: #0b1021;
-  margin: 4px 0;
-}
-
-.metric-hint {
-  color: #6b7280;
-  font-size: 13px;
-}
-
-.stat-footer {
-  margin-top: 14px;
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.landing-badge {
-  background: #ecfeff;
-  color: #0f766e;
-  padding: 8px 12px;
-  border-radius: 10px;
-  font-weight: 700;
-  font-size: 12px;
-  border: 1px solid #ccfbf1;
-}
-
-.landing-section {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 12px 24px 60px;
-}
-
-.feature-card h3 {
-  margin: 0 0 8px;
-  font-size: 20px;
-}
-
-.feature-card p {
-  margin: 0 0 12px;
-  color: #4b5563;
-  line-height: 1.6;
-}
-
-.feature-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.feature-list li {
-  padding-left: 18px;
-  position: relative;
-  margin-bottom: 8px;
-  color: #374151;
-}
-
-.feature-list li::before {
-  content: '•';
-  position: absolute;
-  left: 0;
-  color: #22c55e;
-}
-
-.landing-card {
-  background: var(--color-surface);
-  padding: var(--space-12);
-  border-radius: var(--radius-lg);
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-  text-align: center;
-  max-width: 400px;
-}
-
-.landing-card h1 {
-  font-size: var(--font-size-3xl);
-  margin-bottom: var(--space-2);
-  color: var(--color-neutral-900);
-}
-
-.landing-card p {
-  color: var(--color-neutral-600);
-  margin-bottom: var(--space-8);
-}
-
-.landing-card .btn {
-  width: 100%;
-  padding: var(--space-4);
-  font-size: var(--font-size-base);
 }
 

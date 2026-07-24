@@ -389,6 +389,7 @@
   width: 100%;
   border-collapse: collapse;
   font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
 }
 
 .watchlist-table-compact thead {
