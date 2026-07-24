@@ -25,7 +25,7 @@ import {
 import instanceConnectionTestService from './instance-connection-test.service.js';
 import { normalizeInstanceData } from '../utils/instance-validation.util.js';
 import { nowInIST, computeSessionState } from '../utils/instance-session.util.js';
-import { parseIntSafe } from '../utils/sanitizers.js';
+import { parseIntSafe, isMaskedApiKey } from '../utils/sanitizers.js';
 
 class InstanceService {
   constructor() {
@@ -211,6 +211,14 @@ class InstanceService {
       const existing = await this.getInstanceById(id);
       const hasOptionChain = await this._hasColumn('supports_option_chain');
       const hasMultiplier = await this._hasColumn('multiplier');
+
+      // The edit form is shown the masked api_key (see maskInstanceForResponse) and round-trips
+      // it back unchanged when the user edits an unrelated field - drop it so we don't overwrite
+      // the real stored key with asterisks. A genuine new key never starts with '*'.
+      if (isMaskedApiKey(updates.api_key)) {
+        updates = { ...updates };
+        delete updates.api_key;
+      }
 
       // Normalize updates
       const normalized = normalizeInstanceData(updates, true);

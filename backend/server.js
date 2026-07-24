@@ -201,8 +201,9 @@ app.use('/webhook/tradingview', auditLogger);
 // API v1
 app.use('/api/v1', apiV1Routes);
 
-// Auth: Supabase is the sole login/signup path (see public/login.html) - the API only
-// needs a logout endpoint to clear the local session cookie used for WS gateway auth.
+// Auth: login/register/change-password are local email+password (see public/login.html and
+// src/routes/v1/auth.js) - this endpoint just clears the separate local session cookie used
+// for WS gateway auth.
 app.post('/auth/logout', (req, res, next) => {
   try {
     const sessionId = req.sessionID;

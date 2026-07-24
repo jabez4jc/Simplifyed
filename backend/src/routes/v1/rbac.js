@@ -78,4 +78,52 @@ router.put(
   }
 );
 
+// Create a new local-auth user (email/password) with a role, in one step
+router.post(
+  '/users',
+  requirePermission('rbac.assign_roles'),
+  async (req, res, next) => {
+    try {
+      const { email, password, role } = req.body || {};
+      if (!email || !password || password.length < 8) {
+        return res.status(400).json({
+          status: 'error',
+          message: 'email and a password of at least 8 characters are required',
+        });
+      }
+      if (!role) {
+        return res.status(400).json({ status: 'error', message: 'role is required' });
+      }
+
+      const user = await rbacService.createUser(email, password, role, req.user?.id);
+      res.status(201).json({ status: 'success', data: user });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// Admin-driven password reset (no current-password check - admin is already authorized)
+router.post(
+  '/users/:userId/reset-password',
+  requirePermission('rbac.assign_roles'),
+  async (req, res, next) => {
+    try {
+      const userId = parseInt(req.params.userId, 10);
+      const { newPassword } = req.body || {};
+      if (!newPassword || newPassword.length < 8) {
+        return res.status(400).json({
+          status: 'error',
+          message: 'newPassword must be at least 8 characters',
+        });
+      }
+
+      await rbacService.resetPassword(userId, newPassword);
+      res.json({ status: 'success', message: 'Password reset' });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
 export default router;

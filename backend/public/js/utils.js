@@ -4,6 +4,49 @@
  */
 
 const Utils = {
+  _paginationStore: new Map(),
+
+  /**
+   * Cap a large list of pre-rendered <tr> row strings to a first page, with a "Show N more"
+   * row that reveals the rest on click - avoids dumping hundreds of rows into the DOM on
+   * initial render for tables with no server-side pagination (orders/trades/history).
+   * @param {string[]} rowsHtml - each entry a complete <tr>...</tr> string
+   * @param {Object} [opts]
+   * @param {number} [opts.pageSize=50]
+   * @param {number} [opts.colspan=1] - must match the table's real column count
+   * @returns {string} HTML to place inside <tbody>
+   */
+  renderCappedRows(rowsHtml, { pageSize = 50, colspan = 1 } = {}) {
+    if (!rowsHtml.length) return '';
+    if (rowsHtml.length <= pageSize) return rowsHtml.join('');
+
+    const id = 'pg-' + Math.random().toString(36).slice(2, 10);
+    this._paginationStore.set(id, rowsHtml.slice(pageSize));
+    const remaining = rowsHtml.length - pageSize;
+
+    return rowsHtml.slice(0, pageSize).join('') + `
+      <tr id="${id}">
+        <td colspan="${colspan}" style="text-align: center; padding: var(--space-4);">
+          <button class="btn btn-outline btn-sm" onclick="Utils.revealRemainingRows('${id}')">
+            Show ${remaining} more
+          </button>
+        </td>
+      </tr>
+    `;
+  },
+
+  /**
+   * Reveal the rows stashed by renderCappedRows() for the given marker row id.
+   */
+  revealRemainingRows(id) {
+    const rowsHtml = this._paginationStore.get(id);
+    const marker = document.getElementById(id);
+    if (!rowsHtml || !marker) return;
+    marker.insertAdjacentHTML('afterend', rowsHtml.join(''));
+    marker.remove();
+    this._paginationStore.delete(id);
+  },
+
   /**
    * Format number as currency (INR)
    */
@@ -439,13 +482,64 @@ const Utils = {
 
     return badges[status] || `<span class="badge badge-neutral">${status}</span>`;
   },
+
+  /**
+   * Close a modal, confirming first if a tracked form inside it has unsaved changes.
+   * @param {Element} elementInModal - the overlay itself, or any element inside it (e.g. the
+   *   Cancel button that was clicked - `this` in an inline onclick).
+   * @param {Object} [opts]
+   * @param {boolean} [opts.checkDirty=true] - pass false for closes that follow a successful
+   *   save (there's nothing left to discard, so skip the prompt).
+   * @returns {Promise<boolean>} true if the modal was actually removed (false if the user chose
+   *   not to discard) - callers with extra cleanup/state to clear should gate it on this.
+   */
+  async closeModal(elementInModal, { checkDirty = true } = {}) {
+    const overlay = elementInModal?.classList?.contains('modal-overlay')
+      ? elementInModal
+      : elementInModal?.closest?.('.modal-overlay');
+    if (!overlay) return false;
+
+    if (checkDirty && overlay.dataset.dirty === 'true') {
+      const confirmed = await this.confirm(
+        'You have unsaved changes. Discard them?',
+        'Unsaved Changes'
+      );
+      if (!confirmed) return false;
+    }
+
+    overlay.remove();
+    return true;
+  },
 };
+
+// Mark a modal dirty the moment the user changes a field inside one of its <form> elements -
+// fully generic, no per-modal wiring needed. Scoped to elements inside a <form> specifically
+// (not just anywhere in .modal-overlay) so transient, non-form inputs - e.g. the live symbol
+// search box in the "Add Symbol" modal - don't falsely trigger an "unsaved changes" prompt.
+// 'input' catches text/number fields as they're typed; 'change' catches checkboxes/selects.
+document.addEventListener('input', (e) => {
+  const overlay = e.target.closest?.('.modal-overlay form') && e.target.closest('.modal-overlay');
+  if (overlay) overlay.dataset.dirty = 'true';
+});
+document.addEventListener('change', (e) => {
+  const overlay = e.target.closest?.('.modal-overlay form') && e.target.closest('.modal-overlay');
+  if (overlay) overlay.dataset.dirty = 'true';
+});
+
+// Close on overlay (backdrop) click - single delegated listener for every modal, replacing the
+// identical `modal.addEventListener('click', e => e.target === modal && modal.remove())`
+// snippet that used to be repeated per modal-creation site.
+document.addEventListener('click', (e) => {
+  if (e.target.classList?.contains('modal-overlay')) {
+    Utils.closeModal(e.target);
+  }
+});
 
 // Escape closes the topmost open modal - every modal in this app shares the .modal-overlay
 // class and is appended directly to <body>, so the last one in the DOM is the topmost. If it
 // has a Cancel button (data-action="cancel", used by Utils.confirm()), click it so any pending
-// promise resolves the same way a real Cancel click would; otherwise just remove the overlay,
-// matching the `onclick="this.closest('.modal-overlay').remove()"` pattern used everywhere else.
+// promise resolves the same way a real Cancel click would; otherwise go through closeModal so a
+// dirty form still gets a confirm prompt instead of silently discarding it.
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   const overlays = document.querySelectorAll('.modal-overlay');
@@ -455,6 +549,6 @@ document.addEventListener('keydown', (e) => {
   if (cancelBtn) {
     cancelBtn.click();
   } else {
-    topmost.remove();
+    Utils.closeModal(topmost);
   }
 });

@@ -15,7 +15,11 @@ import {
   ValidationError,
   ForbiddenError,
 } from '../../core/errors.js';
-import { parseBooleanSafe } from '../../utils/sanitizers.js';
+import {
+  parseBooleanSafe,
+  maskInstanceForResponse,
+  maskInstancesForResponse,
+} from '../../utils/sanitizers.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';
 import db from '../../core/database.js';
 import multer from 'multer';
@@ -64,7 +68,7 @@ router.get('/', requirePermission('pages.instances.view'), async (req, res, next
 
     res.json({
       status: 'success',
-      data: instances,
+      data: maskInstancesForResponse(instances),
       count: instances.length,
     });
   } catch (error) {
@@ -83,7 +87,10 @@ router.get('/admin/instances', requirePermission('pages.instances.view'), async 
 
     res.json({
       status: 'success',
-      data: adminInstances,
+      data: {
+        primary: maskInstanceForResponse(adminInstances.primary),
+        secondary: maskInstanceForResponse(adminInstances.secondary),
+      },
     });
   } catch (error) {
     next(error);
@@ -102,7 +109,7 @@ router.get('/market-data/instance', requirePermission('pages.instances.view'), a
 
     res.json({
       status: 'success',
-      data: instance,
+      data: maskInstanceForResponse(instance),
     });
   } catch (error) {
     next(error);
@@ -120,7 +127,7 @@ router.get('/market-data/all', requirePermission('pages.instances.view'), async 
 
     res.json({
       status: 'success',
-      data: instances,
+      data: maskInstancesForResponse(instances),
       count: instances.length,
     });
   } catch (error) {
@@ -139,7 +146,7 @@ router.get('/:id', requirePermission('pages.instances.view'), async (req, res, n
 
     res.json({
       status: 'success',
-      data: instance,
+      data: maskInstanceForResponse(instance),
     });
   } catch (error) {
     next(error);
@@ -158,7 +165,7 @@ router.post('/', requirePermission('instances.add'), async (req, res, next) => {
     res.status(201).json({
       status: 'success',
       message: 'Instance created successfully',
-      data: instance,
+      data: maskInstanceForResponse(instance),
     });
   } catch (error) {
     next(error);
@@ -190,7 +197,7 @@ router.put('/:id', async (req, res, next) => {
     res.json({
       status: 'success',
       message: 'Instance updated successfully',
-      data: instance,
+      data: maskInstanceForResponse(instance),
     });
   } catch (error) {
     next(error);
@@ -246,7 +253,7 @@ router.post('/test/connection', requirePermission('instances.edit'), async (req,
  * Test API key validity (funds endpoint)
  * NOTE: Must be before /:id routes
  */
-router.post('/test/apikey', async (req, res, next) => {
+router.post('/test/apikey', requirePermission('instances.edit'), async (req, res, next) => {
   try {
     const { host_url, api_key } = req.body;
 
@@ -277,6 +284,18 @@ router.post('/bulk-update', async (req, res, next) => {
 
     if (!instance_ids || !Array.isArray(instance_ids) || instance_ids.length === 0) {
       throw new ValidationError('instance_ids must be a non-empty array');
+    }
+
+    // Same permission split as PUT /:id: toggling only analyzer mode is allowed for monitors,
+    // but is_active/multiplier changes require the full edit permission. This route previously
+    // had no permission check at all, letting any authenticated user bypass instances.edit.
+    const changesOnlyMode =
+      is_active === undefined && multiplier === undefined && is_analyzer_mode !== undefined;
+    if (changesOnlyMode && !hasPermission(req, 'instances.toggle_mode')) {
+      return next(new ForbiddenError('Insufficient permissions'));
+    }
+    if (!changesOnlyMode && !hasPermission(req, 'instances.edit')) {
+      return next(new ForbiddenError('Insufficient permissions'));
     }
 
     // At least one field must be provided
@@ -365,7 +384,7 @@ router.post('/bulk-update', async (req, res, next) => {
  * POST /api/v1/instances/:id/refresh
  * Manually refresh instance data (bypasses cron)
  */
-router.post('/:id/refresh', async (req, res, next) => {
+router.post('/:id/refresh', requirePermission('pages.instances.view'), async (req, res, next) => {
   const startTime = Date.now();
   try {
     const id = parseInt(req.params.id, 10);
@@ -383,7 +402,7 @@ router.post('/:id/refresh', async (req, res, next) => {
     res.json({
       status: 'success',
       message: 'Instance refreshed successfully',
-      data: instance,
+      data: maskInstanceForResponse(instance),
     });
   } catch (error) {
     const durationMs = Date.now() - startTime;
@@ -400,7 +419,7 @@ router.post('/:id/refresh', async (req, res, next) => {
  * POST /api/v1/instances/:id/health
  * Update health status
  */
-router.post('/:id/health', async (req, res, next) => {
+router.post('/:id/health', requirePermission('pages.instances.view'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const instance = await instanceService.updateHealthStatus(id);
@@ -408,7 +427,7 @@ router.post('/:id/health', async (req, res, next) => {
     res.json({
       status: 'success',
       message: 'Health status updated',
-      data: instance,
+      data: maskInstanceForResponse(instance),
     });
   } catch (error) {
     next(error);
@@ -420,7 +439,7 @@ router.post('/:id/health', async (req, res, next) => {
  * Get circuit breaker status for an instance
  * Returns information about whether the instance is in cooldown or requires manual refresh
  */
-router.get('/:id/circuit-breaker', async (req, res, next) => {
+router.get('/:id/circuit-breaker', requirePermission('pages.instances.view'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
 
@@ -450,7 +469,7 @@ router.get('/:id/circuit-breaker', async (req, res, next) => {
  * POST /api/v1/instances/:id/pnl
  * Update P&L data
  */
-router.post('/:id/pnl', async (req, res, next) => {
+router.post('/:id/pnl', requirePermission('pages.instances.view'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const instance = await instanceService.updatePnLData(id);
@@ -458,7 +477,7 @@ router.post('/:id/pnl', async (req, res, next) => {
     res.json({
       status: 'success',
       message: 'P&L data updated',
-      data: instance,
+      data: maskInstanceForResponse(instance),
     });
   } catch (error) {
     next(error);
@@ -469,7 +488,7 @@ router.post('/:id/pnl', async (req, res, next) => {
  * POST /api/v1/instances/:id/analyzer/toggle
  * Toggle analyzer mode with Safe-Switch workflow
  */
-router.post('/:id/analyzer/toggle', async (req, res, next) => {
+router.post('/:id/analyzer/toggle', requirePermission('instances.toggle_mode'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const { mode } = req.body;
@@ -483,7 +502,7 @@ router.post('/:id/analyzer/toggle', async (req, res, next) => {
     res.json({
       status: 'success',
       message: `Analyzer mode ${mode ? 'enabled' : 'disabled'} successfully`,
-      data: instance,
+      data: maskInstanceForResponse(instance),
     });
   } catch (error) {
     next(error);

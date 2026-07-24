@@ -150,6 +150,8 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
         </div>
       `;
       document.body.appendChild(modal);
+      // Not relying on the generic global backdrop-click handler here - this modal needs the
+      // interval/state cleanup in _closeOptionChainModal(), not just DOM removal.
       modal.addEventListener('click', (e) => {
         if (e.target === modal) this._closeOptionChainModal();
       });
@@ -286,9 +288,12 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
     }
   }
 
-  _closeOptionChainModal() {
+  async _closeOptionChainModal() {
     const modal = document.querySelector('.option-chain-overlay');
-    if (modal) modal.remove();
+    if (modal) {
+      const closed = await Utils.closeModal(modal);
+      if (!closed) return;
+    }
     if (this.optionChainInterval) {
       clearInterval(this.optionChainInterval);
       this.optionChainInterval = null;

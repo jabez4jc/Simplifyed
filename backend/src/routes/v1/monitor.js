@@ -6,8 +6,10 @@
 import express from 'express';
 import db from '../../core/database.js';
 import orderMonitorService from '../../services/order-monitor.service.js';
+import { requireAuth } from '../../middleware/auth.js';
 
 const router = express.Router();
+router.use(requireAuth);
 
 /**
  * GET /api/v1/monitor/status

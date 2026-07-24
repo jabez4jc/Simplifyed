@@ -98,7 +98,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             </form>
           </div>
           <div class="modal-footer">
-            <button class="btn btn-neutral btn-outline" onclick="this.closest('.modal-overlay').remove()">
+            <button class="btn btn-neutral btn-outline" onclick="Utils.closeModal(this)">
               Cancel
             </button>
             <button class="btn btn-buy" onclick="app.submitEditWatchlist()">
@@ -109,13 +109,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       `;
 
       document.body.appendChild(modal);
-
-      // Close on overlay click
-      modal.addEventListener('click', (e) => {
-        if (e.target === modal) {
-          modal.remove();
-        }
-      });
     } catch (error) {
       Utils.showToast('Failed to load watchlist: ' + error.message, 'error');
     }
@@ -144,8 +137,8 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       await api.updateWatchlist(watchlistId, data);
       Utils.showToast('Watchlist updated successfully', 'success');
 
-      // Close modal
-      document.querySelector('.modal-overlay').remove();
+      // Close modal (no dirty-check - the save just succeeded)
+      Utils.closeModal(document.querySelector('.modal-overlay'), { checkDirty: false });
 
       // Refresh view
       await this.refreshCurrentView();
@@ -296,10 +289,10 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             `}
           </div>
           <div class="modal-footer">
-            <button class="btn btn-neutral btn-outline" onclick="this.closest('.modal-overlay').remove()">
+            <button class="btn btn-neutral btn-outline" onclick="Utils.closeModal(this)">
               Close
             </button>
-            <button class="btn btn-buy" onclick="this.closest('.modal-overlay').remove(); app.showEditWatchlistModal(${id})">
+            <button class="btn btn-buy" onclick="Utils.closeModal(this, { checkDirty: false }); app.showEditWatchlistModal(${id})">
               Edit Watchlist
             </button>
           </div>
@@ -307,13 +300,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       `;
 
       document.body.appendChild(modal);
-
-      // Close on overlay click
-      modal.addEventListener('click', (e) => {
-        if (e.target === modal) {
-          modal.remove();
-        }
-      });
     } catch (error) {
       Utils.showToast('Failed to load watchlist details: ' + error.message, 'error');
     }

@@ -145,7 +145,7 @@ router.delete('/:id', requirePermission('watchlists.manage'), async (req, res, n
  * POST /api/v1/watchlists/:id/clone
  * Clone watchlist
  */
-router.post('/:id/clone', async (req, res, next) => {
+router.post('/:id/clone', requirePermission('watchlists.manage'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
     const { name } = req.body;

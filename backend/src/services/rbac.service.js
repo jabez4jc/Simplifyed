@@ -1,5 +1,6 @@
 import db from '../core/database.js';
-import { ValidationError } from '../core/errors.js';
+import { ValidationError, ConflictError, NotFoundError } from '../core/errors.js';
+import { hashPassword } from '../middleware/auth.js';
 
 class RbacService {
   async listRoles() {
@@ -43,6 +44,35 @@ class RbacService {
        VALUES (?, ?, ?)`,
       [userId, role.id, assignedBy || null]
     );
+  }
+
+  async createUser(email, password, roleName, createdBy) {
+    const normalizedEmail = (email || '').toLowerCase().trim();
+    const existing = await db.get(`SELECT id FROM users WHERE email = ?`, [normalizedEmail]);
+    if (existing) {
+      throw new ConflictError('A user with this email already exists');
+    }
+
+    const passwordHash = await hashPassword(password);
+    const result = await db.run(
+      `INSERT INTO users (email, is_admin, password_hash) VALUES (?, 0, ?)`,
+      [normalizedEmail, passwordHash]
+    );
+
+    await this.assignRole(result.lastID, roleName, createdBy);
+
+    return { id: result.lastID, email: normalizedEmail, role: roleName };
+  }
+
+  async resetPassword(userId, newPassword) {
+    const passwordHash = await hashPassword(newPassword);
+    const result = await db.run(`UPDATE users SET password_hash = ? WHERE id = ?`, [
+      passwordHash,
+      userId,
+    ]);
+    if (!result.changes) {
+      throw new NotFoundError('User');
+    }
   }
 
   async setRolePermissions(roleName, permissionKeys = []) {

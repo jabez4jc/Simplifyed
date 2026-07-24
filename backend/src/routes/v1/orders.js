@@ -413,7 +413,7 @@ router.post('/cancel-all', requirePermission('orders.cancel_all'), async (req, r
  * POST /api/v1/orders/sync/:instanceId
  * Sync order status from OpenAlgo
  */
-router.post('/sync/:instanceId', async (req, res, next) => {
+router.post('/sync/:instanceId', requirePermission('pages.orders.view'), async (req, res, next) => {
   try {
     const instanceId = parseInt(req.params.instanceId, 10);
     const result = await orderService.syncOrderStatus(instanceId);
@@ -432,7 +432,7 @@ router.post('/sync/:instanceId', async (req, res, next) => {
  * GET /api/v1/orders/:instanceId/:orderId/status
  * On-demand single-order status lookup (lighter than /sync for checking just one order).
  */
-router.get('/:instanceId/:orderId/status', async (req, res, next) => {
+router.get('/:instanceId/:orderId/status', requirePermission('pages.orders.view'), async (req, res, next) => {
   try {
     const instanceId = parseInt(req.params.instanceId, 10);
     const result = await orderService.getOrderStatus(instanceId, req.params.orderId);

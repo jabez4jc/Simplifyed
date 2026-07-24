@@ -409,7 +409,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           </form>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-neutral btn-outline" onclick="this.closest('.modal-overlay').remove()">
+          <button class="btn btn-neutral btn-outline" onclick="Utils.closeModal(this)">
             Cancel
           </button>
           <button class="btn btn-buy" onclick="app.submitAddInstance()">
@@ -420,13 +420,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     `;
 
     document.body.appendChild(modal);
-
-    // Close on overlay click
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) {
-        modal.remove();
-      }
-    });
   }
 
   /**
@@ -447,8 +440,8 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       await api.createInstance(data);
       Utils.showToast('Instance added successfully', 'success');
 
-      // Close modal
-      document.querySelector('.modal-overlay').remove();
+      // Close modal (no dirty-check - the save just succeeded)
+      Utils.closeModal(document.querySelector('.modal-overlay'), { checkDirty: false });
 
       // Refresh view
       await this.refreshCurrentView();
@@ -628,7 +621,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           </form>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-neutral btn-outline" onclick="this.closest('.modal-overlay').remove()">
+          <button class="btn btn-neutral btn-outline" onclick="Utils.closeModal(this)">
             Cancel
           </button>
           <button class="btn btn-buy" onclick="app.submitAddWatchlist()">
@@ -657,8 +650,8 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       await api.createWatchlist(data);
       Utils.showToast('Watchlist added successfully', 'success');
 
-      // Close modal
-      document.querySelector('.modal-overlay').remove();
+      // Close modal (no dirty-check - the save just succeeded)
+      Utils.closeModal(document.querySelector('.modal-overlay'), { checkDirty: false });
 
       // Refresh view
       await this.refreshCurrentView();
@@ -1019,7 +1012,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             </form>
           </div>
           <div class="modal-footer">
-            <button class="btn btn-neutral btn-outline" onclick="this.closest('.modal-overlay').remove()">
+            <button class="btn btn-neutral btn-outline" onclick="Utils.closeModal(this)">
               Cancel
             </button>
             <button class="btn btn-buy" onclick="app.submitEditInstance()">
@@ -1030,13 +1023,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       `;
 
       document.body.appendChild(modal);
-
-      // Close on overlay click
-      modal.addEventListener('click', (e) => {
-        if (e.target === modal) {
-          modal.remove();
-        }
-      });
     } catch (error) {
       Utils.showToast('Failed to load instance: ' + error.message, 'error');
     }
@@ -1070,8 +1056,8 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       await api.updateInstance(instanceId, data);
       Utils.showToast('Instance updated successfully', 'success');
 
-      // Close modal
-      document.querySelector('.modal-overlay').remove();
+      // Close modal (no dirty-check - the save just succeeded)
+      Utils.closeModal(document.querySelector('.modal-overlay'), { checkDirty: false });
 
       // Refresh view
       await this.refreshCurrentView();

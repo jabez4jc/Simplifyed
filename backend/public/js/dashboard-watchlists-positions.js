@@ -396,7 +396,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             </tr>
           </thead>
           <tbody>
-            ${positions.map(pos => {
+            ${Utils.renderCappedRows(positions.map(pos => {
       const qty = this.getNormalizedPositionQty(pos);
       const entry = Number(
         pos.entry_price ??
@@ -456,7 +456,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
                   </td>
                 </tr>
               `;
-    }).join('')}
+    }), { colspan: 7 })}
           </tbody>
         </table>
       </div>

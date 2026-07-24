@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Simplifyed Admin V2 - Trading Dashboard</title>
   <link rel="stylesheet" href="/css/tailwind.css?v=20251204-0800">
-  <link rel="stylesheet" href="/css/tokens-base.css?v=20260714-0200">
+  <link rel="stylesheet" href="/css/tokens-base.css?v=20260724-1100">
   <link rel="stylesheet" href="/css/components.css?v=20260724-0900">
   <link rel="stylesheet" href="/css/quick-order.css?v=20260723-0900">
   <link rel="stylesheet" href="/css/settings.css?v=20260714-0200">
@@ -317,25 +317,18 @@
       }
     })();
   </script>
-  <!-- Supabase JS SDK - keeps a live client for the whole dashboard session so the SDK's
-       background token refresh actually has something to refresh (previously only login.html
-       had a client instance, torn down on navigation - see supabase-auth.js). -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.2/dist/umd/supabase.min.js"
-    integrity="sha384-fHA3aDUXCIxySoZcUhq38IKiSI0PxdCsiwF9+rmAnKi2yOVX7xtMuxl60vCNJxKC" crossorigin="anonymous">
-    </script>
-  <script src="/js/supabase-auth.js?v=20260714-1600"></script>
   <script src="/js/api-client.js?v=20260714-1600"></script>
-  <script src="/js/utils.js?v=20260724-0900"></script>
+  <script src="/js/utils.js?v=20260724-1200"></script>
   <script src="/js/quick-order-core.js?v=20260714-0200"></script>
   <script src="/js/quick-order-expansion.js?v=20260714-0200"></script>
   <script src="/js/quick-order-controls.js?v=20260714-0200"></script>
   <script src="/js/quick-order-selectors.js?v=20260714-0200"></script>
-  <script src="/js/quick-order-option-chain.js?v=20260714-0200"></script>
+  <script src="/js/quick-order-option-chain.js?v=20260724-1100"></script>
   <script src="/js/quick-order-preview.js?v=20260714-0200"></script>
   <script src="/js/quick-order-instruments.js?v=20260714-0200"></script>
   <script src="/js/quick-order-place.js?v=20260723-0900"></script>
   <script src="/js/quick-order-init.js?v=20260714-0200"></script>
-  <script src="/js/strategy-builder.js?v=20260713-2400"></script>
+  <script src="/js/strategy-builder.js?v=20260724-1100"></script>
   <script src="/js/settings-core.js?v=20260714-0200"></script>
   <script src="/js/settings-general.js?v=20260714-0200"></script>
   <script src="/js/settings-rbac.js?v=20260714-0200"></script>
@@ -344,14 +337,14 @@
   <script src="/js/settings-init.js?v=20260714-0200"></script>
   <script src="/js/dashboard-core.js?v=20260714-0100"></script>
   <script src="/js/dashboard-overview.js?v=20260714-0100"></script>
-  <script src="/js/dashboard-instances.js?v=20260714-0300"></script>
+  <script src="/js/dashboard-instances.js?v=20260724-1100"></script>
   <script src="/js/dashboard-watchlists-core.js?v=20260723-0900"></script>
-  <script src="/js/dashboard-watchlists-quotes.js?v=20260714-0200"></script>
-  <script src="/js/dashboard-watchlists-crud.js?v=20260714-0200"></script>
-  <script src="/js/dashboard-watchlists-positions.js?v=20260714-0200"></script>
-  <script src="/js/dashboard-watchlists-modals.js?v=20260714-0200"></script>
-  <script src="/js/dashboard-orders.js?v=20260714-0100"></script>
-  <script src="/js/dashboard-trades.js?v=20260714-0100"></script>
+  <script src="/js/dashboard-watchlists-quotes.js?v=20260724-1200"></script>
+  <script src="/js/dashboard-watchlists-crud.js?v=20260724-1100"></script>
+  <script src="/js/dashboard-watchlists-positions.js?v=20260724-1200"></script>
+  <script src="/js/dashboard-watchlists-modals.js?v=20260724-1100"></script>
+  <script src="/js/dashboard-orders.js?v=20260724-1200"></script>
+  <script src="/js/dashboard-trades.js?v=20260724-1200"></script>
   <script src="/js/dashboard-positions.js?v=20260714-0100"></script>
   <script src="/js/dashboard-notifications.js?v=20260714-0100"></script>
   <script src="/js/dashboard-pnl.js?v=20260714-0100"></script>

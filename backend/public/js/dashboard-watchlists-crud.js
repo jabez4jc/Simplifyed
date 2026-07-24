@@ -343,9 +343,10 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     }
   }
 
-  cancelSymbolConfig() {
+  async cancelSymbolConfig() {
     if (this.symbolConfigModal) {
-      this.symbolConfigModal.remove();
+      const closed = await Utils.closeModal(this.symbolConfigModal);
+      if (!closed) return;
       this.symbolConfigModal = null;
     }
     this.pendingSymbolData = null;
@@ -511,7 +512,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           </div>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-neutral btn-outline" onclick="this.closest('.modal-overlay').remove()">
+          <button class="btn btn-neutral btn-outline" onclick="Utils.closeModal(this)">
             Cancel
           </button>
           <button class="btn btn-buy" onclick="app.submitInstanceAssignments(${watchlistId})">
@@ -553,8 +554,8 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
 
       Utils.showToast('Instance assignments updated', 'success');
 
-      // Close modal
-      document.querySelector('.modal-overlay').remove();
+      // Close modal (no dirty-check - the save just succeeded)
+      Utils.closeModal(document.querySelector('.modal-overlay'), { checkDirty: false });
 
       // Refresh view
       await this.renderWatchlistsView();

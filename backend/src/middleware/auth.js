@@ -4,7 +4,6 @@ import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import jwksClient from 'jwks-rsa';
 import db from '../core/database.js';
 import { config } from '../core/config.js';
 import { log } from '../core/logger.js';
@@ -26,35 +25,6 @@ export function signLocalToken(user) {
     algorithm: 'HS256',
     expiresIn: LOCAL_TOKEN_TTL,
   });
-}
-
-// JWKS client for Supabase ES256 JWT verification
-let jwksClientInstance = null;
-
-function getJwksClient() {
-  if (!jwksClientInstance && config.auth.supabaseUrl) {
-    jwksClientInstance = jwksClient({
-      jwksUri: `${config.auth.supabaseUrl}/auth/v1/.well-known/jwks.json`,
-      cache: true,
-      cacheMaxAge: 600000, // 10 minutes
-      rateLimit: true,
-      jwksRequestsPerMinute: 10,
-    });
-  }
-  return jwksClientInstance;
-}
-
-async function getSigningKey(header) {
-  const client = getJwksClient();
-  if (!client) return null;
-
-  try {
-    const key = await client.getSigningKey(header.kid);
-    return key.getPublicKey();
-  } catch (error) {
-    log.warn('Failed to get signing key from JWKS', { error: error.message });
-    return null;
-  }
 }
 
 // Session configuration with persistent SQLite store
@@ -94,7 +64,14 @@ export function configureSession() {
 // Helper to fetch user with role/permissions
 async function attachRoleAndPermissions(userId) {
   if (!userId) return null;
-  const user = await db.get('SELECT * FROM users WHERE id = ?', [userId]);
+  // Deliberately not `SELECT *` - this return value ends up as req.user and gets serialized
+  // straight into API responses (e.g. the /login, /register data.user field), so password_hash
+  // must never be selected here. Password verification uses its own separate query in
+  // routes/v1/auth.js, not this helper.
+  const user = await db.get(
+    'SELECT id, email, is_admin, created_at FROM users WHERE id = ?',
+    [userId]
+  );
   if (!user) return null;
 
   const roleRow = await db.get(
@@ -122,53 +99,9 @@ async function attachRoleAndPermissions(userId) {
   };
 }
 
-async function ensureLocalUserFromToken(payload) {
-  const email = (payload.email || '').toLowerCase();
-  const externalId = payload.sub || email;
-
-  log.debug('Looking up user from token', {
-    tokenEmail: email,
-    sub: payload.sub,
-    lookupEmail: email || externalId
-  });
-
-  if (!externalId) {
-    log.warn('No email or sub in token payload');
-    return null;
-  }
-
-  let user = await db.get('SELECT * FROM users WHERE email = ?', [email || externalId]);
-
-  if (!user) {
-    log.info('User not found, creating new user', { email: email || externalId });
-    const countRow = await db.get('SELECT COUNT(*) as count FROM users');
-    const isFirstUser = (countRow?.count || 0) === 0;
-    const result = await db.run(
-      'INSERT INTO users (email, is_admin, password_hash) VALUES (?, ?, NULL)',
-      [email || externalId, isFirstUser ? 1 : 0]
-    );
-    const userId = result.lastID;
-    if (isFirstUser) {
-      const roleRow = await db.get('SELECT id FROM roles WHERE name = ?', ['Admin']);
-      if (roleRow?.id) {
-        await db.run(
-          `INSERT OR REPLACE INTO user_roles (user_id, role_id, assigned_by)
-           VALUES (?, ?, NULL)`,
-          [userId, roleRow.id]
-        );
-      }
-    }
-    user = await db.get('SELECT * FROM users WHERE id = ?', [userId]);
-  } else {
-    log.debug('User found in database', { userId: user.id, email: user.email });
-  }
-
-  return attachRoleAndPermissions(user.id);
-}
-
-// Optional auth: Supabase is the sole login source (see public/login.html). Attaches req.user
-// from a verified Supabase bearer token, or from test mode when enabled. The Express session
-// (configureSession) is unrelated to this - it only backs WS gateway cookie auth.
+// Optional auth: attaches req.user from a verified local bearer JWT (see public/login.html and
+// routes/v1/auth.js), or from test mode when enabled. The Express session (configureSession) is
+// unrelated to this - it only backs WS gateway cookie auth.
 export async function optionalAuth(req, res, next) {
   try {
     const testModeEnabled =
@@ -191,7 +124,7 @@ export async function optionalAuth(req, res, next) {
       return next();
     }
 
-    // Bearer token: locally-issued JWT (email/password login) or Supabase
+    // Bearer token: locally-issued JWT (email/password login)
     const authHeader = req.headers.authorization || '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
 
@@ -208,65 +141,10 @@ export async function optionalAuth(req, res, next) {
           }
           return next();
         }
-      } catch {
-        // Not a locally-issued token (or user was deleted) - fall through to Supabase below.
-      }
-    }
-
-    if (token && config.auth.supabaseUrl) {
-      try {
-        log.debug('Attempting to verify Supabase token');
-
-        // Decode token to check algorithm
-        const decoded = jwt.decode(token, { complete: true });
-        if (!decoded || !decoded.header) {
-          throw new Error('Invalid token format');
-        }
-
-        log.debug('Token decoded', {
-          algorithm: decoded.header.alg,
-          kid: decoded.header.kid,
-          email: decoded.payload?.email
-        });
-
-        let payload;
-
-        // Handle ES256 (asymmetric) tokens - modern Supabase default
-        if (decoded.header.alg === 'ES256') {
-          log.debug('Using ES256 verification via JWKS');
-          const signingKey = await getSigningKey(decoded.header);
-          if (!signingKey) {
-            throw new Error('Unable to get signing key');
-          }
-          payload = jwt.verify(token, signingKey, { algorithms: ['ES256'] });
-          log.debug('ES256 token verified successfully');
-        }
-        // Handle HS256 (symmetric) tokens - legacy Supabase or service_role keys
-        else if (decoded.header.alg === 'HS256' && config.auth.supabaseJwtSecret) {
-          log.debug('Using HS256 verification with JWT secret');
-          payload = jwt.verify(token, config.auth.supabaseJwtSecret, { algorithms: ['HS256'] });
-          log.debug('HS256 token verified successfully');
-        }
-        else {
-          throw new Error('Unsupported token algorithm: ' + decoded.header.alg);
-        }
-
-        const user = await ensureLocalUserFromToken(payload);
-        if (user) {
-          // Successful auth is routine on every single request - not troubleshooting signal.
-          // Failures (below, "Token verification failed") stay visible.
-          log.debug('User authenticated successfully', { userId: user.id, email: user.email, role: user.role });
-          req.user = user;
-          req.isAuthenticated = () => true;
-          if (req.app?.locals?.startServices) {
-            await req.app.locals.startServices();
-          }
-        } else {
-          log.warn('Token verified but user not found/created');
-        }
+        log.warn('Token verified but user not found/created');
       } catch (err) {
-        log.warn('Token verification failed', { error: err.message, stack: err.stack });
-        // invalid token, ignore and continue without auth
+        log.warn('Token verification failed', { error: err.message });
+        // invalid/expired token, ignore and continue without auth
       }
     }
     next();

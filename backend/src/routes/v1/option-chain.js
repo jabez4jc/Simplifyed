@@ -7,8 +7,10 @@ import express from 'express';
 import optionChainService from '../../services/option-chain.service.js';
 import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
+import { requireAuth } from '../../middleware/auth.js';
 
 const router = express.Router();
+router.use(requireAuth);
 
 /**
  * GET /api/v1/option-chain/underlyings

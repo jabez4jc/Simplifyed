@@ -142,13 +142,16 @@ export async function reloadConfig() {
  * Get environment variable with validation (legacy support)
  */
 function getEnv(key, defaultValue = undefined, required = false) {
-  const value = process.env[key] || defaultValue;
+  const raw = process.env[key];
 
-  if (required && !value) {
+  // Check the raw env var, not raw||defaultValue - a defaultValue would otherwise make
+  // `required` a no-op (e.g. JWT_SECRET/SESSION_SECRET silently falling back to their
+  // hardcoded, publicly-known dev defaults instead of failing startup).
+  if (required && !raw) {
     throw new Error(`Missing required environment variable: ${key}`);
   }
 
-  return value;
+  return raw || defaultValue;
 }
 
 /**
@@ -220,7 +223,7 @@ class Config {
     };
 
     this.session = {
-      secret: getEnv('SESSION_SECRET', 'dev-secret-change-in-production', true),
+      secret: getEnv('SESSION_SECRET', undefined, true),
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     };
 
@@ -234,12 +237,7 @@ class Config {
       googleClientId: null,
       googleClientSecret: null,
       enableTestMode: getEnvBool('ENABLE_TEST_MODE', false),
-      jwtSecret: getEnv('JWT_SECRET', 'dev-jwt-secret-change-in-production', true),
-      supabaseUrl: getEnv('SUPABASE_URL', ''),
-      supabaseAnonKey: getEnv('SUPABASE_ANON_KEY', ''),
-      supabaseJwtSecret: getEnv('SUPABASE_JWT_SECRET', ''),
-      supabaseAudience: getEnv('SUPABASE_JWT_AUD', ''),
-      supabaseIssuer: getEnv('SUPABASE_JWT_ISS', ''),
+      jwtSecret: getEnv('JWT_SECRET', undefined, true),
     };
 
     this.cors = {
@@ -330,6 +328,12 @@ class Config {
       botToken: getEnv('TELEGRAM_BOT_TOKEN', ''),
       botUsername: getEnv('TELEGRAM_BOT_USERNAME', ''),
       defaultChatId: getEnv('TELEGRAM_DEFAULT_CHAT_ID', '') || null,
+      // Optional - if set, the webhook route requires Telegram's X-Telegram-Bot-Api-Secret-Token
+      // header to match. Must also be passed as `secret_token` when calling Telegram's
+      // setWebhook API, or Telegram won't send the header at all. Left optional (rather than
+      // required) so existing bot setups that registered their webhook without a secret_token
+      // keep working until the operator rotates it.
+      webhookSecret: getEnv('TELEGRAM_WEBHOOK_SECRET', ''),
     };
 
     this.webhooks = {

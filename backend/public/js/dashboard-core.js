@@ -418,12 +418,21 @@ class DashboardApp {
       this.wsGatewayEnabled = Boolean(cfg.wsGatewayEnabled);
       this.wsGatewayPath = cfg.wsGatewayPath || '/stream';
       this.applyMarketDataConfig(cfg.marketData || {});
-      if (cfg.webhookToken) {
-        window.WEBHOOK_TOKEN = cfg.webhookToken;
-        window.appConfig = { ...(window.appConfig || {}), webhookToken: cfg.webhookToken };
-      }
     } catch (err) {
       this.wsGatewayEnabled = false;
+    }
+
+    // Separate call: webhook-config requires settings.manage, so a non-admin user 403ing here
+    // must not affect the public config loaded above.
+    try {
+      const webhookRes = await api.getWebhookConfig();
+      const webhookToken = webhookRes?.data?.webhookToken;
+      if (webhookToken) {
+        window.WEBHOOK_TOKEN = webhookToken;
+        window.appConfig = { ...(window.appConfig || {}), webhookToken };
+      }
+    } catch (err) {
+      // Expected for non-admin users - webhook token just won't be shown in the UI.
     }
   }
 

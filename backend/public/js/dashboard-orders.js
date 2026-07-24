@@ -205,7 +205,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       return;
     }
 
-    const rows = orders.map((order) => `
+    const rowsHtml = orders.map((order) => `
       <tr>
         <td>${Utils.escapeHTML(order.underlying || '-')}</td>
         <td>${Utils.escapeHTML(order.symbol || '-')}</td>
@@ -223,7 +223,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         <td class="text-right">${Utils.formatDateTime(order.created_at, true)}</td>
         <td class="text-right">${order.last_sync_at ? Utils.formatDateTime(order.last_sync_at, true) : '-'}</td>
       </tr>
-    `).join('');
+    `);
 
     panel.innerHTML = `
       <div class="table-container overflow-x-auto">
@@ -247,7 +247,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
               <th class="text-right">Last Sync</th>
             </tr>
           </thead>
-          <tbody>${rows}</tbody>
+          <tbody>${Utils.renderCappedRows(rowsHtml, { colspan: 15 })}</tbody>
         </table>
       </div>
     `;
@@ -465,7 +465,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
   }
 
   renderOrdersTable(orders) {
-    const rows = orders.map(order => {
+    const rowsHtml = orders.map(order => {
       const safeValue = (...keys) => {
         for (const key of keys) {
           const parts = key.split('.');
@@ -534,7 +534,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           </td>
         </tr>
       `;
-    }).join('');
+    });
 
     return `
       <div class="table-container overflow-x-auto">
@@ -556,7 +556,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             </tr>
           </thead>
           <tbody>
-            ${rows}
+            ${Utils.renderCappedRows(rowsHtml, { colspan: 12 })}
           </tbody>
         </table>
       </div>

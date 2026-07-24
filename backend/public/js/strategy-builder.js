@@ -431,7 +431,7 @@ class StrategyBuilder {
         ...(brokerTag ? { broker_tag: brokerTag } : {}),
       });
       Utils.showToast('Strategy created', 'success');
-      this.closeModal();
+      this.closeModal({ checkDirty: false });
       await this.refreshSection(watchlistId);
     } catch (error) {
       Utils.showToast(error.message || 'Failed to create strategy', 'error');
@@ -544,7 +544,7 @@ class StrategyBuilder {
     try {
       await api.updateStrategy(strategyId, { name, entry_trigger: entryTrigger, broker_tag: brokerTag });
       Utils.showToast('Strategy updated', 'success');
-      this.closeModal();
+      this.closeModal({ checkDirty: false });
       await this.refreshSection(watchlistId);
       // Reopen so a newly-generated (or just-revoked) webhook slug/URL is visible immediately
       // without a second manual click, per the switch just made above.
@@ -669,7 +669,7 @@ class StrategyBuilder {
     try {
       await api.addStrategyLeg(strategyId, this._readLegForm());
       Utils.showToast('Leg added', 'success');
-      this.closeModal();
+      this.closeModal({ checkDirty: false });
       this.expandedStrategies.add(strategyId);
       await this._refreshLegCountOnly(strategyId, watchlistId);
       await this._loadAndRenderLegs(strategyId, watchlistId);
@@ -705,7 +705,7 @@ class StrategyBuilder {
     try {
       await api.updateStrategyLeg(legId, this._readLegForm());
       Utils.showToast('Leg updated', 'success');
-      this.closeModal();
+      this.closeModal({ checkDirty: false });
       await this._loadAndRenderLegs(strategyId, watchlistId);
     } catch (error) {
       Utils.showToast(error.message || 'Failed to update leg', 'error');
@@ -763,7 +763,7 @@ class StrategyBuilder {
   }
 
   async submitExecute(strategyId, watchlistId) {
-    this.closeModal();
+    this.closeModal({ checkDirty: false });
     try {
       const res = await api.executeStrategy(strategyId, { allowScaleIn: this.isAllowScaleIn() });
       const data = res?.data;
@@ -827,7 +827,7 @@ class StrategyBuilder {
   }
 
   async submitExit(strategyId, watchlistId) {
-    this.closeModal();
+    this.closeModal({ checkDirty: false });
     try {
       const res = await api.exitStrategy(strategyId);
       const data = res?.data;
@@ -899,7 +899,7 @@ class StrategyBuilder {
   }
 
   async submitExecuteLeg(legId, strategyId, watchlistId) {
-    this.closeModal();
+    this.closeModal({ checkDirty: false });
     try {
       const res = await api.executeStrategy(strategyId, { legId, allowScaleIn: this.isAllowScaleIn() });
       const data = res?.data;
@@ -960,7 +960,7 @@ class StrategyBuilder {
   }
 
   async submitExitLeg(legId, strategyId, watchlistId) {
-    this.closeModal();
+    this.closeModal({ checkDirty: false });
     try {
       const res = await api.exitStrategy(strategyId, { legId });
       const data = res?.data;
@@ -993,9 +993,10 @@ class StrategyBuilder {
     }
   }
 
-  closeModal() {
+  async closeModal({ checkDirty = true } = {}) {
     if (this.activeModal) {
-      this.activeModal.remove();
+      const closed = await Utils.closeModal(this.activeModal, { checkDirty });
+      if (!closed) return;
       this.activeModal = null;
     }
   }

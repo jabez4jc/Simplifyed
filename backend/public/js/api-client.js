@@ -81,17 +81,10 @@ class APIClient {
       }
 
       if (!response.ok) {
-        // Not authenticated - the token we sent may just be stale (Supabase silently rotates
-        // it in the background via supabase-auth.js; this snapshot in localStorage can lag
-        // behind by one request). Try one silent refresh-and-retry before giving up and sending
-        // the user to login - only genuinely expired/revoked sessions should reach the redirect.
+        // Not authenticated - local JWTs are stateless (7-day expiry, no refresh mechanism),
+        // so a 401 always means genuinely expired/invalid, not staleness. No retry needed.
         if (response.status === 401) {
-          if (!options._retried && window.supabaseAuth) {
-            const freshToken = await window.supabaseAuth.ensureFreshSession();
-            if (freshToken) {
-              return this.request(endpoint, { ...options, _retried: true });
-            }
-          }
+          localStorage.removeItem('auth_token');
           window.location.href = '/login.html';
           return;
         }
@@ -122,6 +115,10 @@ class APIClient {
 
   async getPublicConfig() {
     return this.request('/public-config');
+  }
+
+  async getWebhookConfig() {
+    return this.request('/webhook-config');
   }
 
   // Instance APIs
@@ -821,34 +818,13 @@ class APIClient {
   }
 
   async logout() {
-    // Sign out of the Supabase client itself (revokes the refresh token server-side) - clearing
-    // localStorage alone left a still-valid refresh token sitting unused/unrevoked.
     try {
-      if (window.supabaseAuth) {
-        const client = await window.supabaseAuth.getClient();
-        await client.auth.signOut();
-      }
-    } catch (_) {
-      // best-effort - still proceed to clear local state below even if this fails
-    }
-
-    try {
-      // Clear locally stored auth token (Supabase access token)
       localStorage.removeItem('auth_token');
-
-      // Clear Supabase persisted sessions (keys start with "sb-" or legacy prefix)
-      const keysToRemove = [];
-      for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        if (key && (key.startsWith('sb-') || key.startsWith('supabase.auth.'))) {
-          keysToRemove.push(key);
-        }
-      }
-      keysToRemove.forEach((key) => localStorage.removeItem(key));
     } catch (_) {
       // ignore localStorage errors (private mode, etc.)
     }
 
+    // Destroys the separate WS-gateway session cookie - unrelated to the Bearer token above.
     return fetch('/auth/logout', {
       method: 'POST',
       credentials: 'include',

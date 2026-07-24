@@ -92,9 +92,14 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
             </div>
           </div>
           <div class="lg:col-span-1 card border border-base-200 bg-base-100">
-            <div class="card-header py-3">
-              <h4 class="font-semibold">Users & Roles</h4>
-              <p class="text-xs text-neutral-500">Assign access by role.</p>
+            <div class="card-header py-3 flex items-center justify-between gap-2">
+              <div>
+                <h4 class="font-semibold">Users & Roles</h4>
+                <p class="text-xs text-neutral-500">Assign access by role.</p>
+              </div>
+              <button class="btn btn-xs btn-primary" onclick="settings.showCreateUserModal()">
+                Create User
+              </button>
             </div>
             <div class="p-3">
               ${this.renderUserAssignments()}
@@ -132,6 +137,11 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
               ${options}
             </select>
           </td>
+          <td class="py-2 px-2">
+            <button class="btn btn-xs btn-outline" onclick="settings.showResetPasswordModal(${u.id}, '${Utils.escapeHTML(u.email)}')">
+              Reset Password
+            </button>
+          </td>
         </tr>
       `;
     }).join('');
@@ -157,10 +167,11 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
                 <th>Email</th>
                 <th>Current Role</th>
                 <th>Assign Role</th>
+                <th>Password</th>
               </tr>
             </thead>
             <tbody>
-              ${rows || '<tr><td colspan="3" class="text-center text-neutral-500">No users found.</td></tr>'}
+              ${rows || '<tr><td colspan="4" class="text-center text-neutral-500">No users found.</td></tr>'}
             </tbody>
           </table>
         </div>
@@ -247,6 +258,117 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         </div>
       </div>
     `;
+  }
+
+  showCreateUserModal() {
+    const roleOptions = this.roles.map(r => `<option value="${Utils.escapeHTML(r.name)}">${Utils.escapeHTML(r.name)}</option>`).join('');
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Create User</h3>
+        </div>
+        <div class="modal-body">
+          <form id="create-user-form">
+            <div class="form-group">
+              <label class="form-label">Email *</label>
+              <input type="email" name="email" class="form-input" required autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Password *</label>
+              <input type="password" name="password" class="form-input" minlength="8" required autocomplete="new-password">
+              <p class="text-xs text-neutral-500 mt-1">At least 8 characters.</p>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Role *</label>
+              <select name="role" class="form-input" required>
+                ${roleOptions}
+              </select>
+            </div>
+          </form>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-neutral btn-outline" onclick="Utils.closeModal(this)">Cancel</button>
+          <button class="btn btn-buy" onclick="settings.submitCreateUser()">Create</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+  }
+
+  async submitCreateUser() {
+    const form = document.getElementById('create-user-form');
+    const data = Object.fromEntries(new FormData(form).entries());
+
+    try {
+      const res = await this.authFetch('/api/v1/rbac/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json?.message || 'Failed to create user');
+      }
+      Utils.closeModal(document.querySelector('.modal-overlay'), { checkDirty: false });
+      Utils.showToast(`User ${data.email} created`, 'success');
+      await this.fetchRbacData();
+      this.refreshRbacSection();
+    } catch (err) {
+      Utils.showToast(err.message, 'error');
+    }
+  }
+
+  showResetPasswordModal(userId, email) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Reset Password</h3>
+        </div>
+        <div class="modal-body">
+          <p class="text-sm text-neutral-600 mb-2">Set a new password for <strong></strong>.</p>
+          <form id="reset-password-form">
+            <div class="form-group">
+              <label class="form-label">New Password *</label>
+              <input type="password" name="newPassword" class="form-input" minlength="8" required autocomplete="new-password">
+              <p class="text-xs text-neutral-500 mt-1">At least 8 characters.</p>
+            </div>
+          </form>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-neutral btn-outline" onclick="Utils.closeModal(this)">Cancel</button>
+          <button class="btn btn-buy" onclick="settings.submitResetPassword(${userId})">Reset</button>
+        </div>
+      </div>
+    `;
+    // Set via textContent (not interpolated into the innerHTML template) so an email containing
+    // markup can never inject into the modal - same convention as Utils.confirm().
+    modal.querySelector('.modal-body strong').textContent = email;
+    document.body.appendChild(modal);
+  }
+
+  async submitResetPassword(userId) {
+    const form = document.getElementById('reset-password-form');
+    const data = Object.fromEntries(new FormData(form).entries());
+
+    try {
+      const res = await this.authFetch(`/api/v1/rbac/users/${userId}/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        throw new Error(json?.message || 'Failed to reset password');
+      }
+      Utils.closeModal(document.querySelector('.modal-overlay'), { checkDirty: false });
+      Utils.showToast('Password reset', 'success');
+    } catch (err) {
+      Utils.showToast(err.message, 'error');
+    }
   }
 
   handlePermissionFilter(value) {

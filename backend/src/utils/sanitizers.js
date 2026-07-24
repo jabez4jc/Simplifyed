@@ -3,6 +3,13 @@
  * Provides functions to sanitize and validate user input
  */
 
+// Cloud provider instance-metadata endpoints (AWS/GCP/Azure/DigitalOcean/Alibaba all use the
+// same link-local address). A host_url pointed here would let the server's own metadata
+// credentials be read back through the funds/connection-test response. Deliberately NOT
+// blocking general private/localhost ranges - self-hosting OpenAlgo on the same host or LAN as
+// this app is a legitimate, expected deployment pattern for this product.
+const BLOCKED_HOSTS = new Set(['169.254.169.254', 'metadata.google.internal', 'fd00:ec2::254']);
+
 /**
  * Normalize and validate URL
  * @param {string} url - Raw URL input
@@ -20,6 +27,10 @@ export function normalizeUrl(url) {
 
     // Only allow http and https protocols
     if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return null;
+    }
+
+    if (BLOCKED_HOSTS.has(parsed.hostname.toLowerCase())) {
       return null;
     }
 
@@ -66,6 +77,31 @@ export function maskApiKey(apiKey, visibleChars = 4) {
   const hidden = Math.max(0, apiKey.length - visible);
 
   return '*'.repeat(hidden) + apiKey.slice(-visible);
+}
+
+/**
+ * Mask an instance row's api_key before it goes out over the API - never send the raw key to
+ * the browser. Callers that need the real key (order placement, health checks, connection
+ * tests) read straight from instanceService/db, not from an HTTP response, so this only needs
+ * to be applied at the route layer, right before res.json().
+ */
+export function maskInstanceForResponse(instance) {
+  if (!instance || typeof instance !== 'object') return instance;
+  return { ...instance, api_key: maskApiKey(instance.api_key) };
+}
+
+export function maskInstancesForResponse(instances) {
+  if (!Array.isArray(instances)) return instances;
+  return instances.map(maskInstanceForResponse);
+}
+
+/**
+ * True if a value is one of our own maskApiKey() outputs (leading '*') rather than a real key -
+ * used on the update path to detect "the edit form just round-tripped the masked placeholder it
+ * was shown" so we don't overwrite the real stored key with asterisks.
+ */
+export function isMaskedApiKey(value) {
+  return typeof value === 'string' && value.startsWith('*');
 }
 
 /**

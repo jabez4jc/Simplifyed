@@ -115,12 +115,6 @@
     </p>
   </div>
 
-  <!-- Supabase JS SDK -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.2/dist/umd/supabase.min.js"
-    integrity="sha384-fHA3aDUXCIxySoZcUhq38IKiSI0PxdCsiwF9+rmAnKi2yOVX7xtMuxl60vCNJxKC" crossorigin="anonymous">
-    </script>
-  <script src="/js/supabase-auth.js"></script>
-
   <script>
     function getToken() {
       try {
@@ -132,12 +126,6 @@
 
     async function logout() {
       try {
-        if (window.supabaseAuth) {
-          const client = await window.supabaseAuth.getClient();
-          await client.auth.signOut();
-        }
-      } catch (_) { }
-      try {
         await fetch('/auth/logout', { method: 'POST', credentials: 'include' });
       } catch (_) { }
       try {
@@ -146,7 +134,7 @@
       window.location.href = '/login.html';
     }
 
-    async function checkAccess({ retried = false } = {}) {
+    async function checkAccess() {
       const token = getToken();
       const statusEl = document.getElementById('status-text');
 
@@ -173,14 +161,8 @@
         }
 
         if (res.status === 401) {
-          // Token in localStorage may just be stale - try one silent refresh before treating
-          // this as a real session expiry (see supabase-auth.js for why this is needed).
-          if (!retried && window.supabaseAuth) {
-            const freshToken = await window.supabaseAuth.ensureFreshSession();
-            if (freshToken) {
-              return checkAccess({ retried: true });
-            }
-          }
+          // Local JWTs are stateless with no refresh mechanism - a 401 here always means a
+          // genuinely expired/invalid session, not staleness. No retry needed.
           statusEl.textContent = 'Session expired. Redirecting to login...';
           setTimeout(() => logout(), 500);
           return;

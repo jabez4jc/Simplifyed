@@ -18,8 +18,10 @@ import { sanitizeString } from '../../utils/sanitizers.js';
 import marketDataFeedService from '../../services/market-data-feed.service.js';
 import symbolResolutionService from '../../services/symbol-resolution.service.js';
 import optionGreeksService from '../../services/option-greeks.service.js';
+import { requireAuth } from '../../middleware/auth.js';
 
 const router = express.Router();
+router.use(requireAuth);
 
 /**
  * GET /api/v1/symbols/search

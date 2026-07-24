@@ -370,10 +370,13 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           <td class="text-right">${timestampDisplay}</td>
         </tr>
       `;
-    }).join('');
+    });
   }
 
   renderTradesTableShell(rowsHtml) {
+    const tbody = rowsHtml.length
+      ? Utils.renderCappedRows(rowsHtml, { colspan: 8 })
+      : '<tr><td colspan="8" class="text-center text-neutral-500">No trades</td></tr>';
     return `
       <div class="table-container overflow-x-auto">
         <table class="table">
@@ -390,7 +393,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             </tr>
           </thead>
           <tbody>
-            ${rowsHtml || '<tr><td colspan="8" class="text-center text-neutral-500">No trades</td></tr>'}
+            ${tbody}
           </tbody>
         </table>
       </div>

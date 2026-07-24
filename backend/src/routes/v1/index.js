@@ -32,6 +32,7 @@ import pnlSnapshotsRoutes from './pnl-snapshots.js';
 import { getAppReadyStatus } from '../../middleware/instruments-refresh.middleware.js';
 import { toISTISOString } from '../../utils/time.js';
 import { config } from '../../core/config.js';
+import { requirePermission } from '../../middleware/auth.js';
 
 const router = express.Router();
 
@@ -62,22 +63,33 @@ router.use('/telemetry', telemetryRoutes);
 router.use('/snapshots', snapshotRoutes);
 router.use('/pnl-snapshots', pnlSnapshotsRoutes);
 
-// Public config for frontend (Supabase)
+// Public config for frontend - intentionally unauthenticated since none of these values are
+// sensitive (contrast with the webhook token below, which lives behind GET /webhook-config
+// specifically because it's a live-trading credential). Anyone on the network can call this
+// with no login at all, so never add anything sensitive here.
 router.get('/public-config', (req, res) => {
   res.json({
     status: 'success',
     data: {
-      supabaseUrl: config.auth.supabaseUrl || '',
-      supabaseAnonKey: config.auth.supabaseAnonKey || '',
       wsGatewayEnabled: config.wsGateway?.enabled || false,
       wsGatewayPath: config.wsGateway?.path || '/stream',
-      webhookToken: config.webhooks?.tradingviewBroadcast?.token || null,
       marketData: {
         positionsPollIdleMs: config.marketDataFeed?.positionIntervalIdleMs || 30000,
         positionsPollActiveMs: config.marketDataFeed?.positionIntervalActiveMs || 8000,
         ltpCacheIdleMs: config.marketDataFeed?.quoteTtlIdleMs || 15000,
         ltpCacheActiveMs: config.marketDataFeed?.quoteTtlActiveMs || 10000,
       },
+    },
+  });
+});
+
+// Webhook token is a live-trading credential (it's the sole auth check on
+// /webhook/tradingview/broadcast) - keep it behind settings.manage, not the public-config route.
+router.get('/webhook-config', requirePermission('settings.manage'), (req, res) => {
+  res.json({
+    status: 'success',
+    data: {
+      webhookToken: config.webhooks?.tradingviewBroadcast?.token || null,
     },
   });
 });

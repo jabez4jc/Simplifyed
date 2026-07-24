@@ -138,93 +138,93 @@
 
 /* Tactical HUD Badges */
 [data-theme="dark"] .badge-v-live {
-  background-color: rgba(16, 185, 129, 0.1) !important;
-  color: #10B981 !important;
-  border-color: rgba(16, 185, 129, 0.3) !important;
+  background-color: rgba(16, 185, 129, 0.1);
+  color: #10B981;
+  border-color: rgba(16, 185, 129, 0.3);
 }
 
 [data-theme="dark"] .badge-v-analyzer {
-  background-color: rgba(245, 158, 11, 0.1) !important;
-  color: #F59E0B !important;
-  border-color: rgba(245, 158, 11, 0.3) !important;
+  background-color: rgba(245, 158, 11, 0.1);
+  color: #F59E0B;
+  border-color: rgba(245, 158, 11, 0.3);
 }
 
 [data-theme="dark"] .badge-buy,
 [data-theme="dark"] .badge-success {
-  background-color: rgba(16, 185, 129, 0.15) !important;
-  color: #10B981 !important;
-  border: 1px solid rgba(16, 185, 129, 0.2) !important;
+  background-color: rgba(16, 185, 129, 0.15);
+  color: #10B981;
+  border: 1px solid rgba(16, 185, 129, 0.2);
 }
 
 [data-theme="dark"] .badge-sell,
 [data-theme="dark"] .badge-error {
-  background-color: rgba(239, 68, 68, 0.15) !important;
-  color: #EF4444 !important;
-  border: 1px solid rgba(239, 68, 68, 0.2) !important;
+  background-color: rgba(239, 68, 68, 0.15);
+  color: #EF4444;
+  border: 1px solid rgba(239, 68, 68, 0.2);
 }
 
 [data-theme="dark"] .badge-warning {
-  background-color: rgba(245, 158, 11, 0.15) !important;
-  color: #F59E0B !important;
-  border: 1px solid rgba(245, 158, 11, 0.2) !important;
+  background-color: rgba(245, 158, 11, 0.15);
+  color: #F59E0B;
+  border: 1px solid rgba(245, 158, 11, 0.2);
 }
 
 [data-theme="dark"] .badge-info {
-  background-color: rgba(59, 130, 246, 0.15) !important;
-  color: #3B82F6 !important;
-  border: 1px solid rgba(59, 130, 246, 0.2) !important;
+  background-color: rgba(59, 130, 246, 0.15);
+  color: #3B82F6;
+  border: 1px solid rgba(59, 130, 246, 0.2);
 }
 
 [data-theme="dark"] .badge-neutral {
-  background-color: rgba(161, 161, 170, 0.15) !important;
-  color: #A1A1AA !important;
-  border: 1px solid rgba(161, 161, 170, 0.2) !important;
+  background-color: rgba(161, 161, 170, 0.15);
+  color: #A1A1AA;
+  border: 1px solid rgba(161, 161, 170, 0.2);
 }
 
 /* Operations Pages Overrides */
 [data-theme="dark"] .ops-header {
-  background: var(--color-surface) !important;
-  border-color: var(--color-border) !important;
+  background: var(--color-surface);
+  border-color: var(--color-border);
 }
 
 [data-theme="dark"] .ops-title {
-  color: var(--color-text-primary, #FFFFFF) !important;
+  color: var(--color-text-primary, #FFFFFF);
 }
 
 [data-theme="dark"] .ops-chip {
-  background: var(--color-neutral-200) !important;
-  border-color: var(--color-border) !important;
-  color: var(--color-neutral-700) !important;
+  background: var(--color-neutral-200);
+  border-color: var(--color-border);
+  color: var(--color-neutral-700);
 }
 
 [data-theme="dark"] .ops-chip.pending {
-  background: rgba(245, 158, 11, 0.1) !important;
-  color: #F59E0B !important;
-  border-color: rgba(245, 158, 11, 0.2) !important;
+  background: rgba(245, 158, 11, 0.1);
+  color: #F59E0B;
+  border-color: rgba(245, 158, 11, 0.2);
 }
 
 [data-theme="dark"] .ops-chip.open {
-  background: rgba(59, 130, 246, 0.1) !important;
-  color: #3B82F6 !important;
-  border-color: rgba(59, 130, 246, 0.2) !important;
+  background: rgba(59, 130, 246, 0.1);
+  color: #3B82F6;
+  border-color: rgba(59, 130, 246, 0.2);
 }
 
 [data-theme="dark"] .ops-chip.complete {
-  background: rgba(16, 185, 129, 0.1) !important;
-  color: #10B981 !important;
-  border-color: rgba(16, 185, 129, 0.2) !important;
+  background: rgba(16, 185, 129, 0.1);
+  color: #10B981;
+  border-color: rgba(16, 185, 129, 0.2);
 }
 
 [data-theme="dark"] .ops-chip.cancelled {
-  background: rgba(255, 255, 255, 0.05) !important;
-  color: #9CA3AF !important;
-  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: rgba(255, 255, 255, 0.05);
+  color: #9CA3AF;
+  border-color: rgba(255, 255, 255, 0.1);
 }
 
 [data-theme="dark"] .ops-chip.rejected {
-  background: rgba(239, 68, 68, 0.1) !important;
-  color: #EF4444 !important;
-  border-color: rgba(239, 68, 68, 0.2) !important;
+  background: rgba(239, 68, 68, 0.1);
+  color: #EF4444;
+  border-color: rgba(239, 68, 68, 0.2);
 }
 
 /* ========== Reset & Base Styles ========== */
@@ -329,40 +329,40 @@ body {
   .drawer.sidebar-collapsed .drawer-side .nav-link[data-label]:hover::after,
   body.sidebar-collapsed .sidebar-logout:hover::after,
   .drawer.sidebar-collapsed .sidebar-logout:hover::after {
-    content: attr(data-label) !important;
-    display: block !important;
-    position: absolute !important;
-    left: calc(100% + 12px) !important;
-    top: 50% !important;
-    transform: translateY(-50%) !important;
-    padding: var(--space-2) var(--space-3) !important;
-    color: white !important;
-    font-size: var(--font-size-base) !important;
-    font-weight: 500 !important;
-    line-height: 1.4 !important;
-    border-radius: var(--radius-lg) !important;
-    white-space: nowrap !important;
-    z-index: 40 !important;
-    pointer-events: none !important;
-    opacity: 1 !important;
-    visibility: visible !important;
+    content: attr(data-label);
+    display: block;
+    position: absolute;
+    left: calc(100% + 12px);
+    top: 50%;
+    transform: translateY(-50%);
+    padding: var(--space-2) var(--space-3);
+    color: white;
+    font-size: var(--font-size-base);
+    font-weight: 500;
+    line-height: 1.4;
+    border-radius: var(--radius-lg);
+    white-space: nowrap;
+    z-index: 40;
+    pointer-events: none;
+    opacity: 1;
+    visibility: visible;
   }
 
   /* Nav link tooltips - consistently dark for better contrast */
   body.sidebar-collapsed .drawer-side .nav-link[data-label]:hover::after,
   .drawer.sidebar-collapsed .drawer-side .nav-link[data-label]:hover::after {
-    background-color: #1a1a1b !important;
-    color: #ffffff !important;
-    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45) !important;
+    background-color: #1a1a1b;
+    color: #ffffff;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
     border: 1px solid rgba(255, 255, 255, 0.1);
   }
 
   /* Logout button tooltip - red background */
   body.sidebar-collapsed .sidebar-logout:hover::after,
   .drawer.sidebar-collapsed .sidebar-logout:hover::after {
-    background-color: var(--color-loss) !important;
-    color: #ffffff !important;
-    box-shadow: 0 8px 20px rgba(239, 68, 68, 0.35) !important;
+    background-color: var(--color-loss);
+    color: #ffffff;
+    box-shadow: 0 8px 20px rgba(239, 68, 68, 0.35);
   }
 }
 
@@ -410,28 +410,33 @@ body {
   word-break: break-word;
 }
 
-.sidebar-logout {
+.btn.sidebar-logout {
   position: relative;
-  display: flex !important;
+  display: flex;
   width: 100%;
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  background-color: transparent !important;
-  border: 2px solid var(--color-loss) !important;
-  color: var(--color-loss) !important;
-  opacity: 1 !important;
-  visibility: visible !important;
+  background-color: transparent;
+  border: 2px solid var(--color-loss);
+  color: var(--color-loss);
+  opacity: 1;
+  visibility: visible;
 }
 
-.sidebar-logout:hover {
+/* daisyUI 5 themes .btn-error via CSS custom properties (--btn-color) read by its own generic
+   .btn:hover rule rather than a plain background-color declaration, so bumping selector
+   specificity alone (unlike the base state above) doesn't consistently win here - verified via
+   computed-style diff that dropping !important changes the hover color. Untangling daisyUI's
+   custom-property theming further is out of scope for this cleanup. */
+.btn.sidebar-logout:hover {
   background-color: var(--color-loss) !important;
   color: white !important;
 }
 
 @media (min-width: 1024px) {
   .drawer {
-    display: flex !important;
+    display: flex;
     min-height: 100vh;
   }
 
@@ -468,7 +473,7 @@ body {
   }
 
   .drawer .drawer-side>:not(.drawer-overlay) {
-    translate: 0 !important;
+    translate: 0;
   }
 
   /* Allow sidebar content to scroll independently while shell stays fixed */
@@ -539,11 +544,11 @@ body {
   }
 
   body.sidebar-collapsed .sidebar-footer {
-    padding: var(--space-4) 0 !important;
-    display: flex !important;
-    flex-direction: column !important;
-    align-items: center !important;
-    width: 100% !important;
+    padding: var(--space-4) 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
   }
 
   body.sidebar-collapsed .sidebar-profile {
@@ -551,9 +556,9 @@ body {
   }
 
   body.sidebar-collapsed .sidebar-profile-avatar {
-    width: 40px !important;
-    height: 40px !important;
-    min-width: 40px !important;
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
     font-size: 0.75rem;
   }
 
@@ -561,26 +566,29 @@ body {
     display: none;
   }
 
+  /* width/min-width/padding/border-radius are the only properties here that actually need
+     !important (verified via computed-style diffing against a stripped copy of this file) -
+     something else (daisyUI's .btn sizing) still contests those specifically. */
   body.sidebar-collapsed .sidebar-logout,
   .drawer.sidebar-collapsed .sidebar-logout {
     width: 40px !important;
-    max-width: 40px !important;
-    height: 40px !important;
+    max-width: 40px;
+    height: 40px;
     min-width: 40px !important;
-    min-height: 40px !important;
+    min-height: 40px;
     padding: 0 !important;
     border-radius: 50% !important;
-    margin: 0 auto !important;
-    display: flex !important;
-    justify-content: center !important;
-    align-items: center !important;
-    flex-shrink: 0 !important;
-    overflow: hidden !important;
+    margin: 0 auto;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    flex-shrink: 0;
+    overflow: hidden;
   }
 
   body.sidebar-collapsed .sidebar-logout .nav-label,
   .drawer.sidebar-collapsed .sidebar-logout .nav-label {
-    display: none !important;
+    display: none;
   }
 
   body.sidebar-collapsed .sidebar-logout svg,

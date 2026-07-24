@@ -52,7 +52,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
               </tr>
             </thead>
             <tbody>
-              ${symbols.map(sym => `
+              ${Utils.renderCappedRows(symbols.map(sym => `
                 <tr class="symbol-row-compact"
                     data-symbol-id="${sym.id}"
                     data-symbol="${Utils.escapeHTML(sym.symbol)}"
@@ -117,7 +117,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
                     </div>
                   </td>
                 </tr>
-              `).join('')}
+              `), { pageSize: 100, colspan: 11 })}
             </tbody>
           </table>
         </div>
@@ -161,14 +161,11 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             ${content || '<p class="text-neutral-600 text-sm">No WebSocket subscriptions found.</p>'}
           </div>
           <div class="modal-footer">
-            <button class="btn btn-neutral btn-outline" onclick="this.closest('.modal-overlay').remove()">Close</button>
+            <button class="btn btn-neutral btn-outline" onclick="Utils.closeModal(this)">Close</button>
           </div>
         </div>
       `;
 
-      modal.addEventListener('click', (e) => {
-        if (e.target === modal) modal.remove();
-      });
       document.body.appendChild(modal);
     } catch (err) {
       Utils.showToast(err?.message || 'Failed to load WS subscriptions', 'error');

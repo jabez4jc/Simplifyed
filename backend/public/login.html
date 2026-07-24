@@ -80,130 +80,6 @@
       padding: 0 2rem 2.5rem;
     }
 
-    .status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.5rem 0.75rem;
-      border: 1px solid var(--accent-dim);
-      font-size: 0.6875rem;
-      margin-bottom: 1.5rem;
-      width: 100%;
-      justify-content: space-between;
-      font-family: var(--font-mono);
-      text-transform: uppercase;
-      background: rgba(255, 255, 255, 0.02);
-    }
-
-    .status-badge.loading {
-      color: var(--text-secondary);
-    }
-
-    .status-badge.success {
-      color: var(--accent-success);
-      border-color: rgba(16, 185, 129, 0.3);
-    }
-
-    .status-badge.error {
-      color: var(--error);
-      border-color: rgba(239, 68, 68, 0.3);
-    }
-
-    .status-indicator {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-    }
-
-    .status-badge.loading .status-indicator {
-      background: var(--text-muted);
-      animation: pulse 1s infinite;
-    }
-
-    .status-badge.success .status-indicator {
-      background: var(--accent-success);
-      box-shadow: 0 0 8px var(--accent-success);
-    }
-
-    .status-badge.error .status-indicator {
-      background: var(--error);
-    }
-
-    @keyframes pulse {
-
-      0%,
-      100% {
-        opacity: 1;
-        transform: scale(1);
-      }
-
-      50% {
-        opacity: 0.5;
-        transform: scale(1.2);
-      }
-    }
-
-    .tabs {
-      display: flex;
-      gap: 1.5rem;
-      margin-bottom: 2rem;
-      border-bottom: 1px solid var(--accent-dim);
-    }
-
-    .tab {
-      padding: 0.75rem 0;
-      border: none;
-      background: none;
-      cursor: pointer;
-      font-size: 0.75rem;
-      font-weight: 700;
-      color: var(--text-muted);
-      position: relative;
-      transition: all 0.2s;
-      font-family: var(--font-mono);
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
-    }
-
-    .tab:hover {
-      color: var(--text-primary);
-    }
-
-    .tab.active {
-      color: var(--accent-signal);
-    }
-
-    .tab.active::after {
-      content: '';
-      position: absolute;
-      bottom: -1px;
-      left: 0;
-      right: 0;
-      height: 2px;
-      background: var(--accent-signal);
-    }
-
-    .tab-panel {
-      display: none;
-    }
-
-    .tab-panel.active {
-      display: block;
-      animation: tabFadeIn 0.4s cubic-bezier(0.19, 1, 0.22, 1);
-    }
-
-    @keyframes tabFadeIn {
-      from {
-        opacity: 0;
-        transform: translateX(-10px);
-      }
-
-      to {
-        opacity: 1;
-        transform: translateX(0);
-      }
-    }
-
     .form-group {
       margin-bottom: 1.5rem;
     }
@@ -326,40 +202,9 @@
     .help-text {
       font-size: 0.6875rem;
       color: var(--text-muted);
-      margin-top: 0.5rem;
+      margin-top: 1.5rem;
       line-height: 1.4;
-    }
-
-    .password-requirements {
-      margin-top: 0.75rem;
-      padding: 0.75rem;
-      background: rgba(255, 255, 255, 0.02);
-      border: 1px solid var(--accent-dim);
-      font-size: 0.6875rem;
-    }
-
-    .password-requirements strong {
-      color: var(--text-secondary);
-      text-transform: uppercase;
-      font-size: 0.625rem;
-      letter-spacing: 0.05em;
-    }
-
-    .password-requirements ul {
-      list-style: none;
-      margin-top: 0.5rem;
-    }
-
-    .password-requirements li {
-      color: var(--text-muted);
-      padding: 0.125rem 0;
-    }
-
-    .password-requirements li::before {
-      content: '>';
-      margin-right: 0.5rem;
-      color: var(--accent-signal);
-      font-family: var(--font-mono);
+      text-align: center;
     }
 
     @media (max-width: 480px) {
@@ -385,124 +230,44 @@
     </div>
 
     <div class="auth-body">
-      <div class="status-badge loading" id="status-badge">
-        <span id="status-text">Connecting to authentication service...</span>
-        <span class="status-indicator"></span>
-      </div>
+      <form onsubmit="handleLogin(event)">
+        <div class="form-group">
+          <label class="form-label" for="login-email">Email</label>
+          <input id="login-email" class="form-input" type="email" placeholder="you@example.com" autocomplete="email"
+            required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="login-password">Password</label>
+          <div class="password-field-wrapper">
+            <input id="login-password" class="form-input" type="password" placeholder="Enter your password"
+              autocomplete="current-password" required>
+            <button type="button" class="password-toggle-btn" aria-label="Show password"
+              onclick="togglePasswordVisibility('login-password', this)">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" />
+                <path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <button type="submit" class="btn-v btn-v-primary btn-block" id="login-btn">
+          <span>Sign In</span>
+        </button>
+      </form>
 
-      <div class="tabs">
-        <button class="tab active" data-tab="login" onclick="switchTab('login')">Sign In</button>
-        <button class="tab" data-tab="signup" onclick="switchTab('signup')">Sign Up</button>
-        <button class="tab" data-tab="reset" onclick="switchTab('reset')">Reset</button>
-      </div>
-
-      <!-- Login Panel -->
-      <div id="login-panel" class="tab-panel active">
-        <form onsubmit="handleLogin(event)">
-          <div class="form-group">
-            <label class="form-label" for="login-email">Email</label>
-            <input id="login-email" class="form-input" type="email" placeholder="you@example.com" autocomplete="email"
-              required>
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="login-password">Password</label>
-            <div class="password-field-wrapper">
-              <input id="login-password" class="form-input" type="password" placeholder="Enter your password"
-                autocomplete="current-password" required>
-              <button type="button" class="password-toggle-btn" aria-label="Show password"
-                onclick="togglePasswordVisibility('login-password', this)">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                  <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" />
-                  <path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
-                </svg>
-              </button>
-            </div>
-          </div>
-          <button type="submit" class="btn-v btn-v-primary btn-block" id="login-btn">
-            <span>Sign In</span>
-          </button>
-        </form>
-      </div>
-
-      <!-- Signup Panel -->
-      <div id="signup-panel" class="tab-panel">
-        <form onsubmit="handleSignup(event)">
-          <div class="form-group">
-            <label class="form-label" for="signup-email">Email</label>
-            <input id="signup-email" class="form-input" type="email" placeholder="you@example.com" autocomplete="email"
-              required>
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="signup-password">Password</label>
-            <div class="password-field-wrapper">
-              <input id="signup-password" class="form-input" type="password" placeholder="Create a strong password"
-                autocomplete="new-password" required minlength="6">
-              <button type="button" class="password-toggle-btn" aria-label="Show password"
-                onclick="togglePasswordVisibility('signup-password', this)">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                  <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" />
-                  <path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
-                </svg>
-              </button>
-            </div>
-            <div class="password-requirements">
-              <strong>Password requirements:</strong>
-              <ul>
-                <li>At least 6 characters long</li>
-                <li>Mix of letters and numbers recommended</li>
-              </ul>
-            </div>
-          </div>
-          <button type="submit" class="btn-v btn-v-primary btn-block" id="signup-btn">
-            <span>Create Account</span>
-          </button>
-          <p class="help-text">
-            By signing up, you agree to receive a confirmation email. You may need to verify your email before logging
-            in.
-          </p>
-        </form>
-      </div>
-
-      <!-- Reset Password Panel -->
-      <div id="reset-panel" class="tab-panel">
-        <form onsubmit="handleReset(event)">
-          <div class="form-group">
-            <label class="form-label" for="reset-email">Email</label>
-            <input id="reset-email" class="form-input" type="email" placeholder="you@example.com" autocomplete="email"
-              required>
-            <p class="help-text">
-              We'll send you an email with instructions to reset your password.
-            </p>
-          </div>
-          <button type="submit" class="btn-v btn-v-primary btn-block" id="reset-btn">
-            <span>Send Reset Link</span>
-          </button>
-        </form>
-      </div>
+      <p class="help-text">
+        Forgot your password? Contact your administrator.
+      </p>
 
       <!-- Message Area -->
       <div id="message-area"></div>
     </div>
   </div>
 
-  <!-- Supabase JS SDK -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.2/dist/umd/supabase.min.js"
-    integrity="sha384-fHA3aDUXCIxySoZcUhq38IKiSI0PxdCsiwF9+rmAnKi2yOVX7xtMuxl60vCNJxKC" crossorigin="anonymous">
-    </script>
-
   <script>
-    let supabaseClient = null;
-    // Track ongoing operations with AbortControllers to prevent race conditions
+    // Track the in-flight login request so a second submit can cancel the first
+    // (e.g. double-click) instead of racing it.
     const activeOperations = new Map();
-
-    // UI Helpers
-    function setStatus(text, type = 'loading') {
-      const badge = document.getElementById('status-badge');
-      const statusText = document.getElementById('status-text');
-
-      badge.className = `status-badge ${type}`;
-      statusText.textContent = text;
-    }
 
     function showMessage(text, type = 'info') {
       const messageArea = document.getElementById('message-area');
@@ -536,21 +301,6 @@
         button.innerHTML = `<span>${restoredText}</span>`;
         delete button.dataset.originalText;
       }
-    }
-
-    function switchTab(tab) {
-      // Update tab buttons
-      document.querySelectorAll('.tab').forEach(t => {
-        t.classList.toggle('active', t.dataset.tab === tab);
-      });
-
-      // Update panels
-      document.querySelectorAll('.tab-panel').forEach(p => {
-        p.classList.toggle('active', p.id === `${tab}-panel`);
-      });
-
-      // Clear messages
-      document.getElementById('message-area').innerHTML = '';
     }
 
     // Redirect the user based on access (dashboard vs pending)
@@ -591,138 +341,6 @@
       }
     }
 
-    // Supabase Initialization
-    async function initSupabase() {
-      try {
-        setStatus('Loading configuration...', 'loading');
-
-        const response = await fetch('/api/v1/public-config');
-        const config = await response.json();
-
-        // Improved validation: explicitly check config and config.data exist
-        if (!config || !config.data) {
-          throw new Error('Invalid server configuration response. Please contact your administrator.');
-        }
-
-        if (!config.data.supabaseUrl || !config.data.supabaseAnonKey) {
-          throw new Error('Supabase configuration is missing. Please contact your administrator.');
-        }
-
-        if (!window.supabase) {
-          throw new Error('Supabase SDK failed to load. Please check your internet connection.');
-        }
-
-        supabaseClient = window.supabase.createClient(
-          config.data.supabaseUrl,
-          config.data.supabaseAnonKey,
-          {
-            auth: {
-              autoRefreshToken: true,
-              persistSession: true,
-              detectSessionInUrl: true
-            }
-          }
-        );
-
-        setStatus('Connected', 'success');
-
-        // Check for existing session
-        await handleAuthRedirect();
-        await checkExistingSession();
-
-      } catch (error) {
-        console.error('Supabase initialization error:', error);
-        setStatus('Connection failed', 'error');
-        showMessage(error.message, 'error');
-      }
-    }
-
-    // Handle OAuth/Email confirmation redirects
-    async function handleAuthRedirect() {
-      if (!supabaseClient) return false;
-
-      try {
-        // Check URL for authentication tokens or codes
-        const hashParams = new URLSearchParams(window.location.hash.substring(1));
-        const searchParams = new URLSearchParams(window.location.search);
-
-        const accessToken = hashParams.get('access_token');
-        const refreshToken = hashParams.get('refresh_token');
-        const code = searchParams.get('code');
-        const error = hashParams.get('error');
-        const errorDescription = hashParams.get('error_description');
-
-        // Handle errors from Supabase
-        if (error) {
-          showMessage(errorDescription || error, 'error');
-          // Clean URL
-          window.history.replaceState({}, document.title, window.location.pathname);
-          return false;
-        }
-
-        // Handle token-based session (magic link, email confirmation)
-        if (accessToken && refreshToken) {
-          setStatus('Verifying your email...', 'loading');
-
-          const { data, error } = await supabaseClient.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken
-          });
-
-          if (error) throw error;
-
-          if (data?.session?.access_token) {
-            localStorage.setItem('auth_token', data.session.access_token);
-            showMessage('Email verified successfully! Redirecting...', 'success');
-
-            // Clean URL
-            window.history.replaceState({}, document.title, window.location.pathname);
-
-            await redirectBasedOnAccess();
-            return true;
-          }
-        }
-
-        // Handle PKCE flow (code exchange)
-        if (code) {
-          setStatus('Completing authentication...', 'loading');
-
-          const { data, error } = await supabaseClient.auth.exchangeCodeForSession(code);
-
-          if (error) throw error;
-
-          if (data?.session?.access_token) {
-            localStorage.setItem('auth_token', data.session.access_token);
-            showMessage('Authentication successful! Redirecting...', 'success');
-
-            // Clean URL
-            window.history.replaceState({}, document.title, window.location.pathname);
-
-            await redirectBasedOnAccess();
-            return true;
-          }
-        }
-
-        return false;
-      } catch (error) {
-        console.error('Auth redirect error:', error);
-        showMessage(error.message, 'error');
-        return false;
-      }
-    }
-
-    // Check if user is already logged in
-    async function checkExistingSession() {
-      const token = localStorage.getItem('auth_token');
-      if (!token) return;
-
-      try {
-        await redirectBasedOnAccess();
-      } catch (error) {
-        console.error('Session check error:', error);
-      }
-    }
-
     // Handle Login
     async function handleLogin(event) {
       event.preventDefault();
@@ -748,22 +366,22 @@
       setButtonLoading('login-btn', true, 'Sign In');
 
       try {
-        if (!supabaseClient) await initSupabase();
-
-        const { data, error } = await supabaseClient.auth.signInWithPassword({
-          email,
-          password
+        const response = await fetch('/api/v1/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: abortController.signal,
+          body: JSON.stringify({ email, password }),
         });
+
+        const result = await response.json();
 
         if (abortController.signal.aborted) return;
 
-        if (error) throw error;
-
-        if (!data?.session?.access_token) {
-          throw new Error('Login succeeded but no session was created');
+        if (!response.ok || result.status !== 'success') {
+          throw new Error(result.message || 'Invalid email or password');
         }
 
-        localStorage.setItem('auth_token', data.session.access_token);
+        localStorage.setItem('auth_token', result.data.token);
         showMessage('Login successful! Redirecting...', 'success');
 
         await redirectBasedOnAccess();
@@ -778,122 +396,11 @@
       }
     }
 
-    // Handle Signup
-    async function handleSignup(event) {
-      event.preventDefault();
-
-      const operationKey = 'signup';
-      // Cancel any existing signup operation
-      if (activeOperations.has(operationKey)) {
-        activeOperations.get(operationKey).abort();
-      }
-
-      const abortController = new AbortController();
-      activeOperations.set(operationKey, abortController);
-
-      const email = document.getElementById('signup-email').value.trim();
-      const password = document.getElementById('signup-password').value;
-
-      if (!email || !password) {
-        showMessage('Please enter both email and password', 'error');
-        activeOperations.delete(operationKey);
-        return;
-      }
-
-      if (password.length < 6) {
-        showMessage('Password must be at least 6 characters long', 'error');
-        activeOperations.delete(operationKey);
-        return;
-      }
-
-      setButtonLoading('signup-btn', true, 'Create Account');
-
-      try {
-        if (!supabaseClient) await initSupabase();
-
-        const { data, error } = await supabaseClient.auth.signUp({
-          email,
-          password,
-          options: {
-            emailRedirectTo: `${window.location.origin}/login.html`
-          }
-        });
-
-        if (abortController.signal.aborted) return;
-
-        if (error) throw error;
-
-        showMessage('Account created! Please check your email for confirmation link.', 'success');
-
-      } catch (error) {
-        if (abortController.signal.aborted) return;
-        console.error('Signup error:', error);
-        showMessage(error.message, 'error');
-      } finally {
-        if (!abortController.signal.aborted) {
-          setButtonLoading('signup-btn', false, 'Create Account');
-        }
-        activeOperations.delete(operationKey);
-      }
-    }
-
-    // Handle Password Reset
-    async function handleReset(event) {
-      event.preventDefault();
-
-      const operationKey = 'reset';
-      // Cancel any existing reset operation
-      if (activeOperations.has(operationKey)) {
-        activeOperations.get(operationKey).abort();
-      }
-
-      const abortController = new AbortController();
-      activeOperations.set(operationKey, abortController);
-
-      const email = document.getElementById('reset-email').value.trim();
-
-      if (!email) {
-        showMessage('Please enter your email address', 'error');
-        activeOperations.delete(operationKey);
-        return;
-      }
-
-      setButtonLoading('reset-btn', true, 'Send Reset Link');
-
-      try {
-        if (!supabaseClient) await initSupabase();
-
-        const { error } = await supabaseClient.auth.resetPasswordForEmail(email, {
-          redirectTo: `${window.location.origin}/login.html`
-        });
-
-        if (abortController.signal.aborted) return;
-
-        if (error) throw error;
-
-        showMessage(
-          'Password reset email sent! Please check your inbox and follow the instructions.',
-          'success'
-        );
-
-        // Clear form
-        document.getElementById('reset-email').value = '';
-
-      } catch (error) {
-        if (abortController.signal.aborted) return;
-        console.error('Reset error:', error);
-        showMessage(error.message, 'error');
-      } finally {
-        if (!abortController.signal.aborted) {
-          setButtonLoading('reset-btn', false, 'Send Reset Link');
-        }
-        activeOperations.delete(operationKey);
-      }
-    }
-
-    // Initialize on page load
+    // If already logged in, skip straight to the access check - otherwise just show the form.
     document.addEventListener('DOMContentLoaded', () => {
-      initSupabase();
+      if (localStorage.getItem('auth_token')) {
+        redirectBasedOnAccess();
+      }
     });
   </script>
 </body>

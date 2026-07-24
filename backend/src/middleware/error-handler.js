@@ -84,10 +84,13 @@ export function errorHandler(err, req, res, next) {
   }
 
   if (err instanceof ForbiddenError) {
+    // Respect a caller-assigned code (e.g. requireAuth's ACCESS_PENDING) if present - the
+    // dashboard's api-client.js keys off this specific code to redirect to access-pending.html
+    // on a mid-session role revocation, not just the generic 403 status.
     return res.status(err.statusCode).json({
       status: 'error',
       message: err.message,
-      code: 'FORBIDDEN',
+      code: err.code || 'FORBIDDEN',
     });
   }
 
