@@ -373,6 +373,23 @@ class APIClient {
     return this.request(`/strategies/${id}/status`);
   }
 
+  async getStrategyInstances(strategyId) {
+    return this.request(`/strategies/${strategyId}/instances`);
+  }
+
+  async assignStrategyInstance(strategyId, instanceId) {
+    return this.request(`/strategies/${strategyId}/instances`, {
+      method: 'POST',
+      body: { instanceId },
+    });
+  }
+
+  async unassignStrategyInstance(strategyId, instanceId) {
+    return this.request(`/strategies/${strategyId}/instances/${instanceId}`, {
+      method: 'DELETE',
+    });
+  }
+
   async getOptionGreeks({ symbol, exchange, instanceId, underlyingSymbol, underlyingExchange }) {
     const params = new URLSearchParams({ symbol, exchange, instanceId });
     if (underlyingSymbol) params.set('underlyingSymbol', underlyingSymbol);

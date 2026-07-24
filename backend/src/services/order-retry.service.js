@@ -3,6 +3,7 @@ import marketDataFeedService from './market-data-feed.service.js';
 import orderPlacementService from './order-placement.service.js';
 import orderService from './order.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
+import openalgoWsService from './openalgo-ws.service.js';
 import { extractLtp } from '../utils/price-extraction.js';
 import { normalizeSymbolKey, normalizeExchange, normalizeProduct } from '../utils/symbol-parsing.util.js';
 
@@ -591,6 +592,24 @@ class OrderRetryService {
    * actually filled would duplicate it).
    */
   async _confirmOrderStatus(instance, orderId, strategy) {
+    // Fast path: the OpenAlgo order-update WebSocket may already have told us (or tell us within
+    // a couple seconds) whether this order filled or was rejected. Skips a REST call that can
+    // itself time out or fail - exactly the failure mode that produces 'uncertain' below - and on
+    // a cache hit (the common case, since this runs after the order already dropped out of the
+    // open-orders list) it's instant. A non-definitive pushed status (open/partial/etc) falls
+    // through to the REST check same as if nothing had arrived - this can only ever answer faster
+    // or the same as before, never worse.
+    try {
+      const pushed = await openalgoWsService.waitForOrderUpdate(orderId, 1500);
+      if (pushed) {
+        const pushedNormalized = this._normalizeStatus((pushed.order_status || '').toString().toLowerCase());
+        if (pushedNormalized === 'complete') return 'filled';
+        if (pushedNormalized === 'rejected' || pushedNormalized === 'cancelled') return 'rejected';
+      }
+    } catch (error) {
+      log.warn('WS order-update fast path failed, falling back to REST', { instance_id: instance?.id, order_id: orderId, error: error.message });
+    }
+
     try {
       const response = await openalgoClient.getOrderStatus(instance, {
         orderid: orderId,

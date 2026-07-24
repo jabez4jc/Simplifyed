@@ -18,6 +18,7 @@ import watchlistService from './watchlist.service.js';
 import symbolValidationService from './symbol-validation.service.js';
 import quickOrderService from './quick-order.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
+import openalgoWsService from './openalgo-ws.service.js';
 import marginSizingService from './margin-sizing.service.js';
 import riskEventsService from './risk-events.service.js';
 import instanceService from './instance.service.js';
@@ -36,7 +37,9 @@ const VALID_QTY_TYPES = ['LOTS', 'FIXED', 'MARGIN_BASED'];
 class StrategyService {
   async listStrategies(watchlistId) {
     return db.all(
-      `SELECT s.*, (SELECT COUNT(*) FROM strategy_legs WHERE strategy_id = s.id) as leg_count
+      `SELECT s.*,
+         (SELECT COUNT(*) FROM strategy_legs WHERE strategy_id = s.id) as leg_count,
+         (SELECT COUNT(*) FROM strategy_instances WHERE strategy_id = s.id) as instance_count
        FROM strategies s
        WHERE s.watchlist_id = ?
        ORDER BY s.created_at DESC`,
@@ -466,7 +469,7 @@ class StrategyService {
 
     const instances = instanceId
       ? [await this._getSingleActiveInstance(instanceId)]
-      : await this._getWatchlistInstances(strategy.watchlist_id);
+      : await this._getStrategyInstances(strategy);
 
     const executionId = `${strategy.broker_tag || `strategy-${strategyId}`}-${Date.now()}`;
     const strategyForExecution = { ...strategy, legs: legsToExecute };
@@ -521,7 +524,7 @@ class StrategyService {
 
     const instances = instanceId
       ? [await this._getSingleActiveInstance(instanceId)]
-      : await this._getWatchlistInstances(strategy.watchlist_id);
+      : await this._getStrategyInstances(strategy);
 
     const settled = await Promise.allSettled(
       instances.map((instance) => this._exitStrategyForInstance({ strategy, instance, legId: resolvedLegId, userId, source }))
@@ -664,7 +667,15 @@ class StrategyService {
 
     const executions = rows.map((row) => {
       const leg = legById.get(row.strategy_leg_id);
-      const isOpen = !row.closed_at;
+      // closed_at only gets written by this service's own Exit/Exit-All code path - a position
+      // closed any other way (Positions page "Close All", a manual square-off, a broker-side
+      // GTT/SL fill) leaves this row permanently marked open even though the broker shows it
+      // flat. Cross-check against the live position cache (same quantity field convention used
+      // by positions.service.js and everywhere else) and treat qty=0 as closed for display,
+      // regardless of closed_at. Read-only correction - never flips closed->open, so it can't
+      // make a leg look re-enterable that isn't (that guard still trusts closed_at only, on
+      // purpose - see _executeStrategyForInstance).
+      let isOpen = !row.closed_at;
       let ltp = null;
       let pnl = null;
 
@@ -673,8 +684,16 @@ class StrategyService {
           row.instance_id, row.resolved_symbol, row.resolved_exchange
         );
         if (position) {
-          ltp = parseFloatSafe(position.ltp ?? position.last_price, null);
-          pnl = parseFloatSafe(position.pnl ?? position.unrealised_pnl ?? position.unrealisedPnl, null);
+          const liveQty = parseIntSafe(
+            position.quantity ?? position.netqty ?? position.net_quantity ?? position.netQty ?? position.net,
+            0
+          );
+          if (liveQty === 0) {
+            isOpen = false;
+          } else {
+            ltp = parseFloatSafe(position.ltp ?? position.last_price, null);
+            pnl = parseFloatSafe(position.pnl ?? position.unrealised_pnl ?? position.unrealisedPnl, null);
+          }
         }
       }
 
@@ -709,6 +728,60 @@ class StrategyService {
     };
   }
 
+  // Push-based reconciliation via the OpenAlgo order-update WebSocket (see openalgo-ws.service.js
+  // and the listener registered below this class) - the real fix for the "leg shows OPEN forever"
+  // bug getExecutionStatus's live-position cross-check was only a read-time stopgap for. A
+  // confirmed fill tells us definitively that a position closed, regardless of which screen
+  // placed the closing order (this strategy's own Exit button, the Positions page's "Close All",
+  // a broker-side SL/GTT) - order updates aren't scoped to whoever initiated them.
+  //
+  // Correlates by instance + symbol + opposite-of-entry-action, not by order_id: a closing order
+  // placed outside this strategy's own Exit flow was never recorded as this row's exit_order_id,
+  // so matching on order_id alone would miss exactly the case this exists to catch.
+  async reconcileOrderUpdate(instanceId, order) {
+    if (!order || order.order_status !== 'complete') return;
+
+    const symbol = (order.symbol || '').trim().toUpperCase();
+    if (!symbol) return;
+
+    const orderAction = (order.action || '').trim().toUpperCase();
+    if (orderAction !== 'BUY' && orderAction !== 'SELL') return;
+
+    const filledQty = parseIntSafe(order.filled_quantity, 0);
+    if (filledQty <= 0) return;
+
+    const openRows = await db.all(
+      `SELECT sle.*, sl.action AS leg_action
+       FROM strategy_leg_executions sle
+       JOIN strategy_legs sl ON sl.id = sle.strategy_leg_id
+       WHERE sle.instance_id = ?
+         AND UPPER(sle.resolved_symbol) = ?
+         AND sle.closed_at IS NULL
+         AND sle.entry_status = 'PLACED'`,
+      [instanceId, symbol]
+    );
+    if (!openRows.length) return;
+
+    const now = new Date().toISOString();
+    for (const row of openRows) {
+      const legAction = (row.leg_action || '').toUpperCase();
+      // Same-direction fill (e.g. a scale-in add) isn't a close - only the opposite side squares
+      // the leg off. Conservative on quantity too: a partial fill doesn't fully close it.
+      if (!legAction || orderAction === legAction) continue;
+      if (filledQty < row.quantity) continue;
+
+      await db.run(
+        `UPDATE strategy_leg_executions
+         SET exit_order_id = COALESCE(exit_order_id, ?), exit_status = 'CLOSED', closed_at = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [order.orderid || null, now, row.id]
+      );
+      log.info('Strategy leg closed via order-update stream', {
+        strategyId: row.strategy_id, legExecutionId: row.id, instanceId, symbol,
+      });
+    }
+  }
+
   async _getSingleActiveInstance(instanceId) {
     const instance = await instanceService.getInstanceById(instanceId);
     if (!instance || !instance.is_active) {
@@ -732,6 +805,84 @@ class StrategyService {
       throw new ValidationError('No active, order-enabled instances assigned to this watchlist');
     }
     return instances;
+  }
+
+  // Resolves which instances Execute/Exit target when no explicit instanceId override is given.
+  // A strategy that has its own strategy_instances rows trades ONLY those (and only those - if
+  // all of them are currently inactive/disabled, that's an error, not a silent fall-through to
+  // the shared container pool, since that would defeat the whole point of scoping a strategy to
+  // specific accounts). A strategy with no rows at all has never been explicitly scoped, so it
+  // keeps the original behavior: every active, order-enabled instance on the container watchlist.
+  async _getStrategyInstances(strategy) {
+    const explicit = await db.all(
+      `SELECT i.* FROM instances i
+       JOIN strategy_instances si ON i.id = si.instance_id
+       WHERE si.strategy_id = ?
+         AND i.is_active = 1
+         AND i.order_placement_enabled = 1`,
+      [strategy.id]
+    );
+    if (explicit.length) {
+      return explicit;
+    }
+
+    const hasAnyAssignment = await db.get(
+      'SELECT 1 FROM strategy_instances WHERE strategy_id = ? LIMIT 1',
+      [strategy.id]
+    );
+    if (hasAnyAssignment) {
+      throw new ValidationError('No active, order-enabled instances assigned to this strategy');
+    }
+
+    return this._getWatchlistInstances(strategy.watchlist_id);
+  }
+
+  async getStrategyInstances(strategyId) {
+    return db.all(
+      `SELECT i.* FROM instances i
+       JOIN strategy_instances si ON i.id = si.instance_id
+       WHERE si.strategy_id = ?
+       ORDER BY i.name ASC`,
+      [strategyId]
+    );
+  }
+
+  async assignStrategyInstance(strategyId, instanceId) {
+    await this.getStrategyWithLegs(strategyId); // throws NotFoundError if the strategy doesn't exist
+
+    const instance = await db.get('SELECT id FROM instances WHERE id = ?', [instanceId]);
+    if (!instance) {
+      throw new NotFoundError('Instance');
+    }
+
+    const existing = await db.get(
+      'SELECT * FROM strategy_instances WHERE strategy_id = ? AND instance_id = ?',
+      [strategyId, instanceId]
+    );
+    if (existing) {
+      // Idempotent: return existing assignment instead of failing
+      return existing;
+    }
+
+    const result = await db.run(
+      'INSERT INTO strategy_instances (strategy_id, instance_id) VALUES (?, ?)',
+      [strategyId, instanceId]
+    );
+    return db.get('SELECT * FROM strategy_instances WHERE id = ?', [result.lastID]);
+  }
+
+  async unassignStrategyInstance(strategyId, instanceId) {
+    const existing = await db.get(
+      'SELECT * FROM strategy_instances WHERE strategy_id = ? AND instance_id = ?',
+      [strategyId, instanceId]
+    );
+    if (!existing) {
+      throw new NotFoundError('Instance assignment');
+    }
+    await db.run(
+      'DELETE FROM strategy_instances WHERE strategy_id = ? AND instance_id = ?',
+      [strategyId, instanceId]
+    );
   }
 
   /**
@@ -1164,4 +1315,15 @@ class StrategyService {
 }
 
 const strategyService = new StrategyService();
+
+// Registered once at module load (this file is always imported for the /strategies routes, so
+// this runs regardless of whether strategies are in active use). openalgo-ws.service.js has no
+// knowledge of strategies - it just emits a transport-level event; this is the one place that
+// turns "an order filled" into "a strategy leg closed".
+openalgoWsService.on('order_update', ({ instanceId, order }) => {
+  strategyService.reconcileOrderUpdate(instanceId, order).catch((error) => {
+    log.warn('Failed to reconcile order update for strategy legs', { instanceId, error: error.message });
+  });
+});
+
 export default strategyService;

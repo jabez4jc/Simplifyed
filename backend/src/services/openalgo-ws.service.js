@@ -7,6 +7,8 @@ import { toISTDate } from '../utils/time.js';
 const MAX_SYMBOLS_PER_INSTANCE = 500;
 const RETRY_MS = 3000;
 const QUOTE_BLACKOUT_END = { hour: 8, minute: 45 };
+const ORDER_UPDATE_CACHE_MAX = 500;
+const ORDER_UPDATE_CACHE_TTL_MS = 10 * 60 * 1000;
 
 function msUntilQuoteBlackoutEnds() {
   const ist = toISTDate();
@@ -63,6 +65,7 @@ class OpenAlgoWsConnection {
     this.onQuote = onQuote;
     this.onStatus = onStatus;
     this.onDepth = null;
+    this.onOrderUpdate = null;
     this.ws = null;
     this.connected = false;
     this.desired = new Set();
@@ -102,6 +105,11 @@ class OpenAlgoWsConnection {
   _onOpen() {
     this.connected = true;
     this._send({ action: 'authenticate', api_key: this.instance.api_key });
+    // Account-level order fill/status stream - same connection as quotes, just a second
+    // subscription. Brokers without a push order-update mechanism simply never send this type;
+    // callers relying on it (see strategyService.reconcileOrderUpdate) already have a
+    // polling-based fallback for those.
+    this._send({ action: 'subscribe_orders' });
     this._syncSubscriptions();
     this.onStatus?.(this.instance.id, 'connected');
   }
@@ -122,6 +130,9 @@ class OpenAlgoWsConnection {
         } else {
           this.onQuote?.(this.instance.id, payload);
         }
+      }
+      if (msg.type === 'order_update') {
+        this.onOrderUpdate?.(this.instance.id, msg);
       }
       if (msg.type === 'auth' && msg.status !== 'success') {
         log.warn('OpenAlgo WS auth failed', { instance: this.instance.name || this.instance.id, message: msg.message });
@@ -188,6 +199,7 @@ class OpenAlgoWsService extends EventEmitter {
     super();
     this.connections = new Map(); // instanceId -> connection
     this.instances = [];
+    this.orderUpdateCache = new Map(); // orderid -> { order, receivedAt } - bounded, TTL'd below
   }
 
   start(instances = []) {
@@ -204,6 +216,10 @@ class OpenAlgoWsService extends EventEmitter {
         );
         const conn = this.connections.get(inst.id);
         conn.onDepth = (instanceId, depth) => this.emit('depth', { instanceId, depth });
+        conn.onOrderUpdate = (instanceId, order) => {
+          this._recordOrderUpdate(order);
+          this.emit('order_update', { instanceId, order });
+        };
       }
     });
   }
@@ -314,6 +330,61 @@ class OpenAlgoWsService extends EventEmitter {
 
   hasActiveConnections() {
     return this.getActiveConnectionCount() > 0;
+  }
+
+  _recordOrderUpdate(order) {
+    const orderId = order?.orderid;
+    if (!orderId) return;
+    this.orderUpdateCache.set(orderId, { order, receivedAt: Date.now() });
+    if (this.orderUpdateCache.size > ORDER_UPDATE_CACHE_MAX) {
+      // Map preserves insertion order - first key is the oldest. A simple FIFO bound is enough
+      // here; this cache only needs to answer "did we hear about this order recently," not act
+      // as a long-lived store.
+      this.orderUpdateCache.delete(this.orderUpdateCache.keys().next().value);
+    }
+  }
+
+  /**
+   * Already-seen order_update for this orderid, if any and not expired. Read-only, no waiting.
+   */
+  getOrderUpdate(orderId) {
+    const entry = this.orderUpdateCache.get(orderId);
+    if (!entry) return null;
+    if (Date.now() - entry.receivedAt > ORDER_UPDATE_CACHE_TTL_MS) {
+      this.orderUpdateCache.delete(orderId);
+      return null;
+    }
+    return entry.order;
+  }
+
+  /**
+   * Resolves with the order_update payload for orderId - immediately if already cached, or as
+   * soon as one arrives within timeoutMs, or null if neither happens. Callers (order-retry's
+   * status confirmation) should fall back to a REST status check on null, same as before this
+   * existed - this only ever gives a faster/more-reliable answer, never a worse one.
+   */
+  waitForOrderUpdate(orderId, timeoutMs = 1500) {
+    const cached = this.getOrderUpdate(orderId);
+    if (cached) return Promise.resolve(cached);
+    if (!orderId) return Promise.resolve(null);
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const onUpdate = ({ order }) => {
+        if (settled || order?.orderid !== orderId) return;
+        settled = true;
+        clearTimeout(timer);
+        this.off('order_update', onUpdate);
+        resolve(order);
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.off('order_update', onUpdate);
+        resolve(null);
+      }, timeoutMs);
+      this.on('order_update', onUpdate);
+    });
   }
 
   stop() {

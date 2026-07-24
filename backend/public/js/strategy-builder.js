@@ -114,9 +114,17 @@ class StrategyBuilder {
     }
   }
 
+  // Exactly one primary action on this page: "+ New Strategy". It always targets the default
+  // container (ensureDefaultStrategyWatchlist - first found, or lazily created), so there is
+  // never a reason to show a second, group-scoped create button next to it.
   async renderOverviewList() {
     const groups = await this.loadAllStrategies();
+    const singleGroup = groups.length === 1 ? groups[0] : null;
 
+    // No container-level "Instances" action here - each strategy row has its own instances
+    // picker now (see showManageStrategyInstancesModal), which already pre-fills from the
+    // container's instances when a strategy hasn't set its own. A second, page-level instances
+    // button next to it was just a confusing second place to do the same thing.
     const header = `
       <div class="flex items-center justify-between mb-4">
         <div>
@@ -142,18 +150,28 @@ class StrategyBuilder {
       `;
     }
 
-    const groupsHtml = groups.map(({ watchlist, strategies }) => `
+    if (singleGroup) {
+      // The overwhelming common case: one container, so its name/instance-count add nothing a
+      // per-group card header would say that the page header doesn't already say. Flat list.
+      const { watchlist, strategies } = singleGroup;
+      return `
+        ${header}
+        <div class="card">
+          <div class="strategies-section__list p-2">
+            ${strategies.map((s) => this._renderStrategyRow(watchlist.id, s)).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    // Multiple containers - rare (e.g. strategy watchlists created before this page existed).
+    // New strategies still only ever go to the default container via the header button; each
+    // section here is just a label for what already exists in that container - instance
+    // assignment happens per strategy, same as the single-container case above.
+    const sectionsHtml = groups.map(({ watchlist, strategies }) => `
       <div class="card mb-4">
         <div class="card-header">
           <h3 class="card-title">${Utils.escapeHTML(watchlist.name)}</h3>
-          <div class="flex gap-2">
-            <button class="btn btn-neutral btn-outline btn-sm" onclick="app.manageWatchlistInstances(${watchlist.id})">
-              Instances (${watchlist.instance_count || 0})
-            </button>
-            <button class="btn btn-buy btn-sm" onclick="strategyBuilder.showCreateStrategyModal(${watchlist.id})">
-              + New Strategy
-            </button>
-          </div>
         </div>
         <div class="strategies-section__list p-2">
           ${strategies.map((s) => this._renderStrategyRow(watchlist.id, s)).join('')}
@@ -161,7 +179,7 @@ class StrategyBuilder {
       </div>
     `).join('');
 
-    return `${header}${groupsHtml}`;
+    return `${header}${sectionsHtml}`;
   }
 
   async renderStrategiesSection(watchlistId) {
@@ -199,6 +217,7 @@ class StrategyBuilder {
 
   _renderStrategyRow(watchlistId, strategy) {
     const legCount = strategy.leg_count ?? strategy.legs?.length ?? 0;
+    const instanceCount = strategy.instance_count ?? 0;
     const triggerBadge = strategy.entry_trigger === 'WEBHOOK'
       ? `<span class="watchlist-card-compact__badge info">Webhook</span>`
       : '';
@@ -217,6 +236,12 @@ class StrategyBuilder {
             ${triggerBadge}
           </div>
           <div class="strategy-row__actions">
+            <button class="btn-icon-compact" onclick="strategyBuilder.showManageStrategyInstancesModal(${strategy.id}, ${watchlistId})" title="${instanceCount ? 'This strategy trades only its own selected instances' : 'This strategy inherits the container instances - click to scope it to its own'}">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
+              </svg>
+            </button>
+            <span class="strategy-row__meta" style="margin-right: 4px;">${instanceCount ? `${instanceCount} instance(s)` : 'Inherited'}</span>
             <button class="btn-icon-compact" onclick="strategyBuilder.showEditStrategyModal(${strategy.id}, ${watchlistId})" title="Edit">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -345,13 +370,14 @@ class StrategyBuilder {
   }
 
   _renderExecutionStatusTable(status) {
-    if (!status?.hasExecutions) return '';
-    const rows = (status.executions || []).map((e) => {
+    const openExecutions = (status?.executions || []).filter((e) => e.isOpen);
+    if (!openExecutions.length) return '';
+    const rows = openExecutions.map((e) => {
       const legLabel = e.legOptionType ? `${e.legAction} ${e.legOptionType}` : (e.legAction || '-');
       const pnlClass = e.pnl > 0 ? 'text-success' : e.pnl < 0 ? 'text-error' : '';
       const pnlText = e.pnl != null ? e.pnl.toFixed(2) : '-';
-      const statusText = e.isOpen ? 'OPEN' : (e.exitStatus || 'CLOSED');
-      const statusClass = e.isOpen ? 'text-success' : 'text-neutral-500';
+      const statusText = 'OPEN';
+      const statusClass = 'text-success';
       return `
         <tr>
           <td>${Utils.escapeHTML(legLabel)}</td>
@@ -448,6 +474,123 @@ class StrategyBuilder {
     // Standalone Strategies overview page has no per-watchlist wrapper - re-render the whole view.
     if (app.currentView === 'strategies') {
       await app.renderStrategiesOverviewView();
+    }
+  }
+
+  async showManageStrategyInstancesModal(strategyId, watchlistId) {
+    let explicitInstances = [];
+    let allInstances = [];
+    let containerInstances = [];
+    try {
+      const [explicitRes, allRes, watchlistRes] = await Promise.all([
+        api.getStrategyInstances(strategyId),
+        api.getInstances(),
+        api.getWatchlistById(watchlistId),
+      ]);
+      explicitInstances = Array.isArray(explicitRes?.data) ? explicitRes.data : [];
+      allInstances = Array.isArray(allRes?.data) ? allRes.data : [];
+      containerInstances = Array.isArray(watchlistRes?.data?.instances) ? watchlistRes.data.instances : [];
+    } catch (error) {
+      Utils.showToast(error.message || 'Failed to load instances', 'error');
+      return;
+    }
+
+    const isExplicit = explicitInstances.length > 0;
+    const checkedIds = new Set((isExplicit ? explicitInstances : containerInstances).map((i) => i.id));
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+      <div class="modal-content">
+        <div class="modal-header"><h3>Strategy Instances</h3></div>
+        <div class="modal-body">
+          <p class="text-sm text-neutral-700 mb-4">
+            ${isExplicit
+              ? 'Execute/Exit for this strategy only fire on the instances checked below.'
+              : 'This strategy has no instances of its own yet - showing the container\'s instances as a starting point. Save to lock it to exactly the selection below.'}
+          </p>
+          <div class="space-y-2" id="strategy-instance-checkboxes">
+            ${allInstances.map((inst) => `
+              <label class="flex items-center gap-3 p-2 border rounded modal-selectable-item cursor-pointer">
+                <input type="checkbox"
+                       class="strategy-instance-checkbox"
+                       data-instance-id="${inst.id}"
+                       ${checkedIds.has(inst.id) ? 'checked' : ''}>
+                <div class="flex-1">
+                  <span class="font-semibold">${Utils.escapeHTML(inst.name)}</span>
+                  <span class="text-sm text-neutral-600 ml-2">(${Utils.escapeHTML(inst.broker || 'N/A')})</span>
+                </div>
+                <span class="badge badge-${inst.health_status === 'healthy' ? 'success' : 'warning'}">
+                  ${inst.health_status || 'unknown'}
+                </span>
+              </label>
+            `).join('')}
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-neutral btn-outline" onclick="strategyBuilder.closeModal()">Cancel</button>
+          ${isExplicit ? `
+            <button class="btn btn-neutral btn-outline" onclick="strategyBuilder.resetStrategyInstances(${strategyId}, ${watchlistId})">
+              Use Container Instances
+            </button>
+          ` : ''}
+          <button class="btn btn-buy" onclick="strategyBuilder.submitStrategyInstanceAssignments(${strategyId}, ${watchlistId})">
+            Save
+          </button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    this.activeModal = modal;
+  }
+
+  async submitStrategyInstanceAssignments(strategyId, watchlistId) {
+    const checkboxes = document.querySelectorAll('.strategy-instance-checkbox');
+    const selectedIds = Array.from(checkboxes)
+      .filter((cb) => cb.checked)
+      .map((cb) => parseInt(cb.dataset.instanceId, 10));
+
+    if (!selectedIds.length) {
+      Utils.showToast('Select at least one instance, or use "Use Container Instances" to inherit instead', 'warning');
+      return;
+    }
+
+    try {
+      const currentRes = await api.getStrategyInstances(strategyId);
+      const currentIds = new Set((currentRes?.data || []).map((i) => i.id));
+
+      const toAdd = selectedIds.filter((id) => !currentIds.has(id));
+      const toRemove = Array.from(currentIds).filter((id) => !selectedIds.includes(id));
+
+      for (const instanceId of toAdd) {
+        await api.assignStrategyInstance(strategyId, instanceId);
+      }
+      for (const instanceId of toRemove) {
+        await api.unassignStrategyInstance(strategyId, instanceId);
+      }
+
+      Utils.showToast('Strategy instances updated', 'success');
+      this.closeModal({ checkDirty: false });
+      await this.refreshSection(watchlistId);
+    } catch (error) {
+      Utils.showToast(error.message || 'Failed to update strategy instances', 'error');
+    }
+  }
+
+  // Clears the strategy's own assignment entirely so it goes back to trading every instance
+  // assigned to the container watchlist (the pre-this-feature default).
+  async resetStrategyInstances(strategyId, watchlistId) {
+    try {
+      const currentRes = await api.getStrategyInstances(strategyId);
+      const currentIds = (currentRes?.data || []).map((i) => i.id);
+      for (const instanceId of currentIds) {
+        await api.unassignStrategyInstance(strategyId, instanceId);
+      }
+      Utils.showToast('Strategy now uses the container\'s instances', 'success');
+      this.closeModal({ checkDirty: false });
+      await this.refreshSection(watchlistId);
+    } catch (error) {
+      Utils.showToast(error.message || 'Failed to reset strategy instances', 'error');
     }
   }
 
@@ -811,23 +954,40 @@ class StrategyBuilder {
   // no instance picker. This confirmation just makes clear which instances will receive live
   // orders before the user commits (no live broker calls are made just to populate this dialog -
   // margin figures are shown after execution, as part of the result, not fetched up front).
+  // Mirrors the backend's own resolution order in strategy.service.js's _getStrategyInstances:
+  // the strategy's own explicit assignment if it has one, else every instance on the container
+  // watchlist. Used only for the confirmation modals below - keeps them honest about which
+  // instances Execute/Exit will actually fire on rather than always showing the container's set.
+  async _resolveEffectiveInstances(strategyId, watchlistId) {
+    const explicitRes = await api.getStrategyInstances(strategyId);
+    const explicit = Array.isArray(explicitRes?.data) ? explicitRes.data : [];
+    if (explicit.length) return { instances: explicit, isExplicit: true };
+
+    const watchlistRes = await api.getWatchlistById(watchlistId);
+    const instances = Array.isArray(watchlistRes?.data?.instances) ? watchlistRes.data.instances : [];
+    return { instances, isExplicit: false };
+  }
+
   async showExecuteModal(strategyId, watchlistId) {
     if (this.isQuickTradeMode()) {
       Utils.showToast('Executing strategy...', 'info');
       return this.submitExecute(strategyId, watchlistId);
     }
-    let watchlist;
+    let instances, isExplicit;
     try {
-      const res = await api.getWatchlistById(watchlistId);
-      watchlist = res?.data;
+      ({ instances, isExplicit } = await this._resolveEffectiveInstances(strategyId, watchlistId));
     } catch (error) {
-      Utils.showToast('Failed to load watchlist instances', 'error');
+      Utils.showToast('Failed to load instances', 'error');
       return;
     }
 
-    const instances = Array.isArray(watchlist?.instances) ? watchlist.instances : [];
     if (!instances.length) {
-      Utils.showToast('No active instances are assigned to this watchlist - assign one first', 'warning');
+      Utils.showToast(
+        isExplicit
+          ? 'No active instances are assigned to this strategy - manage its instances first'
+          : 'No active instances are assigned to this container - assign one first',
+        'warning'
+      );
       return;
     }
 
@@ -835,6 +995,9 @@ class StrategyBuilder {
     const scaleInWarning = this.isAllowScaleIn()
       ? '<p class="text-sm" style="color: var(--color-warning, #d97706);">Allow Scale-In is on - any leg that already has an open position will get an <strong>additional</strong> order on top of it, not be skipped.</p>'
       : '';
+    const scopeNote = isExplicit
+      ? '<strong>this strategy\'s own</strong>'
+      : 'all';
 
     const modal = document.createElement('div');
     modal.className = 'modal-overlay strategy-modal';
@@ -842,7 +1005,7 @@ class StrategyBuilder {
       <div class="modal-content" style="max-width: 420px;">
         <div class="modal-header"><h3>Execute Strategy</h3></div>
         <div class="modal-body">
-          <p class="text-neutral-600 text-sm">This places live orders for every leg against <strong>all ${instances.length} instance(s)</strong> assigned to this watchlist:</p>
+          <p class="text-neutral-600 text-sm">This places live orders for every leg against ${scopeNote} <strong>${instances.length} instance(s)</strong>:</p>
           <ul style="margin: var(--space-2) 0; padding-left: var(--space-5);">${instanceList}</ul>
           <p class="text-neutral-600 text-sm">Each instance's required margin is checked as part of execution and shown in the result.</p>
           ${scaleInWarning}
@@ -882,24 +1045,23 @@ class StrategyBuilder {
     }
   }
 
-  // Closes every still-open leg (per the strategy_leg_executions ledger) across every instance
-  // assigned to the watchlist - same all-instances-at-once convention as Execute.
+  // Closes every still-open leg (per the strategy_leg_executions ledger) across the same
+  // strategy-then-watchlist-fallback instance set that Execute uses.
   async showExitModal(strategyId, watchlistId) {
     if (this.isQuickTradeMode()) {
       Utils.showToast('Exiting strategy...', 'info');
       return this.submitExit(strategyId, watchlistId);
     }
-    let watchlist;
+    let instances, isExplicit;
     try {
-      const res = await api.getWatchlistById(watchlistId);
-      watchlist = res?.data;
+      ({ instances, isExplicit } = await this._resolveEffectiveInstances(strategyId, watchlistId));
     } catch (error) {
-      Utils.showToast('Failed to load watchlist instances', 'error');
+      Utils.showToast('Failed to load instances', 'error');
       return;
     }
 
-    const instances = Array.isArray(watchlist?.instances) ? watchlist.instances : [];
     const instanceList = instances.map((i) => `<li>${Utils.escapeHTML(i.name)}</li>`).join('');
+    const scopeNote = isExplicit ? '<strong>this strategy\'s own</strong>' : 'all';
 
     const modal = document.createElement('div');
     modal.className = 'modal-overlay strategy-modal';
@@ -907,7 +1069,7 @@ class StrategyBuilder {
       <div class="modal-content" style="max-width: 420px;">
         <div class="modal-header"><h3>Exit Strategy</h3></div>
         <div class="modal-body">
-          <p class="text-neutral-600 text-sm">This closes every still-open leg of this strategy across <strong>all ${instances.length} instance(s)</strong> assigned to this watchlist:</p>
+          <p class="text-neutral-600 text-sm">This closes every still-open leg of this strategy across ${scopeNote} <strong>${instances.length} instance(s)</strong>:</p>
           <ul style="margin: var(--space-2) 0; padding-left: var(--space-5);">${instanceList}</ul>
           <p class="text-neutral-600 text-sm">Legs with no open position are skipped.</p>
         </div>
@@ -945,25 +1107,28 @@ class StrategyBuilder {
   }
 
   // Same convention as showExecuteModal, scoped to a single leg - places a live order for just
-  // this leg against every instance assigned to the watchlist (the already-open-leg guard on the
+  // this leg against the strategy's effective instances (the already-open-leg guard on the
   // backend still applies, so re-entering an already-live leg is a safe no-op, not a duplicate).
   async showExecuteLegModal(legId, strategyId, watchlistId) {
     if (this.isQuickTradeMode()) {
       Utils.showToast('Entering leg...', 'info');
       return this.submitExecuteLeg(legId, strategyId, watchlistId);
     }
-    let watchlist;
+    let instances, isExplicit;
     try {
-      const res = await api.getWatchlistById(watchlistId);
-      watchlist = res?.data;
+      ({ instances, isExplicit } = await this._resolveEffectiveInstances(strategyId, watchlistId));
     } catch (error) {
-      Utils.showToast('Failed to load watchlist instances', 'error');
+      Utils.showToast('Failed to load instances', 'error');
       return;
     }
 
-    const instances = Array.isArray(watchlist?.instances) ? watchlist.instances : [];
     if (!instances.length) {
-      Utils.showToast('No active instances are assigned to this watchlist - assign one first', 'warning');
+      Utils.showToast(
+        isExplicit
+          ? 'No active instances are assigned to this strategy - manage its instances first'
+          : 'No active instances are assigned to this container - assign one first',
+        'warning'
+      );
       return;
     }
 
@@ -972,6 +1137,7 @@ class StrategyBuilder {
     const scaleInNote = allowScaleIn
       ? '<p class="text-sm" style="color: var(--color-warning, #d97706);">Allow Scale-In is on - instances where this leg is already open will get an <strong>additional</strong> order on top of it, not be skipped.</p>'
       : '<p class="text-neutral-600 text-sm">Instances where this leg is already open are skipped, not duplicated.</p>';
+    const scopeNote = isExplicit ? '<strong>this strategy\'s own</strong>' : 'all';
 
     const modal = document.createElement('div');
     modal.className = 'modal-overlay strategy-modal';
@@ -979,7 +1145,7 @@ class StrategyBuilder {
       <div class="modal-content" style="max-width: 420px;">
         <div class="modal-header"><h3>Enter Leg</h3></div>
         <div class="modal-body">
-          <p class="text-neutral-600 text-sm">This places a live order for just this leg against <strong>all ${instances.length} instance(s)</strong> assigned to this watchlist:</p>
+          <p class="text-neutral-600 text-sm">This places a live order for just this leg against ${scopeNote} <strong>${instances.length} instance(s)</strong>:</p>
           <ul style="margin: var(--space-2) 0; padding-left: var(--space-5);">${instanceList}</ul>
           ${scaleInNote}
         </div>
@@ -1022,17 +1188,16 @@ class StrategyBuilder {
       Utils.showToast('Exiting leg...', 'info');
       return this.submitExitLeg(legId, strategyId, watchlistId);
     }
-    let watchlist;
+    let instances, isExplicit;
     try {
-      const res = await api.getWatchlistById(watchlistId);
-      watchlist = res?.data;
+      ({ instances, isExplicit } = await this._resolveEffectiveInstances(strategyId, watchlistId));
     } catch (error) {
-      Utils.showToast('Failed to load watchlist instances', 'error');
+      Utils.showToast('Failed to load instances', 'error');
       return;
     }
 
-    const instances = Array.isArray(watchlist?.instances) ? watchlist.instances : [];
     const instanceList = instances.map((i) => `<li>${Utils.escapeHTML(i.name)}</li>`).join('');
+    const scopeNote = isExplicit ? '<strong>this strategy\'s own</strong>' : 'all';
 
     const modal = document.createElement('div');
     modal.className = 'modal-overlay strategy-modal';
@@ -1040,7 +1205,7 @@ class StrategyBuilder {
       <div class="modal-content" style="max-width: 420px;">
         <div class="modal-header"><h3>Exit Leg</h3></div>
         <div class="modal-body">
-          <p class="text-neutral-600 text-sm">This closes just this leg's open position across <strong>all ${instances.length} instance(s)</strong> assigned to this watchlist:</p>
+          <p class="text-neutral-600 text-sm">This closes just this leg's open position across ${scopeNote} <strong>${instances.length} instance(s)</strong>:</p>
           <ul style="margin: var(--space-2) 0; padding-left: var(--space-5);">${instanceList}</ul>
           <p class="text-neutral-600 text-sm">Instances with no open position for this leg are skipped.</p>
         </div>

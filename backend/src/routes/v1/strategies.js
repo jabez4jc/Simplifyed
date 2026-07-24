@@ -65,6 +65,41 @@ router.delete('/:id', requirePermission('watchlists.manage'), async (req, res, n
   }
 });
 
+// GET /api/v1/strategies/:id/instances - the strategy's own explicit instance assignment (empty
+// means it has none set and falls back to the container watchlist's instances at execute time).
+router.get('/:id/instances', requirePermission('pages.watchlists.view'), async (req, res, next) => {
+  try {
+    const instances = await strategyService.getStrategyInstances(req.params.id);
+    res.json({ status: 'success', data: instances });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// POST /api/v1/strategies/:id/instances
+router.post('/:id/instances', requirePermission('watchlists.instances.manage'), async (req, res, next) => {
+  try {
+    const { instanceId } = req.body;
+    if (!instanceId) {
+      throw new ValidationError('instanceId is required');
+    }
+    const assignment = await strategyService.assignStrategyInstance(req.params.id, instanceId);
+    res.status(201).json({ status: 'success', message: 'Instance assigned successfully', data: assignment });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// DELETE /api/v1/strategies/:id/instances/:instanceId
+router.delete('/:id/instances/:instanceId', requirePermission('watchlists.instances.manage'), async (req, res, next) => {
+  try {
+    await strategyService.unassignStrategyInstance(req.params.id, req.params.instanceId);
+    res.json({ status: 'success', message: 'Instance unassigned successfully' });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // POST /api/v1/strategies/:id/legs
 router.post('/:id/legs', requirePermission('watchlists.symbols.manage'), async (req, res, next) => {
   try {
@@ -111,9 +146,10 @@ router.get('/legs/:legId/preview', requirePermission('pages.watchlists.view'), a
 });
 
 // POST /api/v1/strategies/:id/execute
-// instanceId is optional - when omitted, targets every active, order-enabled instance assigned
-// to the strategy's watchlist (same broadcast convention as manual quick orders and TradingView
-// webhooks). Pass instanceId to override and target just one instance.
+// instanceId is optional - when omitted, targets the strategy's own assigned instances (see
+// GET/POST/DELETE :id/instances), or every active, order-enabled instance on the container
+// watchlist if the strategy has never had its own assignment set. Pass instanceId to override
+// and target just one instance.
 // legId is optional - when omitted, every leg is entered; pass it to enter just that leg.
 router.post('/:id/execute', requirePermission('orders.place'), async (req, res, next) => {
   try {
@@ -133,8 +169,8 @@ router.post('/:id/execute', requirePermission('orders.place'), async (req, res, 
 
 // POST /api/v1/strategies/:id/exit
 // Closes every still-open leg (per the strategy_leg_executions ledger executeStrategy writes to)
-// - same optional instanceId override / all-watchlist-instances default as /execute. legId is
-// optional - when omitted, every open leg is closed; pass it to close just that leg.
+// - same optional instanceId override / strategy-then-watchlist-fallback default as /execute.
+// legId is optional - when omitted, every open leg is closed; pass it to close just that leg.
 router.post('/:id/exit', requirePermission('orders.place'), async (req, res, next) => {
   try {
     const { instanceId, legId } = req.body;
