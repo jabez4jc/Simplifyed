@@ -75,6 +75,95 @@ class StrategyBuilder {
     }
   }
 
+  // Cross-watchlist aggregation for the top-level "Strategies" nav view — strategies otherwise
+  // only surface when a user happens to expand the specific Strategy-type watchlist that owns
+  // them, so there was no way to see "what strategies do I have" without opening every watchlist.
+  async loadAllStrategies() {
+    const watchlistsRes = await api.getWatchlists();
+    const watchlists = Array.isArray(watchlistsRes?.data) ? watchlistsRes.data : [];
+    const strategyWatchlists = watchlists.filter((wl) => (wl.type || '').toLowerCase() === 'strategy');
+
+    const groups = await Promise.all(
+      strategyWatchlists.map(async (watchlist) => ({
+        watchlist,
+        strategies: await this.loadStrategies(watchlist.id),
+      }))
+    );
+    return groups.filter((g) => g.strategies.length > 0);
+  }
+
+  // Finds (or lazily creates) the container that strategies are stored under. Strategies are
+  // backed by strategies.watchlist_id in the DB - that FK is how instance-assignment and webhook
+  // resolution already work (see strategy.service.js), so this keeps that data model but hides
+  // it: a user on the Strategies page never has to think about "watchlists" to get a container.
+  async ensureDefaultStrategyWatchlist() {
+    const watchlistsRes = await api.getWatchlists();
+    const watchlists = Array.isArray(watchlistsRes?.data) ? watchlistsRes.data : [];
+    const existing = watchlists.find((wl) => (wl.type || '').toLowerCase() === 'strategy');
+    if (existing) return existing;
+    const created = await api.createWatchlist({ name: 'Strategies', type: 'strategy' });
+    return created?.data;
+  }
+
+  async showCreateStrategyModalStandalone() {
+    try {
+      const container = await this.ensureDefaultStrategyWatchlist();
+      await this.showCreateStrategyModal(container.id);
+    } catch (error) {
+      Utils.showToast(error.message || 'Failed to prepare strategy container', 'error');
+    }
+  }
+
+  async renderOverviewList() {
+    const groups = await this.loadAllStrategies();
+
+    const header = `
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="text-xl font-semibold">Strategies</h2>
+          <p class="text-sm text-neutral-500">Multi-leg entries, manual or TradingView webhook triggered, across every broker account.</p>
+        </div>
+        <button class="btn btn-buy btn-sm" onclick="strategyBuilder.showCreateStrategyModalStandalone()">
+          + New Strategy
+        </button>
+      </div>
+    `;
+
+    if (groups.length === 0) {
+      return `
+        ${header}
+        <div class="card">
+          <div class="p-6 text-center space-y-2">
+            <h3 class="text-lg font-semibold">No strategies yet</h3>
+            <p class="text-sm text-neutral-600">Define a multi-leg entry (e.g. a short straddle) with a manual or TradingView webhook trigger.</p>
+            <button class="btn btn-buy btn-sm" onclick="strategyBuilder.showCreateStrategyModalStandalone()">+ New Strategy</button>
+          </div>
+        </div>
+      `;
+    }
+
+    const groupsHtml = groups.map(({ watchlist, strategies }) => `
+      <div class="card mb-4">
+        <div class="card-header">
+          <h3 class="card-title">${Utils.escapeHTML(watchlist.name)}</h3>
+          <div class="flex gap-2">
+            <button class="btn btn-neutral btn-outline btn-sm" onclick="app.manageWatchlistInstances(${watchlist.id})">
+              Instances (${watchlist.instance_count || 0})
+            </button>
+            <button class="btn btn-buy btn-sm" onclick="strategyBuilder.showCreateStrategyModal(${watchlist.id})">
+              + New Strategy
+            </button>
+          </div>
+        </div>
+        <div class="strategies-section__list p-2">
+          ${strategies.map((s) => this._renderStrategyRow(watchlist.id, s)).join('')}
+        </div>
+      </div>
+    `).join('');
+
+    return `${header}${groupsHtml}`;
+  }
+
   async renderStrategiesSection(watchlistId) {
     const strategies = await this.loadStrategies(watchlistId);
 
@@ -352,8 +441,14 @@ class StrategyBuilder {
 
   async refreshSection(watchlistId) {
     const container = document.getElementById(`strategies-section-${watchlistId}`);
-    if (!container) return;
-    container.outerHTML = await this.renderStrategiesSection(watchlistId);
+    if (container) {
+      container.outerHTML = await this.renderStrategiesSection(watchlistId);
+      return;
+    }
+    // Standalone Strategies overview page has no per-watchlist wrapper - re-render the whole view.
+    if (app.currentView === 'strategies') {
+      await app.renderStrategiesOverviewView();
+    }
   }
 
   async showCreateStrategyModal(watchlistId) {

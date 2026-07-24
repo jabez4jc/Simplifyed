@@ -557,8 +557,13 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       // Close modal (no dirty-check - the save just succeeded)
       Utils.closeModal(document.querySelector('.modal-overlay'), { checkDirty: false });
 
-      // Refresh view
-      await this.renderWatchlistsView();
+      // Refresh view - reused from the standalone Strategies page too, which has no
+      // Watchlists DOM to render into.
+      if (this.currentView === 'strategies') {
+        await this.renderStrategiesOverviewView();
+      } else {
+        await this.renderWatchlistsView();
+      }
     } catch (error) {
       Utils.showToast(error.message, 'error');
     }

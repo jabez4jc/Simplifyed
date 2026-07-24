@@ -34,7 +34,7 @@ class DashboardApp {
     this.watchlistQuoteSnapshots = new Map();
     this.isSidebarCollapsed = false;
     this.quickOrder = window.quickOrder || null;
-    this.validViews = ['dashboard', 'instances', 'watchlists', 'orders', 'trades', 'positions', 'daily-pnl-snapshots', 'settings', 'notifications', 'audit', 'api-playground'];
+    this.validViews = ['dashboard', 'instances', 'watchlists', 'strategies', 'orders', 'trades', 'positions', 'daily-pnl-snapshots', 'settings', 'notifications', 'audit', 'api-playground'];
     this.suppressHashChange = false;
     this._throttledWatchlistRefresh = Utils.throttle((opts = {}) => {
       this.refreshWatchlistPositions(opts);
@@ -90,6 +90,7 @@ class DashboardApp {
       dashboard: 'pages.dashboard.view',
       instances: 'pages.instances.view',
       watchlists: 'pages.watchlists.view',
+      strategies: 'pages.watchlists.view',
       orders: 'pages.orders.view',
       trades: 'pages.trades.view',
       positions: 'pages.positions.view',
@@ -795,6 +796,7 @@ class DashboardApp {
       dashboard: 'Dashboard',
       instances: 'Instances',
       watchlists: 'Watchlists',
+      strategies: 'Strategies',
       orders: 'Orders',
       trades: 'Trades',
       positions: 'Positions',
@@ -824,6 +826,9 @@ class DashboardApp {
         case 'watchlists':
           await this.renderWatchlistsView();
           this.startSnapshotResync('watchlists');
+          break;
+        case 'strategies':
+          await this.renderStrategiesOverviewView();
           break;
         case 'orders':
           await this.renderOrdersView();

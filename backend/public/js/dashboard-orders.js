@@ -110,7 +110,12 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       console.error('Failed to load orders:', error);
       const panel = document.getElementById('orders-panel');
       if (panel) {
-        panel.innerHTML = `<p class="text-error text-center">${error.message}</p>`;
+        panel.innerHTML = `
+          <div class="text-center space-y-2 py-4">
+            <p class="text-error">${Utils.escapeHTML(error.message || 'Failed to load orders')}</p>
+            <button class="btn btn-neutral btn-outline btn-sm" onclick="app.loadOrders(app.currentOrderFilter, { refresh: true })">Retry</button>
+          </div>
+        `;
       }
     }
   }
@@ -127,7 +132,12 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       const response = await api.getOrders(filters);
       this.renderOrderHistoryTable(response.data || []);
     } catch (error) {
-      panel.innerHTML = `<p class="text-error text-center">${error.message}</p>`;
+      panel.innerHTML = `
+        <div class="text-center space-y-2 py-4">
+          <p class="text-error">${Utils.escapeHTML(error.message || 'Failed to load order history')}</p>
+          <button class="btn btn-neutral btn-outline btn-sm" onclick="app.loadOrderHistory()">Retry</button>
+        </div>
+      `;
     }
   }
 
@@ -193,7 +203,12 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       const response = await api.getQuickOrders(filters);
       this.renderQuickOrdersTable(response.data || []);
     } catch (error) {
-      panel.innerHTML = `<p class="text-error text-center">${error.message}</p>`;
+      panel.innerHTML = `
+        <div class="text-center space-y-2 py-4">
+          <p class="text-error">${Utils.escapeHTML(error.message || 'Failed to load quick orders')}</p>
+          <button class="btn btn-neutral btn-outline btn-sm" onclick="app.loadQuickOrdersHistory()">Retry</button>
+        </div>
+      `;
     }
   }
 

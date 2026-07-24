@@ -74,7 +74,10 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     } catch (error) {
       contentArea.innerHTML = `
         <div class="card">
-          <p class="text-center text-error-600">Failed to load positions: ${error.message}</p>
+          <div class="p-4 text-center space-y-2">
+            <p class="text-error">${Utils.escapeHTML(error.message || 'Failed to load positions')}</p>
+            <button class="btn btn-neutral btn-outline btn-sm" onclick="app.renderPositionsView()">Retry</button>
+          </div>
         </div>
       `;
     }

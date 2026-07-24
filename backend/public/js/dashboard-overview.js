@@ -81,34 +81,71 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       stale: telemetrySnapshot.staleCaches,
     };
 
+    const telemetryHealthy = telemetrySnapshot.openCircuits === 0 && telemetrySnapshot.staleCaches === 0;
     const telemetryCards = `
-      <div class="flex flex-nowrap gap-3 mb-4 overflow-x-auto">
-        <div class="stat-card min-w-[240px]" id="telemetry-card-circuits">
-          <div class="stat-label">Circuits Open</div>
-          <div class="stat-value" id="telemetry-circuits">${telemetrySnapshot.openCircuits}</div>
-          <div class="stat-subtext text-xs text-neutral-500">Feeds paused due to failures</div>
+      <details class="card mb-6" id="telemetry-health-details">
+        <summary class="card-header cursor-pointer select-none flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full ${telemetryHealthy ? 'bg-success' : 'bg-warning'}" id="telemetry-health-dot"></span>
+          <h3 class="card-title">System Health</h3>
+          <span class="text-xs text-neutral-500 ml-auto" id="telemetry-health-summary">
+            ${telemetryHealthy ? 'All feeds nominal' : `${telemetrySnapshot.openCircuits} circuit(s) open, ${telemetrySnapshot.staleCaches} stale cache(s)`}
+          </span>
+        </summary>
+        <div class="flex flex-nowrap gap-3 p-4 overflow-x-auto">
+          <div class="stat-card min-w-[240px]" id="telemetry-card-circuits">
+            <div class="stat-label">Circuits Open</div>
+            <div class="stat-value" id="telemetry-circuits">${telemetrySnapshot.openCircuits}</div>
+            <div class="stat-subtext text-xs text-neutral-500">Feeds paused due to failures</div>
+          </div>
+          <div class="stat-card min-w-[240px]" id="telemetry-card-stale">
+            <div class="stat-label">Stale Caches</div>
+            <div class="stat-value" id="telemetry-stale">${telemetrySnapshot.staleCaches}</div>
+            <div class="stat-subtext text-xs text-neutral-500">Quotes/positions beyond TTL</div>
+          </div>
+          <div class="stat-card min-w-[240px]">
+            <div class="stat-label">Orders/sec Headroom</div>
+            <div class="stat-value" id="telemetry-orders-headroom">${telemetrySnapshot.minOrdersRemaining ?? 'n/a'}</div>
+            <div class="stat-subtext text-xs text-neutral-500">Lowest remaining across instances</div>
+          </div>
+          <div class="stat-card min-w-[240px]">
+            <div class="stat-label">RPS Headroom</div>
+            <div class="stat-value" id="telemetry-rps-headroom">${telemetrySnapshot.minRpsRemaining ?? 'n/a'}</div>
+            <div class="stat-subtext text-xs text-neutral-500">Lowest remaining across instances</div>
+          </div>
         </div>
-        <div class="stat-card min-w-[240px]" id="telemetry-card-stale">
-          <div class="stat-label">Stale Caches</div>
-          <div class="stat-value" id="telemetry-stale">${telemetrySnapshot.staleCaches}</div>
-          <div class="stat-subtext text-xs text-neutral-500">Quotes/positions beyond TTL</div>
+      </details>
+    `;
+
+    const activeInstances = this.instances.filter(i => i.is_active);
+    const liveCount = activeInstances.filter(i => !i.is_analyzer_mode).length;
+    const analyzerCount = activeInstances.filter(i => i.is_analyzer_mode).length;
+    const instancesSummary = `
+      <div class="card mb-6">
+        <div class="card-header">
+          <h3 class="card-title">Instances</h3>
+          <button class="btn btn-neutral btn-outline btn-sm" onclick="app.switchView('instances')">
+            Manage Instances →
+          </button>
         </div>
-        <div class="stat-card min-w-[240px]">
-          <div class="stat-label">Orders/sec Headroom</div>
-          <div class="stat-value" id="telemetry-orders-headroom">${telemetrySnapshot.minOrdersRemaining ?? 'n/a'}</div>
-          <div class="stat-subtext text-xs text-neutral-500">Lowest remaining across instances</div>
-        </div>
-        <div class="stat-card min-w-[240px]">
-          <div class="stat-label">RPS Headroom</div>
-          <div class="stat-value" id="telemetry-rps-headroom">${telemetrySnapshot.minRpsRemaining ?? 'n/a'}</div>
-          <div class="stat-subtext text-xs text-neutral-500">Lowest remaining across instances</div>
+        <div class="stats-grid stats-grid-centered">
+          <div class="stat-card">
+            <div class="stat-label">Active</div>
+            <div class="stat-value">${activeInstances.length}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Live</div>
+            <div class="stat-value">${liveCount}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Analyzer</div>
+            <div class="stat-value">${analyzerCount}</div>
+          </div>
         </div>
       </div>
     `;
 
-    // Render
+    // Render — trading KPIs first, infra/account telemetry demoted below
     contentArea.innerHTML = `
-      ${telemetryCards}
       <!-- Live Mode Stats (Primary) -->
       <div class="mb-4">
         <div class="flex items-center mb-2">
@@ -194,18 +231,8 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         </div>
       ` : ''}
 
-      <!-- Instances Table -->
-      <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">Active Instances</h3>
-          <button class="btn btn-buy btn-sm" onclick="app.showAddInstanceModal()">
-            + Add Instance
-          </button>
-        </div>
-        <div class="table-container">
-          ${this.renderInstancesTable(this.instances)}
-        </div>
-      </div>
+      ${instancesSummary}
+      ${telemetryCards}
     `;
 
     this.applyTelemetrySnapshot(telemetrySnapshot);
@@ -324,6 +351,19 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       cardStale.classList.toggle('bg-error/10', snapshot.staleCaches > 0);
       cardStale.classList.toggle('border-error', snapshot.staleCaches > 0);
       cardStale.querySelector('.stat-value')?.classList.toggle('text-error', snapshot.staleCaches > 0);
+    }
+
+    const healthy = snapshot.openCircuits === 0 && snapshot.staleCaches === 0;
+    const healthDot = document.getElementById('telemetry-health-dot');
+    if (healthDot) {
+      healthDot.classList.toggle('bg-success', healthy);
+      healthDot.classList.toggle('bg-warning', !healthy);
+    }
+    const healthSummary = document.getElementById('telemetry-health-summary');
+    if (healthSummary) {
+      healthSummary.textContent = healthy
+        ? 'All feeds nominal'
+        : `${snapshot.openCircuits} circuit(s) open, ${snapshot.staleCaches} stale cache(s)`;
     }
   }
 

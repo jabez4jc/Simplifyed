@@ -395,4 +395,27 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       }
     }
   }
+
+  /**
+   * Strategies overview (cross-watchlist) - see strategy-builder.js's loadAllStrategies/
+   * renderOverviewList for why this exists: strategies previously only surfaced when a user
+   * happened to expand the specific Strategy-type watchlist that owned them.
+   */
+  async renderStrategiesOverviewView() {
+    const contentArea = document.getElementById('content-area');
+    try {
+      contentArea.innerHTML = await strategyBuilder.renderOverviewList();
+    } catch (error) {
+      console.error('Failed to load strategies overview:', error);
+      contentArea.innerHTML = `
+        <div class="card">
+          <div class="p-4 space-y-2">
+            <h3 class="text-lg font-semibold text-loss">Unable to load strategies</h3>
+            <p class="text-sm text-neutral-600">${Utils.escapeHTML(error?.message || 'Network error')}</p>
+            <button class="btn btn-buy btn-sm" onclick="app.switchView('strategies', { forceReload: true })">Retry</button>
+          </div>
+        </div>
+      `;
+    }
+  }
 }.prototype));

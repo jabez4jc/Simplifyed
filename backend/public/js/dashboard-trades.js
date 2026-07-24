@@ -77,12 +77,19 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       this.renderTradesPanel(normalized);
       this.updateTradesLastUpdatedDisplay(this.tradesLastUpdatedAt);
     } catch (error) {
-      const panel = document.getElementById('trades-panel');
-      if (panel) {
-        panel.innerHTML = `<p class="text-center text-error-600">${Utils.escapeHTML(error.message)}</p>`;
-      }
       if (!isAuto) {
-        Utils.showToast(`Failed to load trades: ${error.message}`, 'error');
+        // Manual load/refresh: no prior data on screen to protect, show a retry card.
+        if (panel) {
+          panel.innerHTML = `
+            <div class="text-center space-y-2 py-4">
+              <p class="text-error">${Utils.escapeHTML(error.message || 'Failed to load trades')}</p>
+              <button class="btn btn-neutral btn-outline btn-sm" onclick="app.loadTrades()">Retry</button>
+            </div>
+          `;
+        }
+      } else {
+        // Background poll failure: leave the last-good trades table on screen, just toast.
+        Utils.showToast(`Failed to refresh trades: ${error.message}`, 'error');
       }
     }
   }
