@@ -5,6 +5,7 @@
 
 import { WebSocketServer } from 'ws';
 import marketDataFeedService from './market-data-feed.service.js';
+import openalgoWsService from './openalgo-ws.service.js';
 import { log } from '../core/logger.js';
 
 class WSGatewayService {
@@ -72,6 +73,10 @@ class WSGatewayService {
     marketDataFeedService.on('quotes:update', (payload) => this.broadcast('quotes:update', payload));
     marketDataFeedService.on('positions:update', (payload) => this.broadcast('positions:update', payload));
     marketDataFeedService.on('funds:update', (payload) => this.broadcast('funds:update', payload));
+    // Relays openalgo-ws.service.js's server-to-broker order-update stream on to the browser, so
+    // the frontend can confirm an ambiguous order-placement response from the push feed directly
+    // instead of a REST round-trip (see quick-order-place.js's WS fuzzy-check).
+    openalgoWsService.on('order_update', (payload) => this.broadcast('order_update', payload));
   }
 
   _nextSeq() {

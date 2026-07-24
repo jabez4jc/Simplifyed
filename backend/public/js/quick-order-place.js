@@ -4,6 +4,17 @@
 
 const QUICK_ORDER_QUICK_TRADE_MODE_KEY = 'quickOrderQuickTradeMode';
 
+// Only actions whose broker-side direction is knowable without checking the existing position
+// (or operatingMode for options) - EXIT/EXIT_ALL/REDUCE_*/INCREASE_*/CLOSE_ALL_* depend on
+// context this function doesn't have, so they're deliberately not mapped here and skip the WS
+// fuzzy pre-check below rather than risk a wrong side guess.
+function resolveSimpleOrderSide(action) {
+  const a = (action || '').toUpperCase();
+  if (a === 'BUY' || a === 'BUY_CE' || a === 'BUY_PE' || a === 'COVER') return 'BUY';
+  if (a === 'SELL' || a === 'SELL_CE' || a === 'SELL_PE' || a === 'SHORT') return 'SELL';
+  return null;
+}
+
 Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescriptors(class {
   // Off by default - a confirm dialog stays the safe default before a live order fires; a
   // trader opts into skipping it once they've verified their setup (mirrors strategy-builder.js).
@@ -112,23 +123,60 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
         btn.textContent = 'Placing...';
       });
 
-      // ponytail: no auto-retry on a lost/5xx response - we can't tell "order never reached the
-      // broker" apart from "order went through but the response was lost," so a silent retry
-      // risks placing a second live order. Surface it instead and let the trader check the order
-      // book before deciding to retry by hand.
+      // A lost/5xx response on the FIRST attempt is genuinely ambiguous (did the broker see it or
+      // not?) - but request_id makes a same-payload RETRY safe regardless: the backend's
+      // idempotency layer (idempotency_keys table) returns the original result if the first
+      // attempt actually landed, instead of placing a second live order. One retry only, after a
+      // short pause - if that's also ambiguous, stop and tell the trader rather than looping.
+      const requestId = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `qo-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      orderData.request_id = requestId;
+
       let response;
       try {
         response = await api.placeQuickOrder(orderData);
       } catch (err) {
         const status = err?.status ?? 0;
         if (status === 0 || status >= 500) {
-          Utils.showToast(
-            `Order status unknown (${err.message}). Check the order book before retrying - do not resubmit blindly.`,
-            'error'
-          );
-          return;
+          // Fast path: check the order-update push feed before falling back to a REST retry -
+          // advisory only (fuzzy match, no orderid to key off since that's exactly what the lost
+          // response would have told us), so a miss or an ambiguous action just falls through to
+          // the REST idempotent retry below, unchanged from before.
+          const side = resolveSimpleOrderSide(action);
+          if (side) {
+            const wsMatch = await app.waitForOrderUpdateMatch({ symbol, exchange, side, quantity }, 1500);
+            if (wsMatch) {
+              const filled = wsMatch.order?.filled_quantity || quantity;
+              Utils.showToast(`Order confirmed via broker feed (${filled} filled) - no retry needed`, 'success');
+              return;
+            }
+          }
+
+          await new Promise((resolve) => setTimeout(resolve, 800));
+          try {
+            response = await api.placeQuickOrder(orderData); // same request_id - idempotency-safe
+          } catch (retryErr) {
+            const retryStatus = retryErr?.status ?? 0;
+            if (retryStatus === 409) {
+              Utils.showToast(
+                'Order request already submitted or still processing. Check the order book before placing again.',
+                'warning'
+              );
+              return;
+            }
+            if (retryStatus === 0 || retryStatus >= 500) {
+              Utils.showToast(
+                `Order status still unknown after retry (${retryErr.message}). Check the order book before placing again - do not resubmit blindly.`,
+                'error'
+              );
+              return;
+            }
+            throw retryErr;
+          }
+        } else {
+          throw err;
         }
-        throw err;
       }
 
       if (response && response.data && response.data.summary) {

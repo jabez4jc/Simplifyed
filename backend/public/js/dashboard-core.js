@@ -74,13 +74,18 @@ class DashboardApp {
     // WebSocket streaming (optional)
     this.wsGatewayEnabled = false;
     this.wsGatewayPath = '/stream';
-    this.wsTopics = ['quotes:update', 'positions:update', 'funds:update'];
+    this.wsTopics = ['quotes:update', 'positions:update', 'funds:update', 'order_update'];
     this.useWsGateway = this.loadWsPreference();
     this.ws = null;
     this.wsConnected = false;
     this.wsLastSeq = 0;
     this.wsReconnectDelay = 500;
     this.wsReconnectTimer = null;
+    // Recent order_update events (bounded ring buffer) + pending fuzzy-match waiters - see
+    // waitForOrderUpdateMatch(), used by quick-order-place.js to confirm an ambiguous
+    // order-placement response from the broker's push feed instead of a REST round-trip.
+    this.recentOrderUpdates = [];
+    this.orderUpdateWaiters = [];
     this.wsRefreshDashboard = Utils.debounce(() => this.renderDashboardView(), 1200);
     this.wsRefreshPositions = Utils.debounce(() => this.renderPositionsView(), 1200);
     this.wsRefreshWatchlists = Utils.debounce(() => this._throttledWatchlistRefresh({ showLoader: false }), 800);
@@ -596,9 +601,64 @@ class DashboardApp {
         }
         break;
       }
+      case 'order_update': {
+        this._recordOrderUpdate(msg.payload || {});
+        break;
+      }
       default:
         break;
     }
+  }
+
+  _recordOrderUpdate(payload) {
+    const entry = { ...payload, receivedAt: Date.now() };
+    this.recentOrderUpdates.push(entry);
+    if (this.recentOrderUpdates.length > 200) {
+      this.recentOrderUpdates.shift();
+    }
+    this.orderUpdateWaiters = this.orderUpdateWaiters.filter((waiter) => {
+      if (!this._orderUpdateMatches(entry, waiter.criteria)) return true;
+      clearTimeout(waiter.timer);
+      waiter.resolve(entry);
+      return false;
+    });
+  }
+
+  _orderUpdateMatches(entry, criteria) {
+    const order = entry?.order || {};
+    if ((order.order_status || '').toLowerCase() !== 'complete') return false;
+    if ((order.symbol || '').toUpperCase() !== (criteria.symbol || '').toUpperCase()) return false;
+    if (criteria.exchange && (order.exchange || '').toUpperCase() !== criteria.exchange.toUpperCase()) return false;
+    if (criteria.side && (order.action || '').toUpperCase() !== criteria.side.toUpperCase()) return false;
+    const filledQty = Number(order.filled_quantity) || 0;
+    if (criteria.quantity && filledQty < Number(criteria.quantity)) return false;
+    return true;
+  }
+
+  /**
+   * Advisory-only fuzzy match against the order-update push stream: symbol + exchange + side +
+   * quantity, NOT an exact order-id match (we don't have one - this exists for the case where we
+   * never learned the orderid because the placement response itself was lost). A false miss just
+   * means the caller falls back to its own safe path (e.g. the idempotent REST retry in
+   * quick-order-place.js) - never treat a match here as a substitute for that fallback's
+   * guarantees, only as a faster way to skip it when the broker feed already answered.
+   * Resolves null immediately if the WS gateway isn't connected - nothing to check against.
+   */
+  waitForOrderUpdateMatch(criteria, timeoutMs = 1500) {
+    if (!this.wsConnected) return Promise.resolve(null);
+
+    const already = this.recentOrderUpdates.find(
+      (entry) => Date.now() - entry.receivedAt < timeoutMs && this._orderUpdateMatches(entry, criteria)
+    );
+    if (already) return Promise.resolve(already);
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.orderUpdateWaiters = this.orderUpdateWaiters.filter((w) => w.timer !== timer);
+        resolve(null);
+      }, timeoutMs);
+      this.orderUpdateWaiters.push({ criteria, resolve, timer });
+    });
   }
 
   toggleStreamPreference() {
