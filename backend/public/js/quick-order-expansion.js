@@ -65,9 +65,10 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
     const symbolType = capabilities.symbolType || (symbolRow.querySelector('.badge')?.textContent.trim() || 'UNKNOWN');
     const derivativeExchange = this.getDerivativeExchange(exchange, symbolType);
 
-    // Warm futures/options expiries cache
+    // Warm futures/options expiries cache - skip when the symbol is itself the tradable
+    // contract (dated future or perpetual), same as loadExpansionContent below
     const instrumentTypes = [];
-    if (capabilities.futures) instrumentTypes.push('FUT');
+    if (capabilities.futures && symbolType !== 'FUTURES') instrumentTypes.push('FUT');
     if (capabilities.options) instrumentTypes.push('CE,PE');
 
     let expiries = [];
@@ -184,7 +185,12 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
         expiryUnderlying = symbol;
       }
 
-      if (tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') {
+      if (tradeMode === 'FUTURES' && symbolType === 'FUTURES') {
+        // The watchlist symbol is itself the tradable contract (a dated future or a
+        // perpetual like crypto PERPFUT) - there's no separate expiry-dated series to
+        // pick from, so skip the expiry lookup entirely.
+        this.availableExpiries.set(symbolId, expiries);
+      } else if (tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') {
         // Use NFO exchange for derivatives (futures/options)
         // INDEX and EQUITY symbols need to use NFO/BFO for their derivatives
         const derivativeExchange = this.getDerivativeExchange(exchange, symbolType);

@@ -335,11 +335,12 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
       return;
     }
 
-    const expiry = this.selectedExpiries.get(symbolId);
-    if (!expiry) {
-      container.innerHTML = '<p class="text-sm text-warning">Select an expiry to view the futures quote.</p>';
-      return;
-    }
+    // No client-side expiry gate here: a watchlist symbol that's already itself the
+    // tradable contract (dated future or crypto perpetual) has no expiry to select, and
+    // the backend resolves that case directly from the anchor symbol. If an expiry is
+    // genuinely required (INDEX/EQUITY underlying), the backend returns a clear error
+    // that renders in the catch block below.
+    const expiry = this.selectedExpiries.get(symbolId) || null;
 
     const requestId = (this.futuresPreviewRequestIds.get(symbolId) || 0) + 1;
     this.futuresPreviewRequestIds.set(symbolId, requestId);

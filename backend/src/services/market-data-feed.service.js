@@ -24,6 +24,7 @@ import openalgoWsService from './openalgo-ws.service.js';
 import { isGeneralEndpointBlackout, isQuoteEndpointBlackout } from './instance-health.service.js';
 import marketCalendarService from './market-calendar.service.js';
 import marketDataCircuitBreakerService from './market-data-circuit-breaker.service.js';
+import { isCryptoExchange } from '../utils/broker-type.util.js';
 
 const DEFAULT_QUOTE_INTERVAL = 5000;               // 5 seconds for quote refresh (WS primary; REST uses TTL)
 const DEFAULT_QUOTE_TTL_IDLE_MS = 15000;
@@ -570,7 +571,7 @@ class MarketDataFeedService extends EventEmitter {
       return null;
     }
 
-    if (isQuoteEndpointBlackout()) {
+    if (!isCryptoExchange(exchange) && isQuoteEndpointBlackout()) {
       const cached = this.getCachedDepthEntry(exchange, symbol, staleMs);
       if (cached) {
         const { bid, ask } = this._extractBestBidAskFromDepth(cached.depth);
@@ -748,7 +749,11 @@ class MarketDataFeedService extends EventEmitter {
     const unique = this._dedupeSymbols(symbols);
     if (unique.length === 0) return [];
 
-    if (isQuoteEndpointBlackout()) {
+    // Skip the blackout-driven cache-only fallback when the whole batch is crypto (trades
+    // 24/7, no Indian market hours to pause for). A mixed Indian+crypto batch still falls
+    // back to cache to preserve the existing pause behavior for the Indian symbols in it.
+    const allCrypto = unique.every((s) => isCryptoExchange(s.exchange));
+    if (!allCrypto && isQuoteEndpointBlackout()) {
       const { cached } = this.getCachedQuotesForSymbols(unique, { ttlMs, orderCritical });
       return cached;
     }
@@ -1816,7 +1821,9 @@ class MarketDataFeedService extends EventEmitter {
       throw new Error(`Market closed for ${exchange}:${symbol}`);
     }
 
-    if (isQuoteEndpointBlackout()) {
+    // The quote-blackout window pauses Indian broker API traffic outside NSE/BSE hours -
+    // crypto trades 24/7 and already passed the exchangeOpen check above, so it's exempt.
+    if (!isCryptoExchange(exchange) && isQuoteEndpointBlackout()) {
       throw new Error('Market closed for quotes (02:00-08:45 IST)');
     }
 

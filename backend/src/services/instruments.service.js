@@ -13,6 +13,8 @@ import { ValidationError } from '../core/errors.js';
 import { config } from '../core/config.js';
 import { toISTDate } from '../utils/time.js';
 import { toISTISOString } from '../utils/time.js';
+import cron from 'node-cron';
+import { isCryptoBroker } from '../utils/broker-type.util.js';
 
 const MONTH_ABBR_TO_NUMBER = {
   JAN: '01', FEB: '02', MAR: '03', APR: '04',
@@ -41,7 +43,57 @@ const SUPPORTED_EXCHANGES = [
   'BSE_INDEX'
 ];
 
+const CRYPTO_EXCHANGES = ['CRYPTO'];
+
+/**
+ * Resolve which exchange segments to query for a given instance, based on its broker.
+ * @param {Object} instance - Instance row (needs .broker)
+ * @returns {string[]}
+ */
+function getExchangesForInstance(instance) {
+  return isCryptoBroker(instance?.broker) ? CRYPTO_EXCHANGES : SUPPORTED_EXCHANGES;
+}
+
 class InstrumentsService {
+  constructor() {
+    this.cryptoRefreshCron = null;
+  }
+
+  /**
+   * Schedule a daily refresh of crypto instrument symbols at 17:31 IST. Delta Exchange rolls
+   * new daily/weekly options and expiries around this time - without a refresh, newly-listed
+   * contracts (e.g. a new day's options) are simply missing from the cache until someone
+   * manually re-syncs. Indian exchanges already get a daily refresh via the first-login
+   * middleware; crypto trades 24/7 on its own listing schedule so it needs its own trigger.
+   */
+  startCryptoDailyRefresh() {
+    if (this.cryptoRefreshCron) return;
+    this.cryptoRefreshCron = cron.schedule('31 17 * * *', () => this._refreshCryptoInstruments(), {
+      timezone: 'Asia/Kolkata',
+    });
+    log.info('Crypto instruments daily refresh cron scheduled (17:31 IST)');
+  }
+
+  async _refreshCryptoInstruments() {
+    try {
+      const instances = await instanceService.getAllInstances({ is_active: true });
+      const cryptoInstances = instances.filter((inst) => isCryptoBroker(inst.broker));
+      for (const inst of cryptoInstances) {
+        try {
+          const result = await this.fetchFromInstance(inst.id);
+          log.info('Daily crypto instruments refresh completed', {
+            instance_id: inst.id,
+            count: result.finalCount,
+          });
+        } catch (error) {
+          log.error('Daily crypto instruments refresh failed', error, { instance_id: inst.id });
+        }
+      }
+    } catch (error) {
+      log.error('Daily crypto instruments refresh: failed to list instances', error);
+    }
+  }
+
   /**
    * Check if instruments need to be refreshed
    * Refresh is needed if:
@@ -186,12 +238,13 @@ class InstrumentsService {
         // Single exchange
         instruments = await openalgoClient.getInstruments(instance, exchange);
       } else {
-        // All exchanges - fetch from each and combine
+        // All exchanges for this instance's broker - fetch from each and combine
+        const exchanges = getExchangesForInstance(instance);
         log.info('Fetching instruments from all exchanges', {
-          exchanges: SUPPORTED_EXCHANGES
+          exchanges
         });
 
-        for (const ex of SUPPORTED_EXCHANGES) {
+        for (const ex of exchanges) {
           try {
             const exInstruments = await openalgoClient.getInstruments(instance, ex);
             if (exInstruments && exInstruments.length > 0) {
@@ -218,13 +271,17 @@ class InstrumentsService {
 
       // Store instruments in database (in transaction for atomicity)
       await db.transaction(async () => {
-        // Delete existing instruments for this exchange
+        // Delete existing instruments for the exchange(s) being refreshed only -
+        // never wipe exchanges outside this instance's broker (e.g. a crypto instance
+        // refresh must not delete cached Indian broker instruments, and vice versa)
         if (exchange) {
           await db.run('DELETE FROM instruments WHERE exchange = ?', [exchange]);
           log.debug('Cleared existing instruments for exchange', { exchange });
         } else {
-          await db.run('DELETE FROM instruments');
-          log.debug('Cleared all existing instruments');
+          const exchanges = getExchangesForInstance(instance);
+          const placeholders = exchanges.map(() => '?').join(', ');
+          await db.run(`DELETE FROM instruments WHERE exchange IN (${placeholders})`, exchanges);
+          log.debug('Cleared existing instruments for exchanges', { exchanges });
         }
 
         // Batch insert instruments (SQLite max 999 parameters, each instrument has 12 fields)
@@ -1160,9 +1217,14 @@ class InstrumentsService {
       let totalInstruments = 0;
       const exchangeStats = {};
 
-      // Clear existing instruments
-      log.info('Clearing existing instruments');
-      await db.run('DELETE FROM instruments');
+      // Resolve which exchange segments belong to this instance's broker (Indian vs crypto)
+      // and only clear those - a crypto instance sync must not wipe cached Indian broker
+      // instruments (and an Indian broker sync must not wipe cached crypto instruments)
+      const exchanges = getExchangesForInstance(instance);
+
+      log.info('Clearing existing instruments for exchanges', { exchanges });
+      const clearPlaceholders = exchanges.map(() => '?').join(', ');
+      await db.run(`DELETE FROM instruments WHERE exchange IN (${clearPlaceholders})`, exchanges);
 
       // Notify progress callback
       if (onProgress) {
@@ -1176,7 +1238,7 @@ class InstrumentsService {
       }
 
       // Fetch from each exchange
-      for (const exchange of SUPPORTED_EXCHANGES) {
+      for (const exchange of exchanges) {
         try {
           log.info(`Fetching instruments for exchange: ${exchange}`);
 
@@ -1309,7 +1371,7 @@ class InstrumentsService {
           status: 'rebuilding',
           message: 'Rebuilding search index...',
           currentExchange: null,
-          completedExchanges: SUPPORTED_EXCHANGES,
+          completedExchanges: exchanges,
           totalInstruments
         });
       }
@@ -1326,7 +1388,7 @@ class InstrumentsService {
           status: 'completed',
           message: 'All instruments fetched successfully!',
           currentExchange: null,
-          completedExchanges: SUPPORTED_EXCHANGES,
+          completedExchanges: exchanges,
           totalInstruments
         });
       }
@@ -1363,4 +1425,5 @@ class InstrumentsService {
 }
 
 export default new InstrumentsService();
-export { InstrumentsService, SUPPORTED_EXCHANGES };
+export { InstrumentsService, SUPPORTED_EXCHANGES, CRYPTO_EXCHANGES };
+export const ALL_EXCHANGES = [...SUPPORTED_EXCHANGES, ...CRYPTO_EXCHANGES];

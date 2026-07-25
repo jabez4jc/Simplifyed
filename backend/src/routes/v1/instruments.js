@@ -5,7 +5,7 @@
 
 import express from 'express';
 import multer from 'multer';
-import instrumentsService, { SUPPORTED_EXCHANGES } from '../../services/instruments.service.js';
+import instrumentsService, { SUPPORTED_EXCHANGES, ALL_EXCHANGES } from '../../services/instruments.service.js';
 import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
 import { toISTISOString } from '../../utils/time.js';
@@ -73,8 +73,8 @@ router.get('/search', async (req, res, next) => {
     let validatedExchange = null;
     if (exchange) {
       const upperExchange = sanitizeString(exchange).toUpperCase();
-      if (!SUPPORTED_EXCHANGES.includes(upperExchange)) {
-        throw new ValidationError(`Invalid exchange. Supported exchanges: ${SUPPORTED_EXCHANGES.join(', ')}`);
+      if (!ALL_EXCHANGES.includes(upperExchange)) {
+        throw new ValidationError(`Invalid exchange. Supported exchanges: ${ALL_EXCHANGES.join(', ')}`);
       }
       validatedExchange = upperExchange;
     }

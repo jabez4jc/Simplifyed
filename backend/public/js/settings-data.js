@@ -97,10 +97,10 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
               <div class="settings-stat-box">
                 <p class="text-xs font-medium text-neutral-600 uppercase tracking-wide">Exchanges</p>
                 <p class="text-lg font-semibold text-neutral-900 mt-2">
-                  9 Exchanges
+                  ${(stats.by_exchange || []).length} Exchange${(stats.by_exchange || []).length === 1 ? '' : 's'}
                 </p>
                 <p class="text-xs text-neutral-600 mt-1">
-                  NSE, BSE, NFO, BFO, BCD, CDS, MCX, NSE_INDEX, BSE_INDEX
+                  ${(stats.by_exchange || []).length > 0 ? stats.by_exchange.map(e => e.exchange).join(', ') : 'None cached yet'}
                 </p>
               </div>
             </div>
@@ -151,7 +151,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
                   <div class="flex-1">
                     <h4 class="font-semibold text-success-900 mb-2">Fetch from Instance</h4>
                     <p class="text-xs text-success-800 mb-3">
-                      Download instruments directly from an OpenAlgo instance. Fetches all 9 exchanges.
+                      Download instruments directly from an OpenAlgo instance. Fetches all exchanges the instance's broker supports.
                     </p>
                     <div class="space-y-3">
                       <select id="instance-select" class="form-select w-full text-sm">
@@ -279,7 +279,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
    */
   async loadInstances() {
     try {
-      const response = await this.authFetch('/api/v1/instances');
+      const response = await this.authFetch('/api/v1/instances?is_active=true');
       const data = await response.json();
 
       if (!response.ok) {
@@ -301,7 +301,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       instances.forEach(instance => {
         const option = document.createElement('option');
         option.value = instance.id;
-        option.textContent = `${instance.name} (${instance.host})`;
+        option.textContent = `${instance.name} (${instance.broker})`;
         select.appendChild(option);
       });
 

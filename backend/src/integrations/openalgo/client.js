@@ -14,6 +14,7 @@ import settingsService from '../../services/settings.service.js';
 import { isGeneralEndpointBlackout, isQuoteEndpointBlackout } from '../../services/instance-health.service.js';
 import instanceHealthTrackerService from './instance-health-tracker.service.js';
 import resolutionCacheService from './resolution-cache.service.js';
+import { isCryptoBroker } from '../../utils/broker-type.util.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -320,7 +321,10 @@ class OpenAlgoClient extends EventEmitter {
       endpointKey.includes('quotes') ||
       endpointKey.includes('optionchain') ||
       endpointKey.includes('depth');
-    const inBlackout = isQuoteEndpoint ? isQuoteEndpointBlackout() : isGeneralEndpointBlackout();
+    // The blackout windows exist to pause calls during Indian market off-hours - crypto
+    // brokers trade 24/7 and have no such window, so they're exempt entirely.
+    const inBlackout = !isCryptoBroker(instance?.broker)
+      && (isQuoteEndpoint ? isQuoteEndpointBlackout() : isGeneralEndpointBlackout());
     if (inBlackout && !options?.skipMarketCheck) {
       const err = new Error(
         isQuoteEndpoint

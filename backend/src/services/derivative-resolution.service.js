@@ -154,7 +154,7 @@ class DerivativeResolutionService {
 
       const futuresSymbols = searchResults.filter((result) => {
         const instrumentType = (result.instrumenttype || '').toUpperCase();
-        const isFutures = instrumentType.startsWith('FUT');
+        const isFutures = instrumentType.startsWith('FUT') || instrumentType === 'PERPFUT';
         const resultKey = this._deriveUnderlyingKeyFromInstrumentData(
           result.symbol,
           instrumentType,

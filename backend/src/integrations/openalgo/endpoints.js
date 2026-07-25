@@ -194,7 +194,7 @@ export const RESPONSE_SCHEMAS = {
  * Valid values for order parameters
  */
 export const ORDER_PARAMS = {
-  exchanges: ['NSE', 'BSE', 'NFO', 'BFO', 'CDS', 'MCX'],
+  exchanges: ['NSE', 'BSE', 'NFO', 'BFO', 'CDS', 'MCX', 'CRYPTO'],
 
   products: ['CNC', 'MIS', 'NRML'],
 

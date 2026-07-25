@@ -7,7 +7,8 @@ import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
-import { calculateTradebookPnLClosedOnly } from '../utils/trade-pnl.js';
+import { calculateTradebookPnL, calculateTradeChargesOpenAlgo } from '../utils/trade-pnl.js';
+import { normalizeTradebookEntry } from '../utils/tradebook-utils.js';
 import settingsService from './settings.service.js';
 import { buildBrokerageMap, resolveBrokerageValue } from '../utils/brokerage.js';
 
@@ -149,29 +150,88 @@ class DashboardService {
 
       const tradeSnap = marketDataFeedService.getTradebookSnapshotCached(instance.id);
       const tradebook = tradeSnap?.data || [];
-      const brokerageValue = resolveBrokerageValue(
-        instance.broker,
-        brokerageConfig?.brokerageMap || {},
-        brokerageConfig?.defaultBrokerage ?? 20
-      );
-      const tradePnl = calculateTradebookPnLClosedOnly(Array.isArray(tradebook) ? tradebook : [], {
-        brokerageValue,
-      });
       const hasTradebook = Array.isArray(tradebook) && tradebook.length > 0;
-      const totalPnL = hasTradebook
-        ? Number(tradePnl.net_pnl.toFixed(2))
-        : parseFloatSafe(instance.total_pnl, 0);
+
+      // P&L: sum the broker's own per-position pnl directly instead of reconstructing it from
+      // the tradebook. Reconstruction only ever sees whatever window the tradebook snapshot
+      // covers (today's trades), which is wrong for multi-day carried (NRML) positions - the
+      // position cache's pnl field is the broker's own authoritative number regardless of when
+      // the position was actually opened. A position at qty=0 still carries its P&L for the day
+      // (the broker keeps a zeroed-out row rather than dropping it) - that's realized; a position
+      // still open is unrealized. Same field-name fallbacks used everywhere else in this codebase
+      // (positions.service.js, strategy.service.js's getExecutionStatus, etc).
+      //
+      // IMPORTANT: the broker's pnl field is pure MTM - confirmed against real data (a closed
+      // 280CE leg: short @5.90, covered @2.60, 1250 qty -> exactly 4125.00, zero deduction) - no
+      // brokerage/exchange fee/STT/GST subtracted. Charges don't need FIFO/position matching the
+      // way P&L does (every trade incurs its own cost the moment it executes, whether it opens or
+      // closes a position), so they're summed straight from today's tradebook and netted against
+      // the realized side - unrealized stays gross MTM since a still-open position's eventual
+      // exit cost isn't known yet (same convention most trading platforms use).
+      const positionSnapshot = marketDataFeedService.getPositionSnapshot(instance.id);
+      const positions = Array.isArray(positionSnapshot?.data) ? positionSnapshot.data : null;
+
+      let realizedPnL = 0;
+      let unrealizedPnL = 0;
+      let totalPnL;
+      if (positions) {
+        for (const position of positions) {
+          const qty = parseFloatSafe(
+            position.quantity ?? position.netqty ?? position.net_quantity ?? position.netQty ?? position.net,
+            0
+          );
+          const pnl = parseFloatSafe(
+            position.pnl ?? position.unrealised_pnl ?? position.unrealisedPnl ?? position.mtm,
+            0
+          );
+          if (qty === 0) {
+            realizedPnL += pnl;
+          } else {
+            unrealizedPnL += pnl;
+          }
+        }
+
+        if (hasTradebook) {
+          const brokerageValue = resolveBrokerageValue(
+            instance.broker,
+            brokerageConfig?.brokerageMap || {},
+            brokerageConfig?.defaultBrokerage ?? 20
+          );
+          let chargesTotal = 0;
+          for (const trade of tradebook) {
+            const normalized = normalizeTradebookEntry(trade);
+            const side = (normalized.action || '').toUpperCase();
+            const tradeValue = Math.abs(parseFloatSafe(normalized.trade_value, 0));
+            if ((side !== 'BUY' && side !== 'SELL') || !tradeValue) continue;
+            chargesTotal += calculateTradeChargesOpenAlgo(tradeValue, {
+              exchange: normalized.exchange,
+              symbol: normalized.symbol,
+              side,
+              brokerage: brokerageValue,
+            }).total_cost;
+          }
+          realizedPnL = Number((realizedPnL - chargesTotal).toFixed(2));
+        }
+
+        totalPnL = Number((realizedPnL + unrealizedPnL).toFixed(2));
+      } else {
+        // Position cache never warmed for this instance (e.g. just added, or feed unhealthy) -
+        // fall back to the last value persisted on the instance row rather than showing 0.
+        totalPnL = parseFloatSafe(instance.total_pnl, 0);
+      }
+
+      // Trade counts/turnover are activity stats ("how many trades today"), not P&L - the
+      // same-day tradebook window is correct for these, no FIFO matching needed.
+      const tradeStats = hasTradebook ? calculateTradebookPnL(tradebook) : null;
       const totalTradeValue = hasTradebook
-        ? tradePnl.buy_value + tradePnl.sell_value
+        ? tradeStats.buy_value + tradeStats.sell_value
         : parseFloatSafe(instance.total_trade_value, 0);
       const totalBuyTrades = hasTradebook
-        ? tradePnl.buy_count
+        ? tradeStats.buy_count
         : parseIntSafe(instance.total_buy_trades, 0);
       const totalSellTrades = hasTradebook
-        ? tradePnl.sell_count
+        ? tradeStats.sell_count
         : parseIntSafe(instance.total_sell_trades, 0);
-      const realizedPnL = 0;
-      const unrealizedPnL = 0;
 
       log.debug('Fetched funds from instance', {
         instance_id: instance.id,
@@ -243,6 +303,7 @@ class DashboardService {
       instances.map(async (instance) => {
         await marketDataFeedService.refreshFundsForInstance(instance.id, { force: true });
         await marketDataFeedService.getTradebookSnapshot(instance.id, { force: true });
+        await marketDataFeedService.refreshPositionsForInstance(instance.id, { force: true });
       })
     );
   }

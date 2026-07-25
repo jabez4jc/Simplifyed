@@ -94,7 +94,7 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
       'CDS': 'CDS',         // Currency derivatives
     };
 
-    return exchangeMap[exchange] || 'NFO'; // Default to NFO
+    return exchangeMap[exchange] || exchange; // Unmapped (e.g. CRYPTO) - use as-is
   }
 
   /**

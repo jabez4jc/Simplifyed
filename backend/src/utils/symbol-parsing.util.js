@@ -4,11 +4,13 @@
  * futures symbol components. Extracted from quick-order.service.js - none of these hold any
  * `this` state, so they're plain exported functions rather than a class/singleton.
  *
- * IMPORTANT (MCX): _getUnderlyingQuoteSymbol's MCX branch is load-bearing for the app's MCX
- * options workaround - for MCX, the watchlist symbol row IS the tradable/quotable contract
- * itself (there is no separate underlying/index quote), so it deliberately returns the raw
+ * IMPORTANT (MCX/CRYPTO): _getUnderlyingQuoteSymbol's MCX and CRYPTO branches are load-bearing
+ * for the app's MCX options workaround and crypto perpetuals - for both, the watchlist symbol
+ * row IS the tradable/quotable contract itself (there is no separate underlying/index quote:
+ * MCX commodities have no index feed, and crypto has no plain "BTC" spot quote in USD - only
+ * the perpetual contract or an INR-quoted spot pair), so it deliberately returns the raw
  * contract symbol rather than an abstract underlying name. Do not "fix" this to match the
- * non-MCX fallback branch.
+ * fallback branch.
  */
 
 import derivativeResolutionService, {
@@ -57,7 +59,7 @@ export function getUnderlyingQuoteExchange(symbol = {}) {
 
 export function getUnderlyingQuoteSymbol(symbol = {}) {
   const exchange = (symbol.exchange || '').toUpperCase();
-  if (exchange === 'MCX') {
+  if (exchange === 'MCX' || exchange === 'CRYPTO') {
     return (symbol.symbol || symbol.trading_symbol || '').toUpperCase();
   }
 

@@ -3008,7 +3008,11 @@ class QuickOrderService {
     }
 
     const normalizedExpiry = expiry ? this._normalizeExpiryInput(expiry) : null;
-    if (!normalizedExpiry) {
+    // A watchlist symbol that's already itself the tradable contract (a dated future
+    // added directly, or a non-expiring instrument like a crypto perpetual) has no
+    // separate expiry-dated series to resolve - trade the anchor symbol as-is.
+    const isDirectContract = symbol.symbol_type === 'FUTURES' && !symbol.expiry;
+    if (!normalizedExpiry && !isDirectContract) {
       throw new ValidationError('Select an expiry to preview futures quotes.');
     }
 
@@ -3036,7 +3040,7 @@ class QuickOrderService {
 
     let futuresResolution;
     const matchesWatchlistExpiry = symbol.symbol_type === 'FUTURES'
-      && this._expiryMatchesSymbol(chosenExpiry, symbol);
+      && (isDirectContract || this._expiryMatchesSymbol(chosenExpiry, symbol));
 
     if (matchesWatchlistExpiry) {
       futuresResolution = {

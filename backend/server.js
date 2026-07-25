@@ -26,6 +26,7 @@ import telegramService from './src/services/telegram.service.js';
 import openalgoClient from './src/integrations/openalgo/client.js';
 import settingsService from './src/services/settings.service.js';
 import instanceHealthService, { isGeneralEndpointBlackout, isQuoteEndpointBlackout } from './src/services/instance-health.service.js';
+import instrumentsService from './src/services/instruments.service.js';
 import wsGatewayService from './src/services/ws-gateway.service.js';
 import instanceService from './src/services/instance.service.js';
 import tradingviewWebhookRoutes from './src/routes/tradingview-webhook.js';
@@ -393,6 +394,9 @@ async function startServer() {
 
       // Start instance health cron (every 3h from 08:00 IST)
       instanceHealthService.start();
+
+      // Start crypto instruments daily refresh cron (17:31 IST)
+      instrumentsService.startCryptoDailyRefresh();
 
       // Removed legacy Google OAuth test mode banner
     });

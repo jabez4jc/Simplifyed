@@ -171,8 +171,18 @@ export function calculateTradebookPnLForAppExits(trades = [], options = {}) {
     return timeA - timeB;
   });
 
-  const buyQueue = [];
-  const sellQueue = [];
+  // FIFO matching must happen per instrument - a BUY of one symbol can never close a SELL of a
+  // different one. Queues keyed by exchange+symbol; previously these were two flat arrays shared
+  // across every symbol in the tradebook, so unrelated instruments got matched against each other
+  // (e.g. a NIFTY option buy "closing" a NATGAS option sell), producing meaningless P&L.
+  const queuesBySymbol = new Map();
+  const getQueues = (exchange, symbol) => {
+    const key = `${(exchange || '').toUpperCase()}|${(symbol || '').toUpperCase()}`;
+    if (!queuesBySymbol.has(key)) {
+      queuesBySymbol.set(key, { buyQueue: [], sellQueue: [] });
+    }
+    return queuesBySymbol.get(key);
+  };
 
   let buyValue = 0;
   let sellValue = 0;
@@ -186,6 +196,7 @@ export function calculateTradebookPnLForAppExits(trades = [], options = {}) {
     const price = parseFloatSafe(trade.average_price, 0);
     if (!side || remainingQty <= 0 || price <= 0) continue;
 
+    const { buyQueue, sellQueue } = getQueues(trade.exchange || exchangeFallback, trade.symbol || symbolFallback);
     const isAppExit = isAppTrade(trade, { appOrderIds, strategyTag });
     let closeCounted = false;
 
@@ -337,8 +348,16 @@ export function calculateTradebookPnLClosedOnly(trades = [], options = {}) {
     return timeA - timeB;
   });
 
-  const buyQueue = [];
-  const sellQueue = [];
+  // Same fix as calculateTradebookPnLForAppExits - FIFO queues must be scoped per instrument, not
+  // shared globally across every symbol in the tradebook.
+  const queuesBySymbol = new Map();
+  const getQueues = (exchange, symbol) => {
+    const key = `${(exchange || '').toUpperCase()}|${(symbol || '').toUpperCase()}`;
+    if (!queuesBySymbol.has(key)) {
+      queuesBySymbol.set(key, { buyQueue: [], sellQueue: [] });
+    }
+    return queuesBySymbol.get(key);
+  };
 
   let buyValue = 0;
   let sellValue = 0;
@@ -352,6 +371,7 @@ export function calculateTradebookPnLClosedOnly(trades = [], options = {}) {
     const price = parseFloatSafe(trade.average_price, 0);
     if (!side || remainingQty <= 0 || price <= 0) continue;
 
+    const { buyQueue, sellQueue } = getQueues(trade.exchange || exchangeFallback, trade.symbol || symbolFallback);
     let closeCounted = false;
 
     if (side === 'BUY') {

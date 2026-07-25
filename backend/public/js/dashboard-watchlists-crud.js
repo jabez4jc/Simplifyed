@@ -87,7 +87,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
 
       const enrichedResults = results.map(sym => ({
         ...sym,
-        underlying_symbol: sym.underlying_symbol || sym.name || sym.symbol,
+        underlying_symbol: sym.underlying_symbol || sym.underlying_key || sym.name || sym.symbol,
       }));
 
       resultsContainer.innerHTML = `
@@ -131,7 +131,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       return;
     }
 
-    symbolData.underlying_symbol = symbolData.underlying_symbol || symbolData.name || symbolData.symbol;
+    symbolData.underlying_symbol = symbolData.underlying_symbol || symbolData.underlying_key || symbolData.name || symbolData.symbol;
 
     this.pendingSymbolData = symbolData;
     this.closeSymbolSearchModal();

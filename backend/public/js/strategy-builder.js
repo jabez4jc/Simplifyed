@@ -618,9 +618,13 @@ class StrategyBuilder {
             <select id="strategy-exchange-select" class="form-input">
               <option value="NSE_INDEX">NSE_INDEX</option>
               <option value="NSE">NSE</option>
+              <option value="NFO">NFO</option>
               <option value="BSE_INDEX">BSE_INDEX</option>
               <option value="BSE">BSE</option>
+              <option value="BFO">BFO</option>
               <option value="MCX">MCX</option>
+              <option value="CDS">CDS</option>
+              <option value="CRYPTO">CRYPTO</option>
             </select>
           </div>
           <div class="form-group">

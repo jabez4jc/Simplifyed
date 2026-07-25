@@ -234,7 +234,7 @@ export function sanitizeExchange(exchange) {
   }
 
   const upper = exchange.trim().toUpperCase();
-  const validExchanges = ['NSE', 'BSE', 'NFO', 'BFO', 'CDS', 'MCX', 'NSE_INDEX', 'BSE_INDEX'];
+  const validExchanges = ['NSE', 'BSE', 'NFO', 'BFO', 'CDS', 'MCX', 'NSE_INDEX', 'BSE_INDEX', 'CRYPTO'];
 
   return validExchanges.includes(upper) ? upper : null;
 }

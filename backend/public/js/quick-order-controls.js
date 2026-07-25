@@ -22,8 +22,11 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
    */
   renderTradingControls({ watchlistId, symbolId, symbol, exchange, symbolType, tradeMode, capabilities = {}, availableModes = [], optionsLeg, quantity, expiries, selectedExpiry, selectedProduct, operatingMode, strikePolicy, writerGuard, isMcx = false }) {
     const showOptionsLeg = tradeMode === 'OPTIONS' && capabilities.options;
+    // A watchlist symbol that's already itself the tradable contract (a dated future or a
+    // crypto perpetual) has no separate expiry-dated series to pick - the anchor symbol IS
+    // the contract, so there's nothing to show here.
     const showExpirySelector =
-      (tradeMode === 'FUTURES' && capabilities.futures) ||
+      (tradeMode === 'FUTURES' && capabilities.futures && symbolType !== 'FUTURES') ||
       (tradeMode === 'OPTIONS' && capabilities.options);
     const showOperatingMode = tradeMode === 'OPTIONS' && capabilities.options;
     const showStrikePolicy = tradeMode === 'OPTIONS' && capabilities.options;
