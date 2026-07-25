@@ -145,7 +145,7 @@
 }
 
 .settings-nav-icon {
-  font-size: 1.1rem;
+  font-size: var(--font-size-xl);
   flex-shrink: 0;
 }
 
@@ -159,7 +159,7 @@
 }
 
 .settings-nav-count {
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-2xs);
   padding: 2px 8px;
   background-color: var(--color-neutral-200);
   border-radius: 10px;
@@ -191,7 +191,7 @@
 }
 
 .settings-category-icon {
-  font-size: 1.75rem;
+  font-size: var(--font-size-4xl);
   line-height: 1;
 }
 
@@ -248,7 +248,7 @@
 }
 
 .settings-field-key {
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-2xs);
   color: var(--color-neutral-400);
   font-family: monospace;
   margin-top: var(--space-1);
@@ -258,7 +258,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-2xs);
   color: var(--color-neutral-500);
   background-color: var(--color-neutral-100);
   padding: 2px 8px;
@@ -270,7 +270,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-2xs);
   font-weight: 500;
   color: #b45309;
   background-color: #fef3c7;
@@ -307,7 +307,7 @@
 }
 
 .settings-time-label {
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-2xs);
   color: var(--color-neutral-500);
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -439,7 +439,7 @@
 }
 
 .settings-search-empty-icon {
-  font-size: 3rem;
+  font-size: var(--font-size-5xl);
   margin-bottom: var(--space-4);
   opacity: 0.5;
 }
@@ -600,7 +600,7 @@
 }
 
 .settings-main-tab-icon {
-  font-size: 1.25rem;
+  font-size: var(--font-size-2xl);
   line-height: 1;
 }
 
@@ -617,7 +617,7 @@
 }
 
 .settings-main-tab-description {
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   color: var(--color-neutral-500);
   line-height: 1.2;
 }
@@ -655,7 +655,7 @@
 
 @media (max-width: 768px) {
   .settings-main-tabs-header h2 {
-    font-size: 1.5rem;
+    font-size: var(--font-size-3xl);
   }
 
   .settings-main-tab {
@@ -667,7 +667,7 @@
   }
 
   .settings-main-tab-icon {
-    font-size: 1.5rem;
+    font-size: var(--font-size-3xl);
   }
 
   .settings-main-tab-text {

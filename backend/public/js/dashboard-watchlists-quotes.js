@@ -893,6 +893,12 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       `[data-watchlist-feed-coverage="${watchlistId}"]`
     );
 
+    // Feed the navbar freshness clock from here - this is the one point every quote path
+    // (WS push and REST poll alike) funnels through. See markDataReceived() in dashboard-core.js.
+    if (!statusText && timestamp) {
+      this.markDataReceived(timestamp);
+    }
+
     if (lastUpdateEl) {
       if (statusText) {
         lastUpdateEl.textContent = statusText;

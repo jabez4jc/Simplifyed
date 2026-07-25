@@ -56,7 +56,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   font-weight: 600;
   color: var(--color-neutral-600);
   text-transform: uppercase;
@@ -99,7 +99,7 @@
 .btn-mode-compact {
   flex: 1;
   padding: var(--space-1) var(--space-2);
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   font-weight: 600;
   text-transform: uppercase;
   border: 1px solid var(--color-neutral-300);
@@ -162,7 +162,7 @@
 
 .btn-compact-secondary {
   padding: var(--space-2) var(--space-3);
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   font-weight: 600;
   border: 1px solid var(--color-neutral-300);
   background: var(--color-surface);
@@ -194,7 +194,7 @@
 .btn-operating {
   flex: 1;
   padding: var(--space-1) var(--space-2);
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   font-weight: 600;
   border: none;
   background: var(--color-surface);
@@ -218,13 +218,13 @@
   border: 1px solid var(--color-neutral-200);
   border-radius: var(--radius-sm);
   background-color: var(--color-neutral-100);
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   line-height: 1.4;
 }
 
 .preview-card-compact p {
   margin: 0;
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
 }
 
 /* Quick Order Actions Compact */
@@ -248,7 +248,7 @@
 }
 
 .action-column-label {
-  font-size: 0.625rem;
+  font-size: var(--font-size-3xs);
   font-weight: 700;
   color: var(--color-neutral-500);
   text-transform: uppercase;
@@ -267,7 +267,7 @@
 .btn-action-exit {
   min-height: 100%;
   padding: var(--space-2) var(--space-4);
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -298,7 +298,7 @@
 /* Compact Action Buttons */
 .btn-action-compact {
   padding: var(--space-2) var(--space-3);
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -441,17 +441,17 @@
   }
 
   .action-column-label {
-    font-size: 0.5rem;
+    font-size: var(--font-size-3xs);
     padding: 2px 0;
   }
 
   .btn-action-compact {
-    font-size: 0.625rem;
+    font-size: var(--font-size-3xs);
     padding: var(--space-1) var(--space-2);
   }
 
   .btn-action-exit {
-    font-size: 0.625rem;
+    font-size: var(--font-size-3xs);
     padding: var(--space-1) var(--space-2);
   }
 }
@@ -462,12 +462,12 @@
   }
 
   .btn-mode-compact {
-    font-size: 0.625rem;
+    font-size: var(--font-size-3xs);
     padding: var(--space-1);
   }
 
   .compact-field-label {
-    font-size: 0.625rem;
+    font-size: var(--font-size-3xs);
   }
 
   .action-buttons-3col {
@@ -475,12 +475,12 @@
   }
 
   .btn-action-compact {
-    font-size: 0.5rem;
+    font-size: var(--font-size-3xs);
     padding: 4px 6px;
   }
 
   .btn-action-exit {
-    font-size: 0.5rem;
+    font-size: var(--font-size-3xs);
     padding: 4px 8px;
   }
 }

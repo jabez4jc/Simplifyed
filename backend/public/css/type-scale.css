@@ -1,0 +1,24 @@
+/**
+ * Type scale - the single source of truth for font-size across BOTH stylesheet bundles:
+ * the dashboard (tokens-base.css et al) and the standalone pages that load only landing.css
+ * (index.html, login.html, access-pending.html). It lives in its own file precisely because
+ * those two bundles don't share anything else; defining it twice is how scales drift apart.
+ *
+ * Every step is a whole pixel at the 16px root, and nothing sits between steps. The ladder
+ * previously skipped 10px, 12px, 28px and 48px, so those got hardcoded across the stylesheets
+ * and splintered into near-duplicates - 11px / 11.008px / 11.2px all coexisted, as did
+ * 9.6 / 10 / 10.4. If a size you need isn't here, add a step; don't inline a raw value.
+ */
+:root {
+  --font-size-3xs: 0.625rem;    /* 10px - dense badges/chips. Hard floor: nothing smaller. */
+  --font-size-2xs: 0.6875rem;   /* 11px */
+  --font-size-xs: 0.75rem;      /* 12px - dense table + label text, the most common size */
+  --font-size-sm: 0.8125rem;    /* 13px */
+  --font-size-base: 0.875rem;   /* 14px - body */
+  --font-size-lg: 1rem;         /* 16px */
+  --font-size-xl: 1.125rem;     /* 18px */
+  --font-size-2xl: 1.25rem;     /* 20px */
+  --font-size-3xl: 1.5rem;      /* 24px */
+  --font-size-4xl: 1.75rem;     /* 28px */
+  --font-size-5xl: 3rem;        /* 48px - landing hero only */
+}

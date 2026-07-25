@@ -5,7 +5,17 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Simplifyed Admin V2 - Trading Dashboard</title>
+  <script>
+    // Apply the stored theme before any stylesheet is parsed. dashboard-core.js also does this,
+    // but only after all ~33 deferred scripts have run - long enough for a light-mode user to
+    // see a full dark repaint on every load. Keep the key in sync with loadTheme() there.
+    try {
+      document.documentElement.setAttribute('data-theme',
+        localStorage.getItem('dashboard-theme') || 'dark');
+    } catch (_) { /* private mode - fall back to the attribute already on <html> */ }
+  </script>
   <link rel="stylesheet" href="/css/tailwind.css?v=20251204-0800">
+  <link rel="stylesheet" href="/css/type-scale.css?v=20260725-1200">
   <link rel="stylesheet" href="/css/tokens-base.css?v=20260724-1100">
   <link rel="stylesheet" href="/css/components.css?v=20260724-0900">
   <link rel="stylesheet" href="/css/quick-order.css?v=20260723-0900">
@@ -16,9 +26,7 @@
   <link rel="stylesheet" href="/css/operations.css?v=20260714-0200">
   <link rel="stylesheet" href="/css/overrides.css?v=20260714-0200">
   <link rel="stylesheet" href="/css/trading-buttons.css?v=20251204-0800">
-  <link
-    href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap"
-    rel="stylesheet">
+  <link rel="stylesheet" href="/css/fonts.css?v=20260725-1200">
   <style>
     .logo {
       font-family: 'Outfit', sans-serif;
@@ -71,6 +79,13 @@
           <h2 id="view-title" class="text-2xl font-bold text-base-content">Dashboard</h2>
         </div>
         <div class="flex-none gap-2 navbar-actions">
+          <!-- Feed health. A trading terminal must never leave the operator guessing whether the
+               numbers on screen are live; this reads the same WS/poll state the data path uses. -->
+          <div id="feed-status" class="feed-status is-connecting" role="status" aria-live="polite"
+            title="Market data feed status">
+            <span class="feed-status-dot" aria-hidden="true"></span>
+            <span id="feed-status-label" class="feed-status-label">Connecting</span>
+          </div>
           <button id="theme-toggle-btn" class="icon-button" onclick="app.toggleTheme()" title="Switch light/dark mode"
             aria-label="Toggle theme">
             <svg id="theme-toggle-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
@@ -122,7 +137,8 @@
 
         <!-- Navigation -->
         <ul class="menu menu-lg p-4 gap-2 flex-1 overflow-y-auto">
-          <li>
+          <li class="menu-title nav-group-title" data-nav-group="trading"><span class="nav-label">Trading</span></li>
+          <li data-nav-group-item="trading">
             <a data-view="dashboard" data-label="Dashboard" data-permission="pages.dashboard.view" aria-current="page"
               class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all bg-primary text-primary-content shadow-sm"
               onclick="app.switchView('dashboard')">
@@ -134,19 +150,7 @@
               <span class="nav-label">Dashboard</span>
             </a>
           </li>
-          <li>
-            <a data-view="instances" data-label="Instances" data-permission="pages.instances.view"
-              class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
-              onclick="app.switchView('instances')">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
-                stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
-              </svg>
-              <span class="nav-label">Instances</span>
-            </a>
-          </li>
-          <li>
+          <li data-nav-group-item="trading">
             <a data-view="watchlists" data-label="Watchlists" data-permission="pages.watchlists.view"
               class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
               onclick="app.switchView('watchlists')">
@@ -158,42 +162,7 @@
               <span class="nav-label">Watchlists</span>
             </a>
           </li>
-          <li>
-            <a data-view="strategies" data-label="Strategies" data-permission="pages.watchlists.view"
-              class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
-              onclick="app.switchView('strategies')">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
-                stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M13 10V3L4 14h7v7l9-11h-7z" />
-              </svg>
-              <span class="nav-label">Strategies</span>
-            </a>
-          </li>
-          <li>
-            <a data-view="orders" data-label="Orders" data-permission="pages.orders.view"
-              class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
-              onclick="app.switchView('orders')">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
-                stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
-              </svg>
-              <span class="nav-label">Orders</span>
-            </a>
-          </li>
-          <li>
-            <a data-view="trades" data-label="Trades" data-permission="pages.trades.view"
-              class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
-              onclick="app.switchView('trades')">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
-                stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 19h16M4 12l4 4 6-6 6 6" />
-              </svg>
-              <span class="nav-label">Trades</span>
-            </a>
-          </li>
-          <li>
+          <li data-nav-group-item="trading">
             <a data-view="positions" data-label="Positions" data-permission="pages.positions.view"
               class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
               onclick="app.switchView('positions')">
@@ -205,7 +174,43 @@
               <span class="nav-label">Positions</span>
             </a>
           </li>
-          <li data-permission="pages.daily_pnl.view">
+          <li data-nav-group-item="trading">
+            <a data-view="orders" data-label="Orders" data-permission="pages.orders.view"
+              class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
+              onclick="app.switchView('orders')">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+                stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+              </svg>
+              <span class="nav-label">Orders</span>
+            </a>
+          </li>
+          <li data-nav-group-item="trading">
+            <a data-view="trades" data-label="Trades" data-permission="pages.trades.view"
+              class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
+              onclick="app.switchView('trades')">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+                stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 19h16M4 12l4 4 6-6 6 6" />
+              </svg>
+              <span class="nav-label">Trades</span>
+            </a>
+          </li>
+          <li data-nav-group-item="trading">
+            <a data-view="strategies" data-label="Strategies" data-permission="pages.watchlists.view"
+              class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
+              onclick="app.switchView('strategies')">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+                stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              <span class="nav-label">Strategies</span>
+            </a>
+          </li>
+          <li class="menu-title nav-group-title" data-nav-group="reporting"><span class="nav-label">Reporting</span></li>
+          <li data-nav-group-item="reporting">
             <a data-view="daily-pnl-snapshots" data-label="Daily P&L" data-permission="pages.daily_pnl.view"
               class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
               onclick="app.switchView('daily-pnl-snapshots')">
@@ -217,7 +222,32 @@
               <span class="nav-label">Daily P&L</span>
             </a>
           </li>
-          <li>
+          <li data-nav-group-item="reporting">
+            <a data-view="notifications" data-label="Notifications" data-permission="pages.notifications.view"
+              class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
+              onclick="app.switchView('notifications')">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+                stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V4a2 2 0 10-4 0v1.341C8.67 6.165 8 7.388 8 8.75V14l-2 2h9m0 0v1a3 3 0 11-6 0v-1m6 0H9" />
+              </svg>
+              <span class="nav-label">Notifications</span>
+            </a>
+          </li>
+          <li class="menu-title nav-group-title" data-nav-group="administration"><span class="nav-label">Administration</span></li>
+          <li data-nav-group-item="administration">
+            <a data-view="instances" data-label="Instances" data-permission="pages.instances.view"
+              class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
+              onclick="app.switchView('instances')">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+                stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+              </svg>
+              <span class="nav-label">Instances</span>
+            </a>
+          </li>
+          <li data-nav-group-item="administration">
             <a data-view="settings" data-label="Settings" data-permission="pages.settings.view"
               class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
               onclick="app.switchView('settings')">
@@ -231,19 +261,7 @@
               <span class="nav-label">Settings</span>
             </a>
           </li>
-          <li>
-            <a data-view="notifications" data-label="Notifications" data-permission="pages.notifications.view"
-              class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
-              onclick="app.switchView('notifications')">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
-                stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                  d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V4a2 2 0 10-4 0v1.341C8.67 6.165 8 7.388 8 8.75V14l-2 2h9m0 0v1a3 3 0 11-6 0v-1m6 0H9" />
-              </svg>
-              <span class="nav-label">Notifications</span>
-            </a>
-          </li>
-          <li data-permission="pages.audit.view">
+          <li data-nav-group-item="administration">
             <a data-view="audit" data-label="Audit Logs" data-permission="pages.audit.view"
               class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
               onclick="app.switchView('audit')">
@@ -255,7 +273,7 @@
               <span class="nav-label">Audit Logs</span>
             </a>
           </li>
-          <li data-permission="pages.api_playground.view">
+          <li data-nav-group-item="administration">
             <a data-view="api-playground" data-label="API Playground" data-permission="pages.api_playground.view"
               class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
               onclick="app.switchView('api-playground')">
@@ -329,39 +347,39 @@
       }
     })();
   </script>
-  <script src="/js/api-client.js?v=20260724-1800"></script>
-  <script src="/js/utils.js?v=20260724-1200"></script>
-  <script src="/js/quick-order-core.js?v=20260714-0200"></script>
-  <script src="/js/quick-order-expansion.js?v=20260714-0200"></script>
-  <script src="/js/quick-order-controls.js?v=20260714-0200"></script>
-  <script src="/js/quick-order-selectors.js?v=20260714-0200"></script>
-  <script src="/js/quick-order-option-chain.js?v=20260724-1100"></script>
-  <script src="/js/quick-order-preview.js?v=20260714-0200"></script>
-  <script src="/js/quick-order-instruments.js?v=20260714-0200"></script>
-  <script src="/js/quick-order-place.js?v=20260724-2200"></script>
-  <script src="/js/quick-order-init.js?v=20260714-0200"></script>
-  <script src="/js/strategy-builder.js?v=20260724-1900"></script>
-  <script src="/js/settings-core.js?v=20260714-0200"></script>
-  <script src="/js/settings-general.js?v=20260714-0200"></script>
-  <script src="/js/settings-rbac.js?v=20260714-0200"></script>
-  <script src="/js/settings-data.js?v=20260714-0200"></script>
-  <script src="/js/settings-status.js?v=20260714-0200"></script>
-  <script src="/js/settings-init.js?v=20260714-0200"></script>
-  <script src="/js/dashboard-core.js?v=20260724-2200"></script>
-  <script src="/js/dashboard-overview.js?v=20260724-1600"></script>
-  <script src="/js/dashboard-instances.js?v=20260724-1100"></script>
-  <script src="/js/dashboard-watchlists-core.js?v=20260724-1700"></script>
-  <script src="/js/dashboard-watchlists-quotes.js?v=20260724-1200"></script>
-  <script src="/js/dashboard-watchlists-crud.js?v=20260724-1700"></script>
-  <script src="/js/dashboard-watchlists-positions.js?v=20260724-1200"></script>
-  <script src="/js/dashboard-watchlists-modals.js?v=20260724-1100"></script>
-  <script src="/js/dashboard-orders.js?v=20260724-1200"></script>
-  <script src="/js/dashboard-trades.js?v=20260724-1200"></script>
-  <script src="/js/dashboard-positions.js?v=20260714-0100"></script>
-  <script src="/js/dashboard-notifications.js?v=20260714-0100"></script>
-  <script src="/js/dashboard-pnl.js?v=20260714-0100"></script>
-  <script src="/js/dashboard-playground.js?v=20260714-0100"></script>
-  <script src="/js/dashboard-init.js?v=20260723-0900"></script>
+  <script defer src="/js/api-client.js?v=20260724-1800"></script>
+  <script defer src="/js/utils.js?v=20260724-1200"></script>
+  <script defer src="/js/quick-order-core.js?v=20260714-0200"></script>
+  <script defer src="/js/quick-order-expansion.js?v=20260714-0200"></script>
+  <script defer src="/js/quick-order-controls.js?v=20260714-0200"></script>
+  <script defer src="/js/quick-order-selectors.js?v=20260714-0200"></script>
+  <script defer src="/js/quick-order-option-chain.js?v=20260724-1100"></script>
+  <script defer src="/js/quick-order-preview.js?v=20260714-0200"></script>
+  <script defer src="/js/quick-order-instruments.js?v=20260714-0200"></script>
+  <script defer src="/js/quick-order-place.js?v=20260724-2200"></script>
+  <script defer src="/js/quick-order-init.js?v=20260714-0200"></script>
+  <script defer src="/js/strategy-builder.js?v=20260724-1900"></script>
+  <script defer src="/js/settings-core.js?v=20260714-0200"></script>
+  <script defer src="/js/settings-general.js?v=20260714-0200"></script>
+  <script defer src="/js/settings-rbac.js?v=20260714-0200"></script>
+  <script defer src="/js/settings-data.js?v=20260714-0200"></script>
+  <script defer src="/js/settings-status.js?v=20260714-0200"></script>
+  <script defer src="/js/settings-init.js?v=20260714-0200"></script>
+  <script defer src="/js/dashboard-core.js?v=20260724-2200"></script>
+  <script defer src="/js/dashboard-overview.js?v=20260724-1600"></script>
+  <script defer src="/js/dashboard-instances.js?v=20260724-1100"></script>
+  <script defer src="/js/dashboard-watchlists-core.js?v=20260724-1700"></script>
+  <script defer src="/js/dashboard-watchlists-quotes.js?v=20260724-1200"></script>
+  <script defer src="/js/dashboard-watchlists-crud.js?v=20260724-1700"></script>
+  <script defer src="/js/dashboard-watchlists-positions.js?v=20260724-1200"></script>
+  <script defer src="/js/dashboard-watchlists-modals.js?v=20260724-1100"></script>
+  <script defer src="/js/dashboard-orders.js?v=20260724-1200"></script>
+  <script defer src="/js/dashboard-trades.js?v=20260724-1200"></script>
+  <script defer src="/js/dashboard-positions.js?v=20260714-0100"></script>
+  <script defer src="/js/dashboard-notifications.js?v=20260714-0100"></script>
+  <script defer src="/js/dashboard-pnl.js?v=20260714-0100"></script>
+  <script defer src="/js/dashboard-playground.js?v=20260714-0100"></script>
+  <script defer src="/js/dashboard-init.js?v=20260723-0900"></script>
 </body>
 
 </html>

@@ -575,6 +575,17 @@ The settings UI intentionally hides internal-only or redundant configuration to 
 
 ## 11) Frontend Architecture
 
+### 11.0 Design Tokens & Styling Rules
+There are two stylesheet bundles that share almost nothing: the dashboard (`tokens-base.css` plus the feature sheets) and the standalone pages that load only `landing.css` (`index.html`, `login.html`, `access-pending.html`). Anything that must not drift between them lives in its own file, imported by both.
+
+- **`css/type-scale.css` is the only place a font-size may be defined.** Eleven steps, `--font-size-3xs` (10px) through `--font-size-5xl` (48px), every one a whole pixel at the 16px root. Stylesheets reference `var(--font-size-*)` and never inline a raw value; when the ladder was incomplete, raw values proliferated and splintered into near-duplicates (11px / 11.008px / 11.2px coexisted, as did 9.6 / 10 / 10.4). 10px is a hard floor. If you need a size that isn't there, add a step.
+- **`css/fonts.css` self-hosts the webfonts** (Outfit, JetBrains Mono; latin subset, `font-display: swap`). Nothing may reference `fonts.googleapis.com` — a third-party host on the critical path delays first paint of the whole terminal, and an `@import` to one is worse still, since it blocks before it even begins fetching.
+- **Colour is theme-specific, and both themes are checked against WCAG AA (4.5:1).** Do not assume a value that passes on `#0A0A0B` also passes on `#FFFFFF`. `--color-profit` / `--color-loss` are the most-read values in the product and carry separate light/dark tonal variants for exactly this reason. `--color-primary` is a *fill* that carries `--color-primary-content` text, so it is the darker `#D93A15` rather than the `#FF5733` signal orange (white on `#FF5733` is 3.15:1); `#FF5733` survives as `--color-accent`, used as text/border on dark surfaces.
+- **Never convey state by colour alone.** Change % carries a `+`/`-` sign, the feed pill states its condition in words, badges carry text.
+- **Numeric columns use `.font-mono`** (JetBrains Mono) with `font-variant-numeric: tabular-nums`, so digits stay column-aligned as values tick and prices don't reflow their column.
+
+DaisyUI note: `tailwind.config.js` declares a custom `simplifyed` theme, but the built `tailwind.css` contains DaisyUI's stock `dark`/`light` — the config and the artifact are out of sync, and the app's real appearance comes from the hand-rolled variables in `tokens-base.css`. **Rebuilding `tailwind.css` with the current config would drop the `dark`/`light` themes the app actually uses.** Reconcile the config before running `npm run build:css`.
+
 ### 11.1 Pages
 - `public/index.html`: marketing/landing page, links to `/login.html`.
 - `public/login.html`: login screen (local email/password, see §4.1).
@@ -583,8 +594,8 @@ The settings UI intentionally hides internal-only or redundant configuration to 
 - Settings is a tab within the dashboard shell, not a separate page (rendered via `settings-*.js`).
 
 ### 11.2 Frontend JS Modules
-No bundler - plain `<script>` tags loading small, feature-scoped files (naming convention: `<area>-<concern>.js`).
-- `dashboard-core.js` + `dashboard-init.js`: app state, view switching, bootstrap.
+No bundler - plain `<script defer>` tags loading small, feature-scoped files (naming convention: `<area>-<concern>.js`). All 33 carry `defer`, so they download in parallel and execute in document order; the code already assumes that ordering. The one inline script in `<head>` is deliberately *not* deferred — it applies the stored theme before the stylesheets parse, which is what keeps a light-mode user from seeing a dark repaint on every load.
+- `dashboard-core.js` + `dashboard-init.js`: app state, view switching, bootstrap. Also owns the navbar **feed-status pill** (`resolveFeedState`), which reports the market-data feed as Live / Polling / Stale Ns / Paused / Disconnected / Connecting. Freshness comes from `markDataReceived()`, called from the quote-meta choke point in `dashboard-watchlists-quotes.js` so every feed path — WS push and REST poll alike — advances the same clock.
 - `dashboard-instances.js`, `dashboard-orders.js`, `dashboard-positions.js`, `dashboard-trades.js`, `dashboard-pnl.js`, `dashboard-overview.js`, `dashboard-notifications.js`, `dashboard-playground.js`: one file per dashboard section.
 - `dashboard-watchlists-core.js`, `-crud.js`, `-modals.js`, `-positions.js`, `-quotes.js`: watchlist view, split by concern.
 - `quick-order-core.js` + `quick-order-init.js`, `-controls.js`, `-expansion.js`, `-instruments.js`, `-option-chain.js`, `-place.js`, `-preview.js`, `-selectors.js`: watchlist row expansion and trade controls (see §7.2-7.4).

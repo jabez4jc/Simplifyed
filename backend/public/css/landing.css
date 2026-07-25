@@ -1,4 +1,7 @@
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap');
+/* Self-hosted - see css/fonts.css. Was a fonts.googleapis.com @import, which is worse than a
+   <link>: an @import blocks on the parent stylesheet before it even starts fetching. */
+@import url('/css/fonts.css');
+@import url('/css/type-scale.css');
 
 :root {
     --bg-dark: #0A0A0B;
@@ -52,7 +55,7 @@ header {
 
 .logo {
     font-weight: 800;
-    font-size: 1.25rem;
+    font-size: var(--font-size-2xl);
     letter-spacing: -0.04em;
     text-transform: uppercase;
     display: flex;
@@ -72,7 +75,7 @@ header {
 .nav-links a {
     color: var(--text-secondary);
     text-decoration: none;
-    font-size: 0.875rem;
+    font-size: var(--font-size-base);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -119,7 +122,7 @@ header {
 .kicker {
     font-family: var(--font-mono);
     color: var(--accent-signal);
-    font-size: 0.75rem;
+    font-size: var(--font-size-xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.4em;
@@ -152,7 +155,7 @@ h1 span {
 }
 
 .hero-p {
-    font-size: 1.125rem;
+    font-size: var(--font-size-xl);
     color: var(--text-secondary);
     max-width: 540px;
     margin-bottom: 48px;
@@ -172,7 +175,7 @@ h1 span {
     text-decoration: none;
     border-radius: var(--radius-sharp);
     transition: all 0.3s cubic-bezier(0.19, 1, 0.22, 1);
-    font-size: 0.875rem;
+    font-size: var(--font-size-base);
     display: inline-flex;
     align-items: center;
     gap: 10px;
@@ -203,7 +206,7 @@ h1 span {
 
 .section-label {
     font-family: var(--font-mono);
-    font-size: 0.625rem;
+    font-size: var(--font-size-3xs);
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.5em;
@@ -252,7 +255,7 @@ h1 span {
 }
 
 h3 {
-    font-size: 1.5rem;
+    font-size: var(--font-size-3xl);
     font-weight: 700;
     margin-bottom: 16px;
     letter-spacing: -0.02em;
@@ -260,7 +263,7 @@ h3 {
 
 .feature-card p {
     color: var(--text-secondary);
-    font-size: 0.9375rem;
+    font-size: var(--font-size-base);
     line-height: 1.6;
 }
 
@@ -282,13 +285,13 @@ h3 {
 
 .stat-val {
     font-family: var(--font-mono);
-    font-size: 1.5rem;
+    font-size: var(--font-size-3xl);
     font-weight: 700;
     color: var(--accent-signal);
 }
 
 .stat-label {
-    font-size: 0.6875rem;
+    font-size: var(--font-size-2xs);
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.1em;
@@ -302,7 +305,7 @@ h3 {
     align-items: center;
     gap: 12px;
     font-family: var(--font-mono);
-    font-size: 0.6875rem;
+    font-size: var(--font-size-2xs);
     margin-top: 64px;
     color: var(--text-muted);
 }
@@ -343,7 +346,7 @@ footer {
 }
 
 .footer-brand {
-    font-size: 0.875rem;
+    font-size: var(--font-size-base);
     color: var(--text-muted);
     font-weight: 600;
 }

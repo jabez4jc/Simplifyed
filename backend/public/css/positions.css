@@ -11,7 +11,7 @@
 }
 
 .card-title-compact {
-  font-size: 0.875rem;
+  font-size: var(--font-size-base);
   font-weight: 700;
   color: var(--color-neutral-900);
   margin: 0;
@@ -57,7 +57,7 @@
   border-radius: 9999px;
   border: 1px solid var(--color-neutral-300);
   color: var(--color-neutral-600);
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   transition: transform 0.2s ease;
 }
 
@@ -66,19 +66,19 @@
 }
 
 .instance-name {
-  font-size: 0.875rem;
+  font-size: var(--font-size-base);
   font-weight: 600;
   color: var(--color-neutral-900);
 }
 
 .instance-meta {
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   color: var(--color-neutral-600);
 }
 
 .btn-close-all-compact {
   padding: var(--space-1) var(--space-3);
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   font-weight: 600;
   border: 1px solid var(--color-error);
   border-radius: var(--radius-sm);
@@ -103,7 +103,7 @@
 .positions-table-compact {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   font-variant-numeric: tabular-nums;
 }
 
@@ -114,7 +114,7 @@
 .positions-table-compact th {
   padding: var(--space-1) var(--space-2);
   text-align: left;
-  font-size: 0.688rem;
+  font-size: var(--font-size-2xs);
   font-weight: 600;
   color: var(--color-neutral-700);
   text-transform: uppercase;
@@ -137,7 +137,7 @@
 
 .btn-close-position-compact {
   padding: 2px var(--space-2);
-  font-size: 0.688rem;
+  font-size: var(--font-size-2xs);
   font-weight: 500;
   border: 1px solid var(--color-neutral-300);
   border-radius: var(--radius-sm);
@@ -173,7 +173,7 @@
   }
 
   .positions-table-compact {
-    font-size: 0.688rem;
+    font-size: var(--font-size-2xs);
   }
 
   .positions-table-compact th,

@@ -4,7 +4,7 @@
   align-items: center;
   justify-content: center;
   padding: 12px 24px;
-  font-size: 14px;
+  font-size: var(--font-size-base);
   font-weight: 600;
   line-height: 1.5;
   text-align: center;
@@ -277,7 +277,7 @@
 
 .btn-sm {
   padding: 8px 16px;
-  font-size: 12px;
+  font-size: var(--font-size-xs);
   min-width: 80px;
 }
 .btn-sm svg,
@@ -292,7 +292,7 @@
 
 .btn-lg {
   padding: 16px 32px;
-  font-size: 16px;
+  font-size: var(--font-size-lg);
   min-width: 160px;
 }
 .btn-lg svg,
@@ -409,17 +409,17 @@
 @media (max-width: 768px) {
   .btn {
     padding: 10px 20px;
-    font-size: 13px;
+    font-size: var(--font-size-sm);
     min-width: 100px;
   }
   .btn-sm {
     padding: 7px 14px;
-    font-size: 11px;
+    font-size: var(--font-size-2xs);
     min-width: 70px;
   }
   .btn-lg {
     padding: 14px 28px;
-    font-size: 15px;
+    font-size: var(--font-size-base);
     min-width: 140px;
   }
   .btn-group {
@@ -609,7 +609,7 @@ input[type=reset].btn:not(:disabled) {
   align-items: center;
   justify-content: center;
   padding: 4px 12px;
-  font-size: 12px;
+  font-size: var(--font-size-xs);
   font-weight: 600;
   line-height: 1.4;
   border-radius: 12px;
@@ -619,11 +619,11 @@ input[type=reset].btn:not(:disabled) {
 }
 .badge.badge-sm {
   padding: 2px 8px;
-  font-size: 10px;
+  font-size: var(--font-size-3xs);
 }
 .badge.badge-lg {
   padding: 6px 16px;
-  font-size: 14px;
+  font-size: var(--font-size-base);
 }
 .badge.badge-pill {
   border-radius: 999px;
@@ -683,16 +683,16 @@ input[type=reset].btn:not(:disabled) {
   margin-bottom: 16px;
   border-radius: 8px;
   border-left: 4px solid transparent;
-  font-size: 14px;
+  font-size: var(--font-size-base);
   line-height: 1.6;
 }
 .alert.alert-sm {
   padding: 12px 16px;
-  font-size: 13px;
+  font-size: var(--font-size-sm);
 }
 .alert.alert-lg {
   padding: 20px 24px;
-  font-size: 15px;
+  font-size: var(--font-size-base);
 }
 .alert .alert-icon {
   margin-right: 12px;
@@ -712,7 +712,7 @@ input[type=reset].btn:not(:disabled) {
   cursor: pointer;
   opacity: 0.7;
   padding: 0;
-  font-size: 20px;
+  font-size: var(--font-size-2xl);
   line-height: 1;
 }
 .alert .alert-close:hover {
@@ -756,7 +756,7 @@ input[type=reset].btn:not(:disabled) {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 14px;
+  font-size: var(--font-size-base);
   font-weight: 500;
 }
 .status-indicator::before {
@@ -795,7 +795,7 @@ input[type=reset].btn:not(:disabled) {
 .tag {
   display: inline-block;
   padding: 4px 10px;
-  font-size: 12px;
+  font-size: var(--font-size-xs);
   font-weight: 500;
   border-radius: 4px;
   line-height: 1.4;
@@ -852,28 +852,28 @@ input[type=reset].btn:not(:disabled) {
   align-items: center;
   gap: 4px;
   font-weight: 600;
-  font-size: 14px;
+  font-size: var(--font-size-base);
 }
 .price-change.price-up {
   color: #1A5A45;
 }
 .price-change.price-up::before {
   content: "▲";
-  font-size: 10px;
+  font-size: var(--font-size-3xs);
 }
 .price-change.price-down {
   color: #8B0000;
 }
 .price-change.price-down::before {
   content: "▼";
-  font-size: 10px;
+  font-size: var(--font-size-3xs);
 }
 .price-change.price-neutral {
   color: #2C3E50;
 }
 .price-change.price-neutral::before {
   content: "▬";
-  font-size: 10px;
+  font-size: var(--font-size-3xs);
 }
 
 .position-card {
@@ -893,7 +893,7 @@ input[type=reset].btn:not(:disabled) {
 
 .pnl {
   font-weight: 700;
-  font-size: 16px;
+  font-size: var(--font-size-lg);
 }
 .pnl.pnl-profit {
   color: #1A5A45;
@@ -911,7 +911,7 @@ input[type=reset].btn:not(:disabled) {
   padding: 4px 12px;
   border-radius: 12px;
   font-weight: 600;
-  font-size: 14px;
+  font-size: var(--font-size-base);
 }
 .pnl-badge.pnl-profit {
   background-color: #7ED6B2;
@@ -936,7 +936,7 @@ input[type=reset].btn:not(:disabled) {
   padding: 8px 12px;
   background-color: #2C3E50;
   color: white;
-  font-size: 12px;
+  font-size: var(--font-size-xs);
   border-radius: 6px;
   white-space: nowrap;
   opacity: 0;

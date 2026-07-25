@@ -49,7 +49,7 @@
   padding: var(--space-1) var(--space-2);
   background-color: var(--color-neutral-100);
   color: var(--color-neutral-600);
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-2xs);
   font-weight: 600;
   border-radius: 999px;
 }
@@ -286,7 +286,7 @@
 
 .watchlist-card-compact__badge {
   padding: 2px var(--space-2);
-  font-size: 0.625rem;
+  font-size: var(--font-size-3xs);
   font-weight: 600;
   text-transform: uppercase;
   border-radius: 999px;
@@ -304,12 +304,12 @@
 }
 
 .watchlist-card-compact__meta {
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-2xs);
   color: var(--color-neutral-500);
 }
 
 .watchlist-card-compact__desc {
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-2xs);
   color: var(--color-neutral-600);
   margin: var(--space-1) 0 0;
 }
@@ -404,7 +404,7 @@
   text-align: left;
   font-weight: 600;
   color: var(--color-neutral-600);
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   border-bottom: 2px solid var(--color-neutral-200);
@@ -438,7 +438,7 @@
 
 .watchlist-table-compact .col-expiry {
   width: 90px;
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
 }
 
 .watchlist-table-compact .col-strike {
@@ -510,7 +510,7 @@
 /* Badge Compact */
 .badge-compact {
   padding: 2px var(--space-2);
-  font-size: 0.625rem;
+  font-size: var(--font-size-3xs);
   font-weight: 600;
   text-transform: uppercase;
   border-radius: var(--radius-sm);
@@ -617,7 +617,7 @@
   }
 
   .watchlist-table-compact {
-    font-size: 0.75rem;
+    font-size: var(--font-size-xs);
   }
 
   .watchlist-table-compact th,

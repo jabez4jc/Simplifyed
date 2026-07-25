@@ -18,7 +18,7 @@
 .orders-trades-compact .table th,
 .orders-trades-compact .table td {
   padding: var(--space-2) var(--space-3);
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-2xs);
 }
 
 .orders-trades-compact details summary {
@@ -199,7 +199,7 @@
 
 .btn-sm {
   padding: var(--space-1) var(--space-3);
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-2xs);
 }
 
 .btn-icon {
@@ -241,14 +241,14 @@
 
 .form-error {
   margin-top: var(--space-1);
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-2xs);
   color: var(--color-loss);
 }
 
 .form-help {
   display: block;
   margin-top: var(--space-1);
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-2xs);
   color: var(--color-neutral-600);
   line-height: 1.4;
 }
@@ -306,7 +306,7 @@
   display: inline-flex;
   align-items: center;
   padding: var(--space-1) var(--space-2);
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-2xs);
   font-weight: 500;
   border-radius: var(--radius-sm);
 }
@@ -511,7 +511,7 @@
   border: 1px solid var(--color-neutral-300);
   background-color: var(--color-neutral-100);
   color: var(--color-neutral-700);
-  font-size: 11px;
+  font-size: var(--font-size-2xs);
   font-weight: 600;
   line-height: 1;
   display: inline-flex;
@@ -709,7 +709,7 @@
 
 /* ========== Utility Classes ========== */
 .text-xs {
-  font-size: var(--font-size-xs);
+  font-size: var(--font-size-2xs);
 }
 
 .text-sm {
@@ -820,3 +820,154 @@
   text-align: right;
 }
 
+
+/* ---------------------------------------------------------------------------
+   Feed status pill (navbar)
+   States are mutually exclusive: is-live | is-polling | is-stale | is-paused |
+   is-down | is-connecting. Colour is never the only signal - the label text
+   always states the condition, per the same rule the P&L columns follow.
+   --------------------------------------------------------------------------- */
+.feed-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums; /* stale countdown must not reflow the navbar */
+  user-select: none;
+}
+
+.feed-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.feed-status.is-live,
+.feed-status.is-polling {
+  color: var(--color-profit);
+  background: var(--color-profit-bg);
+  border-color: var(--color-profit-bg);
+}
+
+/* Only a genuinely live socket pulses - a steady dot means polling. */
+.feed-status.is-live .feed-status-dot {
+  animation: feedPulse 2s ease-in-out infinite;
+}
+
+.feed-status.is-stale,
+.feed-status.is-paused {
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+  border-color: var(--color-warning-bg);
+}
+
+.feed-status.is-down {
+  color: var(--color-loss);
+  background: var(--color-loss-bg);
+  border-color: var(--color-loss-bg);
+}
+
+.feed-status.is-connecting {
+  color: var(--color-neutral-500, #6B7280);
+  background: transparent;
+  border-color: var(--color-base-300, #2A2A2E);
+}
+
+@keyframes feedPulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feed-status.is-live .feed-status-dot { animation: none; }
+}
+
+/* Narrow viewports: keep the dot as the at-a-glance signal, drop the word. */
+@media (max-width: 640px) {
+  .feed-status-label { display: none; }
+  .feed-status { padding: 6px; }
+}
+
+/* ---------------------------------------------------------------------------
+   Sidebar nav groups
+   Splits the 12 destinations into Trading / Reporting / Administration so the
+   surfaces used during a session aren't visually interchangeable with the ones
+   configured once. Purely presentational - switchView() still binds on
+   [data-view], so grouping and ordering here are free to change.
+   --------------------------------------------------------------------------- */
+.nav-group-title {
+  padding: var(--space-4, 16px) var(--space-4, 16px) var(--space-1, 4px);
+  font-size: var(--font-size-2xs);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-base-content, #9CA3AF);
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+/* First group sits directly under the brand block - no extra top gap. */
+.nav-group-title:first-child {
+  padding-top: 0;
+}
+
+/* DaisyUI's .menu-title can attach its own spacing/colour; keep ours authoritative. */
+.menu.menu-lg .nav-group-title {
+  margin: 0;
+}
+
+@media (min-width: 1024px) {
+  /* Collapsed rail: the label fades out via the shared .nav-label rule, which would leave an
+     empty row. Collapse the row to a hairline so the grouping still reads as separation. */
+  body.sidebar-collapsed .nav-group-title,
+  .drawer.sidebar-collapsed .nav-group-title {
+    padding: 0;
+    margin: var(--space-2, 8px) var(--space-3, 12px);
+    height: 1px;
+    overflow: hidden;
+    background: var(--color-base-300, #2A2A2E);
+    opacity: 1;
+  }
+
+  body.sidebar-collapsed .nav-group-title:first-child,
+  .drawer.sidebar-collapsed .nav-group-title:first-child {
+    margin-top: 0;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Monospace numerals
+   Tailwind's .font-mono resolves to the system stack (ui-monospace, SFMono...),
+   which varies per OS and has no tabular-figure guarantee. JetBrains Mono is
+   already self-hosted for the landing page, so point the dashboard at it too:
+   prices, quantities and P&L read straighter in a fixed-width face, and
+   digits stay column-aligned as values tick.
+
+   Not applied globally - only where numbers live. Prose stays in Outfit.
+   --------------------------------------------------------------------------- */
+.font-mono,
+.num {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* DaisyUI's .menu sets flex-wrap: wrap. In the vertical sidebar that means any overflow forms
+   a SECOND COLUMN across the rail rather than scrolling - the ul's own overflow-y-auto never
+   engages, because wrapping keeps scrollHeight == clientHeight. Latent until the item count
+   grew past the viewport (the group headings tipped it over; a 13th destination would have
+   done the same). Force a single column so overflow scrolls as intended. */
+.drawer-side ul.menu {
+  flex-wrap: nowrap;
+}
+
+.drawer-side ul.menu > li {
+  flex: none; /* don't compress rows to fit; let the list scroll instead */
+}

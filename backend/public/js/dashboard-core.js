@@ -60,6 +60,10 @@ class DashboardApp {
     this.positionsExpanded = new Set();
     this.expandedWatchlists = new Set();
     this.isPaused = false; // default running; user can pause manually
+    // Feed status pill (navbar) - see updateFeedStatus()
+    this.lastDataAt = 0;          // epoch ms of the most recent successful quote refresh
+    this.feedStatusInterval = null;
+    this.feedStaleAfterMs = 30000; // no fresh quote for this long => warn the operator
     // Telemetry auto-refresh
     this.telemetryInterval = null;
     this.lastTelemetry = { circuits: 0, stale: 0 };
@@ -210,6 +214,7 @@ class DashboardApp {
       const initialView = this.determineInitialView();
       this.switchView(initialView, { updateHash: false, forceReload: true });
       this.updatePauseButtonUI();
+      this.startFeedStatus();
 
       // Note: Auto-refresh disabled to prevent page flicker
       // Individual polling mechanisms (quotes, positions) handle their own updates
@@ -322,6 +327,7 @@ class DashboardApp {
   togglePause() {
     this.isPaused = !this.isPaused;
     this.updatePauseButtonUI();
+    this.updateFeedStatus(); // reflect immediately rather than on the next 1s tick
     if (this.isPaused) {
       Utils.showToast('Paused all background data fetching', 'info');
       this.stopAllWatchlistPolling();
@@ -341,6 +347,77 @@ class DashboardApp {
       this.refreshCurrentView(true);
       this.startAutoRefresh();
     }
+  }
+
+  /**
+   * Record that fresh market data arrived. Called from the quote-meta choke point in
+   * dashboard-watchlists-quotes.js so every feed path (WS push or REST poll) counts.
+   */
+  markDataReceived(timestamp = Date.now()) {
+    const ts = typeof timestamp === 'number' ? timestamp : Date.parse(timestamp);
+    if (Number.isNaN(ts)) return;
+    // Never let a stale cached timestamp drag the freshness clock backwards.
+    if (ts > this.lastDataAt) this.lastDataAt = ts;
+  }
+
+  startFeedStatus() {
+    if (this.feedStatusInterval) return;
+    this.updateFeedStatus();
+    // 1s tick: the stale countdown is the whole point, so it has to advance in real time.
+    this.feedStatusInterval = setInterval(() => this.updateFeedStatus(), 1000);
+  }
+
+  stopFeedStatus() {
+    if (!this.feedStatusInterval) return;
+    clearInterval(this.feedStatusInterval);
+    this.feedStatusInterval = null;
+  }
+
+  /**
+   * Resolve the feed into one of six mutually exclusive states. Ordering matters: an explicit
+   * user pause outranks connection state, and "no data ever" is reported as Connecting rather
+   * than as a huge stale age.
+   */
+  resolveFeedState() {
+    if (this.isPaused) {
+      return { state: 'paused', label: 'Paused', title: 'Background data fetching is paused. Press play to resume.' };
+    }
+
+    const age = this.lastDataAt ? Date.now() - this.lastDataAt : null;
+
+    if (this.wsGatewayEnabled && this.useWsGateway && !this.wsConnected) {
+      return { state: 'down', label: 'Disconnected', title: 'Live stream is down. Reconnecting…' };
+    }
+
+    if (age === null) {
+      return { state: 'connecting', label: 'Connecting', title: 'Waiting for the first quote from the feed.' };
+    }
+
+    if (age > this.feedStaleAfterMs) {
+      const secs = Math.floor(age / 1000);
+      const pretty = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m`;
+      return {
+        state: 'stale',
+        label: `Stale ${pretty}`,
+        title: `No fresh quote for ${pretty}. Prices on screen may be out of date.`,
+      };
+    }
+
+    return this.wsConnected
+      ? { state: 'live', label: 'Live', title: 'Streaming live over the WebSocket gateway.' }
+      : { state: 'polling', label: 'Polling', title: 'Receiving quotes via REST polling.' };
+  }
+
+  updateFeedStatus() {
+    const el = document.getElementById('feed-status');
+    const labelEl = document.getElementById('feed-status-label');
+    if (!el || !labelEl) return;
+
+    const { state, label, title } = this.resolveFeedState();
+    const cls = `feed-status is-${state}`;
+    if (el.className !== cls) el.className = cls;
+    if (labelEl.textContent !== label) labelEl.textContent = label;
+    if (el.title !== title) el.title = title;
   }
 
   updatePauseButtonUI() {
@@ -489,6 +566,24 @@ class DashboardApp {
       const show = this.hasPermission(key);
       el.style.display = show ? '' : 'none';
     });
+    this.applyNavGroupVisibility();
+  }
+
+  /**
+   * Hide a sidebar group heading once every destination under it has been permission-hidden,
+   * so a restricted user never sees an "Administration" label with nothing beneath it.
+   */
+  applyNavGroupVisibility() {
+    document.querySelectorAll('[data-nav-group]').forEach((title) => {
+      const group = title.dataset.navGroup;
+      const items = document.querySelectorAll(`[data-nav-group-item="${group}"]`);
+      const anyVisible = Array.from(items).some((li) => {
+        // The permission attribute sits on the <a>; the wrapping <li> may carry one too.
+        const target = li.querySelector('[data-permission]') || li;
+        return target.style.display !== 'none' && li.style.display !== 'none';
+      });
+      title.style.display = anyVisible ? '' : 'none';
+    });
   }
 
   startWsStream() {
@@ -537,6 +632,7 @@ class DashboardApp {
       ws.onopen = () => {
         this.wsReconnectDelay = 500;
         this.wsConnected = true;
+        this.updateFeedStatus();
         this.stopAllWatchlistPolling();
         if (window.quickOrder && typeof window.quickOrder.syncPreviewPollingWithStreaming === 'function') {
           window.quickOrder.syncPreviewPollingWithStreaming();
@@ -559,6 +655,7 @@ class DashboardApp {
       ws.onclose = () => {
         this.ws = null;
         this.wsConnected = false;
+        this.updateFeedStatus(); // surface the disconnect without waiting for the tick
         this._resumePollingIfWsInactive();
         this.scheduleWsReconnect();
       };

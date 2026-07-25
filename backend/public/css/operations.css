@@ -24,7 +24,7 @@
 }
 
 .ops-kicker {
-  font-size: 0.65rem;
+  font-size: var(--font-size-3xs);
   letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--color-neutral-500);
@@ -32,14 +32,14 @@
 }
 
 .ops-title {
-  font-size: 1.5rem;
+  font-size: var(--font-size-3xl);
   font-weight: 700;
   color: var(--color-neutral-900);
 }
 
 .ops-subtitle {
   color: var(--color-neutral-600);
-  font-size: 0.875rem;
+  font-size: var(--font-size-base);
   max-width: 520px;
 }
 
@@ -51,7 +51,7 @@
 }
 
 .ops-meta {
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   color: var(--color-neutral-500);
 }
 
@@ -84,7 +84,7 @@
 }
 
 .ops-summary-title {
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   text-transform: uppercase;
   letter-spacing: 0.12em;
   color: var(--color-neutral-500);
@@ -92,13 +92,13 @@
 }
 
 .ops-summary-value {
-  font-size: 1.75rem;
+  font-size: var(--font-size-4xl);
   font-weight: 700;
   color: var(--color-neutral-900);
 }
 
 .ops-summary-value-sm {
-  font-size: 1.25rem;
+  font-size: var(--font-size-2xl);
   font-weight: 700;
   color: var(--color-neutral-900);
 }
@@ -110,7 +110,7 @@
 
 .ops-summary-label {
   display: block;
-  font-size: 0.65rem;
+  font-size: var(--font-size-3xs);
   letter-spacing: 0.1em;
   color: var(--color-neutral-500);
   text-transform: uppercase;
@@ -118,7 +118,7 @@
 }
 
 .ops-summary-footnote {
-  font-size: 0.7rem;
+  font-size: var(--font-size-2xs);
   color: var(--color-neutral-500);
 }
 
@@ -136,7 +136,7 @@
   border-radius: 999px;
   border: 1px solid var(--color-neutral-200);
   background: var(--color-neutral-50);
-  font-size: 0.7rem;
+  font-size: var(--font-size-2xs);
   font-weight: 600;
   color: var(--color-neutral-600);
 }
@@ -204,11 +204,11 @@
 .ops-chip-label {
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  font-size: 0.6rem;
+  font-size: var(--font-size-3xs);
 }
 
 .ops-chip-value {
-  font-size: 0.8rem;
+  font-size: var(--font-size-sm);
 }
 
 .ops-section-grid {
@@ -231,13 +231,13 @@
 }
 
 .ops-section-title {
-  font-size: 1rem;
+  font-size: var(--font-size-lg);
   font-weight: 600;
   color: var(--color-neutral-900);
 }
 
 .ops-section-subtitle {
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   color: var(--color-neutral-500);
 }
 
@@ -254,7 +254,7 @@
   padding: 0.2rem 0.6rem;
   border-radius: 999px;
   border: 1px solid var(--color-neutral-200);
-  font-size: 0.7rem;
+  font-size: var(--font-size-2xs);
   font-weight: 600;
   color: var(--color-neutral-600);
   background: var(--color-neutral-50);
@@ -299,7 +299,7 @@
 }
 
 .instance-title {
-  font-size: 1rem;
+  font-size: var(--font-size-lg);
   font-weight: 600;
   color: var(--color-neutral-900);
 }
@@ -308,7 +308,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-3);
-  font-size: 0.75rem;
+  font-size: var(--font-size-xs);
   color: var(--color-neutral-500);
 }
 
@@ -328,7 +328,7 @@
   border: 1px dashed var(--color-neutral-200);
   border-radius: var(--radius-md);
   color: var(--color-neutral-500);
-  font-size: 0.8rem;
+  font-size: var(--font-size-sm);
   text-align: center;
   background: var(--color-neutral-50);
 }
