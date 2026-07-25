@@ -6,7 +6,7 @@ const API_PLAYGROUND_PRESETS = [
       // Root/health
       { label: 'GET /api/v1/health', method: 'GET', path: '/api/v1/health', headers: {}, description: 'Basic health probe for the service.' },
       { label: 'GET /api/v1/ready', method: 'GET', path: '/api/v1/ready', headers: {}, description: 'Readiness probe showing instruments refresh status.' },
-      { label: 'GET /api/v1/public-config', method: 'GET', path: '/api/v1/public-config', headers: {}, description: 'Supabase public config for the UI.' },
+      { label: 'GET /api/v1/public-config', method: 'GET', path: '/api/v1/public-config', headers: {}, description: 'Public (unauthenticated) WS gateway and feed-timing config for the UI.' },
 
       // Instances
       { label: 'GET /api/v1/instances', method: 'GET', path: '/api/v1/instances', headers: {}, description: 'List active instances with metadata and funds.' },

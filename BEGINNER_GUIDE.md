@@ -254,23 +254,20 @@ Just press **Enter** to use the default `/opt/simplifyed`.
 
 ---
 
-#### 7. **Supabase Auth Configuration** (Required)
+#### 7. **Admin Password** (Required)
 
 ```
-Supabase Project URL (e.g., https://xyz.supabase.co):
-Supabase anon key:
-Supabase JWT secret:
+Enter admin password (min 8 characters):
+Confirm admin password:
 ```
 
-The installer needs a Supabase project to handle login - there's no skip option here.
+This is the password for the admin email you entered earlier - together they are how you log in for the first time. There's no skip option.
 
-**If you don't have a Supabase project yet:**
-1. Go to https://app.supabase.com and create a free project
-2. Once created, go to **Settings → API** and copy the **Project URL** and **anon public key**
-3. Go to **Settings → Auth → JWT Settings** and copy the **JWT Secret**
-4. Paste each value in when the installer asks
+**What you'll notice:** nothing appears as you type. That's deliberate - the password is hidden so it doesn't end up visible on screen or in your terminal history. Type it and press Enter, then type it again to confirm.
 
-For full setup (email templates, redirect URLs, enabling Google/other providers inside Supabase), see `backend/SUPABASE_AUTH_SETUP.md` after installing.
+Pick something you'll actually remember, or store it in a password manager now. The app never displays it again - it stores only a bcrypt hash, which cannot be reversed. If you do lose it, you can reset it from the server later (see [Forgot Your Password?](#forgot-your-password) below), so it isn't fatal - just inconvenient.
+
+There's no external service involved in login. The app handles accounts itself.
 
 ---
 
@@ -317,7 +314,7 @@ When installation completes, you'll see a success message with your application 
 https://yourdomain.com
 ```
 
-Sign in using the Supabase project you configured during install - email/password, or any provider (like Google) you turned on inside that Supabase project. Use the same email you gave the installer as "Admin email" to get full admin access on first login.
+Sign in with the admin email and password you entered during installation. That account has full admin access.
 
 ---
 
@@ -406,19 +403,28 @@ sudo journalctl -u simplifyed -n 50
 2. Click "Create New Watchlist"
 3. Add symbols you want to track
 
-### 3. Add a Backup Local Password (optional)
+### 3. Add Your Team
 
-Supabase is required for the first login, but you can add a password-only login on top of it as a fallback:
+Other people can't sign themselves up - an admin creates each account:
 
-1. Sign in through the dashboard once (via Supabase) so you have an active session.
-2. Call the change-password endpoint with just a new password (no current password needed the first time):
-   ```bash
-   curl -X POST https://yourdomain.com/api/v1/auth/change-password \
-     -H "Authorization: Bearer YOUR_SUPABASE_ACCESS_TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"newPassword": "something-at-least-8-characters"}'
-   ```
-3. From then on you can log in with `POST /api/v1/auth/login` using that email/password, even if Supabase is temporarily unreachable.
+1. Go to **Settings → Access Control**
+2. Click **Create User**, enter their email and a starting password
+3. Assign them a role
+
+Roles decide what someone can do. Until you assign one, that person can log in but only sees an "access pending" screen - so creating the account and assigning the role are both needed.
+
+Ask them to change the starting password after their first login (**Settings**, or `POST /api/v1/auth/change-password`).
+
+### 4. Forgot Your Password?
+
+Nothing is lost - reset it from the server over SSH:
+
+```bash
+cd /opt/simplifyed/backend
+sudo -u simplifyed npm run set-password -- your@email.com your-new-password
+```
+
+Then log in with the new password. This only works on an account that already exists, and only from the server - there's no way to trigger it over the internet, which is exactly why it's safe to leave available.
 
 ---
 
@@ -526,7 +532,7 @@ Installation location:
 2. **Get files** using git clone, SCP, or FileZilla
 3. **Verify files** with `ls -la install.sh`
 4. **Run installer** with `sudo ./install.sh`
-5. **Answer prompts** (domain, email, admin email, Supabase credentials)
+5. **Answer prompts** (domain, email, admin email, admin password)
 6. **Wait 5-10 minutes** for installation
 7. **Access** at `https://yourdomain.com`
 

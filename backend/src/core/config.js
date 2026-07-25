@@ -431,13 +431,17 @@ class Config {
       this.openalgo.nonCritical.maxRetries = await getSettingInt('openalgo.non_critical.max_retries', this.openalgo.nonCritical.maxRetries);
       this.openalgo.nonCritical.retryDelay = await getSettingInt('openalgo.non_critical.retry_delay_ms', this.openalgo.nonCritical.retryDelay);
 
-      this.logging.level = getSetting('logging.level', this.logging.level);
-      this.logging.file = getSetting('logging.file', this.logging.file);
+      this.logging.level = await getSetting('logging.level', this.logging.level);
+      this.logging.file = await getSetting('logging.file', this.logging.file);
 
       this.rateLimit.windowMs = await getSettingInt('rate_limit.window_ms', this.rateLimit.windowMs);
       this.rateLimit.maxRequests = await getSettingInt('rate_limit.max_requests', this.rateLimit.maxRequests);
 
-      this.webhooks.tradingviewBroadcast.token = getSetting(
+      // Must be awaited - getSetting is async, and an unawaited Promise here is truthy, which
+      // made assertAuthorized() skip its "not configured" check and its WEBHOOK_TOKEN env
+      // fallback, then fail `token !== expected` for every request. Result: every TradingView
+      // alert 401'd as soon as config loaded from the database.
+      this.webhooks.tradingviewBroadcast.token = await getSetting(
         'webhooks.tradingview.token',
         this.webhooks.tradingviewBroadcast.token
       );

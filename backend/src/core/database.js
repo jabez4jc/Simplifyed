@@ -20,6 +20,7 @@ class Database {
   constructor() {
     this.db = null;
     this.isConnected = false;
+    this._txQueue = Promise.resolve();
   }
 
   /**
@@ -158,21 +159,44 @@ class Database {
   }
 
   /**
-   * Execute multiple queries in a transaction
+   * Execute multiple queries in a transaction.
+   *
+   * Serialized against other transaction() calls. SQLite transactions are a property of the
+   * connection, and this class is a singleton over one connection - so overlapping callers
+   * (e.g. the instruments refresh cron and a watchlist write arriving over HTTP) would
+   * otherwise interleave: the second BEGIN throws "cannot start a transaction within a
+   * transaction", and whichever COMMIT/ROLLBACK lands first applies or discards the *other*
+   * caller's partial writes. Queueing keeps each transaction atomic with respect to the rest.
+   *
+   * ponytail: single global queue - if transaction throughput ever matters, the upgrade is a
+   * connection pool, not finer-grained locks (one connection can only hold one transaction).
+   *
    * @param {Function} callback - Async function that performs queries
    */
   async transaction(callback) {
     this._ensureConnected();
 
-    try {
+    const run = async () => {
       await this.run('BEGIN TRANSACTION');
-      const result = await callback(this);
-      await this.run('COMMIT');
-      return result;
-    } catch (error) {
-      await this.run('ROLLBACK');
-      throw error;
-    }
+      try {
+        const result = await callback(this);
+        await this.run('COMMIT');
+        return result;
+      } catch (error) {
+        // A failed ROLLBACK must not mask the error that caused it.
+        try {
+          await this.run('ROLLBACK');
+        } catch (rollbackError) {
+          log.error('Transaction rollback failed', rollbackError);
+        }
+        throw error;
+      }
+    };
+
+    // Chain onto the queue, and keep the queue alive regardless of this caller's outcome.
+    const result = this._txQueue.then(run, run);
+    this._txQueue = result.then(() => undefined, () => undefined);
+    return result;
   }
 
   /**

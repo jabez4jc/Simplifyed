@@ -37,6 +37,9 @@ export function configureSession() {
     cookie: {
       httpOnly: true,
       secure: config.env === 'production',
+      // Must match the options POST /auth/logout passes to res.clearCookie (server.js), or the
+      // browser treats it as a different cookie and the session cookie survives logout.
+      sameSite: 'lax',
       maxAge: 24 * 60 * 60 * 1000, // 24 hours
     },
   };

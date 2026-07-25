@@ -1,8 +1,8 @@
 # Manual Telegram Linking Workaround
 
 Since Telegram polling is blocked in this environment, use this manual process. `YOUR_ACCESS_TOKEN`
-below is whatever `/api/v1/auth/login` (local) or your Supabase client returns as the access token -
-the `connect.sid` session cookie is unrelated to user auth, it only backs the WS gateway.
+below is the token returned by `POST /api/v1/auth/login` - the `connect.sid` session cookie is
+unrelated to user auth, it only backs the WS gateway.
 
 ## Step 1: Generate Linking Code (via API)
 ```bash

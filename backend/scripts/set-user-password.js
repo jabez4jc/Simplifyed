@@ -1,8 +1,8 @@
 /**
- * One-off CLI to set a local password on an EXISTING user (e.g. a Supabase-provisioned
- * account being cut over to local auth). Never creates a user - use the "Create User" UI
- * (Settings > Access Control) for that. CLI-only, no HTTP route, so it can't be reached
- * over the network.
+ * One-off CLI to set a local password on an EXISTING user - used by install.sh to give the
+ * bootstrap admin its password, and to recover an account whose password was lost. Never
+ * creates a user - use the "Create User" UI (Settings > Access Control) for that. CLI-only,
+ * no HTTP route, so it can't be reached over the network.
  *
  * Usage: node scripts/set-user-password.js <email> <password>
  */

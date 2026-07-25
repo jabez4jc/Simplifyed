@@ -55,7 +55,7 @@ Order of major middleware:
 4. JSON/body parsing (with size limits).
 5. Correlation ID and request logging.
 6. Session handling.
-7. Optional auth (session/Supabase/test-mode).
+7. Optional auth (local Bearer JWT / test-mode).
 8. Instruments refresh background check.
 9. Audit logger for API write operations.
 10. API routes.
@@ -73,11 +73,10 @@ The server starts background services after a successful login/signup or during 
 
 ### 4.1 Auth Methods
 All methods issue/verify a Bearer JWT checked in `middleware/auth.js`'s `optionalAuth`; there is no server-side login session for users (see note below on `express-session`).
-- **Local email/password**: `POST /api/v1/auth/register` (bootstrap-only - closes once any user exists), `/login`, `/change-password`. Tokens are HS256, signed with `config.auth.jwtSecret` (env `JWT_SECRET`), 7-day expiry.
-- **Supabase JWT auth**: optional, gated on `SUPABASE_URL` being configured. Validates ES256 (JWKS, modern Supabase default) and HS256 (legacy/service-role) tokens.
+- **Local email/password** (the only user-facing method): `POST /api/v1/auth/register` (bootstrap-only - closes once any user exists), `/login`, `/change-password`. Tokens are HS256, signed with `config.auth.jwtSecret` (env `JWT_SECRET`), 7-day expiry. Passwords are bcrypt hashes (cost 10); `attachRoleAndPermissions` deliberately never selects `password_hash`, since its return value becomes `req.user` and is serialized into API responses.
 - **Test mode**: `ENABLE_TEST_MODE=true` bypasses auth entirely with a hardcoded admin user - never enable in production.
-- `optionalAuth` tries local-token verification first, then falls through to Supabase if that fails and `SUPABASE_URL` is set - both can be active simultaneously, and a user can have a Supabase identity, a local password, or both.
-- `express-session` + `connect-sqlite3` (`data/sessions.db`) is configured but **not used for user login** - it exists solely to back cookie auth for the WebSocket gateway.
+- Accounts after the first are created by an admin (Settings → Access Control, `rbac.service.js`), not by self-service signup. `scripts/set-user-password.js` is the CLI escape hatch for a lost password; it has no HTTP route.
+- `express-session` + `connect-sqlite3` (`data/sessions.db`) is configured but **not used for user login** - it exists solely to back cookie auth for the WebSocket gateway (`validateWsSessionFromRequest` in `server.js`).
 
 ### 4.2 RBAC
 - Roles, permissions, and user-role assignments are stored in DB.
@@ -88,6 +87,12 @@ All methods issue/verify a Bearer JWT checked in `middleware/auth.js`'s `optiona
 - Writes to `audit_logs` for mutating requests, including quick orders and instance changes.
 
 ## 5) Data Model (SQLite)
+
+### 5.0 Connection Semantics
+`core/database.js` is a singleton wrapping **one** sqlite3 connection (WAL journal, foreign keys on). Two consequences worth knowing before writing data code:
+
+- A SQLite transaction is a property of the connection, not the caller. `db.transaction()` therefore serializes its callers through an internal promise queue - without it, an overlapping `BEGIN` throws `cannot start a transaction within a transaction`, and whichever `COMMIT`/`ROLLBACK` lands first applies or discards the *other* caller's partial writes. Real overlap exists today: the instruments refresh (cron- and middleware-triggered) against watchlist writes arriving over HTTP.
+- Because everything shares one connection, transaction throughput is bounded. The upgrade path is a connection pool, not finer-grained locking.
 
 Major tables (selected fields):
 
@@ -200,6 +205,7 @@ Major tables (selected fields):
 
 ### 6.6 External Integrations
 - `integrations/openalgo/client.js`: HTTP2 client, backoff, per-instance health, circuit breaker.
+  - **Market blackout windows are enforced here and only here.** The windows (`market_hours.*` settings, quote vs. general) pause broker calls during Indian off-hours. This is the correct and only layer for the check because it is the one that knows the target instance's broker, and therefore the only one that can exempt 24/7 crypto brokers via `utils/broker-type.util.js`'s `isCryptoBroker`. Do not reintroduce an app-level blackout middleware: it cannot see the broker, so it would black out crypto trading overnight.
 - `services/tradingview-broadcast.service.js`: TradingView webhook payload normalization and broadcast.
 - `services/telegram.service.js`: linking and notifications.
 
@@ -221,6 +227,8 @@ Major tables (selected fields):
 ### 6.10 Idempotency and Provenance
 - `services/idempotency.service.js`: stores idempotency keys, hashes, and cached responses for replays.
 - Order rows store `request_id`, `trigger_type`, `correlation_id`, and `source` for traceability.
+- **The INSERT is the lock.** Concurrent requests carrying the same `request_id` all miss the initial `SELECT`, so `UNIQUE(request_id, source)` is the only thing separating them: `getOrCreate` uses `INSERT OR IGNORE` and treats `changes === 0` as a duplicate. Exactly one caller receives `hit: false` and may place the order. Never "recover" from a failed insert by re-reading and returning `hit: false` - that lets a retried TradingView alert execute twice.
+- `expires_at` is written as SQLite's UTC `YYYY-MM-DD HH:MM:SS`, because `cleanupExpired` string-compares it against `CURRENT_TIMESTAMP`. An ISO-8601 value does not compare correctly against that format.
 
 ## 7) Watchlist Trading Architecture (Deep Detail)
 
@@ -569,7 +577,7 @@ The settings UI intentionally hides internal-only or redundant configuration to 
 
 ### 11.1 Pages
 - `public/index.html`: marketing/landing page, links to `/login.html`.
-- `public/login.html`: login screen (local email/password and/or Supabase, see §4.1).
+- `public/login.html`: login screen (local email/password, see §4.1).
 - `public/access-pending.html`: shown to authenticated users with no role assigned yet (`ACCESS_PENDING`, see `requireAuth` in §4.2).
 - `public/dashboard.html`: main app shell.
 - Settings is a tab within the dashboard shell, not a separate page (rendered via `settings-*.js`).
@@ -582,8 +590,7 @@ No bundler - plain `<script>` tags loading small, feature-scoped files (naming c
 - `quick-order-core.js` + `quick-order-init.js`, `-controls.js`, `-expansion.js`, `-instruments.js`, `-option-chain.js`, `-place.js`, `-preview.js`, `-selectors.js`: watchlist row expansion and trade controls (see §7.2-7.4).
 - `settings-core.js` + `-init.js`, `-data.js`, `-general.js`, `-rbac.js`, `-status.js`: settings UI, RBAC admin, import/export.
 - `strategy-builder.js`: multi-leg strategy CRUD/execution UI (see §7.10).
-- `supabase-auth.js`: persistent Supabase client with background token refresh (see §4.1).
-- `api-client.js`: API wrapper for all endpoints, attaches the Bearer token.
+- `api-client.js`: API wrapper for all endpoints, attaches the Bearer token from `localStorage` and clears it on a 401.
 - `utils.js`: formatting/UI helpers.
 
 ### 11.3 Data Refresh Patterns
@@ -631,7 +638,7 @@ Route groups under `/api/v1` (by module):
 - **health-check / ready / health**: runtime and readiness probes.
 - **telemetry**: rate-limit and cache visibility.
 - **snapshots / pnl-snapshots**: cache snapshots and daily P&L export.
-- **public-config**: unauthenticated Supabase URL/anon-key + feed-timing config for the frontend bootstrap.
+- **public-config**: unauthenticated WS-gateway and feed-timing config for the frontend bootstrap. Deliberately carries nothing sensitive; the TradingView webhook token is served separately by **webhook-config**, behind `settings.manage`.
 
 Webhook routes (public token auth):
 - **/webhook/tradingview**: TradingView broadcast endpoints.

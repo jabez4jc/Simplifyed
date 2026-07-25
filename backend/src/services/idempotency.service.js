@@ -4,6 +4,14 @@ import { log } from '../core/logger.js';
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
+// cleanupExpired compares expires_at against SQLite's CURRENT_TIMESTAMP, which is UTC
+// 'YYYY-MM-DD HH:MM:SS'. toISOString() is also UTC but formats as 'YYYY-MM-DDTHH:MM:SS.sssZ',
+// and the string comparison put 'T' (0x54) above ' ' (0x20) - so keys expiring on the current
+// date never got collected. Store the format the comparison actually expects.
+function toSqliteUtc(ms) {
+  return new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+}
+
 class IdempotencyService {
   _hashPayload(payload) {
     const raw = typeof payload === 'string' ? payload : JSON.stringify(payload || {});
@@ -32,26 +40,29 @@ class IdempotencyService {
     }
 
     const requestHash = this._hashPayload(payload);
-    const expiresAt = ttlMs ? new Date(Date.now() + ttlMs).toISOString() : null;
+    const expiresAt = ttlMs ? toSqliteUtc(Date.now() + ttlMs) : null;
 
-    try {
-      await db.run(
-        `INSERT INTO idempotency_keys (request_id, source, request_hash, status, expires_at)
-         VALUES (?, ?, ?, 'pending', ?)`,
-        [requestId, source, requestHash, expiresAt]
-      );
-    } catch (error) {
-      log.warn('Idempotency insert failed, reloading record', {
-        requestId,
-        source,
-        error: error.message,
-      });
-    }
+    // The INSERT is the lock. Two concurrent identical requests (a TradingView alert retry
+    // racing the original) both miss the SELECT above, so only the UNIQUE(request_id, source)
+    // constraint distinguishes them. OR IGNORE turns the violation into changes === 0 instead
+    // of a throw, and the loser must report hit:true - previously the failure was swallowed and
+    // both callers got hit:false, so both went on to place the order.
+    const { changes } = await db.run(
+      `INSERT OR IGNORE INTO idempotency_keys (request_id, source, request_hash, status, expires_at)
+       VALUES (?, ?, ?, 'pending', ?)`,
+      [requestId, source, requestHash, expiresAt]
+    );
 
     const record = await db.get(
       'SELECT * FROM idempotency_keys WHERE request_id = ? AND source = ?',
       [requestId, source]
     );
+
+    if (changes === 0) {
+      const mismatch = Boolean(record?.request_hash && record.request_hash !== requestHash);
+      log.warn('Idempotency insert lost the race, treating as duplicate', { requestId, source });
+      return { hit: true, record, mismatch };
+    }
 
     return { hit: false, record, mismatch: false };
   }
@@ -67,7 +78,7 @@ class IdempotencyService {
         responseJson,
         status,
         statusCode,
-        new Date(Date.now() + DEFAULT_TTL_MS).toISOString(),
+        toSqliteUtc(Date.now() + DEFAULT_TTL_MS),
         requestId,
         source,
       ]

@@ -11,7 +11,7 @@ Simplifyed Admin is the control plane for running multiple OpenAlgo broker insta
 - **Shared market‑data feed** – Quotes, positions, and funds are polled once per interval and cached for every admin session.
 - **Multi-leg strategies & GTT** – Webhook-triggerable strategies with per-leg risk config, exit orders tracked as GTT triggers.
 - **SQLite + services layer** – Instruments cache, option chain builder, expiry calendar, quick‑order execution engine, and health monitoring. One embedded database file, no external DB service.
-- **Local or Supabase auth** – Email/password login built into the app (`/api/v1/auth/register` bootstraps the first admin), or an optional Supabase project for managed identity. Neither is required to run the app.
+- **Local email/password auth** – Built into the app, no external identity provider. `POST /api/v1/auth/register` bootstraps the first admin and then closes itself; further accounts are created by an admin under Settings → Access Control, with role-based permissions.
 - **Docs as source of truth** – See [ARCHITECTURE.md](ARCHITECTURE.md) for the in‑depth architecture guide.
 
 ---
@@ -81,22 +81,20 @@ npm install
 
 #### 3. Configure environment
 
-Create `backend/.env` (there's no `.env.example` yet - copy the keys below):
-
-```
-PORT=3000
-SESSION_SECRET=replace-me       # WS gateway cookie auth only, not user login
-JWT_SECRET=replace-me           # signs local email/password login tokens
-DATABASE_PATH=./database/simplifyed.db
-TELEGRAM_BOT_TOKEN=...          # optional (alerting)
-
-# Optional: only needed if you want Supabase as an additional login method
-SUPABASE_URL=...
-SUPABASE_ANON_KEY=...
-SUPABASE_JWT_SECRET=...
+```bash
+cp .env.example .env
 ```
 
-No `.env` at all still works for local development - every value above has a (non-production-safe) default.
+`.env.example` documents every supported key. Two are **required** - the server exits at startup if either is missing:
+
+```
+SESSION_SECRET=   # signs the session cookie used for WebSocket gateway auth
+JWT_SECRET=       # signs local email/password login tokens
+```
+
+Generate each with `openssl rand -hex 32`. Everything else has a working default.
+
+One more key is worth setting deliberately: `WEBHOOK_TOKEN` is the *only* auth on the TradingView broadcast endpoint, which places live orders. Leave it empty and the endpoint rejects everything; set it and treat it as a trading credential.
 
 #### 4. Run migrations
 
@@ -125,7 +123,23 @@ npm start            # production style
 npm run dev          # rebuilds CSS + restarts on change (if configured)
 ```
 
-The dashboard is available at `http://localhost:3000`. Since no users exist yet, `POST /api/v1/auth/register` (email + password, 8+ chars) creates the first account as Admin and closes itself - use that as your login, or configure Supabase for managed identity instead (see `backend/SUPABASE_AUTH_SETUP.md`).
+The dashboard is available at `http://localhost:3000`.
+
+#### 7. Create the first account
+
+No users exist yet, so bootstrap one:
+
+```bash
+curl -X POST http://localhost:3000/api/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"you@example.com","password":"at-least-8-chars"}'
+```
+
+That first account is created as Admin, and the route then closes itself permanently - every later account is created by an admin under **Settings → Access Control**. If you lose the password, reset it from the CLI:
+
+```bash
+npm run set-password -- you@example.com new-password
+```
 
 ---
 
@@ -201,6 +215,6 @@ Logs stream to stdout via Winston; check the console for `[info]`/`[warn]`/`[err
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) – Full architecture reference (backend services, database schema, watchlist/strategy trading workflows, API surface).
 - [INSTALL.md](INSTALL.md) / [QUICKSTART.md](QUICKSTART.md) / [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) – Production install via `install.sh`.
-- `backend/SUPABASE_AUTH_SETUP.md` – Configuring Supabase as an optional login method.
+- `backend/.env.example` – Every supported environment variable, annotated.
 
 Keep these documents updated whenever you enhance the application - they are the canonical reference for new contributors.

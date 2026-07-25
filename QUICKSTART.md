@@ -9,7 +9,7 @@ Before you begin, ensure you have:
 - [ ] Ubuntu 20.04+ server with root/sudo access
 - [ ] Domain name pointing to your server's IP
 - [ ] Email address for SSL certificate notifications
-- [ ] A Supabase project (URL, anon key, JWT secret) - **required** by the installer for login
+- [ ] An admin email address and a password (8+ characters) for your first login
 - [ ] (Optional) Telegram bot token
 
 ## Installation in 3 Steps
@@ -47,9 +47,9 @@ The installer will ask you for:
 2. **Domain name** - Your fully qualified domain (e.g., admin.example.com)
 3. **Email address** - For Let's Encrypt SSL certificate notifications
 4. **Application port** - Press Enter for default (3000)
-5. **Admin email** - The email that gets the Admin role on first login (must match the account you sign in with)
-6. **Installation directory** - Press Enter for default (/opt/simplifyed)
-7. **Supabase URL, anon key, JWT secret** - Required; create a free project at supabase.com first if you don't have one
+5. **Admin email** - The account created with the Admin role
+6. **Admin password** - Entered twice, minimum 8 characters (input is hidden)
+7. **Installation directory** - Press Enter for default (/opt/simplifyed)
 8. **Telegram bot** - Press Enter to skip or enter bot details
 
 That's it! The script handles everything else automatically.
@@ -75,7 +75,9 @@ Once installation completes, open your browser and visit:
 https://yourdomain.com
 ```
 
-Sign in with the Supabase project you configured (email/password or whichever providers you enabled there, e.g. Google). The email you gave the installer as "Admin email" is pre-granted the Admin role on first login - everyone else who signs in afterward gets no role until an admin assigns one from Settings.
+Sign in with the admin email and password you set during installation. That account holds the Admin role.
+
+Everyone else is added from **Settings → Access Control** - an admin creates the account and assigns a role. A user with no role assigned can sign in but sees an "access pending" screen until an admin grants one.
 
 ## Quick Reference Commands
 
@@ -104,8 +106,9 @@ sudo nano /opt/simplifyed/backend/.env
    - Add your OpenAlgo broker instances
    - Configure watchlists
 
-2. **Add a local password-only login** (optional, works alongside Supabase)
-   - Sign in once via Supabase, then call `POST /api/v1/auth/change-password` with just `newPassword` to attach a local password to your account - useful as a Supabase-outage fallback.
+2. **Add your team**
+   - Settings → Access Control → Create User, then assign a role.
+   - Users change their own password via `POST /api/v1/auth/change-password`; an admin can reset one from the server with `npm run set-password -- <email> <new-password>`.
 
 3. **Import Instruments** (for options trading)
    ```bash
@@ -155,7 +158,7 @@ sudo netstat -tlnp | grep 3000
 
 ## One-Command Installation (Advanced)
 
-Note: the installer still prompts interactively for domain, email, and Supabase credentials even when run this way - "one-command" refers to the download+execute step, not a fully unattended install.
+Note: the installer still prompts interactively for domain, email, and the admin credentials even when run this way - "one-command" refers to the download+execute step, not a fully unattended install.
 
 If you're confident with the defaults and have DNS configured:
 

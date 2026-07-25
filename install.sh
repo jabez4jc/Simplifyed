@@ -32,6 +32,7 @@ DOMAIN=""
 EMAIL=""
 PORT=3000
 ADMIN_EMAIL=""
+ADMIN_PASSWORD=""
 
 ################################################################################
 # Helper Functions
@@ -160,6 +161,24 @@ collect_user_input() {
         read -p "Enter admin user email (first login will be granted Admin): " ADMIN_EMAIL
         if [[ -z "$ADMIN_EMAIL" ]]; then
             print_error "Admin email cannot be empty"
+        fi
+    done
+
+    # Admin password. Must be collected here - the app closes its self-service /register route
+    # as soon as any user row exists, and this install creates one.
+    while [[ -z "$ADMIN_PASSWORD" ]]; do
+        read -s -p "Enter admin password (min 8 characters): " ADMIN_PASSWORD
+        echo ""
+        if [[ ${#ADMIN_PASSWORD} -lt 8 ]]; then
+            print_error "Password must be at least 8 characters"
+            ADMIN_PASSWORD=""
+            continue
+        fi
+        read -s -p "Confirm admin password: " ADMIN_PASSWORD_CONFIRM
+        echo ""
+        if [[ "$ADMIN_PASSWORD" != "$ADMIN_PASSWORD_CONFIRM" ]]; then
+            print_error "Passwords do not match"
+            ADMIN_PASSWORD=""
         fi
     done
 
@@ -319,27 +338,12 @@ configure_environment() {
     SESSION_SECRET=$(generate_random_string)
     JWT_SECRET=$(generate_random_string)
 
-    # Collect Supabase credentials (required)
-    echo ""
-    print_info "Supabase Auth Configuration (required)"
-    while [[ -z "$SUPABASE_URL" ]]; do
-        read -p "Supabase Project URL (e.g., https://xyz.supabase.co): " SUPABASE_URL
-        if [[ -z "$SUPABASE_URL" ]]; then
-            print_error "Supabase URL cannot be empty"
-        fi
-    done
-    while [[ -z "$SUPABASE_ANON_KEY" ]]; do
-        read -p "Supabase anon key: " SUPABASE_ANON_KEY
-        if [[ -z "$SUPABASE_ANON_KEY" ]]; then
-            print_error "Supabase anon key cannot be empty"
-        fi
-    done
-    while [[ -z "$SUPABASE_JWT_SECRET" ]]; do
-        read -p "Supabase JWT secret: " SUPABASE_JWT_SECRET
-        if [[ -z "$SUPABASE_JWT_SECRET" ]]; then
-            print_error "Supabase JWT secret cannot be empty"
-        fi
-    done
+    # Webhook token for the TradingView broadcast endpoint. This is the sole auth check on
+    # /webhook/tradingview/broadcast, so it must be a real secret, not a guessable string.
+    WEBHOOK_TOKEN=$(generate_random_string)
+
+    # Auth is local email+password - the first admin is created via POST /api/v1/auth/register
+    # after startup. No external identity provider is needed.
 
     # Collect Telegram credentials (optional)
     echo ""
@@ -363,12 +367,9 @@ SESSION_SECRET=$SESSION_SECRET
 # Local email/password auth (bootstrap admin via POST /api/v1/auth/register)
 JWT_SECRET=$JWT_SECRET
 
-# Supabase Auth (optional, additional login method)
-SUPABASE_URL=$SUPABASE_URL
-SUPABASE_ANON_KEY=$SUPABASE_ANON_KEY
-SUPABASE_JWT_SECRET=$SUPABASE_JWT_SECRET
-SUPABASE_JWT_AUD=authenticated
-SUPABASE_JWT_ISS=$SUPABASE_URL
+# TradingView broadcast webhook - the only auth on /webhook/tradingview/broadcast.
+# Send it as the X-Webhook-Token header (or ?token= query param) from your alerts.
+WEBHOOK_TOKEN=$WEBHOOK_TOKEN
 
 # Test Mode (disabled in production)
 TEST_MODE=false
@@ -485,15 +486,28 @@ SQL
     sqlite3 "$DB_PATH" \
       "UPDATE application_settings SET value='${PORT}' WHERE key='server.port';"
 
-    print_info "Granting admin role to ${ADMIN_EMAIL}..."
+    # Login normalizes the address to lowercase (routes/v1/auth.js), so store it that way or
+    # the account can never be matched.
+    local admin_email_lc
+    admin_email_lc=$(printf '%s' "$ADMIN_EMAIL" | tr '[:upper:]' '[:lower:]')
+
+    print_info "Granting admin role to ${admin_email_lc}..."
     sqlite3 "$DB_PATH" <<SQL
-INSERT OR IGNORE INTO users (email, is_admin) VALUES ('${ADMIN_EMAIL}', 1);
-UPDATE users SET is_admin = 1 WHERE email = '${ADMIN_EMAIL}';
+INSERT OR IGNORE INTO users (email, is_admin) VALUES ('${admin_email_lc//\'/\'\'}', 1);
+UPDATE users SET is_admin = 1 WHERE email = '${admin_email_lc//\'/\'\'}';
 INSERT OR REPLACE INTO user_roles (user_id, role_id)
 SELECT u.id, r.id
 FROM users u, roles r
-WHERE u.email = '${ADMIN_EMAIL}' AND r.name = 'Admin';
+WHERE u.email = '${admin_email_lc//\'/\'\'}' AND r.name = 'Admin';
 SQL
+
+    # The row above has no password_hash, and creating any user closes POST /api/v1/auth/register
+    # (it only bootstraps while the users table is empty). Without setting a password here the
+    # install would have no reachable login at all, so hash the operator's password with the
+    # app's own bcrypt helper.
+    print_info "Setting admin password..."
+    (cd "$INSTALL_DIR/backend" && DATABASE_PATH="$DB_PATH" sudo -u $APP_USER \
+        node scripts/set-user-password.js "$admin_email_lc" "$ADMIN_PASSWORD")
 
     print_success "Database initialized and migrations applied"
 }
@@ -804,9 +818,11 @@ display_summary() {
     echo -e "${GREEN}║  Next Steps:                                               ║${NC}"
     echo -e "${GREEN}║                                                            ║${NC}"
 
-    echo -e "${GREEN}║  1. Visit https://$DOMAIN to access the dashboard${NC}"
-    echo -e "${GREEN}║     Auth is handled via Supabase with the credentials you  ║${NC}"
-    echo -e "${GREEN}║     provided during install (edit in $INSTALL_DIR/backend/.env).${NC}"
+    echo -e "${GREEN}║  1. Visit https://$DOMAIN and sign in${NC}"
+    echo -e "${GREEN}║     Email:    $ADMIN_EMAIL${NC}"
+    echo -e "${GREEN}║     Password: the one you set during install               ║${NC}"
+    echo -e "${GREEN}║     Change it later via Settings, or:                      ║${NC}"
+    echo -e "${GREEN}║     npm run set-password -- <email> <new-password>         ║${NC}"
 
     echo -e "${GREEN}║                                                            ║${NC}"
     echo -e "${GREEN}║  2. Configure OpenAlgo instances in the dashboard          ║${NC}"

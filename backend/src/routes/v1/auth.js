@@ -15,8 +15,10 @@ import {
 
 const router = express.Router();
 
-// Bootstrap the first admin account. Only works while no users exist yet -
-// once any user exists (local or Supabase-provisioned), this route is closed.
+// Bootstrap the first admin account. Only works while no users exist yet - once any user
+// exists this route is closed permanently, and further accounts are created by an admin via
+// Settings > Access Control (rbac.service.js). Note install.sh creates the admin account
+// itself, so on a scripted install this route is already closed by first boot.
 router.post('/register', async (req, res, next) => {
   try {
     const { email, password } = req.body || {};
