@@ -110,8 +110,13 @@ export async function checkInstrumentsRefresh(req, res, next) {
       return next();
     }
 
-    // Allow auth endpoints without blocking
-    if (req.path.startsWith('/auth/')) {
+    // Allow identity endpoints without blocking. This is mounted with a bare app.use(), so
+    // req.path is the full path - the old '/auth/' prefix test never matched anything and
+    // /api/user was gated on the instruments cache. When no broker instance was healthy that
+    // returned 503, login.html cleared the token and bounced back to the login form: a login
+    // loop caused entirely by a trading-readiness check. Who you are does not depend on the
+    // instruments cache; only trading does.
+    if (req.path === '/api/user' || req.path.startsWith('/api/v1/auth/')) {
       return next();
     }
 

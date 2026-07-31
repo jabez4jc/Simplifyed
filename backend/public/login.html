@@ -331,9 +331,16 @@
           return;
         }
 
-        // Invalid/expired token
-        localStorage.removeItem('auth_token');
-        window.location.href = '/login.html';
+        // Only 401 means the token is actually bad. Any other failure (503 while the
+        // instruments cache loads, a proxy 502) used to discard a perfectly valid token and
+        // bounce back here, which reads to the user as "I can't log in".
+        if (response.status === 401) {
+          localStorage.removeItem('auth_token');
+          window.location.href = '/login.html';
+          return;
+        }
+        showMessage('Server is not ready yet. Please try again in a moment.', 'error');
+        setButtonLoading('login-btn', false, 'Sign In');
       } catch (error) {
         console.error('Access redirect error:', error);
         localStorage.removeItem('auth_token');
