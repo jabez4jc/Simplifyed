@@ -251,21 +251,28 @@ class RiskControlsService {
     return { targetPoints, stoplossPoints, trailingPoints, trailingActivationPoints };
   }
 
+  /**
+   * Which risk-column set applies: 'direct' (equity), 'futures' or 'options'.
+   *
+   * symbol_type is authoritative and is checked FIRST. It used to be checked last, behind
+   * substring tests on the symbol name - and `symbol.includes('CE')` matches RELIAN**CE**,
+   * PETRON**E**T is fine but PE**L**, **CE**SC, **CE**ATLTD, PERSIST**E**NT and A**CE** are not.
+   * Every such equity was classified as 'options', so auto-exit read target_points_options /
+   * stoploss_points_options for it and silently ignored anything configured on the Direct tab.
+   *
+   * The name heuristics remain as a fallback for rows with no symbol_type, but are now anchored:
+   * a real option symbol ends in a strike followed by CE/PE (NIFTY26JUL24000CE), and a future
+   * ends in FUT. Substring matching anywhere in the name is not a safe test.
+   */
   _determineMode(entry, symbol) {
+    const type = (entry?.symbol_type || '').toUpperCase();
+    if (type === 'OPTIONS') return 'options';
+    if (type === 'FUTURES' || type === 'INDEX') return 'futures';
+    if (type === 'EQUITY' || type === 'EQ') return 'direct';
+
     const normalizedSymbol = (symbol || '').toUpperCase();
-    if (normalizedSymbol.includes('CE') || normalizedSymbol.includes('PE')) {
-      return 'options';
-    }
-    if (normalizedSymbol.includes('FUT')) {
-      return 'futures';
-    }
-    const type = (entry.symbol_type || '').toUpperCase();
-    if (type === 'OPTIONS') {
-      return 'options';
-    }
-    if (type === 'FUTURES' || type === 'INDEX') {
-      return 'futures';
-    }
+    if (/\d(CE|PE)$/.test(normalizedSymbol)) return 'options';
+    if (/FUT$/.test(normalizedSymbol)) return 'futures';
     return 'direct';
   }
 }

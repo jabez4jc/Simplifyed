@@ -29,6 +29,7 @@ import telegramRoutes from './telegram.js';
 import telemetryRoutes from './telemetry.js';
 import snapshotRoutes from './snapshots.js';
 import pnlSnapshotsRoutes from './pnl-snapshots.js';
+import historyRoutes from './history.js';
 import { getAppReadyStatus } from '../../middleware/instruments-refresh.middleware.js';
 import { toISTISOString } from '../../utils/time.js';
 import { config } from '../../core/config.js';
@@ -62,6 +63,7 @@ router.use('/health-check', healthCheckRoutes);
 router.use('/telemetry', telemetryRoutes);
 router.use('/snapshots', snapshotRoutes);
 router.use('/pnl-snapshots', pnlSnapshotsRoutes);
+router.use('/history', historyRoutes);
 
 // Public config for frontend - intentionally unauthenticated since none of these values are
 // sensitive (contrast with the webhook token below, which lives behind GET /webhook-config

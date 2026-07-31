@@ -1,11 +1,26 @@
 import EventEmitter from 'events';
 import WebSocket from 'ws';
 import { log } from '../core/logger.js';
+import { isCryptoBroker, isCryptoExchange } from '../utils/broker-type.util.js';
 import { isQuoteEndpointBlackout } from './instance-health.service.js';
 import { toISTDate } from '../utils/time.js';
 
 const MAX_SYMBOLS_PER_INSTANCE = 500;
 const RETRY_MS = 3000;
+// Reconnects for several connections dropped by the same event (a shared proxy blip) are spread
+// out rather than firing in lockstep - a small jitter, not a real backoff curve, since RETRY_MS
+// itself never grows (this app always wants to keep trying, never gives up onto REST at this
+// layer - see openalgo-ws-heartbeat.test.js).
+const RETRY_JITTER_MS = 600;
+// A connection can go "silently dead" - TCP still open, broker-side gone (common behind proxies/
+// load balancers) - with no `close` event ever firing. Nothing here previously asked "are we
+// actually still hearing from this socket"; market-data-feed.service.js's own 10-15s quote TTL
+// eventually inferred it from stale REST-side data, which is slow and indirect. This watchdog
+// asks directly: if a connection hasn't produced ANY message (quote, order update, auth, ping -
+// anything JSON that parsed) in WS_LIVENESS_TIMEOUT_MS, treat it as dead and reconnect through
+// the exact same path a real `close` event already uses.
+const WS_LIVENESS_CHECK_MS = 15 * 1000;
+const WS_LIVENESS_TIMEOUT_MS = 45 * 1000;
 const QUOTE_BLACKOUT_END = { hour: 8, minute: 45 };
 const ORDER_UPDATE_CACHE_MAX = 500;
 const ORDER_UPDATE_CACHE_TTL_MS = 10 * 60 * 1000;
@@ -42,6 +57,34 @@ function serializeSubscribeDepth(entries) {
     }
     return payload;
   });
+}
+
+/**
+ * Whether an incoming message is an application-level heartbeat, and what to answer with if so.
+ * Pulled out as a pure function so it's testable without opening a real socket - the connection
+ * class it's used from opens one in its constructor, which has no place in a unit test.
+ *
+ * The exact envelope OpenAlgo's heartbeat uses isn't documented, so both a `type` and an
+ * `action` convention are recognised (the rest of this protocol uses `type` for pushed data and
+ * `action` for client-initiated commands - a ping could reasonably be either), and the reply
+ * carries both keys for the same reason.
+ */
+export function pingReplyFor(msg) {
+  if (!msg || (msg.type !== 'ping' && msg.action !== 'ping')) return null;
+  return { type: 'pong', action: 'pong' };
+}
+
+/**
+ * Pure decision the liveness watchdog runs against every connection - separated out from
+ * `_startLivenessWatchdog` (below) so it's testable without a real socket, same reasoning as
+ * `pingReplyFor` above. A connection currently reconnecting (`connected: false`) is never stale -
+ * it's already on its own close/error path, this check exists only to catch the "socket object
+ * still says open but nothing has arrived" case that path can't see.
+ */
+export function isConnectionStale(conn, now = Date.now()) {
+  if (!conn || !conn.connected) return false;
+  const last = conn.lastMessageAt || 0;
+  return now - last >= WS_LIVENESS_TIMEOUT_MS;
 }
 
 function buildWsUrl(instance) {
@@ -96,6 +139,13 @@ class OpenAlgoWsConnection {
       this.ws.on('error', (err) => {
         log.warn('OpenAlgo WS error', { instance: this.instance.name || this.instance.id, error: err.message });
       });
+      // Protocol-level ping: the `ws` library answers this automatically at the socket level
+      // with no application code required. This handler is redundant with that default and is
+      // only here so a dropped connection shows up in logs as "server pinged, we're still
+      // here" rather than as a silent gap.
+      this.ws.on('ping', () => {
+        log.debug('OpenAlgo WS ping received', { instance: this.instance.name || this.instance.id });
+      });
     } catch (err) {
       log.warn('OpenAlgo WS connect failed', { instance: this.instance.name || this.instance.id, error: err.message });
       this._scheduleReconnect();
@@ -104,6 +154,9 @@ class OpenAlgoWsConnection {
 
   _onOpen() {
     this.connected = true;
+    // A fresh connection has heard nothing yet - stamp it now so the liveness watchdog's first
+    // check doesn't immediately treat it as stale before the first real message arrives.
+    this.lastMessageAt = Date.now();
     this._send({ action: 'authenticate', api_key: this.instance.api_key });
     // Account-level order fill/status stream - same connection as quotes, just a second
     // subscription. Brokers without a push order-update mechanism simply never send this type;
@@ -115,6 +168,10 @@ class OpenAlgoWsConnection {
   }
 
   _onMessage(raw) {
+    // Any inbound frame counts - the watchdog only cares whether the socket is actually
+    // carrying traffic, not what kind. Stamped before the parse attempt below so even a
+    // malformed-but-real message (caught and ignored further down) still proves liveness.
+    this.lastMessageAt = Date.now();
     try {
       const msg = JSON.parse(raw.toString());
       if (msg.type === 'market_data' && msg.data) {
@@ -137,6 +194,12 @@ class OpenAlgoWsConnection {
       if (msg.type === 'auth' && msg.status !== 'success') {
         log.warn('OpenAlgo WS auth failed', { instance: this.instance.name || this.instance.id, message: msg.message });
       }
+      // Application-level heartbeat, distinct from the protocol-level ping the `ws` library
+      // already auto-answers above. Some WS deployments send this instead (or as well) because
+      // it survives proxies/CDNs that strip raw WebSocket control frames - every subdomain this
+      // app connects to is exactly that kind of proxied deployment.
+      const pingReply = pingReplyFor(msg);
+      if (pingReply) this._send(pingReply);
     } catch (err) {
       // ignore malformed messages
     }
@@ -147,7 +210,8 @@ class OpenAlgoWsConnection {
       try { this.ws.terminate(); } catch (_) {}
     }
     this.connected = false;
-    setTimeout(() => this._connect(), RETRY_MS);
+    const jitter = Math.round((Math.random() * 2 - 1) * RETRY_JITTER_MS);
+    setTimeout(() => this._connect(), Math.max(500, RETRY_MS + jitter));
     this.onStatus?.(this.instance.id, 'reconnecting');
   }
 
@@ -200,6 +264,7 @@ class OpenAlgoWsService extends EventEmitter {
     this.connections = new Map(); // instanceId -> connection
     this.instances = [];
     this.orderUpdateCache = new Map(); // orderid -> { order, receivedAt } - bounded, TTL'd below
+    this._livenessInterval = null;
   }
 
   start(instances = []) {
@@ -222,6 +287,29 @@ class OpenAlgoWsService extends EventEmitter {
         };
       }
     });
+    this._startLivenessWatchdog();
+  }
+
+  /**
+   * Reconnects any connection that has gone silently dead - see the WS_LIVENESS_TIMEOUT_MS doc
+   * comment at the top of this file for why this exists (a `close` event alone is not enough).
+   * One shared interval for every connection, not one per connection - N sockets should not mean
+   * N timers for the same check.
+   */
+  _startLivenessWatchdog() {
+    if (this._livenessInterval) return;
+    this._livenessInterval = setInterval(() => {
+      const now = Date.now();
+      for (const conn of this.connections.values()) {
+        if (!isConnectionStale(conn, now)) continue;
+        log.warn('OpenAlgo WS liveness check failed - reconnecting', {
+          instance: conn.instance?.name || conn.instance?.id,
+          silentForMs: now - (conn.lastMessageAt || 0),
+        });
+        conn._scheduleReconnect();
+      }
+    }, WS_LIVENESS_CHECK_MS);
+    this._livenessInterval.unref?.();
   }
 
   /**
@@ -243,24 +331,40 @@ class OpenAlgoWsService extends EventEmitter {
     }));
 
     const conns = Array.from(this.connections.values());
-    let idx = 0;
     conns.forEach((c) => c.setSubscriptions([])); // reset
 
+    /**
+     * Round-robin never checked whether a connection's BROKER could serve a symbol's exchange
+     * at all. With a crypto instance and an Indian broker instance as the only two connections,
+     * an Indian index (NIFTY, NSE_INDEX) had a coin-flip chance of being assigned to the crypto
+     * connection - which has no NSE session to subscribe to, so no quote for that symbol ever
+     * arrives on it. The symbol still shows as "subscribed" and the chart still polls, so the
+     * failure is invisible: the snapshot just never updates, and gets older forever. Observed
+     * live: NIFTY landed on the crypto connection and its cached quote was 190 days old.
+     */
+    const compatible = (conn, exchange) => (isCryptoExchange(exchange)
+      ? isCryptoBroker(conn.instance?.broker)
+      : !isCryptoBroker(conn.instance?.broker));
+
+    const idxByBucket = new Map(); // 'crypto' | 'indian' -> next round-robin index
     for (const sym of symbolsUpper) {
       const key = `${sym.exchange}|${sym.symbol}`;
-      // Prefer instance with non-zero LTP if provided
+      const pool = conns.filter((c) => compatible(c, sym.exchange));
+      if (!pool.length) continue; // no connection can possibly serve this exchange
+
       let targetConn = null;
       const preferredId = preferredInstances.get(key);
       if (preferredId && this.connections.has(preferredId)) {
         const candidate = this.connections.get(preferredId);
-        if ((candidate.desired.size || 0) < MAX_SYMBOLS_PER_INSTANCE) {
+        if (pool.includes(candidate) && (candidate.desired.size || 0) < MAX_SYMBOLS_PER_INSTANCE) {
           targetConn = candidate;
         }
       }
       if (!targetConn) {
-        // Round-robin fallback
-        targetConn = conns[idx % conns.length];
-        idx += 1;
+        const bucket = isCryptoExchange(sym.exchange) ? 'crypto' : 'indian';
+        const idx = idxByBucket.get(bucket) || 0;
+        targetConn = pool[idx % pool.length];
+        idxByBucket.set(bucket, idx + 1);
       }
       if ((targetConn.desired.size || 0) >= MAX_SYMBOLS_PER_INSTANCE) {
         continue;
@@ -392,6 +496,10 @@ class OpenAlgoWsService extends EventEmitter {
       conn.close();
     }
     this.connections.clear();
+    if (this._livenessInterval) {
+      clearInterval(this._livenessInterval);
+      this._livenessInterval = null;
+    }
   }
 }
 

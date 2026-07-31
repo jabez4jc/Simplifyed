@@ -6,6 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
+    "postinstall": "node scripts/sync-vendor-charts.js",
     "dev": "node --watch server.js",
     "build:css": "node build-css.js",
     "pretest": "DATABASE_PATH=./database/test.db node migrations/migrate.js",
@@ -40,6 +41,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "node-cron": "^3.0.3",
+    "openalgo-charts": "^1.0.24",
     "sqlite3": "^5.1.7",
     "undici": "^7.16.0",
     "winston": "^3.11.0",

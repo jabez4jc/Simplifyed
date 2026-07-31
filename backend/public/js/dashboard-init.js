@@ -31,7 +31,8 @@ document.addEventListener('visibilitychange', () => {
     }
   } else if (app.autoPausedByVisibility) {
     app.autoPausedByVisibility = false;
-    app.refreshCurrentView(true);
-    app.startAutoRefresh();
+    // In place, not a rebuild - see resumeBackgroundData. Coming back to the tab must not
+    // destroy the chart you left open.
+    app.resumeBackgroundData();
   }
 });

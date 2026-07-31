@@ -47,6 +47,43 @@ const FEED_STAGGER_MS = 2000;
 const WS_SYMBOL_STALE_MS = 10 * 60 * 1000;
 const DEFAULT_DEPTH_LEVEL = 5;
 
+/**
+ * INT32 overflow markers.
+ *
+ * Broker feeds relayed through OpenAlgo send 2^31 for numeric fields they have no value for,
+ * and prices are scaled by 100, so an unset price arrives as 21474836.48. Observed live on
+ * NSE_INDEX NIFTY, whose quote carried open/high/low of 21474836.48 and a volume of exactly
+ * 2^31. Passed through, those become a 21-million-rupee candle and a volume baseline that
+ * poisons every delta computed from it.
+ */
+const INT32_SENTINEL = 2 ** 31;
+const INT32_SENTINEL_PRICE = INT32_SENTINEL / 100;
+const isSentinelValue = (n) => n === INT32_SENTINEL || n === INT32_SENTINEL_PRICE;
+
+const QUOTE_PRICE_FIELDS = ['ltp', 'open', 'high', 'low', 'close', 'prev_close', 'bid', 'ask'];
+
+/**
+ * Strip unusable fields from an incoming quote, or return null when nothing is left worth
+ * caching. Fields are dropped rather than zeroed: a missing high is honest, a high of 0 is a
+ * price that never traded.
+ */
+export function sanitiseQuote(quote) {
+  if (!quote || typeof quote !== 'object') return null;
+  const clean = { ...quote };
+
+  for (const field of QUOTE_PRICE_FIELDS) {
+    const value = Number(clean[field]);
+    if (Number.isFinite(value) && isSentinelValue(value)) delete clean[field];
+  }
+  const volume = Number(clean.volume);
+  if (Number.isFinite(volume) && isSentinelValue(volume)) delete clean.volume;
+
+  // Without a last price there is nothing a quote is good for downstream.
+  const ltp = Number(clean.ltp);
+  if (!Number.isFinite(ltp) || ltp <= 0) return null;
+  return clean;
+}
+
 class MarketDataFeedService extends EventEmitter {
   constructor() {
     super();
@@ -133,8 +170,14 @@ class MarketDataFeedService extends EventEmitter {
     await this._startWsQuotes();
     openalgoWsService.on('quote', ({ instanceId, quote }) => {
       try {
+        const clean = sanitiseQuote(quote);
+        if (!clean) {
+          // Nothing usable in the packet. Caching it would serve a fabricated price to the
+          // chart, the watchlist and the order preview alike.
+          return;
+        }
         const enriched = {
-          ...quote,
+          ...clean,
           _source_instance_id: instanceId,
           _source: 'ws',
         };
@@ -258,6 +301,9 @@ class MarketDataFeedService extends EventEmitter {
         host_url: i.host_url,
         api_key: i.api_key,
         websocket_url: i.websocket_url,
+        // Needed so a symbol is only ever round-robined onto a connection whose broker can
+        // actually serve its exchange - see the note on syncAll's compatibility filter.
+        broker: i.broker,
       })));
       // Prime subscriptions immediately with current symbols
       const symbols = await this._buildGlobalSymbolList();
@@ -523,9 +569,19 @@ class MarketDataFeedService extends EventEmitter {
     return entry;
   }
 
+  /**
+   * OpenAlgo reports depth in two DIFFERENT shapes depending on transport, and this function is
+   * fed both: the WebSocket push uses `depth.buy[]`/`depth.sell[]`, the REST `/depth` endpoint
+   * uses `bids[]`/`asks[]` at the top level. Recognising only the WS shape meant every REST
+   * fallback (WS depth unavailable or too slow) silently computed bid=null/ask=null even though
+   * the broker returned real numbers - degrading limit-price synthesis to plain-quote pricing
+   * for no reason. Both shapes are checked so either source works.
+   */
   _extractBestBidAskFromDepth(depth) {
-    const buy = depth?.depth?.buy || depth?.buy || depth?.data?.buy || [];
-    const sell = depth?.depth?.sell || depth?.sell || depth?.data?.sell || [];
+    const buy = depth?.depth?.buy || depth?.buy || depth?.data?.buy
+      || depth?.bids || depth?.data?.bids || [];
+    const sell = depth?.depth?.sell || depth?.sell || depth?.data?.sell
+      || depth?.asks || depth?.data?.asks || [];
     const bid = Number(buy?.[0]?.price ?? 0);
     const ask = Number(sell?.[0]?.price ?? 0);
     return {
@@ -1952,6 +2008,20 @@ class MarketDataFeedService extends EventEmitter {
     this.lastGlobalSymbolList = next;
     const preferred = this._buildPreferredInstanceMap(next);
     openalgoWsService.syncAll(next, preferred);
+  }
+
+  /**
+   * Public entry point for a caller that just resolved one symbol it wants live data for (a
+   * chart being opened, a symbol/timeframe switch) and needs it in the broker-side WS
+   * subscription set NOW, rather than waiting on the incidental REST-polling side effect that
+   * used to be the only path in (see the doc comment on `_ensureWsSymbolSubscription` above -
+   * that method already did the right thing, it just had no caller). A no-op when WS has no
+   * active connections yet - `refreshQuotes()`'s own periodic sync will pick the symbol up once
+   * a connection exists, same as any other symbol.
+   */
+  ensureSymbolSubscribed(exchange, symbol) {
+    if (!exchange || !symbol) return;
+    this._ensureWsSymbolSubscription([{ exchange, symbol }]);
   }
 
   async _waitForWsQuote(exchange, symbol, { retries = 5, delayMs = 200, targetInstanceId = null } = {}) {

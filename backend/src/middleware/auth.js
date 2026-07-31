@@ -5,11 +5,19 @@ import path from 'path';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import db from '../core/database.js';
-import { config } from '../core/config.js';
+import { config, isTestMode } from '../core/config.js';
 import { log } from '../core/logger.js';
 import { UnauthorizedError, ForbiddenError } from '../core/errors.js';
 
 const LOCAL_TOKEN_TTL = '7d';
+
+/**
+ * True when the app is served over TLS, per BASE_URL. Exported so server.js's clearCookie call
+ * uses the identical value - a Secure mismatch between set and clear leaves the cookie behind.
+ */
+export function isSecureBaseUrl() {
+  return String(config.baseUrl || '').toLowerCase().startsWith('https:');
+}
 
 export async function hashPassword(password) {
   return bcrypt.hash(password, 10);
@@ -36,7 +44,11 @@ export function configureSession() {
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: config.env === 'production',
+      // Derived from the actual scheme, not from NODE_ENV. What makes a Secure cookie correct
+      // is being served over TLS, which BASE_URL already states exactly; NODE_ENV only
+      // correlates with it, and defaults to 'development' when unset - so a TLS deployment
+      // missing that variable would have silently sent session cookies in the clear.
+      secure: isSecureBaseUrl(),
       // Must match the options POST /auth/logout passes to res.clearCookie (server.js), or the
       // browser treats it as a different cookie and the session cookie survives logout.
       sameSite: 'lax',
@@ -107,12 +119,7 @@ async function attachRoleAndPermissions(userId) {
 // unrelated to this - it only backs WS gateway cookie auth.
 export async function optionalAuth(req, res, next) {
   try {
-    const testModeEnabled =
-      config.auth.enableTestMode === true ||
-      process.env.ENABLE_TEST_MODE === 'true' ||
-      config.testMode?.enabled === true;
-
-    if (testModeEnabled) {
+    if (isTestMode()) {
       req.user = {
         id: 1,
         email: 'test@example.com',
@@ -209,6 +216,25 @@ export async function getUserWithRole(userId) {
   return attachRoleAndPermissions(userId);
 }
 
+/**
+ * Verify a locally-issued Bearer JWT for the WS gateway's connection-upgrade auth.
+ *
+ * No DB round-trip (unlike optionalAuth) - the gateway only needs to know the token is genuine
+ * and unexpired before it starts streaming to that socket, not the user's permission set.
+ * Deliberately the SAME secret and algorithm optionalAuth verifies REST requests with: the
+ * gateway used to check an express-session cookie instead, which nothing in this app ever
+ * issues (saveUninitialized is false and no route writes to req.session), so the WS connection
+ * was rejected on every single attempt, not merely sometimes.
+ */
+export function verifyLocalToken(token) {
+  if (!token) return null;
+  try {
+    return jwt.verify(token, config.auth.jwtSecret, { algorithms: ['HS256'] });
+  } catch (_) {
+    return null;
+  }
+}
+
 export default {
   configureSession,
   optionalAuth,
@@ -216,6 +242,7 @@ export default {
   requireAdmin,
   requirePermission,
   getUserWithRole,
+  verifyLocalToken,
   hashPassword,
   verifyPassword,
   signLocalToken,

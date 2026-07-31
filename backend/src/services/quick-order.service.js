@@ -1144,7 +1144,12 @@ class QuickOrderService {
       symbol: finalSymbol,
       quantity: tradeQuantity,
       action: algoAction,
-      final_position: finalPosition,
+      // null, not the verified position: verifyPosition() above is deliberately fire-and-forget
+      // so it cannot block the response, and its `finalPosition` is scoped to that closure.
+      // Referencing it here threw ReferenceError and failed the whole order *after* it had been
+      // sent to the broker. The sibling options path already returns null here for the same
+      // reason; no consumer reads this field.
+      final_position: null,
     };
   }
 

@@ -104,6 +104,12 @@ class OpenAlgoClient extends EventEmitter {
     this.rpmLimitPerInstance = 300;
     this.rpmLimitGlobal = Number.POSITIVE_INFINITY; // optional global cap (disabled)
     this.ordersPerSecondLimit = 10;
+    // OpenAlgo caps /placesmartorder at 2 req/sec, a stricter limit than plain /placeorder's
+    // 10/sec. Every order this app places goes through placesmartorder (see order-placement
+    // .service.js - it always reconciles against the open position), so applying the lenient
+    // limit there let a burst - closing several positions, a fast quick-order fan-out, a retry
+    // storm - send smart-orders up to 5x the rate the broker actually accepts.
+    this.smartOrdersPerSecondLimit = 2;
     // Endpoint-specific token buckets (per instance)
     this.endpointBuckets = new Map(); // key: instKey -> { orders, critical, background, rest_quotes }
     this.errorCounters = new Map(); // instKey -> { day, count404, countInvalid, backoffUntil }
@@ -192,6 +198,7 @@ class OpenAlgoClient extends EventEmitter {
           rpsPerInstance: this.rpsLimitPerInstance,
           rpmPerInstance: this.rpmLimitPerInstance,
           ordersPerSecond: this.ordersPerSecondLimit,
+          smartOrdersPerSecond: this.smartOrdersPerSecondLimit,
           maxConcurrentTasks: this.maxConcurrentTasks,
         });
       } catch (error) {
@@ -224,6 +231,7 @@ class OpenAlgoClient extends EventEmitter {
           rpsPerInstance: this.rpsLimitPerInstance,
           rpmPerInstance: this.rpmLimitPerInstance,
           ordersPerSecond: this.ordersPerSecondLimit,
+          smartOrdersPerSecond: this.smartOrdersPerSecondLimit,
           maxConcurrentTasks: this.maxConcurrentTasks,
         });
         this.emit('rateLimitsReloaded');
@@ -261,6 +269,7 @@ class OpenAlgoClient extends EventEmitter {
     this.rpmLimitPerInstance = getNum('rate_limits.rpm_per_instance', this.rpmLimitPerInstance);
     this.rpmLimitGlobal = Number.POSITIVE_INFINITY; // keep global cap disabled
     this.ordersPerSecondLimit = getNum('rate_limits.orders_per_second', this.ordersPerSecondLimit);
+    this.smartOrdersPerSecondLimit = getNum('rate_limits.smart_orders_per_second', this.smartOrdersPerSecondLimit);
     this.maxConcurrentTasks = getNum('rate_limits.max_concurrent_tasks', this.maxConcurrentTasks);
 
     // Testing/debug settings
@@ -748,6 +757,15 @@ class OpenAlgoClient extends EventEmitter {
     const state = this._getRateState(instKey);
     let waitedOnce = false;
 
+    // placesmartorder is capped at 2/sec by OpenAlgo, plain placeorder at 10/sec - a single
+    // shared limit here was applying the lenient figure to what is, in every call site this app
+    // has, exclusively smart-order traffic. Both endpoints still share one sliding window (the
+    // broker enforces its cap per API key, not per endpoint-shape), so this only needs to pick
+    // the RIGHT threshold for that window rather than tracking the endpoints separately.
+    const ordersLimit = (endpoint || '').toLowerCase() === 'placesmartorder'
+      ? this.smartOrdersPerSecondLimit
+      : this.ordersPerSecondLimit;
+
     while (true) {
       const now = Date.now();
       this._prune(state.rps, 1000, now);
@@ -764,7 +782,7 @@ class OpenAlgoClient extends EventEmitter {
 
       const rpsOver = instRps >= this.rpsLimitPerInstance;
       const rpmOver = instRpm >= this.rpmLimitPerInstance;
-      const ordersOver = isOrderPlacement && (instOrders >= this.ordersPerSecondLimit || globalOrders >= this.ordersPerSecondLimit);
+      const ordersOver = isOrderPlacement && (instOrders >= ordersLimit || globalOrders >= ordersLimit);
 
       if (!rpsOver && !rpmOver && !ordersOver) {
         return;
@@ -787,6 +805,7 @@ class OpenAlgoClient extends EventEmitter {
           globalRpm,
           instOrders,
           globalOrders,
+          ordersLimit,
           waitFor,
         });
         waitedOnce = true;
@@ -892,7 +911,11 @@ class OpenAlgoClient extends EventEmitter {
       const meta = this.instanceMeta.get(instKey) || {};
       const rpsLimit = this.rpsLimitPerInstance;
       const rpmLimit = this.rpmLimitPerInstance;
-      const ordersLimit = this.ordersPerSecondLimit;
+      // Every order this app places goes through placesmartorder, so the SMART limit is what
+      // actually governs the shared `orders` window in practice, even though a future direct
+      // placeorder call would be allowed the more lenient figure. Reporting the plain limit
+      // here would tell an operator they have 5x the order throughput they actually do.
+      const ordersLimit = this.smartOrdersPerSecondLimit;
 
       budgets.push({
         key: instKey,
@@ -903,6 +926,7 @@ class OpenAlgoClient extends EventEmitter {
           rps: rpsLimit,
           rpm: rpmLimit,
           ordersPerSecond: ordersLimit,
+          ordersPerSecondPlain: this.ordersPerSecondLimit,
           maxConcurrent: this.maxConcurrentTasks,
         },
         usage: {
@@ -1156,7 +1180,16 @@ class OpenAlgoClient extends EventEmitter {
    */
   async getOrderBook(instance) {
     const response = await this.request(instance, 'orderbook');
-    return response.data;
+    // OpenAlgo returns either a bare array or { orders: [...] } depending on broker and version.
+    // Normalize here so callers get one shape. Every caller but one already re-implemented this
+    // (order-placement.service.js, market-data-feed.service.js, the order-id lookup below);
+    // order.service.syncOrderStatus did not, and its `orderbook.find(...)` threw
+    // "orderbook.find is not a function" on every poll, leaving order status unreconciled.
+    const data = response.data;
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data?.orders)) return data.orders;
+    if (Array.isArray(data?.data)) return data.data;
+    return [];
   }
 
   /**

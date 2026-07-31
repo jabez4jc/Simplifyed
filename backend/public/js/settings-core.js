@@ -11,7 +11,7 @@ class SettingsHandler {
   constructor() {
     this.categories = [];
     this.settings = {};
-    this.activeCategory = 'server';
+    this.activeCategory = null; // schema decides; see settings-schema.js
     this.activeMainTab = 'general'; // New: Track main tab (general, access, data, status)
     this.isSaving = false;
     this.searchQuery = '';
@@ -25,50 +25,13 @@ class SettingsHandler {
     this.permissionFilter = '';
     this.userFilter = '';
     this.userRoleFilter = 'all';
-    this.allowedCategories = ['polling', 'market_data_feed', 'instance_health', 'instance_health_tests', 'market_hours', 'trading', 'brokerage'];
-    this.allowedSettings = {
-      polling: [
-        'polling.instance_interval_ms',
-        'polling.health_check_interval_ms',
-      ],
-      streaming: [
-        'streaming.enabled',
-      ],
-      market_data_feed: [
-        'market_data_feed.quote_ttl_idle_ms',
-        'market_data_feed.quote_ttl_active_ms',
-        'market_data_feed.position_interval_idle_ms',
-        'market_data_feed.position_interval_active_ms',
-        'market_data_feed.tradebook_interval_idle_ms',
-        'market_data_feed.tradebook_interval_active_ms',
-        'market_data_feed.orderbook_interval_ms',
-        'market_data_feed.funds_interval_ms',
-        'market_data_feed.multiquote_cooldown_idle_ms',
-        'market_data_feed.multiquote_cooldown_active_ms',
-        'market_data_feed.max_order_spread_pct',
-      ],
-      instance_health: [
-        'instance_health.ping_healthy_interval_ms',
-        'instance_health.ping_unhealthy_interval_ms',
-        'instance_health.ping_unhealthy_max_attempts',
-        'instance_health.analyzer_check_interval_ms',
-      ],
-      instance_health_tests: [],
-      market_hours: [
-        'market_hours.quote_blackout_start',
-        'market_hours.quote_blackout_end',
-        'market_hours.general_blackout_start',
-        'market_hours.general_blackout_end',
-      ],
-      trading: [
-        'trading_sessions',
-      ],
-      brokerage: [
-        'brokerage.default',
-        'brokerage.by_broker',
-        'brokerage.market_order_support',
-      ],
-    };
+    // allowedCategories/allowedSettings used to live here as a hardcoded mirror of what the
+    // UI would show. It drifted from the database (it listed a polling key that doesn't exist
+    // and hid one that does), and being client-side it filtered display only - the API still
+    // accepted writes to every other key. Both concerns now live in
+    // src/config/settings-registry.js, served via GET /api/v1/settings/schema.
+    this.schema = null;
+    this.activeGroup = null;
     this.displaySettings = {};
     this.displayCategories = [];
 
@@ -220,7 +183,12 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
 
       this.categories = categories;
       this.settings = allSettings;
-      this.applySettingsFilter();
+
+      // The schema is what the UI renders from; fetch it after this.settings so its values win
+      // (it reads the same rows, but only the editable subset, already grouped and labelled).
+      if (canViewAppSettings) {
+        await this.fetchSchema();
+      }
 
       // Load instance health test config
       if (this.isAdmin()) {
@@ -254,6 +222,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         this.initRbacListeners();
       }
       this.initCategoryTabs();
+      this.bindSchemaInputs();
       this.initMainTabListeners();
     } catch (error) {
       contentArea.innerHTML = `
@@ -262,64 +231,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         </div>
       `;
       console.error('[Settings] Error rendering settings view:', error);
-    }
-  }
-
-  applySettingsFilter() {
-    const allowedCategories = Array.isArray(this.allowedCategories)
-      ? new Set(this.allowedCategories)
-      : null;
-    const filteredSettings = {};
-
-    Object.entries(this.settings || {}).forEach(([category, categorySettings]) => {
-      if (allowedCategories && !allowedCategories.has(category)) {
-        return;
-      }
-
-      const allowedKeys = this.allowedSettings?.[category];
-      const filteredCategorySettings = {};
-
-      Object.entries(categorySettings || {}).forEach(([key, setting]) => {
-        if (Array.isArray(allowedKeys) && !allowedKeys.includes(key)) {
-          return;
-        }
-        filteredCategorySettings[key] = setting;
-      });
-
-      if (Object.keys(filteredCategorySettings).length > 0) {
-        filteredSettings[category] = filteredCategorySettings;
-      }
-    });
-
-    if (!allowedCategories || allowedCategories.has('streaming')) {
-      const streamingSetting = this.getStreamingSetting();
-      if (!this.settings.streaming) {
-        this.settings.streaming = {};
-      }
-      this.settings.streaming['streaming.enabled'] = streamingSetting;
-      filteredSettings.streaming = this.settings.streaming;
-    }
-
-    if (!allowedCategories || allowedCategories.has('instance_health_tests')) {
-      filteredSettings.instance_health_tests = {};
-    }
-
-    this.displaySettings = filteredSettings;
-    this.displayCategories = Object.keys(filteredSettings).map((category) => ({
-      category,
-      count: Object.keys(filteredSettings[category] || {}).length,
-    }));
-
-    if (Array.isArray(this.allowedCategories)) {
-      this.displayCategories.sort(
-        (a, b) =>
-          this.allowedCategories.indexOf(a.category) -
-          this.allowedCategories.indexOf(b.category)
-      );
-    }
-
-    if (!this.displaySettings[this.activeCategory]) {
-      this.activeCategory = this.displayCategories[0]?.category || this.activeCategory;
     }
   }
 

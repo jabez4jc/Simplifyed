@@ -11,6 +11,8 @@ import instanceService from '../../services/instance.service.js';
 import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';
+import riskControlsService from '../../services/risk-controls.service.js';
+import { resolveOptionsUnderlyingKey, resolveOptionLotSize } from '../../utils/underlying.util.js';
 import db from '../../core/database.js';
 
 const OPTIONS_ACTION_SIDE = {
@@ -60,6 +62,7 @@ async function resolveMarginBasedQuantity({ symbolId, instanceId, action }) {
   return quantity;
 }
 
+
 const router = express.Router();
 router.use(requireAuth);
 
@@ -92,6 +95,99 @@ function logAudit(req, action, metadata = {}) {
  *   "stepLots": 1 (optional - for OPTIONS mode)
  * }
  */
+/**
+ * GET /api/v1/quickorders/targets?symbolId=123
+ *
+ * Answers "if I place this order, where does it actually go?" WITHOUT placing anything.
+ *
+ * Exists for the chart's confirmation dialog. On this app a single click fans out to every
+ * instance assigned to the symbol's watchlist, so the operator has to be told the blast radius
+ * before committing, not after - including which targets are live and which are analyzer.
+ *
+ * Deliberately calls quickOrderService._getTargetInstances, the same resolver the execution
+ * path uses, rather than re-implementing the query. A preview that can drift from the real
+ * target set is worse than no preview: it would state a blast radius confidently and be wrong.
+ */
+router.get('/targets', requirePermission('orders.place'), async (req, res, next) => {
+  try {
+    const { symbolId, instanceId } = req.query;
+    const parsedSymbolId = parseInt(symbolId, 10);
+    if (!Number.isInteger(parsedSymbolId) || parsedSymbolId <= 0) {
+      throw new ValidationError('symbolId must be a positive integer');
+    }
+
+    const symbol = await db.get(
+      `SELECT ws.id, ws.symbol, ws.exchange, ws.watchlist_id, ws.lot_size, ws.qty_type,
+              ws.qty_value, ws.product_type, ws.symbol_type, ws.underlying_symbol,
+              ws.tradable_equity, ws.tradable_futures, ws.tradable_options,
+              w.name AS watchlist_name
+         FROM watchlist_symbols ws
+         JOIN watchlists w ON w.id = ws.watchlist_id
+        WHERE ws.id = ?`,
+      [parsedSymbolId]
+    );
+    if (!symbol) {
+      throw new ValidationError(`Symbol ${parsedSymbolId} not found`);
+    }
+
+    let instances = [];
+    let unavailable = null;
+    try {
+      instances = await quickOrderService._getTargetInstances(instanceId || null, symbol.watchlist_id);
+    } catch (error) {
+      // No active order-enabled instance assigned. Reported as data, not as a 500 - the dialog
+      // needs to say "nothing would be sent" rather than fail opaquely.
+      unavailable = error.message;
+    }
+
+    res.json({
+      status: 'success',
+      data: {
+        symbol: {
+          id: symbol.id,
+          symbol: symbol.symbol,
+          exchange: symbol.exchange,
+          watchlistId: symbol.watchlist_id,
+          watchlistName: symbol.watchlist_name,
+          // Instrument class, resolved by the SAME function auto-exit uses, so the chart never
+          // guesses. Drives whether the order is sized in units (equity) or lots (F&O):
+          // 'direct' => equity => quantity is units; 'futures'/'options' => quantity is lots.
+          mode: riskControlsService._determineMode(symbol, symbol.symbol),
+          // Lot size of the OPTION contracts on this underlying, read from the instruments
+          // master rather than the watchlist row. An INDEX row carries lot_size 1 - correct,
+          // an index cannot be traded - but an option on it trades in the derivative's lots:
+          // NIFTY 65, BANKNIFTY 30, SENSEX 20, FINNIFTY 60, NIFTYNXT 25.
+          // Resolved via underlying_key, never a symbol LIKE: 'NIFTY%' also matches
+          // NIFTYNXT50 (lot 25) and would report the wrong size for NIFTY.
+          optionLotSize: await resolveOptionLotSize(await resolveOptionsUnderlyingKey(symbol)),
+          lotSize: symbol.lot_size,
+          qtyType: symbol.qty_type,
+          qtyValue: symbol.qty_value,
+          productType: symbol.product_type,
+          tradableEquity: !!symbol.tradable_equity,
+          tradableFutures: !!symbol.tradable_futures,
+          tradableOptions: !!symbol.tradable_options,
+        },
+        instances: instances.map((i) => ({
+          id: i.id,
+          name: i.name,
+          broker: i.broker,
+          isAnalyzer: !!i.is_analyzer_mode,
+          // Per-instance lot scaling, applied by BOTH order paths. This is the app's existing
+          // "lots per instance" mechanism, and it is invisible unless surfaced: an instance on
+          // multiplier 5 receives five times the lots the operator typed.
+          multiplier: Math.min(Math.max(parseInt(i.multiplier, 10) || 1, 1), 999),
+        })),
+        liveCount: instances.filter((i) => !i.is_analyzer_mode).length,
+        analyzerCount: instances.filter((i) => i.is_analyzer_mode).length,
+        unavailable,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post('/', requirePermission('orders.place'), async (req, res, next) => {
   try {
     const {

@@ -799,3 +799,188 @@
   padding: 0;
 }
 
+
+/* ===========================================================================
+   Schema-driven settings (see public/js/settings-schema.js)
+   Groups > sections > fields, rendered from the server registry.
+   =========================================================================== */
+
+.settings-group-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: var(--space-6);
+}
+
+.settings-group-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  color: var(--color-neutral-500);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.settings-group-tab:hover { color: var(--color-neutral-800); }
+
+.settings-group-tab.active {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+}
+
+.settings-group-tab-count {
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--color-neutral-200);
+  color: var(--color-neutral-600);
+}
+
+.settings-group-tab.active .settings-group-tab-count {
+  background: var(--color-primary);
+  color: var(--color-primary-content);
+}
+
+.settings-group-header { margin-bottom: var(--space-6); }
+
+.settings-group-title {
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  color: var(--color-neutral-900);
+}
+
+/* Constrained measure - these descriptions are prose, and full-bleed lines on a wide
+   trading monitor are unreadable. */
+.settings-group-description {
+  font-size: var(--font-size-base);
+  color: var(--color-neutral-600);
+  margin-top: var(--space-2);
+  max-width: 68ch;
+  line-height: 1.55;
+}
+
+.settings-section {
+  padding: var(--space-5) 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.settings-section:first-of-type { border-top: none; padding-top: 0; }
+
+.settings-section-title {
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-neutral-500);
+  margin-bottom: var(--space-2);
+}
+
+.settings-section-note {
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-500);
+  max-width: 68ch;
+  line-height: 1.5;
+  margin-bottom: var(--space-4);
+}
+
+.settings-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* Paired fields (idle vs active, retries vs delay) share a row so the relationship reads
+   at a glance instead of being inferred from two similar labels. */
+.settings-field-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-5);
+}
+
+@media (max-width: 720px) {
+  .settings-field-pair { grid-template-columns: 1fr; }
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* Overrides the earlier .settings-field-label rule (column flex), which stretched the
+   qualifier chip to the full row width instead of sitting it beside the label text. */
+.settings-field .settings-field-label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start; /* the earlier rule centers; labels read left-aligned */
+  gap: var(--space-2);
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  color: var(--color-neutral-800);
+}
+
+.settings-field-help {
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-500);
+  line-height: 1.5;
+  max-width: 60ch;
+  margin-bottom: var(--space-2);
+}
+
+/* The live "= 12 seconds" translation under a millisecond input. */
+.settings-field-hint {
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-400);
+  font-variant-numeric: tabular-nums;
+  min-height: 1.2em; /* reserve space so typing doesn't shift the row */
+}
+
+.settings-time-input { max-width: 160px; }
+.settings-number-input { font-variant-numeric: tabular-nums; }
+
+/* JSON editors (sessions, brokerage tables) need the full row. */
+.settings-field-wide { grid-column: 1 / -1; }
+
+.settings-field-breadcrumb {
+  display: block;
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-neutral-400);
+  margin-bottom: var(--space-1);
+}
+
+.settings-search-hit {
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.settings-search-hit:first-child { border-top: none; }
+
+/* Distinguishes the two halves of a paired field ("No positions" / "Holding positions"),
+   which otherwise share an identical label and rely on help text to tell them apart. */
+.settings-field-qualifier {
+  display: inline-block;
+  margin-left: var(--space-2);
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--color-neutral-200);
+  color: var(--color-neutral-600);
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}

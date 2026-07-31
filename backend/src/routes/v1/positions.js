@@ -74,6 +74,79 @@ router.get('/aggregate/pnl', requirePermission('pages.positions.view'), async (r
 });
 
 /**
+ * GET /api/v1/positions/symbol?exchange=NSE&symbol=SBIN
+ *
+ * One symbol's position, aggregated across every active instance AND broken out per instance.
+ * Added for the chart overlay, where a single "entry price" line is ambiguous under fan-out:
+ * two instances can hold the same symbol at different average prices. The chart draws the
+ * aggregate (quantity-weighted) and lists the parts, so the line always has a stated meaning.
+ *
+ * Declared before /:instanceId so the literal path is not captured as an instance id.
+ */
+router.get('/symbol', requirePermission('pages.positions.view'), async (req, res, next) => {
+  try {
+    const { exchange, symbol } = req.query;
+    if (!exchange || !symbol) {
+      throw new ValidationError('exchange and symbol are required');
+    }
+
+    const wantExchange = String(exchange).trim().toUpperCase();
+    const wantSymbol = String(symbol).replace(/\s+/g, '').toUpperCase();
+
+    // refresh:false - the chart must never trigger broker traffic of its own; it reads whatever
+    // the shared feed last cached. The positions view owns refreshing.
+    const all = await positionsService.getAllPositions({ onlyOpen: true, refresh: false });
+
+    const legs = [];
+    for (const inst of all.instances || []) {
+      for (const pos of inst.positions || []) {
+        const posExchange = String(pos.exchange || pos.exch || pos.brexchange || '').trim().toUpperCase();
+        const posSymbol = String(pos.symbol || pos.tradingsymbol || pos.trading_symbol || '')
+          .replace(/\s+/g, '').toUpperCase();
+        if (posExchange !== wantExchange || posSymbol !== wantSymbol) continue;
+
+        const quantity = Number(pos.quantity ?? pos.netqty ?? pos.net_quantity ?? pos.netQty ?? 0) || 0;
+        if (!quantity) continue;
+
+        legs.push({
+          instanceId: inst.instance_id,
+          instanceName: inst.instance_name,
+          isAnalyzer: !!inst.is_analyzer_mode,
+          quantity,
+          entryPrice: Number(pos.entry_price) || null,
+          entryPriceSource: pos.entry_price_source || null,
+          pnl: Number(pos.pnl ?? pos.unrealized_pnl ?? 0) || 0,
+        });
+      }
+    }
+
+    // Quantity-weighted so the aggregate line sits where the combined book actually broke even.
+    // Long and short legs across instances net out, which is the honest aggregate.
+    const netQuantity = legs.reduce((n, l) => n + l.quantity, 0);
+    const priced = legs.filter((l) => l.entryPrice > 0);
+    const weight = priced.reduce((n, l) => n + Math.abs(l.quantity), 0);
+    const avgEntry = weight
+      ? priced.reduce((n, l) => n + l.entryPrice * Math.abs(l.quantity), 0) / weight
+      : null;
+
+    res.json({
+      status: 'success',
+      data: {
+        exchange: wantExchange,
+        symbol: wantSymbol,
+        netQuantity,
+        avgEntryPrice: avgEntry,
+        totalPnl: legs.reduce((n, l) => n + l.pnl, 0),
+        instanceCount: legs.length,
+        legs,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * GET /api/v1/positions/:instanceId
  * Get positions for an instance
  */

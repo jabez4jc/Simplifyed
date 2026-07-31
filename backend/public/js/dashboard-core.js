@@ -34,7 +34,7 @@ class DashboardApp {
     this.watchlistQuoteSnapshots = new Map();
     this.isSidebarCollapsed = false;
     this.quickOrder = window.quickOrder || null;
-    this.validViews = ['dashboard', 'instances', 'watchlists', 'strategies', 'orders', 'trades', 'positions', 'daily-pnl-snapshots', 'settings', 'notifications', 'audit', 'api-playground'];
+    this.validViews = ['dashboard', 'instances', 'watchlists', 'chart', 'strategies', 'orders', 'trades', 'positions', 'daily-pnl-snapshots', 'settings', 'notifications', 'audit', 'api-playground'];
     this.suppressHashChange = false;
     this._throttledWatchlistRefresh = Utils.throttle((opts = {}) => {
       this.refreshWatchlistPositions(opts);
@@ -90,9 +90,20 @@ class DashboardApp {
     // order-placement response from the broker's push feed instead of a REST round-trip.
     this.recentOrderUpdates = [];
     this.orderUpdateWaiters = [];
-    this.wsRefreshDashboard = Utils.debounce(() => this.renderDashboardView(), 1200);
-    this.wsRefreshPositions = Utils.debounce(() => this.renderPositionsView(), 1200);
-    this.wsRefreshWatchlists = Utils.debounce(() => this._throttledWatchlistRefresh({ showLoader: false }), 800);
+    // Each debounced refresh is scheduled while its view is on screen, but the view can change
+    // before the timer fires 0.8-1.2s later - switching to the chart right after a positions/funds
+    // tick schedules exactly that. Without a re-check here, the timer fires anyway and overwrites
+    // whatever is now showing (e.g. the chart) with a stale view's re-render, silently detaching
+    // that view's canvas/series from the DOM even though its own data keeps updating underneath.
+    this.wsRefreshDashboard = Utils.debounce(() => {
+      if (this.currentView === 'dashboard') this.renderDashboardView();
+    }, 1200);
+    this.wsRefreshPositions = Utils.debounce(() => {
+      if (this.currentView === 'positions') this.renderPositionsView();
+    }, 1200);
+    this.wsRefreshWatchlists = Utils.debounce(() => {
+      if (this.currentView === 'watchlists') this._throttledWatchlistRefresh({ showLoader: false });
+    }, 800);
     // Theme (light-only)
     this.theme = 'light';
     this.viewPermissions = {
@@ -100,6 +111,10 @@ class DashboardApp {
       instances: 'pages.instances.view',
       watchlists: 'pages.watchlists.view',
       strategies: 'pages.watchlists.view',
+      // Charting reuses the watchlist permission rather than introducing a new key: the chart
+      // draws watchlist symbols, so anyone who may see them may chart them. Avoids an RBAC
+      // migration and means every existing role works unchanged.
+      chart: 'pages.watchlists.view',
       orders: 'pages.orders.view',
       trades: 'pages.trades.view',
       positions: 'pages.positions.view',
@@ -218,9 +233,7 @@ class DashboardApp {
 
       // Note: Auto-refresh disabled to prevent page flicker
       // Individual polling mechanisms (quotes, positions) handle their own updates
-      // this.startAutoRefresh();
-
-      // debug removed
+      this.startAutoRefresh();
     } catch (error) {
       console.error('Failed to initialize dashboard:', error);
       Utils.showToast('Failed to initialize dashboard', 'error');
@@ -332,6 +345,12 @@ class DashboardApp {
       Utils.showToast('Paused all background data fetching', 'info');
       this.stopAllWatchlistPolling();
       this.stopTradesPolling();
+    }
+
+    // Dispose the chart when navigating away; createChart attaches a ResizeObserver and canvas
+    // that survive the innerHTML swap otherwise.
+    if (this.currentView === 'chart' && viewName !== 'chart') {
+      if (typeof this.destroyChart === 'function') this.destroyChart();
       this.stopPositionsPolling();
       if (this.pollingInterval) {
         clearInterval(this.pollingInterval);
@@ -344,8 +363,7 @@ class DashboardApp {
       Utils.showToast('Resumed data fetching', 'success');
       // Resume backend polling
       api.startPolling().catch(() => { });
-      this.refreshCurrentView(true);
-      this.startAutoRefresh();
+      this.resumeBackgroundData();
     }
   }
 
@@ -625,7 +643,12 @@ class DashboardApp {
     if (this.ws) return;
     try {
       const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-      const url = `${protocol}://${window.location.host}${this.wsGatewayPath}?topics=${this.wsTopics.join(',')}&last_seq=${this.wsLastSeq || 0}`;
+      // The token travels in the query string because a WebSocket upgrade cannot carry a
+      // custom Authorization header - the browser's WebSocket constructor has no API for it.
+      // The gateway used to expect a session cookie instead, which nothing in this app ever
+      // issues, so this connection was rejected every single time regardless of retries.
+      const token = encodeURIComponent(localStorage.getItem('auth_token') || '');
+      const url = `${protocol}://${window.location.host}${this.wsGatewayPath}?topics=${this.wsTopics.join(',')}&last_seq=${this.wsLastSeq || 0}&token=${token}`;
       const ws = new WebSocket(url);
       this.ws = ws;
 
@@ -674,10 +697,28 @@ class DashboardApp {
       this.wsLastSeq = Math.max(this.wsLastSeq, msg.seq);
     }
 
+    // The navbar pill answers one question - "is the feed alive" - and that has nothing to do
+    // with which view happens to be open. It used to be marked from inside the watchlists-view
+    // rendering path only (updateWatchlistQuoteMeta), on the theory that every quote funnelled
+    // through there; the dispatch below grew view-specific branches (chart folds ticks itself,
+    // dashboard/positions refresh their own widgets) that never went near it, so the pill sat on
+    // "Connecting" - lastDataAt never set - for as long as the user stayed off Watchlists, which
+    // in practice is most of the time. Any of these three topics arriving IS the feed working,
+    // regardless of what's rendered as a result, so the clock is marked here instead.
+    if (msg.topic === 'quotes:update' || msg.topic === 'positions:update' || msg.topic === 'funds:update') {
+      this.markDataReceived();
+    }
+
     switch (msg.topic) {
       case 'quotes:update': {
         if (this.currentView === 'watchlists') {
           this.handleQuoteStreamPayload(msg.payload || {});
+        } else if (this.currentView === 'chart') {
+          // Fold ticks straight into the live bar - see dashboard-chart-live.js. The watchlist
+          // caches are kept warm at the same time so switching back is not a cold start.
+          const quotes = Array.isArray(msg.payload?.data) ? msg.payload.data : [];
+          const ts = Date.now();
+          for (const quote of quotes) this.applyChartQuote(this.hydrateQuoteWithLtp(quote, ts), true);
         } else {
           this.wsRefreshWatchlists();
         }
@@ -953,6 +994,7 @@ class DashboardApp {
       dashboard: 'Dashboard',
       instances: 'Instances',
       watchlists: 'Watchlists',
+      chart: 'Chart',
       strategies: 'Strategies',
       orders: 'Orders',
       trades: 'Trades',
@@ -993,6 +1035,9 @@ class DashboardApp {
         case 'trades':
           await this.renderTradesView();
           break;
+        case 'chart':
+          await this.renderChartView();
+          break;
         case 'positions':
           await this.renderPositionsView();
           this.startSnapshotResync('positions');
@@ -1024,26 +1069,48 @@ class DashboardApp {
       `;
     }
   }
+  /**
+   * Re-render the current view from scratch. This is a user-initiated action (a Refresh button,
+   * an explicit force) - it is NOT what the background tick does. See startAutoRefresh.
+   */
   async refreshCurrentView(force = false) {
     if (this.isPaused && !force) return;
     await this.loadView(this.currentView, { force });
   }
-  startAutoRefresh() {
-    // Clear existing interval
-    if (this.pollingInterval) {
-      clearInterval(this.pollingInterval);
-    }
 
+  /**
+   * Bring background data back after a pause or a tab switch.
+   *
+   * Deliberately NOT a full re-render. Returning to the tab used to call
+   * refreshCurrentView(true), which rebuilt the whole view - so stepping away from the chart and
+   * back destroyed the candles, the option panes and every indicator sub-chart. Resuming should
+   * be invisible: restart the pollers, refresh in place, leave the DOM alone.
+   */
+  resumeBackgroundData() {
+    this.startAutoRefresh();
+
+    const inPlace = RESUME_IN_PLACE[this.currentView];
+    if (inPlace) {
+      Promise.resolve(inPlace(this)).catch((error) =>
+        console.error(`Resume refresh failed for ${this.currentView}:`, error));
+      return;
+    }
+    // These views start their pollers as part of rendering, so for them resuming does mean a
+    // re-render. Everything else is either handled above or holds state a rebuild would lose.
+    if (RESUME_BY_RERENDER.has(this.currentView)) {
+      this.loadView(this.currentView, { force: true }).catch(() => { /* reported by loadView */ });
+    }
+  }
+
+  startAutoRefresh() {
+    if (this.pollingInterval) clearInterval(this.pollingInterval);
     if (this.isPaused) return;
 
-    // Refresh every 15 seconds, but skip watchlists view
-    // to avoid conflicts with independent watchlist polling
     this.pollingInterval = setInterval(() => {
-      // Only refresh if not on watchlists view
-      // Watchlists view has its own polling mechanism
-      if (this.currentView !== 'watchlists') {
-        this.refreshCurrentView();
-      }
+      const refresh = AUTO_REFRESH_VIEWS[this.currentView];
+      if (!refresh || this.isPaused) return;
+      Promise.resolve(refresh(this)).catch((error) =>
+        console.error(`Auto-refresh failed for ${this.currentView}:`, error));
     }, 15000);
   }
 
@@ -1057,5 +1124,53 @@ class DashboardApp {
     }
   }
 }
+
+/**
+ * What the 15-second background tick is allowed to touch, and how.
+ *
+ * It used to re-render whichever view was open, wholesale, every 15 seconds. That predates
+ * every view growing its own updating mechanism, so by now it is redundant everywhere and
+ * actively destructive in places: the chart tears down its candles, option panes and indicator
+ * sub-charts mid-interaction (leaving "Trade options" ticked with nothing under it), the API
+ * playground loses whatever was typed, and settings loses an unsaved edit. It also read as the
+ * whole page reloading every few seconds, because visually that is what it was.
+ *
+ * Views absent from this map are not stale - they keep themselves current by other means:
+ *
+ *   watchlists   own adaptive poller (startPositionsPolling)
+ *   positions    WebSocket pushes (wsRefreshPositions) plus a 60s snapshot resync
+ *   dashboard    own metrics and telemetry intervals
+ *   trades       own 5s poller
+ *   chart        own candle refresh and live feed
+ *   strategies, audit, daily-pnl-snapshots   static until acted on
+ *   settings, api-playground                 hold unsaved input; re-rendering destroys it
+ *
+ * Anything added here must update data in place. A full re-render is a page refresh in
+ * everything but name.
+ */
+const AUTO_REFRESH_VIEWS = {
+  instances: (app) => app.renderInstancesView(),
+  notifications: (app) => app.renderNotificationsView(),
+  // Data-only: keeps the active filter, the scroll position and any expanded row.
+  orders: (app) => app.loadOrders(app.currentOrderFilter || '', { ensureView: false }),
+};
+
+/**
+ * How each view comes back after a pause or a tab switch.
+ *
+ * Resuming used to call refreshCurrentView(true) - a full rebuild of whatever was open - so
+ * stepping away from the chart and back destroyed the candles, the option panes and every
+ * indicator sub-chart, while leaving "Trade options" ticked with nothing beneath it.
+ *
+ * In-place first. Falling back to a re-render is only for views whose pollers are started by
+ * their own render, where not re-rendering would leave them silently frozen.
+ */
+const RESUME_IN_PLACE = {
+  ...AUTO_REFRESH_VIEWS,
+  // Fresh candles after being away, without tearing the chart down.
+  chart: (app) => app.loadChartData(),
+};
+
+const RESUME_BY_RERENDER = new Set(['watchlists', 'positions', 'trades', 'dashboard']);
 
 window.DashboardApp = DashboardApp;

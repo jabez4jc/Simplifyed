@@ -104,8 +104,32 @@ class OrderService {
         bufferPoints = 0;
       }
 
-      const supportsMarketOrders = await brokerCapabilitiesService.supportsMarketOrders(instance.broker);
-      if (supportsMarketOrders) {
+      // A caller-specified resting order is honoured EXACTLY as given.
+      //
+      // Everything below this branch exists to pick a price type on the caller's behalf: use
+      // MARKET where the broker supports it, otherwise synthesise a marketable LIMIT from the
+      // live quote plus a buffer. That is right for "fill this now" callers (quick orders,
+      // auto-exit, retries), which is all this route ever had.
+      //
+      // It is catastrophic for a caller that chose a price. Without this guard a chart
+      // right-click of "Buy Limit @ 64,190.76" arrived here and was rewritten to
+      // pricetype: MARKET, price: 0 - executing immediately at whatever the market was, instead
+      // of resting where the operator put it. Silently turning a resting order into an
+      // immediate fill is the worst possible failure mode for an order router.
+      const RESTING_TYPES = ['LIMIT', 'SL', 'SL-M'];
+      const callerChosePrice = RESTING_TYPES.includes(normalized.pricetype)
+        && (normalized.price > 0 || normalized.trigger_price > 0);
+
+      const supportsMarketOrders = callerChosePrice
+        ? null // not consulted - the caller's price type stands
+        : await brokerCapabilitiesService.supportsMarketOrders(instance.broker);
+
+      if (callerChosePrice) {
+        log.info('Honouring caller-specified resting order', {
+          symbol: normalized.symbol,
+          pricetype: normalized.pricetype,
+        });
+      } else if (supportsMarketOrders) {
         normalized.pricetype = 'MARKET';
         normalized.price = 0;
       } else {
@@ -633,9 +657,14 @@ class OrderService {
    * @returns {Promise<Object>} - Update summary
    */
   async syncOrderStatus(instanceId) {
+    // Declared outside the try so the catch below can still read it. It was previously a
+    // `const` inside the try block, which is block-scoped - so the catch's `instance?.name`
+    // threw ReferenceError instead of logging, replacing every real failure here with a
+    // misleading "instance is not defined" and discarding the original error.
+    let instance = null;
     try {
       // Get instance
-      const instance = await db.get('SELECT * FROM instances WHERE id = ?', [
+      instance = await db.get('SELECT * FROM instances WHERE id = ?', [
         instanceId,
       ]);
 
@@ -773,12 +802,17 @@ class OrderService {
       normalized.quantity = quantity;
     }
 
-    // Position size (required for placesmartorder)
+    // Position size: the SIGNED net position desired after this order, as placesmartorder
+    // defines it - negative means net short. The previous `< 0` rejection was inconsistent with
+    // the rest of the app: quick-order.service computes signed targets via _computeTarget()
+    // (SELL_CE returns `current - Qstep`, i.e. negative) and passes them straight to the same
+    // broker endpoint, and order-payload.factory forwards the value unchanged. Rejecting
+    // negatives here made it impossible to open a short through this route at all.
     const positionSize = parseIntSafe(data.position_size, null);
-    if (positionSize === null || positionSize < 0) {
+    if (positionSize === null) {
       errors.push({
         field: 'position_size',
-        message: 'Position size is required for placesmartorder',
+        message: 'Position size is required for placesmartorder (signed: negative = net short)',
       });
     } else {
       normalized.position_size = positionSize;

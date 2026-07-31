@@ -210,10 +210,13 @@ class Config {
    * @private
    */
   _loadFromEnv() {
+    // A label for logs and the startup banner - NOT a behaviour switch. Everything that used
+    // to branch on it now derives from the thing it actually cares about: cookie security from
+    // the BASE_URL scheme, the instruments bypass from ENABLE_TEST_MODE. The value defaults to
+    // 'development', so anything gated on it fails open, which is the wrong direction for a
+    // trading system.
+    // The removed isDev/isProd/isTest companions had no consumers anywhere in the codebase.
     this.env = getEnv('NODE_ENV', 'development');
-    this.isDev = this.env === 'development';
-    this.isProd = this.env === 'production';
-    this.isTest = this.env === 'test';
 
     this.port = getEnvInt('PORT', 3000);
     this.baseUrl = getEnv('BASE_URL', 'http://localhost:3000');
@@ -227,15 +230,11 @@ class Config {
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     };
 
-    this.google = {
-      clientId: null,
-      clientSecret: null,
-      callbackUrl: getEnv('GOOGLE_CALLBACK_URL', 'http://localhost:3000/auth/google/callback'),
-    };
-
     this.auth = {
-      googleClientId: null,
-      googleClientSecret: null,
+      // The single switch that disables authentication. There were previously two independent
+      // env vars for this (ENABLE_TEST_MODE and TEST_MODE) feeding three separate checks in
+      // optionalAuth - so disabling auth had three ways to happen and one way to audit.
+      // Read it through isTestMode() (exported below), never directly.
       enableTestMode: getEnvBool('ENABLE_TEST_MODE', false),
       jwtSecret: getEnv('JWT_SECRET', undefined, true),
     };
@@ -243,11 +242,6 @@ class Config {
     this.cors = {
       origin: getEnv('CORS_ORIGIN', 'http://localhost:3000'),
       credentials: true,
-    };
-
-    this.testMode = {
-      enabled: getEnvBool('TEST_MODE', false),
-      userEmail: getEnv('TEST_USER_EMAIL', 'test@simplifyed.in'),
     };
 
     this.polling = {
@@ -361,34 +355,31 @@ class Config {
       const dbSettings = await settingsService.getAllSettings();
 
       // Apply database settings with fallback to current values
-      this.env = await getSetting('server.node_env', this.env);
-      this.isDev = this.env === 'development';
-      this.isProd = this.env === 'production';
-      this.isTest = this.env === 'test';
 
-      this.port = await getSettingInt('server.port', this.port);
+      // port/node_env are startup values and are no longer read from the database (migration
+      // 059 removed those rows) - a change there could not take effect without a restart.
       this.baseUrl = await getSetting('server.base_url', this.baseUrl);
 
-      this.database.path = await getSetting('database.path', this.database.path);
-      this.session.secret = await getSetting('session.secret', this.session.secret);
-      this.session.maxAge = await getSettingInt('session.max_age_ms', this.session.maxAge);
+      // Deliberately NOT loaded from the database:
+      //
+      //   session.secret  - the database row overrode the required SESSION_SECRET env var *after*
+      //                     configureSession() had already signed cookies with the env value, so
+      //                     server.js's WS cookie check verified against a different secret and
+      //                     rejected every WebSocket connection. The shipped row also held the
+      //                     literal 'CHANGE_THIS_IN_PRODUCTION'. Secrets come from the
+      //                     environment only, where getEnv(..., required) can enforce them.
+      //   test_mode.*     - flips optionalAuth to a hardcoded admin identity for the whole
+      //                     process. Env-only (ENABLE_TEST_MODE), never a stored row.
+      //   database.path   - the connection is already open by the time this runs.
+      //   cors.*          - cors() is configured at module load; a later change does nothing.
+      //   oauth.google.*  - no Google sign-in route exists; local email/password is the only
+      //                     auth method (see routes/v1/auth.js).
+      //
+      // See src/config/settings-registry.js for the full editable/not-editable split.
       settingsCacheDurationMs = await getSettingInt(
         'settings.cache_duration_ms',
         settingsCacheDurationMs
       );
-
-      this.google.clientId = await getSetting('oauth.google.client_id', this.google.clientId);
-      this.google.clientSecret = await getSetting('oauth.google.client_secret', this.google.clientSecret);
-      this.google.callbackUrl = await getSetting('oauth.google.callback_url', this.google.callbackUrl);
-
-      this.auth.googleClientId = this.google.clientId;
-      this.auth.googleClientSecret = this.google.clientSecret;
-
-      this.cors.origin = await getSetting('cors.origin', this.cors.origin);
-      this.cors.credentials = await getSettingBool('cors.credentials', this.cors.credentials);
-
-      this.testMode.enabled = await getSettingBool('test_mode.enabled', this.testMode.enabled);
-      this.testMode.userEmail = await getSetting('test_mode.user_email', this.testMode.userEmail);
 
       this.polling.instanceInterval = await getSettingInt('polling.instance_interval_ms', this.polling.instanceInterval);
       this.polling.marketDataInterval = await getSettingInt('polling.market_data_interval_ms', this.polling.marketDataInterval);
@@ -462,6 +453,20 @@ class Config {
       log.warn('Failed to load configuration from database, using environment variables', error.message);
     }
   }
+}
+
+/**
+ * The one place that decides whether authentication is disabled.
+ *
+ * optionalAuth previously OR'd three conditions fed by two different environment variables
+ * (ENABLE_TEST_MODE and TEST_MODE), so an auth bypass had three independent triggers and no
+ * single place to audit. Lives here rather than in middleware because services need it too, and
+ * a service importing from middleware is the wrong direction.
+ *
+ * Environment-only by design: a database row must never be able to switch off authentication.
+ */
+export function isTestMode() {
+  return config.auth.enableTestMode === true || process.env.ENABLE_TEST_MODE === 'true';
 }
 
 export const config = new Config();

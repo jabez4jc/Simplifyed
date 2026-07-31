@@ -1,0 +1,1545 @@
+/**
+ * Chart view (see public/js/dashboard-chart.js)
+ *
+ * The chart canvas is sized by its container, so the container must have a real height -
+ * Lightweight Charts' autoSize observes the element rather than the viewport.
+ */
+
+.chart-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.chart-view:fullscreen {
+  background: var(--color-bg, #0b0e14);
+  padding: var(--space-4);
+  overflow-y: auto;
+}
+
+.chart-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.chart-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.chart-toolbar-label {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--color-neutral-500);
+  white-space: nowrap;
+}
+
+.chart-symbol-select {
+  min-width: 260px;
+  max-width: 420px;
+}
+
+.chart-tf-btn {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-neutral-600);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.chart-tf-btn:hover {
+  color: var(--color-neutral-900);
+  border-color: var(--color-neutral-400);
+}
+
+.chart-tf-btn.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-primary-content);
+}
+
+.chart-toolbar-status {
+  margin-left: auto;
+}
+
+.chart-status {
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-500);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Cached-because-the-feed-is-down reads as a warning, not as normal state. Colour is not the
+   only signal - the label itself says "cached (feed unreachable)". */
+.chart-status.is-stale {
+  color: var(--color-warning);
+  font-weight: 600;
+}
+
+/* Explicit height: autoSize watches this element, and a flex child with no basis collapses
+   to zero, which renders a chart of no height and no error. */
+.chart-container {
+  height: 620px;
+  min-height: 380px;
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+@media (max-width: 900px) {
+  .chart-container { height: 440px; }
+  .chart-symbol-select { min-width: 0; width: 100%; }
+  .chart-toolbar-status { margin-left: 0; width: 100%; }
+}
+
+/* Apache-2.0 requires visible attribution to TradingView when using Lightweight Charts. */
+.chart-attribution {
+  font-size: var(--font-size-3xs);
+  color: var(--color-neutral-400);
+  text-align: right;
+}
+
+.chart-attribution a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+/* --- Position overlay (phase 2) --------------------------------------------
+   The aggregate line is drawn on the chart itself; this panel shows the parts
+   it was averaged from, so "avg entry" is never an unexplained number.        */
+
+.chart-position {
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.chart-position-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+}
+
+.chart-position-side {
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Direction is stated in words (LONG / SHORT), never by colour alone. */
+.chart-position-side.is-long {
+  background: var(--color-profit-bg);
+  color: var(--color-profit);
+}
+
+.chart-position-side.is-short {
+  background: var(--color-loss-bg);
+  color: var(--color-loss);
+}
+
+.chart-position-stat {
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-500);
+}
+
+.chart-position-stat strong {
+  color: var(--color-neutral-900);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-position-muted {
+  margin-left: auto;
+  color: var(--color-neutral-400);
+}
+
+.chart-position-legs {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-xs);
+}
+
+.chart-position-legs th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--color-neutral-500);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.chart-position-legs td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-neutral-700);
+}
+
+.chart-position-legs tr:last-child td { border-bottom: none; }
+
+/* Numeric columns are tabular and right-aligned so figures compare down the column. */
+.chart-position-legs .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-leg-badge {
+  margin-left: var(--space-2);
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+/* --- Chart trading (phase 3) -----------------------------------------------
+   One click fans out to N instances, so the affordances state the target count
+   up front and the confirmation states it again in full.                      */
+
+.chart-trade-host { margin-top: calc(var(--space-2) * -1); }
+
+.chart-trade-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.chart-qty-input {
+  width: 120px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-trade-btn { min-width: 92px; }
+
+.chart-trade-target {
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-500);
+}
+
+/* "LIVE" is the one word that must not be missed on this screen. */
+.chart-trade-live { color: var(--color-loss); font-weight: 700; }
+
+.chart-trade-note {
+  padding: var(--space-4);
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-500);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.chart-confirm { max-width: 520px; }
+
+.chart-confirm-lead {
+  font-size: var(--font-size-base);
+  color: var(--color-neutral-800);
+  line-height: 1.55;
+  margin-bottom: var(--space-4);
+}
+
+.chart-confirm-group {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-3);
+}
+
+.chart-confirm-group h4 {
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-2);
+}
+
+.chart-confirm-group ul { margin: 0; padding: 0; list-style: none; }
+
+.chart-confirm-group li {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--font-size-xs);
+  padding: 2px 0;
+}
+
+.chart-confirm-group li span { color: var(--color-neutral-500); }
+
+/* Real money is visually separated from simulation - not by colour alone, the
+   headings say "real money" and "simulated" in words. */
+.chart-confirm-group.is-live {
+  background: var(--color-loss-bg);
+  border: 1px solid var(--color-loss);
+}
+.chart-confirm-group.is-live h4 { color: var(--color-loss); }
+
+.chart-confirm-group.is-analyzer {
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-bg);
+}
+.chart-confirm-group.is-analyzer h4 { color: var(--color-warning); }
+
+.chart-confirm-note {
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-500);
+  line-height: 1.5;
+}
+
+/* --- Exit levels (phase 4) -------------------------------------------------
+   Config the auto-exit monitor consumes, not broker-side resting orders.      */
+
+.chart-levels {
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.chart-levels-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.chart-levels-title {
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  color: var(--color-neutral-800);
+}
+
+.chart-levels-mode {
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-neutral-400);
+}
+
+.chart-level-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+
+.chart-level-name {
+  min-width: 88px;
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-600);
+}
+
+.chart-level-input {
+  width: 120px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The price equivalent of the points value, updated live as it is typed or dragged, so the two
+   representations can never disagree on screen. */
+.chart-level-price {
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-500);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-levels-note {
+  margin-top: var(--space-3);
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-500);
+  line-height: 1.5;
+  max-width: 70ch;
+}
+
+.chart-levels-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/* Signals the line is grabbed; chart pan/zoom is disabled for the duration. */
+.chart-container.is-dragging-level {
+  cursor: ns-resize;
+}
+
+.chart-level-diff {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-xs);
+  margin-bottom: var(--space-4);
+}
+
+.chart-level-diff th,
+.chart-level-diff td {
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.chart-level-diff th { color: var(--color-neutral-500); font-weight: 600; }
+.chart-level-old { color: var(--color-neutral-500); text-decoration: line-through; }
+.chart-level-new { color: var(--color-neutral-900); font-weight: 700; }
+
+/* --- Chart-native order entry ----------------------------------------------
+   Legend, floating tickets and the right-click context menu.                  */
+
+/* Over the canvas, top-left. Pointer-transparent so it never eats a click meant for a candle. */
+.chart-legend {
+  position: absolute;
+  top: 6px;
+  left: 50px;
+  z-index: 6;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--color-surface) 78%, transparent);
+  font-size: var(--font-size-3xs);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.chart-legend-sym { font-weight: 700; color: var(--color-neutral-900); }
+.chart-legend-meta { color: var(--color-neutral-400); }
+.chart-legend-ohlc { color: var(--color-neutral-500); }
+.chart-legend-ohlc b { color: var(--color-neutral-700); font-weight: 600; }
+.chart-legend-ltp b { font-weight: 700; }
+
+/* Positioning context for the tickets and the context menu, which sit over the canvas. */
+.chart-canvas-wrap { position: relative; }
+
+.chart-prod-btn {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-neutral-600);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chart-prod-btn.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-primary-content);
+}
+
+/*
+ * One-click tickets, pinned top-RIGHT over the canvas. The engine draws its own per-indicator
+ * legend rows top-left (see the note on `legendOffset` in dashboard-chart.js's initChart - it
+ * exists for exactly this "a host overlay in the corner" case, but in testing did not reliably
+ * push the native rows clear when this app's own top-left legend/tickets grew past a few
+ * indicators, so the tickets were moved to the opposite corner instead - a guaranteed fix rather
+ * than one contingent on an internal gate this app does not control). Clear of the right price
+ * axis (56px default width) rather than the draw-tool rail, which sits on the left now.
+ */
+.chart-tickets {
+  position: absolute;
+  top: 8px;
+  right: 68px;
+  z-index: 5;
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.chart-ticket {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 74px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: filter 0.15s ease;
+}
+
+.chart-ticket:hover { filter: brightness(1.12); }
+.chart-ticket:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.chart-ticket-price { font-size: var(--font-size-3xs); opacity: 0.85; }
+.chart-ticket-label { font-size: var(--font-size-xs); font-weight: 800; letter-spacing: 0.05em; }
+
+.chart-ticket.is-buy { background: var(--color-profit); color: #06281C; }
+.chart-ticket.is-sell { background: var(--color-loss); color: #2A0A0A; }
+
+.chart-ticket-qty {
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-2);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  color: var(--color-neutral-600);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Right-click menu. Invalid combinations stay visible but disabled with a reason, so the
+   price/order-type rule is learned rather than guessed at. */
+.chart-ctx {
+  position: absolute;
+  z-index: 20;
+  min-width: 200px;
+  padding: var(--space-2);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-ctx-item {
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  background: transparent;
+  text-align: left;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chart-ctx-item.is-buy { color: var(--color-profit); }
+.chart-ctx-item.is-sell { color: var(--color-loss); }
+.chart-ctx-item:hover:not(:disabled) { background: var(--color-neutral-200); }
+
+.chart-ctx-item:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.chart-ctx-item.is-neutral { color: var(--color-neutral-700); font-weight: 500; }
+
+.chart-ctx-sep {
+  height: 1px;
+  margin: var(--space-2) 0;
+  background: var(--color-border);
+}
+
+.chart-ctx-submenu { position: relative; }
+
+.chart-ctx-flyout {
+  position: absolute;
+  left: calc(100% + var(--space-1));
+  top: 0;
+  min-width: 140px;
+  padding: var(--space-2);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  z-index: 21;
+}
+
+.chart-ctx-flyout[hidden] { display: none; }
+
+.chart-confirm-resting {
+  font-size: var(--font-size-xs);
+  color: var(--color-warning);
+}
+
+/* Resolved size, shown before anything is clicked: lots -> units, and any instance
+   multiplier applied. The multiplier is otherwise invisible from this screen. */
+.chart-size-hint {
+  font-size: var(--font-size-3xs);
+  color: var(--color-warning);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Per-instance size inside the confirmation, so the arithmetic is checkable per target. */
+.chart-confirm-size {
+  color: var(--color-neutral-500);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-confirm-sizing {
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-500);
+  margin-bottom: var(--space-4);
+}
+
+/* --- Instance picker -------------------------------------------------------
+   Which instances receive this order. Live and analyzer are tagged in words,
+   and any lot multiplier is shown on the chip - it changes the size sent.     */
+
+.chart-instances {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.chart-inst-label {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--color-neutral-500);
+  margin-right: var(--space-1);
+}
+
+.chart-inst {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-500);
+  user-select: none;
+}
+
+.chart-inst input { cursor: pointer; }
+.chart-inst-name { font-weight: 600; }
+
+.chart-inst-tag {
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Deselected chips stay legible but clearly off - opacity alone reads as disabled. */
+.chart-inst:not(.is-on) { opacity: 0.5; }
+
+.chart-inst.is-on.is-live {
+  border-color: var(--color-loss);
+  color: var(--color-neutral-900);
+}
+.chart-inst.is-on.is-live .chart-inst-tag { color: var(--color-loss); }
+
+.chart-inst.is-on.is-analyzer {
+  border-color: var(--color-warning);
+  color: var(--color-neutral-900);
+}
+.chart-inst.is-on.is-analyzer .chart-inst-tag { color: var(--color-warning); }
+
+.chart-inst-all {
+  margin-left: var(--space-2);
+  padding: 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-neutral-500);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+.chart-inst-all:hover { color: var(--color-neutral-900); }
+
+/* --- Options on the underlying --------------------------------------------- */
+
+.chart-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.chart-opt-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--color-neutral-700);
+  cursor: pointer;
+}
+
+.chart-opt-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.chart-opt-leg {
+  padding: 3px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-neutral-500);
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chart-opt-leg.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-primary-content);
+}
+
+.chart-opt-expiry { min-width: 150px; }
+
+.chart-opt-note {
+  font-size: var(--font-size-3xs);
+  color: var(--color-neutral-400);
+}
+
+/*
+ * CE/PE columns, three actions each - the same Buyer/Writer model as the watchlist (see
+ * trading-controls.css for the .btn-action-compact / .btn-buy-ce / .btn-reduce-ce etc. classes
+ * reused here verbatim, so a CE/PE button looks and behaves identically in both places).
+ */
+.chart-tickets.is-options {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  /* Wide enough for the longest label ("REDUCE CE"/"CLOSE ALL CE") at this font without
+     truncating - a clipped action name on an order button is a correctness risk, not just
+     cosmetic, so this errs wide rather than ellipsizing. */
+  max-width: 320px;
+  padding: var(--space-1);
+  background: color-mix(in srgb, var(--color-surface) 88%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.chart-ticket-col {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 0;
+  min-width: 84px;
+}
+
+.chart-ticket-col-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-align: center;
+  color: var(--color-neutral-400);
+}
+
+.chart-ticket-opt {
+  padding: 3px 6px;
+  font-size: 10px;
+  min-width: 0;
+  width: 100%;
+  white-space: normal;
+  line-height: 1.15;
+  text-align: center;
+}
+
+/* The `hidden` attribute hides an element via the UA stylesheet's `display: none`, which ANY
+   author `display` rule outranks. Every block above that sets display therefore ignored
+   `hidden` - the right-click menu in particular stayed mounted and visible even when the code
+   had explicitly suppressed it. Restore the intent explicitly. */
+.chart-ctx[hidden],
+.chart-tickets[hidden],
+.chart-instances[hidden],
+.chart-options[hidden],
+.chart-opt-controls[hidden] {
+  display: none;
+}
+
+/* --- Option scalping layout ------------------------------------------------
+   Single pane normally; underlying + CE + PE while trading options.          */
+
+.chart-layout { display: block; }
+
+.chart-layout.is-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: stretch;
+}
+
+/* In split view the underlying gives up height to fit beside two stacked panes. */
+.chart-layout.is-split .chart-container { height: 640px; }
+
+.chart-panes {
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.chart-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.chart-pane-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.chart-pane-sym { font-weight: 700; color: var(--color-neutral-900); }
+.chart-pane-meta { color: var(--color-neutral-400); font-size: var(--font-size-3xs); }
+.chart-pane-last { margin-left: auto; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* flex:1 + min-height:0 so the canvas fills the pane instead of collapsing. */
+.chart-pane-body { flex: 1; min-height: 0; }
+
+.chart-pane-menu { position: relative; }
+
+.chart-pane-btn {
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-neutral-500);
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chart-pane-btn:hover { color: var(--color-neutral-900); }
+
+/*
+ * `position: fixed` with left/top set from the button's own getBoundingClientRect() in
+ * bindPanePopovers() below, NOT `absolute` - `.chart-pane` (its ancestor) has `overflow: hidden`
+ * for the chart canvas's sake, which would silently clip an absolutely-positioned popover to
+ * invisibility the moment it extended past the pane's own (narrow, short) box - exactly what
+ * happened before this was fixed: the popover WAS toggling open, just clipped to nothing.
+ * `position: fixed` escapes that clip (its containing block is the viewport, not the pane) as
+ * long as no ancestor sets a transform/filter/will-change, which none here do.
+ */
+.chart-pane-pop {
+  position: fixed;
+  z-index: 45;
+  min-width: 180px;
+  max-width: 260px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: var(--space-2);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.chart-pane-pop.is-wide { min-width: 240px; }
+
+.chart-pane-empty {
+  padding: var(--space-5);
+  font-size: var(--font-size-xs);
+  color: var(--color-neutral-500);
+  text-align: center;
+}
+
+/* --- Indicators ------------------------------------------------------------ */
+
+.chart-ind-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-1);
+}
+
+.chart-ind-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-neutral-500);
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chart-ind-btn:hover { color: var(--color-neutral-900); }
+
+.chart-ind-btn.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-primary-content);
+}
+
+/* Oscillators get their own sub-chart rather than sharing the price scale - a dashed edge
+   hints they behave differently from the overlays. */
+.chart-ind-btn.oscillator { border-style: dashed; }
+
+/* The toolbar's own Settings button sits at the far right; the same class is reused for
+   buttons inside the config panel, which must NOT be pushed away from their label. */
+.chart-ind-bar > .chart-ind-settings { margin-left: auto; }
+
+.chart-ind-settings {
+  padding: 3px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-neutral-500);
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chart-ind-settings:hover { color: var(--color-neutral-900); }
+
+.chart-ind-config {
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+/* `hidden` alone loses to the display below - see the note on .chart-ctx. */
+.chart-ind-config[hidden],
+.chart-sync-bar[hidden] { display: none; }
+
+/* Rows carry between zero and four fields (RSI has length, MA, overbought and oversold), so
+   the track has to fit the widest of them. Anything narrower overflows its cell and paints on
+   top of the neighbouring row. */
+.chart-ind-cfg-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: var(--space-2) var(--space-3);
+}
+
+.chart-ind-cfg-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-3xs);
+}
+
+.chart-ind-cfg-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 74px;
+  font-weight: 700;
+  color: var(--color-neutral-700);
+}
+
+.chart-ind-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.chart-ind-cfg-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  color: var(--color-neutral-500);
+}
+
+.chart-ind-cfg-field input,
+.chart-ind-cfg-field select {
+  /* Wide enough for three digits plus the spinner - at 56px the stepper clipped the value. */
+  width: 68px;
+  padding: 2px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-neutral-900);
+  font-size: var(--font-size-3xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-ind-cfg-field select { width: auto; max-width: 128px; }
+.chart-ind-cfg-field input[type="color"] { width: 32px; padding: 1px; }
+.chart-ind-cfg-field input[type="checkbox"] { width: auto; }
+
+.chart-ind-cfg-none { color: var(--color-neutral-400); }
+
+/* --- Pattern picker -------------------------------------------------------- */
+
+.chart-pattern-picker {
+  margin-bottom: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.chart-pattern-picker[hidden] { display: none; }
+
+.chart-pat-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-neutral-500);
+}
+
+.chart-pat-count {
+  margin-right: auto;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--color-neutral-400);
+}
+
+/* Over forty rows: scroll in place rather than pushing the chart off the screen. */
+.chart-pat-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 2px var(--space-4);
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--space-3) var(--space-4);
+}
+
+.chart-pat-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px 0;
+}
+
+.chart-pat-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-size-3xs);
+  color: var(--color-neutral-700);
+  cursor: pointer;
+}
+
+.chart-pat-name span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-pat-name input { accent-color: var(--color-primary); cursor: pointer; }
+
+/* The code as it appears on the chart, so the list doubles as the key. */
+.chart-pat-code {
+  flex: 0 0 38px;
+  padding: 1px 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-neutral-500);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  text-align: center;
+}
+
+.chart-pat-key {
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--color-neutral-400);
+}
+
+.chart-pat-row input[type="color"] {
+  width: 26px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
+.chart-pat-row select {
+  width: 86px;
+  padding: 1px 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-neutral-700);
+  font-size: var(--font-size-3xs);
+}
+
+/* The markers layer is a toggle, not a plotted line - square it off from the others. */
+.chart-ind-btn.markers { border-style: dotted; }
+
+.chart-ind-cfg-note,
+.chart-profile-note,
+.chart-sync-note {
+  margin-top: var(--space-2);
+  font-size: var(--font-size-3xs);
+  color: var(--color-neutral-500);
+}
+
+.chart-profile-note, .chart-sync-note { max-width: 320px; }
+
+.chart-sync-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-1);
+}
+
+.chart-sync-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--font-size-3xs);
+  color: var(--color-neutral-500);
+  cursor: pointer;
+}
+
+.chart-sync-item input { accent-color: var(--color-primary); cursor: pointer; }
+
+.chart-pane-tf {
+  margin-left: var(--space-2);
+  padding: 1px 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-neutral-700);
+  font-size: var(--font-size-3xs);
+}
+
+/* Oscillators stack, so the container is a column of independently sized sub-charts. */
+.chart-oscillator {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.chart-oscillator[hidden] { display: none; }
+
+.chart-osc {
+  /* No left or right border: a 1px edge shifts the plot area and the oscillator no longer sits
+     exactly under the candle it belongs to. Alignment with the price chart wins over the frame. */
+  border-block: 1px solid var(--color-border);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+
+.chart-osc-title {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-neutral-500);
+}
+
+.chart-osc-body { height: 150px; }
+
+/* Oscillators are panes of the price chart now, so the price chart has to be tall enough to
+   host them. The old standalone sub-chart container is left styled but unused. */
+/* Oscillators are panes of this chart now, so its height is set from script - price pane plus
+   each enabled oscillator. See refreshOscillator. */
+
+/* Resize grip under each oscillator. Tall enough to grab without hunting for it. */
+.chart-osc-resize {
+  height: 7px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-surface);
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.chart-osc-resize::after {
+  content: '';
+  display: block;
+  width: 34px;
+  height: 3px;
+  margin: 2px auto;
+  border-radius: 999px;
+  background: var(--color-border);
+}
+
+.chart-osc-resize:hover::after,
+.chart-osc-resize.is-resizing::after { background: var(--color-primary); }
+
+@media (max-width: 1200px) {
+  .chart-layout.is-split { grid-template-columns: 1fr; }
+  .chart-layout.is-split .chart-container { height: 420px; }
+  .chart-panes { grid-template-rows: 300px 300px; }
+}
+
+.chart-panes[hidden] { display: none; }
+
+
+/* --- Drawing tools --------------------------------------------------------- */
+
+/* The rail sits beside the canvas rather than above it, so the chart keeps the full height and
+   the tools read as chart furniture. */
+.chart-canvas-wrap {
+  display: flex;
+  align-items: stretch;
+}
+
+.chart-canvas-wrap > .chart-container { flex: 1 1 auto; min-width: 0; }
+
+.chart-draw-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  width: 40px;
+  padding: var(--space-2) 0;
+  border: 1px solid var(--color-border);
+  border-right: none;
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
+  background: var(--color-surface);
+}
+
+.chart-draw-rail[hidden] { display: none; }
+
+.chart-draw-note {
+  writing-mode: vertical-rl;
+  font-size: var(--font-size-3xs);
+  color: var(--color-neutral-500);
+  padding: var(--space-2) 0;
+  text-align: center;
+}
+
+.chart-rail-btn {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-neutral-500);
+  cursor: pointer;
+}
+
+.chart-rail-btn svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.chart-rail-btn:hover {
+  background: var(--color-bg);
+  color: var(--color-neutral-900);
+}
+
+.chart-rail-btn.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-primary-content);
+}
+
+/* An open flyout is not the same as an armed tool - one is a menu, the other is loaded. */
+.chart-rail-btn.open { border-color: var(--color-primary); color: var(--color-primary); }
+
+.chart-rail-btn.is-danger:hover { color: var(--color-loss); }
+
+.chart-rail-sep {
+  width: 18px;
+  height: 1px;
+  margin: var(--space-2) 0;
+  background: var(--color-border);
+}
+
+.chart-draw-flyout {
+  position: absolute;
+  left: 44px;
+  z-index: 30;
+  min-width: 190px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+}
+
+.chart-draw-flyout[hidden] { display: none; }
+
+.chart-flyout-head {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-neutral-500);
+}
+
+.chart-flyout-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  width: 100%;
+  padding: 5px var(--space-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-neutral-700);
+  font-size: var(--font-size-3xs);
+  text-align: left;
+  cursor: pointer;
+}
+
+.chart-flyout-item:hover { background: var(--color-bg); color: var(--color-neutral-900); }
+
+.chart-flyout-item.active {
+  background: var(--color-primary);
+  color: var(--color-primary-content);
+}
+
+.chart-flyout-anchors { color: var(--color-neutral-400); font-variant-numeric: tabular-nums; }
+
+.chart-flyout-item.active .chart-flyout-anchors { color: inherit; opacity: 0.75; }
+
+/* Heading on the order menu opened from a drawn line, so it is clear which price is meant. */
+.chart-ctx-head {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  color: var(--color-neutral-500);
+  white-space: nowrap;
+}
+
+
+/* --- Compact toolbar ------------------------------------------------------- */
+
+/*
+ * One row instead of six. Everything that is not a per-trade decision sits behind a popover, so
+ * the candles start immediately under the toolbar rather than a third of the way down.
+ */
+.chart-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.chart-bar .chart-symbol-select {
+  width: auto;
+  min-width: 160px;
+  max-width: 215px;
+  height: 28px;
+  padding: 0 var(--space-2);
+  font-size: var(--font-size-3xs);
+}
+
+/* Grouped timeframe picker (Seconds/Minutes/Hours/Days), inside the timeframe popover. */
+.chart-tf-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-2);
+}
+
+.chart-tf-grid .chart-tf-btn {
+  padding: 4px 8px;
+  font-size: var(--font-size-3xs);
+}
+
+/* Segmented groups read as one control, so they are joined rather than spaced. */
+.chart-seg {
+  display: inline-flex;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.chart-seg .chart-tf-btn,
+.chart-seg .chart-prod-btn {
+  padding: 4px 9px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-neutral-500);
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chart-seg > * + * { border-left: 1px solid var(--color-border); }
+
+.chart-seg .chart-tf-btn:hover,
+.chart-seg .chart-prod-btn:hover { color: var(--color-neutral-900); }
+
+.chart-seg .chart-tf-btn.active,
+.chart-seg .chart-prod-btn.active {
+  background: var(--color-primary);
+  color: var(--color-primary-content);
+}
+
+.chart-lots {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-3xs);
+  color: var(--color-neutral-500);
+}
+
+.chart-bar .chart-qty-input {
+  width: 62px;
+  height: 28px;
+  padding: 0 var(--space-2);
+  font-size: var(--font-size-3xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Both of these carry long text. Left to wrap they turn the one-row toolbar into two, so they
+   truncate and keep the full string in the tooltip. */
+.chart-bar .chart-size-hint,
+.chart-bar .chart-status {
+  min-width: 0;
+  max-width: 170px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--font-size-3xs);
+}
+
+.chart-bar .chart-status { max-width: 250px; }
+
+.chart-bar-gap { flex: 1 1 auto; }
+
+.chart-menu { position: relative; }
+
+.chart-bar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-neutral-500);
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chart-bar-btn:hover { color: var(--color-neutral-900); }
+
+.chart-bar-btn b { color: var(--color-neutral-900); font-variant-numeric: tabular-nums; }
+
+.chart-bar-btn.active {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: var(--color-primary-content);
+}
+
+.chart-bar-btn.active b { color: inherit; }
+
+/* Nothing to send to is a state worth seeing without opening the panel. */
+.chart-bar-btn.is-blocked { border-color: var(--color-loss); color: var(--color-loss); }
+
+.chart-live-badge {
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--color-loss);
+  color: var(--color-primary-content);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+}
+
+.chart-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  min-width: 260px;
+  max-width: min(760px, 90vw);
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 40%);
+}
+
+.chart-pop.is-wide { min-width: 620px; }
+
+.chart-pop[hidden] { display: none; }
+
+/* Inside a popover these panels are already framed, so they drop their own chrome. */
+.chart-pop .chart-options,
+.chart-pop .chart-instances,
+.chart-pop .chart-ind-bar,
+.chart-pop .chart-ind-config,
+.chart-pop .chart-pattern-picker,
+.chart-pop .chart-sync-bar {
+  border: none;
+  background: transparent;
+  padding-inline: 0;
+  margin-bottom: 0;
+}
+
+.chart-pop .chart-trade-controls {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-3xs);
+}
+
+.chart-pop .chart-trade-host { margin-top: 0; }
+
+@media (max-width: 900px) {
+  .chart-pop { right: auto; left: 0; min-width: 240px; }
+  .chart-pop.is-wide { min-width: 240px; }
+}

@@ -925,12 +925,21 @@
 }
 
 @media (min-width: 1024px) {
-  /* Collapsed rail: the label fades out via the shared .nav-label rule, which would leave an
-     empty row. Collapse the row to a hairline so the grouping still reads as separation. */
+  /*
+   * Collapsed rail: the label fades out via the shared .nav-label rule, which would leave an
+   * empty row. Collapse the row to a hairline so the grouping still reads as separation.
+   *
+   * Sized and centred to match the icon column, NOT the li's own (much wider) box: the nav
+   * links above and below are 48px circles centred with `margin: 4px auto` inside a li that is
+   * well over twice that wide, so a divider using the li's own edges (minus a fixed
+   * left/right margin) span far past the icons it separates and read as misaligned against
+   * them - a symptom of matching the wrong reference box, not an accidental typo.
+   */
   body.sidebar-collapsed .nav-group-title,
   .drawer.sidebar-collapsed .nav-group-title {
     padding: 0;
-    margin: var(--space-2, 8px) var(--space-3, 12px);
+    margin: var(--space-2, 8px) auto;
+    width: 32px;
     height: 1px;
     overflow: hidden;
     background: var(--color-base-300, #2A2A2E);

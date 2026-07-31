@@ -6,6 +6,25 @@ import { toISTDate } from '../utils/time.js';
 const TIMINGS_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const HOLIDAYS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
+/**
+ * Index segments trade under a real exchange's session, but OpenAlgo's market/timings and
+ * market/holidays endpoints have never heard of NSE_INDEX or BSE_INDEX - they answer for NSE,
+ * BSE, NFO, BFO, MCX, BCD, CDS, NCO, CRYPTO only. An exact-string match therefore NEVER finds
+ * an entry for an index segment, `isExchangeOpen` returns false unconditionally, and
+ * `filterOpenSymbols` drops every index symbol from the WS subscription list permanently -
+ * regardless of instance, regardless of the time of day. Observed live: NIFTY and BANKNIFTY
+ * were never subscribed on any instance, so their cached quotes could only get older.
+ *
+ * The underlying's index runs on the same clock as its own cash segment, so the timings
+ * question for NSE_INDEX is answered by NSE's session.
+ */
+const CALENDAR_EXCHANGE_ALIASES = { NSE_INDEX: 'NSE', BSE_INDEX: 'BSE' };
+
+function calendarExchange(exchange) {
+  const ex = (exchange || '').toUpperCase();
+  return CALENDAR_EXCHANGE_ALIASES[ex] || ex;
+}
+
 class MarketCalendarService {
   constructor() {
     this.timingsCache = new Map(); // date -> { data, fetchedAt }
@@ -138,7 +157,7 @@ class MarketCalendarService {
   }
 
   async isExchangeOpen(exchange, date = new Date()) {
-    const ex = (exchange || '').toUpperCase();
+    const ex = calendarExchange(exchange);
     if (!ex) return false;
 
     const dateStr = this._formatDate(date);
@@ -178,7 +197,7 @@ class MarketCalendarService {
   }
 
   async getNextSessionOpen(exchange, fromDate = new Date(), { maxDays = 7 } = {}) {
-    const ex = (exchange || '').toUpperCase();
+    const ex = calendarExchange(exchange);
     if (!ex) return null;
 
     const base = toISTDate(fromDate);
@@ -246,13 +265,14 @@ class MarketCalendarService {
     const cache = new Map();
 
     for (const s of symbols) {
-      const exchange = (s.exchange || '').toUpperCase();
-      if (!exchange) continue;
-      if (!cache.has(exchange)) {
-        // Cache per-exchange for this call
-        cache.set(exchange, await this.isExchangeOpen(exchange));
+      // Cached under the RAW exchange (a symbol still carries NSE_INDEX downstream), even
+      // though the open/closed question is answered against the aliased one.
+      const raw = (s.exchange || '').toUpperCase();
+      if (!raw) continue;
+      if (!cache.has(raw)) {
+        cache.set(raw, await this.isExchangeOpen(raw));
       }
-      if (cache.get(exchange)) {
+      if (cache.get(raw)) {
         results.push(s);
       }
     }

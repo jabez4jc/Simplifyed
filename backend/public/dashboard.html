@@ -17,15 +17,16 @@
   <link rel="stylesheet" href="/css/tailwind.css?v=20251204-0800">
   <link rel="stylesheet" href="/css/type-scale.css?v=20260725-1200">
   <link rel="stylesheet" href="/css/tokens-base.css?v=20260724-1100">
-  <link rel="stylesheet" href="/css/components.css?v=20260724-0900">
+  <link rel="stylesheet" href="/css/components.css?v=20260727-2230">
   <link rel="stylesheet" href="/css/quick-order.css?v=20260723-0900">
-  <link rel="stylesheet" href="/css/settings.css?v=20260714-0200">
+  <link rel="stylesheet" href="/css/settings.css?v=20260725-2319">
   <link rel="stylesheet" href="/css/watchlists.css?v=20260723-0900">
   <link rel="stylesheet" href="/css/trading-controls.css?v=20260714-0200">
   <link rel="stylesheet" href="/css/positions.css?v=20260723-0900">
   <link rel="stylesheet" href="/css/operations.css?v=20260714-0200">
   <link rel="stylesheet" href="/css/overrides.css?v=20260714-0200">
   <link rel="stylesheet" href="/css/trading-buttons.css?v=20251204-0800">
+  <link rel="stylesheet" href="/css/chart.css?v=20260728-1700">
   <link rel="stylesheet" href="/css/fonts.css?v=20260725-1200">
   <style>
     .logo {
@@ -160,6 +161,18 @@
                   d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
               </svg>
               <span class="nav-label">Watchlists</span>
+            </a>
+          </li>
+          <li data-nav-group-item="trading">
+            <a data-view="chart" data-label="Chart" data-permission="pages.watchlists.view"
+              class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
+              onclick="app.switchView('chart')">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+                stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M3 3v18h18M7 15l3-4 3 3 4-6" />
+              </svg>
+              <span class="nav-label">Chart</span>
             </a>
           </li>
           <li data-nav-group-item="trading">
@@ -359,13 +372,14 @@
   <script defer src="/js/quick-order-place.js?v=20260724-2200"></script>
   <script defer src="/js/quick-order-init.js?v=20260714-0200"></script>
   <script defer src="/js/strategy-builder.js?v=20260724-1900"></script>
-  <script defer src="/js/settings-core.js?v=20260714-0200"></script>
-  <script defer src="/js/settings-general.js?v=20260714-0200"></script>
+  <script defer src="/js/settings-core.js?v=20260725-2319"></script>
+  <script defer src="/js/settings-schema.js?v=20260725-2319"></script>
+  <script defer src="/js/settings-general.js?v=20260725-2319"></script>
   <script defer src="/js/settings-rbac.js?v=20260714-0200"></script>
   <script defer src="/js/settings-data.js?v=20260714-0200"></script>
   <script defer src="/js/settings-status.js?v=20260714-0200"></script>
   <script defer src="/js/settings-init.js?v=20260714-0200"></script>
-  <script defer src="/js/dashboard-core.js?v=20260724-2200"></script>
+  <script defer src="/js/dashboard-core.js?v=20260727-1700"></script>
   <script defer src="/js/dashboard-overview.js?v=20260724-1600"></script>
   <script defer src="/js/dashboard-instances.js?v=20260724-1100"></script>
   <script defer src="/js/dashboard-watchlists-core.js?v=20260724-1700"></script>
@@ -379,6 +393,21 @@
   <script defer src="/js/dashboard-notifications.js?v=20260714-0100"></script>
   <script defer src="/js/dashboard-pnl.js?v=20260714-0100"></script>
   <script defer src="/js/dashboard-playground.js?v=20260714-0100"></script>
+  <!--
+    Drawing tools (lightweight-charts-drawing) and its base engine are retired here - the chart
+    now runs on openalgo-charts (see js/openalgo-charts-bridge.js). Both are still vendored under
+    public/vendor for the drawing-tools slice of this migration, just not loaded by default.
+  -->
+  <script type="module" src="/js/openalgo-charts-bridge.js?v=1.0.24-5"></script>
+  <script defer src="/js/chart-patterns.js?v=20260728-1600"></script>
+  <script defer src="/js/dashboard-chart-panes.js?v=20260728-1700"></script>
+  <script defer src="/js/dashboard-chart-profile.js?v=20260728-1100"></script>
+  <script defer src="/js/dashboard-chart-orders.js?v=20260728-1700"></script>
+  <script defer src="/js/dashboard-chart-types.js?v=20260728-1500"></script>
+  <script defer src="/js/dashboard-chart-sync.js?v=20260728-1700"></script>
+  <script defer src="/js/dashboard-chart-live.js?v=20260728-1300"></script>
+  <script defer src="/js/dashboard-chart-draw.js?v=20260727-2032"></script>
+  <script defer src="/js/dashboard-chart.js?v=20260728-1700"></script>
   <script defer src="/js/dashboard-init.js?v=20260723-0900"></script>
 </body>
 

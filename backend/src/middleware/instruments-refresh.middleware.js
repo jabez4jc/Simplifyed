@@ -6,7 +6,7 @@
 
 import instrumentsService from '../services/instruments.service.js';
 import { log } from '../core/logger.js';
-import { config } from '../core/config.js';
+import { isTestMode } from '../core/config.js';
 
 /**
  * Global app readiness state
@@ -16,18 +16,65 @@ let appReady = false;
 let refreshInProgress = false;
 let refreshError = null;
 let lastRefreshDate = null;
+let bypassed = false;
+
+// isTestMode() is imported from core/config.js so there is exactly one definition of
+// "authentication is disabled". Test mode means this is not a real deployment, which is the
+// only condition under which skipping the instruments check is defensible.
 
 /**
- * Get app ready status
- * @returns {Object} - Ready status with details
+ * Get app ready status.
+ * `ready` reports whether the instruments cache has actually been verified - it is never set
+ * true as a side effect of a bypass, so /api/v1/ready can still fail when it should.
  */
 export function getAppReadyStatus() {
   return {
     ready: appReady,
     refreshInProgress,
     error: refreshError,
-    lastRefreshDate
+    lastRefreshDate,
+    ...(bypassed ? { bypassed: true, reason: 'test mode - instruments not verified' } : {}),
   };
+}
+
+/**
+ * Evaluate readiness once at startup.
+ *
+ * Whether the instruments cache is usable is a property of the server, not of anyone's request.
+ * Readiness was previously only ever computed inside `checkInstrumentsRefresh`, which returns
+ * early for unauthenticated traffic - so /api/v1/ready stayed 503 until a human logged in.
+ * That is unusable as a probe: a load balancer would never route traffic, so no login could
+ * happen, so it would never go green. (The old development bypass hid this by asserting
+ * readiness unconditionally.)
+ *
+ * Only the cheap local check runs here - two SQLite queries. A stale cache deliberately leaves
+ * the app not-ready rather than triggering a broker refresh during boot; the first authenticated
+ * request performs that blocking refresh, as before.
+ */
+export async function evaluateStartupReadiness() {
+  if (isTestMode()) {
+    bypassed = true;
+    log.warn('Test mode: instruments check bypassed - app is NOT verified for trading');
+    return getAppReadyStatus();
+  }
+
+  try {
+    const needsRefresh = await instrumentsService.needsRefresh();
+    if (!needsRefresh) {
+      appReady = true;
+      lastRefreshDate = new Date();
+      log.info('Instruments cache is current - app ready for trading');
+    } else {
+      appReady = false;
+      log.warn('Instruments cache is stale - app NOT ready; refresh runs on first authenticated request');
+    }
+  } catch (error) {
+    appReady = false;
+    refreshError = error.message;
+    log.error('Could not evaluate instruments readiness at startup', error);
+  }
+
+  return getAppReadyStatus();
 }
 
 /**
@@ -68,21 +115,22 @@ export async function checkInstrumentsRefresh(req, res, next) {
       return next();
     }
 
-    // Skip instruments refresh in test mode or when Google OAuth is absent
-    const testModeEnabled = config.auth.enableTestMode === true ||
-                            process.env.ENABLE_TEST_MODE === 'true' ||
-                            config.testMode?.enabled === true ||
-                            config.env === 'development';
-    if (testModeEnabled || !config.auth.googleClientId) {
-      if (!appReady) {
-        log.info('Test mode/dev: Skipping instruments refresh, marking app as ready', {
-          user: req.user?.email,
-          path: req.path
-        });
-        appReady = true;
-        refreshInProgress = false;
-        refreshError = null;
-        lastRefreshDate = new Date();
+    // Test mode is the only bypass, and it does NOT claim the app is ready.
+    //
+    // This used to also bypass whenever NODE_ENV was 'development' - and, because NODE_ENV
+    // defaults to 'development' when unset, that made a forgotten environment variable enough
+    // to disable the check on a real deployment. Worse, the bypass set `appReady = true`, so
+    // /api/v1/ready returned 200 while the instruments cache had never been verified. A
+    // readiness probe that cannot fail is not a readiness probe.
+    //
+    // Nothing is saved by skipping: needsRefresh() below is two local SQLite queries, so with a
+    // warm cache this middleware is already a no-op. The bypass only ever mattered on the one
+    // request per day where the cache is genuinely stale - which is precisely when a trading
+    // application must not proceed.
+    if (isTestMode()) {
+      if (!bypassed) {
+        bypassed = true;
+        log.warn('Test mode: instruments refresh bypassed - app is NOT verified for trading');
       }
       return next();
     }

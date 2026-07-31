@@ -68,15 +68,15 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
    * Render application settings section
    */
   renderApplicationSettings() {
-    const activeMeta = this.categoryMeta[this.activeCategory] || { icon: '⚙️', description: '' };
-
+    // Structure comes from the server registry (see settings-schema.js). This method only owns
+    // the surrounding chrome: search, the group host, and the save/reset actions.
     return `
       <div class="settings-container">
-        <!-- Header with Search -->
         <div class="settings-header">
           <div class="settings-header-info">
             <p class="text-sm text-neutral-600">
-              Configure application settings. Changes are saved when you click "Save Changes".
+              Only settings that take effect without a restart appear here. Changes apply when
+              you click Save.
             </p>
           </div>
           <div class="settings-search-wrapper">
@@ -84,87 +84,29 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
               <svg class="settings-search-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
                 <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
               </svg>
-              <input
-                type="text"
-                class="settings-search-input"
-                placeholder="Search settings..."
-                id="settings-search"
-                value="${this.searchQuery}"
-                oninput="settings.handleSearch(this.value)"
-              />
+              <input type="text" class="settings-search-input" placeholder="Search settings..."
+                     id="settings-search" value="${this.searchQuery}"
+                     oninput="settings.handleSearch(this.value)" />
               ${this.searchQuery ? `
-                <button class="settings-search-clear" onclick="settings.clearSearch()">
+                <button class="settings-search-clear" onclick="settings.clearSearch()" aria-label="Clear search">
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
                     <path d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z" />
                   </svg>
-                </button>
-              ` : ''}
+                </button>` : ''}
             </div>
           </div>
         </div>
 
-        ${this.searchQuery ? this.renderSearchResults() : `
-          <!-- Category Sidebar + Content Layout -->
-          <div class="settings-layout">
-            <!-- Category Sidebar -->
-            <div class="settings-sidebar">
-              <div class="settings-sidebar-header">
-                <span class="text-xs font-semibold uppercase tracking-wider text-neutral-500">Categories</span>
-              </div>
-              <nav class="settings-nav">
-                ${this.displayCategories.map(cat => {
-      const meta = this.categoryMeta[cat.category] || { icon: '⚙️', description: '' };
-      return `
-                    <button
-                      class="settings-nav-item ${cat.category === this.activeCategory ? 'active' : ''}"
-                      data-category="${cat.category}"
-                      onclick="settings.switchCategory('${cat.category}')"
-                    >
-                      <span class="settings-nav-icon">${meta.icon}</span>
-                      <span class="settings-nav-label">${this.formatCategoryName(cat.category)}</span>
-                      <span class="settings-nav-count">${cat.count}</span>
-                    </button>
-                  `;
-    }).join('')}
-              </nav>
-            </div>
+        ${this.searchQuery
+          ? this.renderSearchResults()
+          : `<div id="settings-schema-host" class="settings-schema-host">${this.renderSchemaShell()}</div>`}
 
-            <!-- Settings Content -->
-            <div class="settings-main">
-              <!-- Category Header -->
-              <div class="settings-category-header">
-                <div class="settings-category-title">
-                  <span class="settings-category-icon">${activeMeta.icon}</span>
-                  <div>
-                    <h3 class="text-lg font-semibold text-neutral-900">${this.formatCategoryName(this.activeCategory)}</h3>
-                    <p class="text-sm text-neutral-600">${activeMeta.description}</p>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Settings Form -->
-              <div class="settings-content" id="settings-content">
-                ${this.renderSettingsForm(this.activeCategory)}
-              </div>
-            </div>
-          </div>
-        `}
-
-        <!-- Save Button -->
         <div class="settings-actions">
-          <button
-            class="btn btn-buy"
-            onclick="settings.saveSettings()"
-            ${this.isSaving ? 'disabled' : ''}
-          >
-            ${this.isSaving ? '💾 Saving...' : '💾 Save Changes'}
+          <button class="btn btn-buy" onclick="settings.saveSettings()" ${this.isSaving ? 'disabled' : ''}>
+            ${this.isSaving ? 'Saving...' : 'Save Changes'}
           </button>
-          <button
-            class="btn btn-neutral btn-outline"
-            onclick="settings.resetSettings()"
-            ${this.isSaving ? 'disabled' : ''}
-          >
-            🔄 Reset to Defaults
+          <button class="btn btn-neutral btn-outline" onclick="settings.resetSettings()" ${this.isSaving ? 'disabled' : ''}>
+            Reset to Defaults
           </button>
         </div>
       </div>
@@ -273,183 +215,57 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
   /**
    * Render search results
    */
+  /**
+   * Search across the schema rather than the raw settings table, so results are limited to
+   * settings that can actually be saved, and each hit carries the same label/help text the
+   * grouped view shows.
+   */
   renderSearchResults() {
+    const q = (this.searchQuery || '').toLowerCase();
     const results = [];
-
-    Object.entries(this.displaySettings).forEach(([category, categorySettings]) => {
-      Object.entries(categorySettings).forEach(([key, setting]) => {
-        const settingName = this.formatSettingName(key).toLowerCase();
-        const description = (setting.description || '').toLowerCase();
-        const keyLower = key.toLowerCase();
-
-        if (settingName.includes(this.searchQuery) ||
-          description.includes(this.searchQuery) ||
-          keyLower.includes(this.searchQuery)) {
-          results.push({
-            key,
-            category,
-            setting,
-            name: this.formatSettingName(key),
-            categoryName: this.formatCategoryName(category)
-          });
+    for (const group of this.schema?.groups || []) {
+      for (const section of group.sections) {
+        for (const field of section.fields) {
+          const haystack = `${field.label} ${field.help || ''} ${field.key} ${group.label} ${section.label}`.toLowerCase();
+          if (haystack.includes(q)) results.push({ field, group, section });
         }
-      });
-    });
+      }
+    }
 
     if (results.length === 0) {
       return `
         <div class="settings-search-empty">
-          <div class="settings-search-empty-icon">🔍</div>
-          <p class="text-neutral-600">No settings found matching "<strong>${Utils.escapeHTML(this.searchQuery)}</strong>"</p>
-          <button class="btn btn-neutral btn-outline btn-sm mt-3" onclick="settings.clearSearch()">Clear Search</button>
+          <p class="text-neutral-600">No settings match "<strong>${Utils.escapeHTML(this.searchQuery)}</strong>".</p>
+          <p class="text-sm text-neutral-500 mt-2">
+            Only settings that take effect without a restart are listed. Secrets, startup values
+            and debug flags are configured through the environment.
+          </p>
+          <button class="btn btn-neutral btn-outline btn-sm mt-3" onclick="settings.clearSearch()">Clear search</button>
         </div>
       `;
     }
 
     return `
-      <div class="settings-search-results">
+      <div class="settings-search-results" id="settings-schema-host">
         <div class="settings-search-results-header">
-          <span class="text-sm text-neutral-600">Found ${results.length} setting${results.length !== 1 ? 's' : ''}</span>
+          <span class="text-sm text-neutral-600">
+            ${results.length} setting${results.length !== 1 ? 's' : ''} found
+          </span>
         </div>
-        <div class="settings-content">
-          ${results.map(result => {
-      const inputId = `setting-${result.key.replace(/\./g, '-')}`;
-      const inputValue = result.setting.pendingValue ?? result.setting.rawValue ?? result.setting.value;
-      const meta = this.categoryMeta[result.category] || { icon: '⚙️' };
-      const helpText = this.getSettingHelpText(result.key);
-
-      return `
-              <div class="settings-field settings-field-search">
-                <label for="${inputId}" class="settings-field-label">
-                  <div class="settings-field-title">
-                    <span class="font-medium">${result.name}</span>
-                    ${result.setting.isSensitive ? '<span class="settings-sensitive-badge">Sensitive</span>' : ''}
-                  </div>
-                  <span class="settings-field-category">
-                    <span>${meta.icon}</span>
-                    <span>${result.categoryName}</span>
-                  </span>
-                  ${result.setting.description ? `<span class="text-sm text-neutral-500 block mt-1">${result.setting.description}</span>` : ''}
-                  ${helpText ? `<span class="text-xs text-neutral-500 block mt-1">${helpText}</span>` : ''}
-                </label>
-                <div class="settings-field-input">
-                  ${this.renderInputField(inputId, result.key, result.setting.dataType, inputValue, result.setting.isSensitive)}
-                </div>
-              </div>
-            `;
-    }).join('')}
+        <div class="settings-section-body">
+          ${results.map(({ field, group, section }) => `
+            <div class="settings-search-hit">
+              <span class="settings-field-breadcrumb">
+                ${Utils.escapeHTML(group.label)} › ${Utils.escapeHTML(section.label)}
+              </span>
+              ${this.renderSchemaField(field)}
+            </div>
+          `).join('')}
         </div>
       </div>
     `;
   }
 
-  /**
-   * Render settings form for a category
-   */
-  renderSettingsForm(category) {
-    if (category === 'instance_health_tests') {
-      return this.renderInstanceHealthTests();
-    }
-    if (category === 'market_hours') {
-      return this.renderMarketHoursForm();
-    }
-    const categorySettings = this.displaySettings[category] || {};
-
-    const inputs = Object.entries(categorySettings).map(([key, setting]) => {
-      const inputId = `setting-${key.replace(/\./g, '-')}`;
-      const isSensitive = setting.isSensitive;
-      const inputValue = setting.pendingValue ?? setting.rawValue ?? setting.value;
-      const helpText = this.getSettingHelpText(key);
-
-      return `
-        <div class="settings-field ${isSensitive ? 'settings-field-sensitive' : ''}">
-          <label for="${inputId}" class="settings-field-label">
-            <div class="settings-field-title">
-              <span class="font-medium text-neutral-800">${this.formatSettingName(key)}</span>
-              ${isSensitive ? '<span class="settings-sensitive-badge">🔒 Sensitive</span>' : ''}
-            </div>
-            ${setting.description ? `<span class="text-sm text-neutral-500 block mt-1">${setting.description}</span>` : ''}
-            ${helpText ? `<span class="text-xs text-neutral-500 block mt-1">${helpText}</span>` : ''}
-            <span class="settings-field-key">${key}</span>
-          </label>
-          <div class="settings-field-input">
-            ${this.renderInputField(inputId, key, setting.dataType, inputValue, isSensitive)}
-          </div>
-        </div>
-      `;
-    }).join('');
-
-    if (Object.keys(categorySettings).length === 0) {
-      return `
-        <div class="settings-empty">
-          <p class="text-neutral-500">No settings available in this category.</p>
-        </div>
-      `;
-    }
-
-    return `<div class="settings-fields">${inputs}</div>`;
-  }
-
-  renderMarketHoursForm() {
-    const categorySettings = this.displaySettings.market_hours || {};
-    const resolveSetting = (key) => categorySettings[key] || {};
-    const resolveValue = (setting) => setting.pendingValue ?? setting.rawValue ?? setting.value ?? '';
-
-    const renderRow = (label, startKey, endKey) => {
-      const startSetting = resolveSetting(startKey);
-      const endSetting = resolveSetting(endKey);
-      const startId = `setting-${startKey.replace(/\./g, '-')}`;
-      const endId = `setting-${endKey.replace(/\./g, '-')}`;
-      const startValue = resolveValue(startSetting);
-      const endValue = resolveValue(endSetting);
-      const startHelp = this.getSettingHelpText(startKey);
-      const endHelp = this.getSettingHelpText(endKey);
-
-      return `
-        <div class="settings-field settings-field-row market-hours">
-          <label class="settings-field-label" for="${startId}">
-            <div class="settings-field-title">
-              <span class="font-medium text-neutral-800">${label}</span>
-            </div>
-            ${startHelp ? `<span class="text-xs text-neutral-500">Start: ${startHelp}</span>` : ''}
-            ${endHelp ? `<span class="text-xs text-neutral-500">End: ${endHelp}</span>` : ''}
-            <span class="settings-field-key">${startKey} → ${endKey}</span>
-          </label>
-          <div class="settings-field-input settings-field-inline">
-            <div class="settings-time-pair">
-              <div class="settings-time-item">
-                <label class="settings-time-label" for="${startId}">Start</label>
-                ${this.renderInputField(startId, startKey, startSetting.dataType, startValue, startSetting.isSensitive)}
-              </div>
-              <div class="settings-time-item">
-                <label class="settings-time-label" for="${endId}">End</label>
-                ${this.renderInputField(endId, endKey, endSetting.dataType, endValue, endSetting.isSensitive)}
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-    };
-
-    const rows = [
-      renderRow(
-        'Quotes blackout (IST)',
-        'market_hours.quote_blackout_start',
-        'market_hours.quote_blackout_end'
-      ),
-      renderRow(
-        'General blackout (IST)',
-        'market_hours.general_blackout_start',
-        'market_hours.general_blackout_end'
-      ),
-    ].join('');
-
-    return `<div class="settings-fields">${rows}</div>`;
-  }
-
-  /**
-   * Render input field based on data type
-   */
   renderInputField(id, key, dataType, value, isSensitive) {
     const baseProps = `id="${id}" name="${key}" data-key="${key}" data-type="${dataType}" ${isSensitive ? 'data-sensitive="true"' : ''}`;
 
@@ -740,36 +556,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
   /**
    * Switch category tab
    */
-  switchCategory(category) {
-    this.activeCategory = category;
-
-    // Update active tab
-    document.querySelectorAll('.settings-tab').forEach(tab => {
-      tab.classList.remove('active');
-    });
-    document.querySelector(`[data-category="${category}"]`).classList.add('active');
-
-    const meta = this.categoryMeta[category] || { icon: '⚙️', description: '' };
-    const headerTitle = document.querySelector('.settings-category-title h3');
-    const headerDesc = document.querySelector('.settings-category-title p');
-    const headerIcon = document.querySelector('.settings-category-icon');
-    if (headerTitle) {
-      headerTitle.textContent = this.formatCategoryName(category);
-    }
-    if (headerDesc) {
-      headerDesc.textContent = meta.description || '';
-    }
-    if (headerIcon) {
-      headerIcon.textContent = meta.icon || '⚙️';
-    }
-
-    // Update content
-    document.getElementById('settings-content').innerHTML = this.renderSettingsForm(category);
-
-    // Re-initialize event listeners
-    this.initCategoryTabs();
-  }
-
   /**
    * Handle setting change
    */
@@ -1043,7 +829,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       ? window.app.getStreamPreference()
       : false;
     if (enabled === current) {
-      this.applySettingsFilter();
       return;
     }
 
@@ -1066,7 +851,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       this.settings.streaming['streaming.enabled'].rawValue = enabled ? 'true' : 'false';
       delete this.settings.streaming['streaming.enabled'].pendingValue;
     }
-    this.applySettingsFilter();
   }
 
   /**
@@ -1125,11 +909,14 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
 
     this.categories = await this.fetchCategories();
     this.settings = await this.fetchAllSettings();
-    this.applySettingsFilter();
+    await this.fetchSchema();
 
-    // Re-render the current category
-    document.getElementById('settings-content').innerHTML = this.renderSettingsForm(this.activeCategory);
-    this.initCategoryTabs();
+    const host = document.getElementById('settings-schema-host');
+    if (host) {
+      host.dataset.bound = '';
+      host.innerHTML = this.renderSchemaShell();
+      this.bindSchemaInputs();
+    }
   }
 
   /**

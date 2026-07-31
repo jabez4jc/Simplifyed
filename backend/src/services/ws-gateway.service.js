@@ -8,6 +8,12 @@ import marketDataFeedService from './market-data-feed.service.js';
 import openalgoWsService from './openalgo-ws.service.js';
 import { log } from '../core/logger.js';
 
+// Standard `ws` idiom for pruning zombie clients (laptop sleep, network switch, a NAT/proxy that
+// silently drops the connection): a `close` event isn't guaranteed to ever fire for those, so a
+// client is pinged every PING_INTERVAL_MS and terminated if it didn't answer the PREVIOUS round -
+// giving it a full interval to reply before being judged dead, not just one round-trip.
+const PING_INTERVAL_MS = 30 * 1000;
+
 class WSGatewayService {
   constructor() {
     this.wss = null;
@@ -16,6 +22,7 @@ class WSGatewayService {
     this.path = '/stream';
     this.tokenValidator = null;
     this.instanceFilter = null;
+    this._pingInterval = null;
   }
 
   start(server, { enabled = false, path = '/stream', tokenValidator = null, instanceFilter = null } = {}) {
@@ -33,15 +40,34 @@ class WSGatewayService {
     this.instanceFilter = instanceFilter;
     this.wss = new WebSocketServer({ server, path: this.path });
     this._wireEvents();
+    this._startPingWatchdog();
     log.info('WS Gateway started', { path: this.path });
   }
 
   stop() {
+    if (this._pingInterval) {
+      clearInterval(this._pingInterval);
+      this._pingInterval = null;
+    }
     if (this.wss) {
       this.wss.close();
       this.wss = null;
     }
     this.enabled = false;
+  }
+
+  _startPingWatchdog() {
+    this._pingInterval = setInterval(() => {
+      for (const client of this.wss.clients) {
+        if (client.isAlive === false) {
+          try { client.terminate(); } catch (_) { /* already gone */ }
+          continue;
+        }
+        client.isAlive = false;
+        try { client.ping(); } catch (_) { /* already gone */ }
+      }
+    }, PING_INTERVAL_MS);
+    this._pingInterval.unref?.();
   }
 
   _wireEvents() {
@@ -61,6 +87,8 @@ class WSGatewayService {
         const topics = new Set((topicsParam || '').split(',').filter(Boolean));
         const clientMeta = { topics, lastSeq: lastSeqParam ? Number(lastSeqParam) : 0 };
         ws.meta = clientMeta;
+        ws.isAlive = true;
+        ws.on('pong', () => { ws.isAlive = true; });
 
         ws.on('error', () => {});
         ws.send(JSON.stringify({ type: 'hello', seq: this._nextSeq() }));

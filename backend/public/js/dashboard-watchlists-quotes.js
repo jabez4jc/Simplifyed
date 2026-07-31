@@ -893,8 +893,13 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       `[data-watchlist-feed-coverage="${watchlistId}"]`
     );
 
-    // Feed the navbar freshness clock from here - this is the one point every quote path
-    // (WS push and REST poll alike) funnels through. See markDataReceived() in dashboard-core.js.
+    // Feed the navbar freshness clock from here too - the REST poll path calls this
+    // unconditionally, regardless of which view is open, so it's a correct source for it. The
+    // WS push path used to be marked ONLY from here, on the assumption every quote funnelled
+    // through this function - untrue once the WS dispatcher (dashboard-core.js:handleWsMessage)
+    // grew view-specific branches (chart, dashboard) that never call it. That dispatcher now
+    // marks the clock directly for every quotes/positions/funds message, so this call is
+    // redundant for WS traffic and only load-bearing for the REST fallback.
     if (!statusText && timestamp) {
       this.markDataReceived(timestamp);
     }

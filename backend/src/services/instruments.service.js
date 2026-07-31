@@ -12,6 +12,7 @@ import { log } from '../core/logger.js';
 import { ValidationError } from '../core/errors.js';
 import { config } from '../core/config.js';
 import { toISTDate } from '../utils/time.js';
+import { isTestMode } from '../core/config.js';
 import { toISTISOString } from '../utils/time.js';
 import cron from 'node-cron';
 import { isCryptoBroker } from '../utils/broker-type.util.js';
@@ -195,9 +196,10 @@ class InstrumentsService {
     const startTime = Date.now();
     let refreshLogId = null;
 
-    // Skip refresh in test mode (test instances don't have valid instruments)
-    // Use config.testMode.enabled for consistency across the application
-    if (config.testMode.enabled) {
+    // Skip refresh in test mode (test instances don't have valid instruments).
+    // Same isTestMode() as the auth middleware - config.testMode was a second, independent
+    // switch fed by a different env var, and has been removed.
+    if (isTestMode()) {
       log.info('Test mode: Skipping instruments refresh', {
         exchange: exchange || 'ALL'
       });

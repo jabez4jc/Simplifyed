@@ -9,6 +9,7 @@ import EventEmitter from 'events';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { ValidationError } from '../core/errors.js';
+import { isEditable, validateValue, SETTINGS_GROUPS, SETTINGS_FIELDS } from '../config/settings-registry.js';
 
 const ESSENTIAL_SETTINGS = [
   {
@@ -423,6 +424,24 @@ class SettingsService extends EventEmitter {
    */
   async updateSetting(key, value) {
     try {
+      // The registry is the allowlist, and it is enforced HERE rather than in the UI. Before
+      // this check the only filtering was a hardcoded list in settings-core.js, so any caller
+      // holding `settings.manage` could PUT keys the UI never showed - including
+      // `test_mode.enabled`, which switches optionalAuth into a hardcoded-admin bypass for the
+      // entire process, and `rate_limits.disabled`, which removes the guard that keeps a live
+      // broker from being flooded.
+      if (!isEditable(key)) {
+        throw new ValidationError(
+          `Setting '${key}' is not editable at runtime. It is either applied only at startup, `
+          + 'a secret that must come from the environment, or a debug flag.'
+        );
+      }
+
+      const rangeError = validateValue(key, value);
+      if (rangeError) {
+        throw new ValidationError(rangeError);
+      }
+
       // Get current setting to validate
       const current = await this.getSetting(key);
 
@@ -498,24 +517,21 @@ class SettingsService extends EventEmitter {
       const results = {};
       const errors = [];
 
-      // Use transaction for batch update
-      await db.run('BEGIN TRANSACTION');
-
-      try {
+      // Goes through db.transaction() rather than raw BEGIN/COMMIT so it joins the serialization
+      // queue in core/database.js. Issuing BEGIN directly on the shared connection let this
+      // batch interleave with another transaction already in flight (see the note there).
+      await db.transaction(async () => {
         for (const [key, value] of Object.entries(settings)) {
           try {
             const updated = await this.updateSetting(key, value);
             results[key] = updated;
           } catch (error) {
+            // Collected, not thrown: one rejected key shouldn't roll back the valid ones in
+            // the same save. The caller gets both lists back.
             errors.push({ key, error: error.message });
           }
         }
-
-        await db.run('COMMIT');
-      } catch (error) {
-        await db.run('ROLLBACK');
-        throw error;
-      }
+      });
 
       if (errors.length > 0) {
         log.warn('Some settings failed to update', { errorCount: errors.length });
@@ -662,6 +678,58 @@ class SettingsService extends EventEmitter {
     };
 
     return defaults[key] || '';
+  }
+
+  /**
+   * The registry, hydrated with each field's current value, ready for the UI to render.
+   *
+   * Returning presentation *and* data together is deliberate: the Settings screen used to keep
+   * its own hardcoded copy of which keys to show, which drifted from reality (it listed
+   * `polling.health_check_interval_ms`, which does not exist, while hiding
+   * `polling.market_data_interval_ms`, which does). One list, served from the same place that
+   * enforces writes, cannot drift.
+   *
+   * Fields whose row is missing from application_settings are dropped with a warning rather
+   * than rendered as empty inputs that fail on save.
+   */
+  async getSchema() {
+    const rows = await db.all('SELECT key, value, data_type FROM application_settings');
+    const byKey = new Map(rows.map((r) => [r.key, r]));
+
+    const hydrate = (field) => {
+      const row = byKey.get(field.key);
+      if (!row) return null;
+      let value = row.value;
+      if (row.data_type === 'number') value = Number(row.value);
+      else if (row.data_type === 'boolean') value = row.value === 'true';
+      else if (row.data_type === 'json') {
+        try { value = JSON.parse(row.value); } catch { value = null; }
+      }
+      return { ...field, value, dataType: row.data_type };
+    };
+
+    const missing = [];
+    const groups = SETTINGS_GROUPS.map((group) => ({
+      ...group,
+      sections: group.sections
+        .map((section) => ({
+          ...section,
+          fields: section.fields
+            .map((f) => {
+              const h = hydrate(f);
+              if (!h) missing.push(f.key);
+              return h;
+            })
+            .filter(Boolean),
+        }))
+        .filter((s) => s.fields.length > 0),
+    })).filter((g) => g.sections.length > 0);
+
+    if (missing.length) {
+      log.warn('Settings in registry with no database row', { count: missing.length });
+    }
+
+    return { groups, editableCount: SETTINGS_FIELDS.size - missing.length };
   }
 }
 

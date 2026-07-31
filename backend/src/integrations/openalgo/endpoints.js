@@ -222,11 +222,18 @@ export const ERROR_CODES = {
 
 /**
  * Rate limits (per instance)
+ *
+ * Reference only - not read by client.js, which hardcodes its own enforcement
+ * (ordersPerSecondLimit / smartOrdersPerSecondLimit, settings-editable via
+ * rate_limits.orders_per_second / rate_limits.smart_orders_per_second). Kept accurate here
+ * anyway since a wrong number in a file titled "rate limits" is its own kind of bug:
+ * placesmartorder is capped at 2/sec by OpenAlgo, not 10 - every order this app places goes
+ * through that endpoint, never plain placeorder.
  */
 export const RATE_LIMITS = {
   default: 50, // requests per second
   placeorder: 10,
-  placesmartorder: 10,
+  placesmartorder: 2,
   cancelorder: 10,
   quotes: 20,
   multiquotes: 10,

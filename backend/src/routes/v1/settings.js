@@ -30,6 +30,19 @@ router.get('/', requirePermission('pages.settings.view'), async (req, res, next)
 });
 
 /**
+ * GET /api/v1/settings/schema
+ * The runtime-editable settings, grouped and labelled for display, with current values.
+ * Registered before /:category so the literal path isn't swallowed by the param route.
+ */
+router.get('/schema', requirePermission('pages.settings.view'), async (req, res, next) => {
+  try {
+    res.json({ status: 'success', data: await settingsService.getSchema() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * GET /api/v1/settings/categories
  * Get all setting categories
  */

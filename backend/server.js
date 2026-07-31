@@ -13,9 +13,6 @@ import helmet from 'helmet';
 import cors from 'cors';
 import compression from 'compression';
 import http from 'http';
-import session from 'express-session';
-import connectSqlite3 from 'connect-sqlite3';
-import signature from 'cookie-signature';
 import { config } from './src/core/config.js';
 import { log } from './src/core/logger.js';
 import db from './src/core/database.js';
@@ -33,10 +30,10 @@ import tradingviewWebhookRoutes from './src/routes/tradingview-webhook.js';
 import idempotencyService from './src/services/idempotency.service.js';
 
 // Middleware
-import { configureSession, requireAuth, optionalAuth, getUserWithRole } from './src/middleware/auth.js';
+import { configureSession, requireAuth, optionalAuth, getUserWithRole, isSecureBaseUrl, verifyLocalToken } from './src/middleware/auth.js';
 import { errorHandler, notFoundHandler } from './src/middleware/error-handler.js';
 import { correlationId, requestLogger, bodyParserErrorHandler } from './src/middleware/request-logger.js';
-import { checkInstrumentsRefresh } from './src/middleware/instruments-refresh.middleware.js';
+import { checkInstrumentsRefresh, evaluateStartupReadiness } from './src/middleware/instruments-refresh.middleware.js';
 import { auditLogger } from './src/middleware/audit-logger.js';
 
 // Routes
@@ -80,66 +77,6 @@ function stopBackgroundServices() {
     log.warn('Error stopping background services', { error: err.message });
   }
   servicesStarted = false;
-}
-
-// Session-backed WS auth helpers
-const SQLiteStore = connectSqlite3(session);
-let wsSessionStore = null;
-
-function getWsSessionStore() {
-  if (wsSessionStore) return wsSessionStore;
-
-  const dataDir = path.join(process.cwd(), 'data');
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
-
-  wsSessionStore = new SQLiteStore({
-    db: 'sessions.db',
-    dir: dataDir,
-    table: 'sessions',
-    concurrentDB: true,
-  });
-
-  return wsSessionStore;
-}
-
-function parseCookies(cookieHeader = '') {
-  return cookieHeader.split(';').reduce((acc, part) => {
-    const [key, ...rest] = part.trim().split('=');
-    if (!key) return acc;
-    acc[key] = decodeURIComponent(rest.join('=') || '');
-    return acc;
-  }, {});
-}
-
-async function validateWsSessionFromRequest(req) {
-  try {
-    const cookies = parseCookies(req.headers?.cookie || '');
-    const raw = cookies['connect.sid'];
-    if (!raw) return false;
-
-    // Express-session cookies are signed: s:<value>.signature
-    const unsigned = signature.unsign(raw.startsWith('s:') ? raw.slice(2) : raw, config.session.secret);
-    if (!unsigned) return false;
-
-    const store = getWsSessionStore();
-    return await new Promise((resolve) => {
-      store.get(unsigned, (err, sess) => {
-        if (err) {
-          log.warn('WS session lookup failed', { error: err.message });
-          return resolve(false);
-        }
-        if (!sess) return resolve(false);
-        const expires = sess.cookie?.expires ? new Date(sess.cookie.expires).getTime() : null;
-        if (expires && expires < Date.now()) return resolve(false);
-        return resolve(true);
-      });
-    });
-  } catch (err) {
-    log.warn('WS session validation error', { error: err.message });
-    return false;
-  }
 }
 
 // Create Express app
@@ -210,9 +147,11 @@ app.post('/auth/logout', (req, res, next) => {
     const sessionId = req.sessionID;
     req.session.destroy(() => {
       // Explicitly clear the session cookie so the browser stops sending it
+      // Must mirror configureSession()'s cookie options exactly - a differing Secure or
+      // SameSite makes the browser treat this as a different cookie and leave the real one set.
       res.clearCookie('connect.sid', {
         httpOnly: true,
-        secure: config.env === 'production',
+        secure: isSecureBaseUrl(),
         sameSite: 'lax',
       });
       log.info('Session destroyed on logout', { sessionId });
@@ -290,8 +229,14 @@ async function startServer() {
       }
     });
 
-    // Ensure test user exists in development
-    if (config.env === 'development' && !config.auth.googleClientId) {
+    // Ensure test user exists in development.
+    // Gated solely on test mode, which already means authentication is disabled. Adding
+    // NODE_ENV to the condition bought nothing (test mode is never on in a real deployment) and
+    // reintroduced the defaulted variable as a security-relevant input. The old
+    // `!config.auth.googleClientId` clause dated from Google sign-in and was always true, which
+    // would have seeded a passwordless admin row into any development database - and, because
+    // creating a user closes /auth/register, blocked the real bootstrap admin from being made.
+    if (config.auth.enableTestMode === true) {
       const testUser = await db.get('SELECT * FROM users WHERE id = 1');
       if (!testUser) {
         await db.run(
@@ -312,6 +257,10 @@ async function startServer() {
 
     // Do not start background services until user logs in (lazy start)
 
+    // Establish readiness before the listener opens, so /api/v1/ready answers truthfully from
+    // the first request rather than waiting for a human to log in.
+    await evaluateStartupReadiness();
+
     // Resolve WS-capable instances once at boot (safe fallback)
     let websocketCapableInstanceIds = [];
     if (config.wsGateway?.enabled) {
@@ -326,7 +275,12 @@ async function startServer() {
     wsGatewayService.start(server, {
       enabled: config.wsGateway?.enabled,
       path: config.wsGateway?.path,
-      tokenValidator: async (_token, req) => validateWsSessionFromRequest(req),
+      // The gateway used to check an express-session cookie here, which nothing in this
+      // app ever issues (see verifyLocalToken's comment) - every WS connection was rejected,
+      // not merely some of them. It now verifies the same locally-issued JWT every REST
+      // request already authenticates with; the browser cannot set a custom Authorization
+      // header on a WebSocket upgrade, so the client sends it as a `token` query param instead.
+      tokenValidator: async (token) => Boolean(verifyLocalToken(token)),
       instanceFilter: () => websocketCapableInstanceIds,
     });
 
@@ -336,7 +290,7 @@ async function startServer() {
         port: config.port,
         env: config.env,
         baseUrl: config.baseUrl,
-        testMode: !config.auth.googleClientId,
+        testMode: config.auth.enableTestMode === true,
         wsGateway: config.wsGateway?.enabled ? config.wsGateway?.path : 'disabled',
       });
 
@@ -349,7 +303,7 @@ async function startServer() {
       console.log(`║  Environment:  ${String(config.env || 'unknown').padEnd(43)} ║`);
       console.log(`║  Port:         ${String(config.port || 3000).padEnd(43)} ║`);
       console.log(`║  Base URL:     ${String(config.baseUrl || 'unknown').padEnd(43)} ║`);
-      console.log(`║  Test Mode:    ${String(!config.auth.googleClientId ? 'Yes' : 'No').padEnd(43)} ║`);
+      console.log(`║  Test Mode:    ${String(config.auth.enableTestMode === true ? 'Yes - AUTH DISABLED' : 'No').padEnd(43)} ║`);
       console.log('║                                                            ║');
       console.log('╠════════════════════════════════════════════════════════════╣');
       console.log('║  API Endpoints:                                            ║');

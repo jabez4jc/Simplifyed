@@ -17,11 +17,15 @@ export class AppError extends Error {
   }
 
   toJSON() {
+    // No stack trace. It was previously included whenever NODE_ENV was 'development' - which is
+    // the default when the variable is unset, so the guard would not have held on a deployment
+    // that simply lost its environment file. The stack is already captured in the server logs by
+    // log.error(); serialising it into an API response only ever exposes internal paths to
+    // whoever triggered the error.
     return {
       status: 'error',
       message: this.message,
       statusCode: this.statusCode,
-      ...(process.env.NODE_ENV === 'development' && { stack: this.stack }),
     };
   }
 }
