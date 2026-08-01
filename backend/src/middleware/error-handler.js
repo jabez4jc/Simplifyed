@@ -42,7 +42,21 @@ function upstreamStatus(err) {
  * @param {Response} res - Express response
  * @param {Function} next - Next middleware
  */
-export function errorHandler(err, req, res, next) {
+export function errorHandler(err, req, res, _next) {
+  if (err?.name === 'MulterError') {
+    const fileTooLarge = err.code === 'LIMIT_FILE_SIZE';
+    log.warn('Rejected file upload', {
+      path: req.path,
+      method: req.method,
+      code: err.code,
+    });
+    return res.status(fileTooLarge ? 413 : 400).json({
+      status: 'error',
+      message: fileTooLarge ? 'Uploaded file is too large' : 'Invalid file upload',
+      code: err.code || 'UPLOAD_ERROR',
+    });
+  }
+
   // Log error
   if (err instanceof AppError) {
     if (err.statusCode >= 500) {

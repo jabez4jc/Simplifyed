@@ -68,7 +68,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         </div>
       `;
     } catch (error) {
-      return `<p class="text-error text-sm">Failed to load monitor status: ${error.message}</p>`;
+      return `<p class="text-error text-sm">Failed to load monitor status: ${Utils.escapeHTML(error.message)}</p>`;
     }
   }
 

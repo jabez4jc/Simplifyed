@@ -114,7 +114,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         </div>
       `;
     } catch (error) {
-      resultsContainer.innerHTML = `<p class="text-error">Search failed: ${error.message}</p>`;
+      resultsContainer.innerHTML = `<p class="text-error">Search failed: ${Utils.escapeHTML(error.message)}</p>`;
     }
   }
 

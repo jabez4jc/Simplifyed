@@ -56,7 +56,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     if (!this.activeRoleTab && this.roles.length > 0) {
       this.activeRoleTab = this.roles[0].name;
     }
-    const roleOptions = this.roles.map(r => `<option value="${r.name}" ${r.name === this.activeRoleTab ? 'selected' : ''}>${r.name}</option>`).join('');
+    const roleOptions = this.roles.map(r => `<option value="${Utils.escapeHTML(r.name)}" ${r.name === this.activeRoleTab ? "selected" : ""}>${Utils.escapeHTML(r.name)}</option>`).join('');
     const activeRolePanel = this.renderRolePermissionsPanel(this.activeRoleTab);
 
     return `
@@ -127,7 +127,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     });
 
     const rows = filteredUsers.map(u => {
-      const options = this.roles.map(r => `<option value="${r.name}" ${r.name === u.role ? 'selected' : ''}>${r.name}</option>`).join('');
+      const options = this.roles.map(r => `<option value="${Utils.escapeHTML(r.name)}" ${r.name === u.role ? "selected" : ""}>${Utils.escapeHTML(r.name)}</option>`).join('');
       return `
         <tr>
           <td class="py-2 px-2">${Utils.escapeHTML(u.email)}</td>
@@ -218,7 +218,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         return `
         <label class="btn btn-xs ${pillClass} rounded-full rbac-pill px-2">
           <input type="checkbox" class="rbac-perm-checkbox hidden"
-            data-role="${role.name}" data-perm="${p.key}"
+            data-role="${Utils.escapeHTML(role.name)}" data-perm="${p.key}"
             ${checked ? 'checked' : ''}>
           <span class="text-xs">${Utils.escapeHTML(p.key)}</span>
         </label>
@@ -250,7 +250,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
           <div class="flex gap-1 flex-wrap">
             <button class="btn btn-xs btn-outline" onclick="settings.togglePermissionGroups(true)">Expand all</button>
             <button class="btn btn-xs btn-outline" onclick="settings.togglePermissionGroups(false)">Collapse all</button>
-            <button class="btn btn-xs btn-primary rbac-save-perms" data-role="${role.name}">Save</button>
+            <button class="btn btn-xs btn-primary rbac-save-perms" data-role="${Utils.escapeHTML(role.name)}">Save</button>
           </div>
         </div>
         <div class="grid gap-2 md:grid-cols-2 xl:grid-cols-3 max-h-[24rem] overflow-auto">

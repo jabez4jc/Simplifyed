@@ -7,6 +7,7 @@ import openalgoClient from '../integrations/openalgo/client.js';
 import db from '../core/database.js';
 import { toISTDate, toISTISOString } from '../utils/time.js';
 import marketCalendarService from './market-calendar.service.js';
+import { ValidationError } from '../core/errors.js';
 
 async function createNotification(title, body, severity = 'warn') {
   try {
@@ -26,13 +27,11 @@ const DEFAULT_TESTS = {
   ],
   multiquotes: [
     { symbol: 'SBIN', exchange: 'NSE' },
-    { symbol: 'NIFTY30DEC25FUT', exchange: 'NFO' },
     { symbol: 'INFY', exchange: 'BSE' },
   ],
-  optionchain: [
-    { underlying: 'NIFTY', exchange: 'NSE_INDEX', expiry_date: '30DEC25', strike_count: 5 },
-    { underlying: 'NATURALGAS', exchange: 'MCX', expiry_date: '23DEC25', strike_count: 5 },
-  ],
+  // Expiries change continuously, so a fabricated default would report every healthy broker as
+  // degraded once the contract expires. Admins can add current contracts from Settings.
+  optionchain: [],
 };
 
 function getIstDate() {
@@ -73,15 +72,60 @@ async function getTestConfig() {
   try {
     const setting = await settingsService.getSetting('instance_health_tests');
     const raw = setting?.value ?? setting?.rawValue;
-    if (raw) return JSON.parse(raw);
+    if (typeof raw === 'string' && raw) return JSON.parse(raw);
+    if (raw && typeof raw === 'object') return raw;
   } catch (err) {
-    log.warn('Using default instance health tests', { error: err.message });
+    if (!(err instanceof ValidationError)) {
+      log.warn('Using default instance health tests', { error: err.message });
+    }
   }
   return DEFAULT_TESTS;
 }
 
 async function persistTestConfig(cfg) {
-  await settingsService.setSetting('instance_health_tests', cfg);
+  await db.run(
+    `INSERT INTO application_settings (key, value, description, category, data_type)
+     VALUES ('instance_health_tests', ?, 'Symbols used for endpoint capability tests', 'instance_health_tests', 'json')
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+    [JSON.stringify(cfg)]
+  );
+}
+
+function validateTestConfig(cfg) {
+  if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+    throw new ValidationError('Health test config must be an object');
+  }
+
+  const validateList = (name, key) => {
+    const rows = cfg[name];
+    if (!Array.isArray(rows) || rows.length > 20) {
+      throw new ValidationError(`${name} must be an array with at most 20 entries`);
+    }
+    for (const row of rows) {
+      const symbol = row?.[key];
+      if (typeof symbol !== 'string' || !symbol.trim() || typeof row.exchange !== 'string' || !row.exchange.trim()) {
+        throw new ValidationError(`${name} entries require ${key} and exchange`);
+      }
+    }
+  };
+
+  validateList('quotes', 'symbol');
+  validateList('multiquotes', 'symbol');
+  validateList('optionchain', 'underlying');
+  for (const row of cfg.optionchain) {
+    if (typeof row.expiry_date !== 'string' || !/^\d{2}[A-Z]{3}\d{2}$/.test(row.expiry_date.toUpperCase())) {
+      throw new ValidationError('optionchain expiry_date must use DDMMMYY format');
+    }
+    if (row.strike_count !== undefined && (!Number.isInteger(row.strike_count) || row.strike_count < 1 || row.strike_count > 50)) {
+      throw new ValidationError('optionchain strike_count must be an integer from 1 to 50');
+    }
+  }
+
+  return {
+    quotes: cfg.quotes,
+    multiquotes: cfg.multiquotes,
+    optionchain: cfg.optionchain.map((row) => ({ ...row, expiry_date: row.expiry_date.toUpperCase() })),
+  };
 }
 
 async function updateInstanceEndpoint(instance, endpoint, ok, reason = null) {
@@ -235,7 +279,12 @@ class InstanceHealthService {
   }
 
   async updateTestConfig(cfg) {
-    await persistTestConfig(cfg);
+    const validated = validateTestConfig(cfg);
+    await persistTestConfig(validated);
+  }
+
+  async getTestConfig() {
+    return getTestConfig();
   }
 }
 

@@ -15,9 +15,13 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           .map(
             (n) => `
           <div class="flex items-start gap-3 p-3 rounded-lg ${n.read ? 'bg-base-200' : 'bg-base-100'} border border-base-200">
-            <div class="text-sm font-semibold">${n.title}</div>
+            <div class="text-sm font-semibold">${Utils.escapeHTML(n.title || '')}</div>
             <div class="ml-auto text-xs text-neutral-500">${fmtDate(n.created_at)}</div>
-            <div class="text-xs text-neutral-600 w-full">${n.body || ''}</div>
+            <!-- Escaped: notification bodies are assembled by the server's logger from log
+                 messages and their metadata, which includes error_message straight off a broker
+                 response. An OpenAlgo instance returning markup in an error would otherwise have
+                 stored script in this table and run it here, where localStorage holds auth_token. -->
+            <div class="text-xs text-neutral-600 w-full">${Utils.escapeHTML(n.body || '')}</div>
             ${n.read || !canEdit ? '' : `<button class="btn btn-xs btn-outline" onclick="app.markNotificationRead(${n.id})">Mark read</button>`}
           </div>`
           )
@@ -39,7 +43,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         </div>
       `;
     } catch (err) {
-      contentArea.innerHTML = `<p class="text-error text-sm">Failed to load notifications: ${err.message}</p>`;
+      contentArea.innerHTML = `<p class="text-error text-sm">Failed to load notifications: ${Utils.escapeHTML(err.message)}</p>`;
     }
   }
 
@@ -129,7 +133,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     } catch (err) {
       const container = document.getElementById('audit-table');
       if (container) {
-        container.innerHTML = `<p class="text-error text-sm">Failed to load audit logs: ${err.message}</p>`;
+        container.innerHTML = `<p class="text-error text-sm">Failed to load audit logs: ${Utils.escapeHTML(err.message)}</p>`;
       }
     }
   }

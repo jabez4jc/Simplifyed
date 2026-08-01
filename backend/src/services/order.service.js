@@ -16,7 +16,6 @@ import brokerCapabilitiesService from './broker-capabilities.service.js';
 import {
   NotFoundError,
   ValidationError,
-  OpenAlgoError,
 } from '../core/errors.js';
 import { normalizeSymbolKey, normalizeExchange, normalizeProduct } from '../utils/symbol-parsing.util.js';
 import {
@@ -46,7 +45,6 @@ class OrderService {
       pricetype = 'MARKET',
       price = 0,
       trigger_price = 0,
-      position_size, // Required for placesmartorder
       user_id = null,
       source = null,
       trigger_type = null,

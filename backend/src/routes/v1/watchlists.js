@@ -5,9 +5,7 @@
 
 import express from 'express';
 import watchlistService from '../../services/watchlist.service.js';
-import { log } from '../../core/logger.js';
 import {
-  NotFoundError,
   ConflictError,
   ValidationError,
   ForbiddenError,
@@ -18,7 +16,14 @@ import { Parser } from '../../utils/csv.js';
 import db from '../../core/database.js';
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, callback) => {
+    const isCsv = file.mimetype === 'text/csv' || file.originalname.toLowerCase().endsWith('.csv');
+    callback(isCsv ? null : new ValidationError('Only CSV files are allowed'), isCsv);
+  },
+});
 
 router.use(requireAuth);
 

@@ -227,7 +227,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     } catch (error) {
       contentArea.innerHTML = `
         <div class="p-4">
-          <p class="text-error">Failed to load settings: ${error.message}</p>
+          <p class="text-error">Failed to load settings: ${Utils.escapeHTML(error.message)}</p>
         </div>
       `;
       console.error('[Settings] Error rendering settings view:', error);

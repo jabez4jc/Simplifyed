@@ -34,17 +34,24 @@ router.get('/search', async (req, res, next) => {
     if (!query) {
       throw new ValidationError('query parameter is required');
     }
+    const requestedExchange = exchange ? sanitizeString(exchange).toUpperCase() : null;
+    const requestedType = instrumenttype ? sanitizeString(instrumenttype).toUpperCase() : null;
 
     // Try cached instruments first (fast path)
     try {
       const cachedResults = await symbolResolutionService.searchSymbols(
         query,
-        exchange ? sanitizeString(exchange).toUpperCase() : null
+        requestedExchange
       );
 
       if (cachedResults && cachedResults.length > 0) {
+        const filteredResults = requestedType
+          ? cachedResults.filter((instrument) =>
+              String(instrument.instrumenttype || instrument.instrument_type || '').toUpperCase() === requestedType
+            )
+          : cachedResults;
         // Classify each result
-        const enrichedResults = cachedResults.map(instrument => ({
+        const enrichedResults = filteredResults.map(instrument => ({
           ...instrument,
           symbol_type: symbolValidationService.classifySymbol(instrument),
           tradingsymbol: instrument.symbol,
@@ -69,10 +76,16 @@ router.get('/search', async (req, res, next) => {
 
     // Fallback to OpenAlgo API (slower path)
     log.debug('Symbol search using OpenAlgo API', { query });
-    const results = await symbolValidationService.searchSymbols(
+    const apiResults = await symbolValidationService.searchSymbols(
       query,
       instanceId ? parseInt(instanceId, 10) : null
     );
+    const results = apiResults.filter((instrument) => {
+      const resultExchange = String(instrument.exchange || instrument.exch || '').toUpperCase();
+      const resultType = String(instrument.instrumenttype || instrument.instrument_type || '').toUpperCase();
+      return (!requestedExchange || resultExchange === requestedExchange)
+        && (!requestedType || resultType === requestedType);
+    });
 
     res.json({
       status: 'success',
@@ -260,7 +273,7 @@ router.get('/expiry', async (req, res, next) => {
  */
 router.get('/option-chain', async (req, res, next) => {
   try {
-    const { symbol, expiry, exchange, type, include_quotes, strike_window } = req.query;
+    const { symbol, expiry, type, include_quotes, strike_window } = req.query;
 
     if (!symbol) {
       throw new ValidationError('symbol parameter is required');
@@ -276,8 +289,8 @@ router.get('/option-chain', async (req, res, next) => {
     const includeQuotes = include_quotes === 'true' || include_quotes === true;
     const window = strike_window ? parseInt(strike_window, 10) : null;
 
-    if (window && (Number.isNaN(window) || window < 0)) {
-      throw new ValidationError('strike_window must be a positive integer');
+    if (strike_window !== undefined && (!Number.isInteger(window) || window < 1 || window > 100)) {
+      throw new ValidationError('strike_window must be an integer from 1 to 100');
     }
 
     const optionChain = await optionChainService.getOptionChain(
@@ -566,7 +579,7 @@ function parseOptionSymbol(symbol) {
   // Match: UNDERLYING + DDMMMYY + STRIKE + CE/PE
   // Underlying can contain letters, digits, and hyphens (e.g., MCDOWELL-N, 726GS2033)
   // Use non-greedy match to correctly separate underlying from date
-  const match = normalized.match(/^([A-Z][A-Z0-9\-]*)(\d{2})([A-Z]{3})(\d{2})(\d+(?:\.\d+)?)(CE|PE)$/);
+  const match = normalized.match(/^([A-Z][A-Z0-9-]*)(\d{2})([A-Z]{3})(\d{2})(\d+(?:\.\d+)?)(CE|PE)$/);
   if (!match) {
     return { underlying: null, expiry: null, strike: null, optionType: null, error: 'Invalid format' };
   }
@@ -604,7 +617,7 @@ function parseFuturesSymbol(symbol) {
 
   // Match: UNDERLYING + DDMMMYY + FUT
   // Underlying can contain letters, digits, and hyphens (e.g., 726GS2033, MCDOWELL-N)
-  const match = normalized.match(/^([A-Z][A-Z0-9\-]*)(\d{2})([A-Z]{3})(\d{2})FUT$/);
+  const match = normalized.match(/^([A-Z][A-Z0-9-]*)(\d{2})([A-Z]{3})(\d{2})FUT$/);
   if (!match) {
     return { underlying: null, expiry: null, error: 'Invalid format' };
   }

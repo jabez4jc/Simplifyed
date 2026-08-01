@@ -129,10 +129,6 @@ class InstancePnlService {
           brokerageValue,
         });
         const totalPnl = Number(tradePnl.net_pnl.toFixed(2));
-        const buyTrades = tradePnl.buy_count || 0;
-        const sellTrades = tradePnl.sell_count || 0;
-        const buyValue = tradePnl.buy_value || 0;
-        const sellValue = tradePnl.sell_value || 0;
         const realizedPnl = 0;
         const unrealizedPnl = 0;
 

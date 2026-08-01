@@ -32,7 +32,23 @@ const router = express.Router();
  */
 const LOGIN_MAX_FAILS = 5;
 const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+const MAX_PASSWORD_BYTES = 72;
 const loginFails = new Map(); // `ip|email` -> { count, until }
+
+function normalizeCredentials(body = {}) {
+  const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+  const password = typeof body.password === 'string' ? body.password : '';
+  return { email, password };
+}
+
+function validEmail(email) {
+  return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function validNewPassword(password) {
+  const bytes = Buffer.byteLength(password, 'utf8');
+  return password.length >= 8 && bytes <= MAX_PASSWORD_BYTES;
+}
 
 function loginKey(req, email) {
   return `${req.ip}|${String(email || '').toLowerCase()}`;
@@ -72,11 +88,11 @@ function recordLoginFailure(key) {
 // itself, so on a scripted install this route is already closed by first boot.
 router.post('/register', async (req, res, next) => {
   try {
-    const { email, password } = req.body || {};
-    if (!email || !password || password.length < 8) {
+    const { email, password } = normalizeCredentials(req.body);
+    if (!validEmail(email) || !validNewPassword(password)) {
       return res.status(400).json({
         status: 'error',
-        message: 'email and a password of at least 8 characters are required',
+        message: 'A valid email and password of 8 to 72 bytes are required',
       });
     }
 
@@ -91,7 +107,7 @@ router.post('/register', async (req, res, next) => {
     const passwordHash = await hashPassword(password);
     const result = await db.run(
       'INSERT INTO users (email, is_admin, password_hash) VALUES (?, 1, ?)',
-      [email.toLowerCase(), passwordHash]
+      [email, passwordHash]
     );
 
     const adminRole = await db.get('SELECT id FROM roles WHERE name = ?', ['Admin']);
@@ -113,8 +129,8 @@ router.post('/register', async (req, res, next) => {
 
 router.post('/login', async (req, res, next) => {
   try {
-    const { email, password } = req.body || {};
-    if (!email || !password) {
+    const { email, password } = normalizeCredentials(req.body);
+    if (!validEmail(email) || !password || Buffer.byteLength(password, 'utf8') > 1024) {
       return res.status(400).json({ status: 'error', message: 'email and password are required' });
     }
 
@@ -130,7 +146,7 @@ router.post('/login', async (req, res, next) => {
       });
     }
 
-    const row = await db.get('SELECT id, password_hash FROM users WHERE email = ?', [email.toLowerCase()]);
+    const row = await db.get('SELECT id, password_hash FROM users WHERE email = ?', [email]);
     const ok = row && (await verifyPassword(password, row.password_hash));
     if (!ok) {
       recordLoginFailure(key);
@@ -148,14 +164,15 @@ router.post('/login', async (req, res, next) => {
 
 router.post('/change-password', requireAuth, async (req, res, next) => {
   try {
-    const { currentPassword, newPassword } = req.body || {};
-    if (!newPassword || newPassword.length < 8) {
-      return res.status(400).json({ status: 'error', message: 'newPassword must be at least 8 characters' });
+    const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
+    const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
+    if (!validNewPassword(newPassword)) {
+      return res.status(400).json({ status: 'error', message: 'newPassword must be 8 to 72 bytes' });
     }
 
     const row = await db.get('SELECT password_hash FROM users WHERE id = ?', [req.user.id]);
     if (row.password_hash) {
-      const ok = await verifyPassword(currentPassword || '', row.password_hash);
+      const ok = await verifyPassword(currentPassword, row.password_hash);
       if (!ok) {
         return res.status(401).json({ status: 'error', message: 'Current password is incorrect' });
       }

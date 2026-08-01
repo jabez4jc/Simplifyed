@@ -88,7 +88,7 @@ export function parseFuturesSymbol(symbolStr) {
   }
 
   // Match: UNDERLYING + DDMMMYY + FUT
-  const match = normalized.match(/^([A-Z][A-Z0-9\-]*)(\d{2})([A-Z]{3})(\d{2})FUT$/);
+  const match = normalized.match(/^([A-Z][A-Z0-9-]*)(\d{2})([A-Z]{3})(\d{2})FUT$/);
   if (!match) {
     return { underlying: null, expiry: null };
   }

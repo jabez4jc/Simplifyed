@@ -10,7 +10,6 @@ import marketDataInstanceService from './market-data-instance.service.js';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { ValidationError } from '../core/errors.js';
-import { config } from '../core/config.js';
 import { toISTDate } from '../utils/time.js';
 import { isTestMode } from '../core/config.js';
 import { toISTISOString } from '../utils/time.js';
@@ -73,6 +72,12 @@ class InstrumentsService {
       timezone: 'Asia/Kolkata',
     });
     log.info('Crypto instruments daily refresh cron scheduled (17:31 IST)');
+  }
+
+  stopCryptoDailyRefresh() {
+    if (!this.cryptoRefreshCron) return;
+    this.cryptoRefreshCron.stop();
+    this.cryptoRefreshCron = null;
   }
 
   async _refreshCryptoInstruments() {
@@ -980,7 +985,7 @@ class InstrumentsService {
           }
 
           const [
-            id, symbol, brsymbol, name, exchange, brexchange,
+            _id, symbol, brsymbol, name, exchange, brexchange,
             token, expiry, strike, lotsize, instrumenttype, tick_size
           ] = fields;
 

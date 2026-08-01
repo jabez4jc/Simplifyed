@@ -58,7 +58,7 @@ class InstanceHealthCheckService {
 
       try {
         // Test connection
-        const pingResponse = await staggeredInstanceRequest(id, () => openalgoClient.ping(instance));
+        await staggeredInstanceRequest(id, () => openalgoClient.ping(instance));
         healthStatus = 'healthy';
 
         // Update last ping time

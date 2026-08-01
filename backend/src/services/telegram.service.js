@@ -174,7 +174,7 @@ class TelegramService {
    * Send a single summary notification for a batch/broadcast of orders.
    * Includes instance list, trigger type (manual/automated), and button label.
    */
-  async sendOrderSummary(summary, context = {}) {
+  async sendOrderSummary(summary) {
     ensureConfigured();
     await ensureSchema();
 

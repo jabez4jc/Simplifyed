@@ -10,7 +10,7 @@ import positionsService from '../../services/positions.service.js';
 import openalgoClient from '../../integrations/openalgo/client.js';
 import marketDataFeedService from '../../services/market-data-feed.service.js';
 import { log } from '../../core/logger.js';
-import { NotFoundError, ValidationError } from '../../core/errors.js';
+import { ValidationError } from '../../core/errors.js';
 import quickOrderService from '../../services/quick-order.service.js';
 import pnlSnapshotService from '../../services/pnl-snapshot.service.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';

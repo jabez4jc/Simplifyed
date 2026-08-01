@@ -1,7 +1,6 @@
 import assert from 'assert';
 import test from 'node:test';
 import { config, isTestMode } from '../../src/core/config.js';
-import { isSecureBaseUrl } from '../../src/middleware/auth.js';
 import { AppError } from '../../src/core/errors.js';
 
 /**
@@ -13,26 +12,9 @@ import { AppError } from '../../src/core/errors.js';
 const snapshot = () => ({ baseUrl: config.baseUrl, env: config.env, tm: config.auth.enableTestMode });
 const restore = (s) => { config.baseUrl = s.baseUrl; config.env = s.env; config.auth.enableTestMode = s.tm; };
 
-test('cookie Secure follows the URL scheme, not NODE_ENV', () => {
-  const s = snapshot();
-  try {
-    config.baseUrl = 'https://admin.example.com';
-    config.env = 'development'; // a TLS deployment that lost its NODE_ENV
-    assert.strictEqual(isSecureBaseUrl(), true, 'TLS must imply Secure regardless of NODE_ENV');
-
-    config.baseUrl = 'http://localhost:3000';
-    config.env = 'production'; // a local run labelled production
-    assert.strictEqual(isSecureBaseUrl(), false, 'plain HTTP must not set Secure, or the cookie is never sent');
-
-    config.baseUrl = 'HTTPS://Admin.Example.com';
-    assert.strictEqual(isSecureBaseUrl(), true, 'scheme check must be case-insensitive');
-
-    config.baseUrl = undefined;
-    assert.strictEqual(isSecureBaseUrl(), false, 'missing BASE_URL must not throw');
-  } finally {
-    restore(s);
-  }
-});
+// The cookie-Secure test that used to lead this file is gone with the thing it guarded:
+// express-session issued the only cookie in the app and nothing ever used it, so the session
+// stack (and isSecureBaseUrl with it) was removed. Authentication is a stateless Bearer JWT.
 
 test('authentication can only be disabled by ENABLE_TEST_MODE', () => {
   const s = snapshot();
@@ -74,8 +56,10 @@ test('serialised errors never carry a stack trace', () => {
 
 test('config exposes no NODE_ENV-derived behaviour flags', () => {
   // isDev/isProd/isTest had no consumers and were an invitation to add a fourth coupling.
-  // config.testMode and config.google were dead alongside them.
-  for (const key of ['isDev', 'isProd', 'isTest', 'testMode', 'google']) {
+  // config.testMode and config.google were dead alongside them. `session` went with
+  // express-session - keeping a required SESSION_SECRET that signs nothing is a startup
+  // failure waiting to happen for no benefit.
+  for (const key of ['isDev', 'isProd', 'isTest', 'testMode', 'google', 'session']) {
     assert.ok(!(key in config), `config.${key} was removed and must not return`);
   }
   assert.strictEqual(typeof config.env, 'string', 'config.env survives as a log label only');

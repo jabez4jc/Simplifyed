@@ -200,7 +200,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
 
       return html;
     } catch (error) {
-      return `<p class="text-error text-sm">Failed to load instruments cache stats: ${error.message}</p>`;
+      return `<p class="text-error text-sm">Failed to load instruments cache stats: ${Utils.escapeHTML(error.message)}</p>`;
     }
   }
 
@@ -266,8 +266,8 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       }, 2000);
     } catch (error) {
       console.error('[Settings] CSV upload error:', error);
-      statusText.textContent = `❌ Error: ${error.message}`;
-      Utils.showToast(`Upload failed: ${error.message}`, 'error');
+      statusText.textContent = `❌ Error: ${Utils.escapeHTML(error.message)}`;
+      Utils.showToast(`Upload failed: ${Utils.escapeHTML(error.message)}`, 'error');
     } finally {
       uploadBtn.disabled = false;
       uploadBtn.textContent = '📤 Upload CSV';
@@ -370,9 +370,9 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       this.pollFetchStatus(instanceId, statusText, fetchBtn, progressDiv);
     } catch (error) {
       console.error('[Settings] Fetch from instance error:', error);
-      statusText.textContent = `❌ Error: ${error.message}`;
+      statusText.textContent = `❌ Error: ${Utils.escapeHTML(error.message)}`;
       statusText.classList.add('text-error');
-      Utils.showToast(`Fetch failed: ${error.message}`, 'error');
+      Utils.showToast(`Fetch failed: ${Utils.escapeHTML(error.message)}`, 'error');
       fetchBtn.disabled = false;
       fetchBtn.textContent = '🔄 Fetch from Instance';
     }

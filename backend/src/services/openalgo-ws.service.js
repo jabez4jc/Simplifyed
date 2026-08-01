@@ -207,7 +207,7 @@ class OpenAlgoWsConnection {
 
   _scheduleReconnect() {
     if (this.ws) {
-      try { this.ws.terminate(); } catch (_) {}
+      try { this.ws.terminate(); } catch (_) { /* socket is already closed */ }
     }
     this.connected = false;
     const jitter = Math.round((Math.random() * 2 - 1) * RETRY_JITTER_MS);
@@ -222,7 +222,7 @@ class OpenAlgoWsConnection {
 
   close() {
     if (this.ws) {
-      try { this.ws.terminate(); } catch (_) {}
+      try { this.ws.terminate(); } catch (_) { /* socket is already closed */ }
     }
     this.connected = false;
   }

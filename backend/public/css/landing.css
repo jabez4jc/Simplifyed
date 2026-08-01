@@ -80,10 +80,17 @@ header {
     text-transform: uppercase;
     letter-spacing: 0.05em;
     transition: color 0.2s;
+    padding: 10px 0;
 }
 
 .nav-links a:hover {
     color: var(--text-primary);
+}
+
+a:focus-visible,
+button:focus-visible {
+    outline: 2px solid var(--accent-signal);
+    outline-offset: 3px;
 }
 
 /* --- Hero Section (The Tactical Scan) --- */
@@ -179,6 +186,8 @@ h1 span {
     display: inline-flex;
     align-items: center;
     gap: 10px;
+    min-height: 44px;
+    cursor: pointer;
 }
 
 .btn-v-primary {
@@ -310,18 +319,12 @@ h3 {
     color: var(--text-muted);
 }
 
-.pulse {
+.capability-dot {
     width: 6px;
     height: 6px;
     background: var(--accent-success);
     border-radius: 50%;
-    animation: beacon 2s infinite;
-}
-
-@keyframes beacon {
-    0% { transform: scale(1); opacity: 1; box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-    70% { transform: scale(1.5); opacity: 0; box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
-    100% { transform: scale(1); opacity: 0; box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    flex: none;
 }
 
 /* --- Utilities --- */
@@ -358,4 +361,35 @@ footer {
     .hero-visual { display: none; }
     .features-grid { grid-template-columns: 1fr; }
     .feature-card { grid-column: span 1 !important; margin-top: 0 !important; }
+}
+
+@media (max-width: 640px) {
+    .v-container { padding-left: 20px; padding-right: 20px; }
+    header { height: 64px; }
+    header .nav-links,
+    header .header-cta { display: none; }
+    .logo { font-size: var(--font-size-xl); }
+    .hero { min-height: auto; padding-top: 56px; padding-bottom: 64px; }
+    .hero-content { min-width: 0; }
+    h1 { font-size: clamp(2.75rem, 15vw, 4rem); overflow-wrap: anywhere; }
+    .hero-p { font-size: var(--font-size-base); }
+    .cta-group { flex-direction: column; gap: 12px; }
+    .btn-v { width: 100%; justify-content: center; }
+    .heartbeat { margin-top: 40px; flex-wrap: wrap; row-gap: 8px; }
+    .heartbeat span:last-child { flex-basis: 100%; margin-left: 18px; }
+    .stats-bar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px 20px; }
+    .features { padding-top: 72px; padding-bottom: 72px; }
+    .feature-card { padding: 28px 24px; }
+    footer { padding-top: 48px; padding-bottom: 48px; flex-direction: column; align-items: stretch; gap: 24px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+
+    .reveal { opacity: 1; transform: none; }
 }

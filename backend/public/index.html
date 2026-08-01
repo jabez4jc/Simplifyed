@@ -43,12 +43,10 @@
           <a href="#features" class="btn-v btn-v-secondary">View Architecture</a>
         </div>
 
-        <div class="heartbeat">
-          <div class="pulse"></div>
-          <span>OpenAlgo API Bridge: Active (20ms Latency)</span>
-          <span style="margin-left: 20px;">NSE: Connected</span>
-          <span style="margin-left: 20px;">BSE: Connected</span>
-          <span style="margin-left: 20px;">MCX: Connected</span>
+        <div class="heartbeat" aria-label="Supported integrations and markets">
+          <div class="capability-dot" aria-hidden="true"></div>
+          <span>OpenAlgo API Bridge</span>
+          <span>NSE / BSE / MCX support</span>
         </div>
       </div>
       <div class="hero-visual">
@@ -58,20 +56,20 @@
 
     <div class="stats-bar v-container" id="stats">
       <div class="stat-item reveal">
-        <span class="stat-val">50</span>
-        <span class="stat-label">Active Instances</span>
+        <span class="stat-val">Multi</span>
+        <span class="stat-label">Broker Instances</span>
       </div>
       <div class="stat-item reveal">
-        <span class="stat-val">50K+</span>
-        <span class="stat-label">Instruments Cached</span>
+        <span class="stat-val">F&amp;O</span>
+        <span class="stat-label">Trading Workflows</span>
       </div>
       <div class="stat-item reveal">
-        <span class="stat-val">0.5s</span>
-        <span class="stat-label">Order Propagation</span>
+        <span class="stat-val">Local</span>
+        <span class="stat-label">Self-hosted Data</span>
       </div>
       <div class="stat-item reveal">
-        <span class="stat-val">4.8K</span>
-        <span class="stat-label">Daily Avg Executions</span>
+        <span class="stat-val">RBAC</span>
+        <span class="stat-label">Access Controls</span>
       </div>
     </div>
 
@@ -118,10 +116,7 @@
 
   <footer class="v-container">
     <div class="footer-brand">© 2026 Simplifyed (JeNeFa AdVenture).</div>
-    <div class="cta-group">
-      <a href="/login.html" class="btn-v btn-v-secondary" style="padding: 10px 20px;">Support</a>
-      <a href="/login.html" class="btn-v btn-v-primary" style="padding: 10px 20px;">Access V2.0</a>
-    </div>
+    <a href="/login.html" class="btn-v btn-v-primary" style="padding: 10px 20px;">Access V2.0</a>
   </footer>
 
   <script>
@@ -130,10 +125,16 @@
         threshold: 0.1
       };
 
+      if (!('IntersectionObserver' in window) || window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        document.querySelectorAll('.reveal').forEach(el => el.classList.add('visible'));
+        return;
+      }
+
       const observer = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
           if (entry.isIntersecting) {
             entry.target.classList.add('visible');
+            observer.unobserve(entry.target);
           }
         });
       }, observerOptions);

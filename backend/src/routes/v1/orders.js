@@ -8,11 +8,7 @@ import orderService from '../../services/order.service.js';
 import idempotencyService from '../../services/idempotency.service.js';
 import marketDataFeedService from '../../services/market-data-feed.service.js';
 import instanceService from '../../services/instance.service.js';
-import { log } from '../../core/logger.js';
-import {
-  NotFoundError,
-  ValidationError,
-} from '../../core/errors.js';
+import { ValidationError } from '../../core/errors.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';
 import db from '../../core/database.js';
 

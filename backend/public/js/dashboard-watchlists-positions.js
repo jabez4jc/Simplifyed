@@ -197,7 +197,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       Utils.showToast(`Close request submitted for ${symbol}`, 'success');
       await this.refreshWatchlistPositions({ showLoader: false });
     } catch (error) {
-      Utils.showToast(`Failed to close ${symbol}: ${error.message}`, 'error');
+      Utils.showToast(`Failed to close ${symbol}: ${Utils.escapeHTML(error.message)}`, 'error');
     }
   }
 

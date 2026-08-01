@@ -120,16 +120,6 @@ async function getSettingFloat(key, defaultValue) {
 }
 
 /**
- * Get boolean setting
- */
-async function getSettingBool(key, defaultValue) {
-  const value = await getSetting(key, defaultValue);
-  if (value === null || value === undefined) return defaultValue;
-
-  return value.toString().toLowerCase() === 'true';
-}
-
-/**
  * Reload settings from database (for runtime updates)
  */
 export async function reloadConfig() {
@@ -225,10 +215,9 @@ class Config {
       path: getEnv('DATABASE_PATH', './database/simplifyed.db'),
     };
 
-    this.session = {
-      secret: getEnv('SESSION_SECRET', undefined, true),
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    };
+    // No `session` block: express-session was removed along with connect-sqlite3 (see
+    // middleware/auth.js). Authentication is a stateless JWT, so SESSION_SECRET signed nothing
+    // and is no longer read - an existing .env may keep the line, it is simply ignored.
 
     this.auth = {
       // The single switch that disables authentication. There were previously two independent
@@ -352,8 +341,6 @@ class Config {
    */
   async loadFromDatabase() {
     try {
-      const dbSettings = await settingsService.getAllSettings();
-
       // Apply database settings with fallback to current values
 
       // port/node_env are startup values and are no longer read from the database (migration
@@ -362,12 +349,11 @@ class Config {
 
       // Deliberately NOT loaded from the database:
       //
-      //   session.secret  - the database row overrode the required SESSION_SECRET env var *after*
-      //                     configureSession() had already signed cookies with the env value, so
-      //                     server.js's WS cookie check verified against a different secret and
-      //                     rejected every WebSocket connection. The shipped row also held the
-      //                     literal 'CHANGE_THIS_IN_PRODUCTION'. Secrets come from the
-      //                     environment only, where getEnv(..., required) can enforce them.
+      //   secrets         - JWT_SECRET comes from the environment only, where getEnv(..., required)
+      //                     can enforce it. A database row cannot be required at startup, and the
+      //                     shipped session.secret row used to hold the literal
+      //                     'CHANGE_THIS_IN_PRODUCTION'. (session.* rows are gone entirely now -
+      //                     express-session was removed, see middleware/auth.js.)
       //   test_mode.*     - flips optionalAuth to a hardcoded admin identity for the whole
       //                     process. Env-only (ENABLE_TEST_MODE), never a stored row.
       //   database.path   - the connection is already open by the time this runs.

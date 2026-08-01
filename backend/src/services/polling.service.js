@@ -5,13 +5,10 @@
 
 import { log } from '../core/logger.js';
 import { config } from '../core/config.js';
-import db from '../core/database.js';
 import instanceService from './instance.service.js';
-import pnlService from './pnl.service.js';
 import orderService from './order.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import marketDataFeedService from './market-data-feed.service.js';
-import { parseFloatSafe } from '../utils/sanitizers.js';
 import { ExternalAPIError } from '../core/errors.js';
 import { isGeneralEndpointBlackout } from './instance-health.service.js';
 

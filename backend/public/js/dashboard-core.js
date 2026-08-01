@@ -1064,7 +1064,7 @@ class DashboardApp {
       console.error(`Failed to load ${viewName} view:`, error);
       contentArea.innerHTML = `
         <div class="card">
-          <p class="text-loss">Failed to load ${viewName}: ${error.message}</p>
+          <p class="text-loss">Failed to load ${viewName}: ${Utils.escapeHTML(error.message)}</p>
         </div>
       `;
     }

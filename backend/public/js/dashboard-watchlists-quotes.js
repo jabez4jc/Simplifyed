@@ -322,7 +322,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     } catch (error) {
       console.error('Failed to toggle symbol expansion', { watchlistId, symbolId, error });
       if (window.Utils && typeof Utils.showToast === 'function') {
-        Utils.showToast(`Failed to open trading controls: ${error.message}`, 'error');
+        Utils.showToast(`Failed to open trading controls: ${Utils.escapeHTML(error.message)}`, 'error');
       }
     }
   }

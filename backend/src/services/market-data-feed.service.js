@@ -831,8 +831,6 @@ class MarketDataFeedService extends EventEmitter {
     }
 
     const supportPool = pool.filter(inst => inst.supports_multiquotes);
-    const regularPool = pool.filter(inst => !inst.supports_multiquotes);
-
     let fetchedQuotes = [];
     let pendingSymbols = [...openMissing];
 
@@ -1474,7 +1472,6 @@ class MarketDataFeedService extends EventEmitter {
 
   async _maybePingInstance(instance) {
     const id = instance.id;
-    const state = this.instanceHealth.get(id) || { healthy: true, lastPing: 0, nextPing: 0, notified: false };
     try {
       await openalgoClient.ping(instance);
       this._markInstanceHealthy(id);
@@ -1491,6 +1488,7 @@ class MarketDataFeedService extends EventEmitter {
       notified: false,
       unhealthyAttempts: 0,
       requiresManualRefresh: false,
+      lastError: null,
     });
   }
 
@@ -1505,6 +1503,7 @@ class MarketDataFeedService extends EventEmitter {
       notified: prev.notified || false,
       unhealthyAttempts: attempts,
       requiresManualRefresh,
+      lastError: reason || prev.lastError || null,
     });
 
     if (this.openPositionInstances.has(instanceId) && !prev.notified) {
@@ -1520,6 +1519,7 @@ class MarketDataFeedService extends EventEmitter {
           notified: true,
           unhealthyAttempts: attempts,
           requiresManualRefresh,
+          lastError: reason || prev.lastError || null,
         });
       } catch (err) {
         log.warn('Failed to notify unhealthy instance', { instanceId, error: err.message });
@@ -1698,13 +1698,14 @@ class MarketDataFeedService extends EventEmitter {
    */
   _buildPreferredInstanceMap(symbols = []) {
     const preferred = new Map(); // key -> instanceId
-    const now = Date.now();
+    const requested = new Set(symbols.map((symbol) => this._symbolKey(symbol.exchange, symbol.symbol)));
     this.quoteCache.forEach((snapshot, instanceId) => {
       const data = snapshot?.data || [];
       data.forEach((q) => {
         const ltp = Number(q.ltp ?? q.LastTradedPrice ?? q.last_price ?? q.last);
         if (!ltp || ltp <= 0) return;
         const key = this._symbolKey(q.exchange, q.symbol);
+        if (requested.size > 0 && !requested.has(key)) return;
         // prefer freshest
         if (!preferred.has(key) || (snapshot.fetchedAt && snapshot.fetchedAt >= (preferred.get(`${key}_ts`) || 0))) {
           preferred.set(key, instanceId);

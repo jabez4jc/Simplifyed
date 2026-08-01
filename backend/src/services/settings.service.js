@@ -654,8 +654,6 @@ class SettingsService extends EventEmitter {
         { label: 'Session 4', start: '20:30', end: '22:45' },
       ]),
       'database.path': './database/simplifyed.db',
-      'session.secret': 'CHANGE_THIS_IN_PRODUCTION',
-      'session.max_age_ms': '604800000',
       'cors.origin': 'http://localhost:3000',
       'cors.credentials': 'true',
       'logging.level': 'info',

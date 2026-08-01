@@ -155,7 +155,7 @@ export function validateOrderRequest(data, endpoint) {
  * @returns {boolean} - true if valid
  * @throws {ValidationError} - If validation fails
  */
-export function validateResponse(response, endpoint) {
+export function validateResponse(response, _endpoint) {
   if (!response) {
     throw new ValidationError('Empty response from OpenAlgo');
   }

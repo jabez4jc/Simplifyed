@@ -440,13 +440,24 @@ class OpenAlgoClient extends EventEmitter {
         lastError = error;
         this._recordError(instKey, error, endpoint);
 
-        // Don't retry on client errors (4xx) - these indicate bad requests
-        // Log at WARN level for invalid API keys (not ERROR) to reduce log spam
-        if (error.statusCode >= 400 && error.statusCode < 500) {
-          const isInvalidApiKey = error.message && error.message.toLowerCase().includes('invalid apikey');
+        // Don't retry on client errors (4xx) - these indicate bad requests.
+        //
+        // A 2xx carrying `status: "error"` is the same thing wearing different clothes: OpenAlgo
+        // answers most rejections ("Invalid symbol", "Insufficient funds", analyzer-mode refusals)
+        // with HTTP 200 and an error body, which _makeRequest turns into an OpenAlgoError whose
+        // statusCode is 200. That fell below the 4xx test and was retried like a network blip -
+        // identical request, identical rejection, two extra broker round-trips and two extra
+        // position-check calls per order on the critical path.
+        //
+        // Rate limiting is the one broker-side rejection that IS worth retrying, since the next
+        // attempt sits behind this client's own throttle and a backoff delay.
+        const isTransientRejection = /rate limit|too many requests|try again/i.test(error.message || '');
+        const isDeterministicRejection =
+          (error.statusCode >= 400 && error.statusCode < 500) ||
+          (error.statusCode < 400 && !isTransientRejection);
 
-          const logFn = isInvalidApiKey ? log.warn.bind(log) : log.warn.bind(log);
-          logFn('OpenAlgo API Client Error (4xx)', {
+        if (isDeterministicRejection) {
+          log.warn('OpenAlgo rejected the request - not retrying', {
             endpoint,
             statusCode: error.statusCode,
             isCritical,
@@ -766,7 +777,7 @@ class OpenAlgoClient extends EventEmitter {
       ? this.smartOrdersPerSecondLimit
       : this.ordersPerSecondLimit;
 
-    while (true) {
+    for (;;) {
       const now = Date.now();
       this._prune(state.rps, 1000, now);
       this._prune(state.rpm, 60000, now);
@@ -1385,7 +1396,7 @@ class OpenAlgoClient extends EventEmitter {
 
     // Separate successful and failed quotes
     const quotes = results.filter(r => r.success).map(r => {
-      const { success, ...quote } = r;
+      const { success: _success, ...quote } = r;
       return quote;
     });
     const failed = results.filter(r => !r.success);
@@ -1631,6 +1642,7 @@ class OpenAlgoClient extends EventEmitter {
       // Re-check health at start of each round to respect new cooldowns
       const healthyThisRound = instances.filter(i => this.isInstanceHealthy(i.id));
       const skippedThisRound = instances.length - healthyThisRound.length;
+      totalSkipped += skippedThisRound;
 
       // CRITICAL FIX: If all instances are unhealthy, check for manual refresh requirement
       // Don't force attempts on instances that require manual intervention

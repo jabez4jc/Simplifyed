@@ -88,8 +88,6 @@ class QuickOrderService {
    * @param {string} params.tradeMode - EQUITY, FUTURES, OPTIONS
    * @param {number} params.quantity - Quantity (in lots for F&O)
    * @param {string} params.product - MIS, CNC, NRML
-   * @param {string} params.orderType - MARKET, LIMIT
-   * @param {number} params.price - Price (for LIMIT orders)
    * @returns {Promise<Object>} Order result
    */
   async placeQuickOrder(params) {
@@ -102,7 +100,6 @@ class QuickOrderService {
       tradeMode,
       quantity,
       product = 'MIS',
-      orderType = 'MARKET',
       price = 0,
       expiry = null,  // User-selected expiry date
       optionsLeg = null,  // User-selected options leg (ITM2, ATM, OTM1, etc.)
@@ -2147,7 +2144,7 @@ class QuickOrderService {
           pricetype: orderType,
           price: orderPrice,
         });
-        const orderResult = await orderPlacementService.placeSmartOrder(instance, orderPayload, {
+        await orderPlacementService.placeSmartOrder(instance, orderPayload, {
           request_type: 'OPTIONS_RECONCILE',
           trade_mode: 'OPTIONS',
           base_symbol: position.symbol,
@@ -2187,14 +2184,14 @@ class QuickOrderService {
    * Get cached position book for an instance (fallback to OpenAlgo if cache missing)
    * @private
    */
-  async _getPositionBook(instance, { forceLive = true } = {}) {
+  async _getPositionBook(instance) {
     // Always prefer live fetch per requirement; cache only as fallback for failures if needed later
     const positionBook = await openalgoClient.getPositionBook(instance);
     marketDataFeedService.setPositionSnapshot(instance.id, positionBook);
     return positionBook;
   }
 
-  async _resolveLotSize(symbol, exchange, fallbackLotSize, instance = null) {
+  async _resolveLotSize(symbol, exchange, fallbackLotSize) {
     const fallback = fallbackLotSize && fallbackLotSize > 0 ? fallbackLotSize : 1;
     try {
       const instrument = await instrumentsService.getInstrument(symbol, exchange);

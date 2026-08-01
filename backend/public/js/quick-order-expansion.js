@@ -44,7 +44,7 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
     } catch (error) {
       console.error('Failed to toggle watchlist symbol expansion', { watchlistId, symbolId, error });
       if (window.Utils && typeof Utils.showToast === 'function') {
-        Utils.showToast(`Failed to show trading controls: ${error.message}`, 'error');
+        Utils.showToast(`Failed to show trading controls: ${Utils.escapeHTML(error.message)}`, 'error');
       }
     }
   }
@@ -243,7 +243,7 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
 
       contentDiv.dataset.loaded = 'true';
     } catch (error) {
-      contentDiv.innerHTML = `<p class="text-error text-sm">Failed to load trading controls: ${error.message}</p>`;
+      contentDiv.innerHTML = `<p class="text-error text-sm">Failed to load trading controls: ${Utils.escapeHTML(error.message)}</p>`;
     }
   }
 }.prototype));

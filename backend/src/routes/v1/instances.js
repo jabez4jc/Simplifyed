@@ -9,14 +9,11 @@ import pollingService from '../../services/polling.service.js';
 import marketDataInstanceService from '../../services/market-data-instance.service.js';
 import openalgoClient from '../../integrations/openalgo/client.js';
 import { log } from '../../core/logger.js';
-import {
-  NotFoundError,
-  ConflictError,
-  ValidationError,
-  ForbiddenError,
-} from '../../core/errors.js';
+import { ValidationError, ForbiddenError } from '../../core/errors.js';
 import {
   parseBooleanSafe,
+  maskApiKey,
+  isMaskedApiKey,
   maskInstanceForResponse,
   maskInstancesForResponse,
 } from '../../utils/sanitizers.js';
@@ -26,7 +23,14 @@ import multer from 'multer';
 import { Parser } from '../../utils/csv.js';
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, callback) => {
+    const isCsv = file.mimetype === 'text/csv' || file.originalname.toLowerCase().endsWith('.csv');
+    callback(isCsv ? null : new ValidationError('Only CSV files are allowed'), isCsv);
+  },
+});
 
 // All instance routes require authentication
 router.use(requireAuth);
@@ -339,7 +343,7 @@ router.post('/bulk-update', async (req, res, next) => {
         };
 
         // Only update instances that successfully toggled analyzer mode
-        const successfulIds = instance_ids.filter((id, index) =>
+        const successfulIds = instance_ids.filter((id) =>
           !results.errors.find(err => err.instance_id === id)
         );
 
@@ -631,8 +635,17 @@ router.get('/export/csv', requireAdmin, async (req, res, next) => {
     const colNames = columns.map((c) => c.name);
     const rows = await db.all(`SELECT ${colNames.join(', ')} FROM instances ORDER BY id ASC`);
 
+    // api_key is masked here for the same reason every other instance response masks it: this
+    // produces a file that leaves the server - into a downloads folder, an email, a support
+    // ticket - carrying live broker credentials in plaintext. Being admin-only bounds who can
+    // ask for it, not where it ends up afterwards. The import side below recognises the mask and
+    // leaves the stored key untouched, so an export/import round-trip still works; seeding a
+    // *new* instance from a CSV means supplying its real key, which is the correct trade.
     const parser = new Parser();
-    const csv = parser.stringify([colNames, ...rows.map((r) => colNames.map((c) => r[c]))]);
+    const csv = parser.stringify([
+      colNames,
+      ...rows.map((r) => colNames.map((c) => (c === 'api_key' ? maskApiKey(r[c]) : r[c]))),
+    ]);
 
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="instances-export.csv"');
@@ -685,8 +698,15 @@ router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res,
         }
       });
 
+      // A CSV produced by the export above carries the masked key, never the real one. Writing
+      // that back would replace a working credential with a row of asterisks and silently break
+      // the instance, so drop it and let the stored value stand.
+      if (isMaskedApiKey(payload.api_key)) {
+        delete payload.api_key;
+      }
+
       // Guard required fields to avoid NOT NULL/UNIQUE violations
-      if (!payload.host_url || !payload.api_key) {
+      if (!payload.host_url) {
         skippedMissing += 1;
         continue;
       }
@@ -696,6 +716,11 @@ router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res,
 
       try {
         const existing = await db.get('SELECT id FROM instances WHERE host_url = ?', [payload.host_url]);
+        if (!existing && !payload.api_key) {
+          // Nothing to fall back on - a new instance cannot be created without a real key.
+          skippedMissing += 1;
+          continue;
+        }
         if (existing) {
           const fields = Object.keys(payload);
           const setSql = fields.map((f) => `${f} = ?`).join(', ');

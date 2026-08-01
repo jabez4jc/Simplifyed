@@ -368,7 +368,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           <td>${Utils.escapeHTML(trade.symbol || '-')}</td>
           <td>${Utils.escapeHTML(trade.exchange || '-')}</td>
           <td>
-            <span class="badge ${badgeClass}">${action || '-'}</span>
+            <span class="badge ${badgeClass}">${Utils.escapeHTML(action || '-')}</span>
           </td>
           <td>${trade.quantity ?? '-'}</td>
           <td>${Utils.escapeHTML(trade.product || '-')}</td>

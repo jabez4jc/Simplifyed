@@ -1,7 +1,3 @@
-import session from 'express-session';
-import connectSqlite3 from 'connect-sqlite3';
-import fs from 'fs';
-import path from 'path';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import db from '../core/database.js';
@@ -10,14 +6,6 @@ import { log } from '../core/logger.js';
 import { UnauthorizedError, ForbiddenError } from '../core/errors.js';
 
 const LOCAL_TOKEN_TTL = '7d';
-
-/**
- * True when the app is served over TLS, per BASE_URL. Exported so server.js's clearCookie call
- * uses the identical value - a Secure mismatch between set and clear leaves the cookie behind.
- */
-export function isSecureBaseUrl() {
-  return String(config.baseUrl || '').toLowerCase().startsWith('https:');
-}
 
 export async function hashPassword(password) {
   return bcrypt.hash(password, 10);
@@ -35,46 +23,17 @@ export function signLocalToken(user) {
   });
 }
 
-// Session configuration with persistent SQLite store
-export function configureSession() {
-  const SQLiteStore = connectSqlite3(session);
-  const sessionConfig = {
-    secret: config.session.secret,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      // Derived from the actual scheme, not from NODE_ENV. What makes a Secure cookie correct
-      // is being served over TLS, which BASE_URL already states exactly; NODE_ENV only
-      // correlates with it, and defaults to 'development' when unset - so a TLS deployment
-      // missing that variable would have silently sent session cookies in the clear.
-      secure: isSecureBaseUrl(),
-      // Must match the options POST /auth/logout passes to res.clearCookie (server.js), or the
-      // browser treats it as a different cookie and the session cookie survives logout.
-      sameSite: 'lax',
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    },
-  };
-
-  const dataDir = path.join(process.cwd(), 'data');
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
-
-  sessionConfig.store = new SQLiteStore({
-    db: 'sessions.db',
-    dir: dataDir,
-    table: 'sessions',
-    concurrentDB: true,
-  });
-
-  log.info('Session store configured with SQLite persistence', {
-    dbPath: path.join(dataDir, 'sessions.db'),
-    ttl: '24 hours',
-  });
-
-  return session(sessionConfig);
-}
+/*
+ * Authentication here is entirely stateless: a locally-issued HS256 JWT, sent as a Bearer header
+ * on REST calls and as ?token= on the WebSocket upgrade (see verifyLocalToken).
+ *
+ * express-session + connect-sqlite3 used to be mounted alongside it. Nothing ever used them - no
+ * route wrote to req.session, saveUninitialized was false, and the WS gateway was moved off the
+ * cookie onto the same JWT - so in the lifetime of the deployment the sessions table stayed at
+ * zero rows. They are gone, along with the SESSION_SECRET they needed and connect-sqlite3's
+ * pinned sqlite3@5, which was the last thing holding the app's dependency tree on a vulnerable
+ * node-gyp/tar chain.
+ */
 
 // Helper to fetch user with role/permissions
 async function attachRoleAndPermissions(userId) {
@@ -115,8 +74,8 @@ async function attachRoleAndPermissions(userId) {
 }
 
 // Optional auth: attaches req.user from a verified local bearer JWT (see public/login.html and
-// routes/v1/auth.js), or from test mode when enabled. The Express session (configureSession) is
-// unrelated to this - it only backs WS gateway cookie auth.
+// routes/v1/auth.js), or from test mode when enabled. This is the only authentication in the
+// app - REST and the WebSocket gateway both verify the same token.
 export async function optionalAuth(req, res, next) {
   try {
     if (isTestMode()) {
@@ -236,7 +195,6 @@ export function verifyLocalToken(token) {
 }
 
 export default {
-  configureSession,
   optionalAuth,
   requireAuth,
   requireAdmin,

@@ -5,7 +5,6 @@
 
 import express from 'express';
 import pollingService from '../../services/polling.service.js';
-import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';
 import db from '../../core/database.js';

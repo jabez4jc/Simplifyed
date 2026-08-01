@@ -10,16 +10,10 @@ import { ValidationError } from '../core/errors.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import marketDataInstanceService from './market-data-instance.service.js';
 import {
-  black76Greeks,
-  impliedVolBlack76,
   parseExpiryToYearFraction,
   riskFreeRateForSymbol,
   dividendYieldForSymbol,
   normalizeLeg,
-  fillMissingLtp,
-  findNearestAtmRow,
-  computeForwardSet,
-  chooseForward,
   buildGreeksForRows,
   nearestStrikeToSpot,
   stripDerivativeSuffix,
@@ -169,6 +163,9 @@ class OptionChainService {
    */
   async getUnderlyings(type = null) {
     try {
+      if (type && !['index', 'stock'].includes(type)) {
+        throw new ValidationError('type must be either index or stock');
+      }
       // Get index underlyings from NSE_INDEX exchange
       const indices = await db.all(`
         SELECT DISTINCT symbol as name, symbol, 'index' as type
@@ -192,8 +189,8 @@ class OptionChainService {
       `);
 
       return {
-        indices,
-        stocks
+        indices: type === 'stock' ? [] : indices,
+        stocks: type === 'index' ? [] : stocks,
       };
     } catch (error) {
       log.error('Failed to get underlyings', error);
@@ -209,36 +206,37 @@ class OptionChainService {
    */
   async getExpiries(underlying, type = null) {
     try {
+      if (type && !['index', 'stock'].includes(type)) {
+        throw new ValidationError('type must be either index or stock');
+      }
       const normalizedUnderlying = underlying.toUpperCase();
       const brokerUnderlying = stripDerivativeSuffix(normalizedUnderlying);
 
       // Check if it's an index (from NSE_INDEX exchange)
-      const indexCheck = await db.get(`
+      const indexCheck = type === 'stock' ? null : await db.get(`
         SELECT DISTINCT symbol as underlying, 'index' as type
         FROM instruments
         WHERE exchange = 'NSE_INDEX'
         AND instrumenttype = 'INDEX'
         AND symbol = ?
         LIMIT 1
-      `, [normalizedUnderlying]);
+      `, [brokerUnderlying]);
 
       // Check if it's a stock/derivative (from BFO or NFO exchange) using underlying_key
-      const stockCheck = await db.get(`
+      const stockCheck = type === 'index' ? null : await db.get(`
         SELECT DISTINCT underlying_key as underlying, 'stock' as type, exchange
         FROM instruments
         WHERE exchange IN ('BFO', 'NFO')
         AND instrumenttype IN ('CE', 'PE')
         AND underlying_key = ?
         LIMIT 1
-      `, [normalizedUnderlying]);
+      `, [brokerUnderlying]);
 
       const underlyingCheck = indexCheck || stockCheck;
 
       if (!underlyingCheck) {
         throw new ValidationError(`Underlying ${underlying} not found or has no options`);
       }
-
-      const exchange = underlyingCheck.exchange || (underlyingCheck.type === 'index' ? 'NSE_INDEX' : 'BFO');
 
       // Get all expiries for this underlying using underlying_key
       const expiries = await db.all(`
@@ -249,10 +247,10 @@ class OptionChainService {
         AND underlying_key = ?
         AND expiry IS NOT NULL
         ORDER BY expiry
-      `, [normalizedUnderlying]);
+      `, [brokerUnderlying]);
 
       return {
-        underlying: normalizedUnderlying,
+        underlying: brokerUnderlying,
         type: underlyingCheck.type,
         exchange: underlyingCheck.type === 'index' ? 'NFO' : 'BFO,NFO',
         expiries: expiries.map(row => row.expiry)
@@ -591,7 +589,9 @@ class OptionChainService {
       let pool = await marketDataInstanceService.getPoolForEndpoint('optionchain');
       if (!pool.length) return null;
 
-      const orderedPool = pool.sort((a, b) => (a.health_status === 'healthy' ? -1 : 1));
+      const orderedPool = pool.sort(
+        (a, b) => Number(b.health_status === 'healthy') - Number(a.health_status === 'healthy')
+      );
       const exchangeCandidates =
         exchangeLabel === 'MCX'
           ? ['MCX']

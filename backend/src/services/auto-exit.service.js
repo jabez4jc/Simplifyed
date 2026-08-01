@@ -306,7 +306,6 @@ class AutoExitService {
   async _executeAutoExit(instance, position, mode, reason = 'AUTO_EXIT') {
     const positionSymbol = position.symbol || position.tradingsymbol || position.trading_symbol;
     const positionExchange = position.exchange || position.exch || position.brexchange;
-    const quantity = Math.abs(this._getPositionQuantity(position));
     const tradeMode = TRADE_MODE_MAP[mode] || 'FUTURES';
     const product = position.product || position.product_type || 'MIS';
 

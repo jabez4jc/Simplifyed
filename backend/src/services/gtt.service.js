@@ -56,7 +56,6 @@ class GttService {
       payload.stoploss = null;
       payload.target = null;
     } else {
-      const triggerPrice = stoplossPrice ?? targetPrice;
       payload.triggerprice_sl = stoplossPrice ?? 0;
       payload.triggerprice_tg = targetPrice ?? 0;
     }

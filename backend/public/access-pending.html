@@ -79,6 +79,17 @@
       font-family: var(--font-mono);
       margin-right: 0.75rem;
     }
+
+    .pending-actions {
+      display: flex;
+      gap: 15px;
+      margin-top: 2rem;
+    }
+
+    @media (max-width: 480px) {
+      .pending-card { padding: 2rem 1.5rem; }
+      .pending-actions { flex-direction: column; gap: 10px; }
+    }
   </style>
 </head>
 
@@ -104,12 +115,12 @@
       <div>Authorization pending administrator approval</div>
     </div>
 
-    <div style="display: flex; gap: 15px; margin-top: 2rem;">
-      <button class="btn-v btn-v-primary btn-block" id="retry-btn">REFRESH PROXIES</button>
-      <button class="btn-v btn-v-secondary btn-block" id="logout-btn">TERMINATE SESSION</button>
+    <div class="pending-actions">
+      <button type="button" class="btn-v btn-v-primary btn-block" id="retry-btn">CHECK ACCESS</button>
+      <button type="button" class="btn-v btn-v-secondary btn-block" id="logout-btn">SIGN OUT</button>
     </div>
 
-    <p id="status-text"
+    <p id="status-text" role="status" aria-live="polite"
       style="margin-top: 1.5rem; color: var(--text-muted); font-size: 0.6875rem; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.1em;">
       Awaiting server response...
     </p>

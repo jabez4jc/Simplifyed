@@ -7,10 +7,10 @@ import jwt from 'jsonwebtoken';
  * The WebSocket gateway's connection-upgrade auth.
  *
  * It used to check an express-session cookie (`connect.sid`), which NOTHING in this app ever
- * issues: `configureSession()` sets `saveUninitialized: false`, and no route anywhere writes to
- * `req.session` (confirmed by search) - the app is JWT-only. That meant every WS connection was
- * rejected, not merely some of them: the "Disconnected" pill was permanent, not flaky. It now
- * verifies the same locally-issued JWT every REST request already authenticates with.
+ * issued - no route wrote to `req.session` and saveUninitialized was false, so every WS
+ * connection was rejected, not merely some: the "Disconnected" pill was permanent, not flaky.
+ * It now verifies the same locally-issued JWT every REST request authenticates with, and the
+ * unused session stack has since been removed outright.
  */
 
 test('a token signed by this server verifies', () => {

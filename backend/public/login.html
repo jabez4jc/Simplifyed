@@ -113,6 +113,12 @@
       background: rgba(255, 255, 255, 0.06);
     }
 
+    .form-input:focus-visible,
+    .password-toggle-btn:focus-visible {
+      outline: 2px solid var(--accent-signal);
+      outline-offset: 2px;
+    }
+
     .form-input::placeholder {
       color: var(--text-muted);
     }
@@ -130,8 +136,8 @@
       right: 0.5rem;
       top: 50%;
       transform: translateY(-50%);
-      width: 2rem;
-      height: 2rem;
+      width: 2.75rem;
+      height: 2.75rem;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -260,7 +266,7 @@
       </p>
 
       <!-- Message Area -->
-      <div id="message-area"></div>
+      <div id="message-area" role="status" aria-live="polite"></div>
     </div>
   </div>
 
@@ -271,9 +277,12 @@
 
     function showMessage(text, type = 'info') {
       const messageArea = document.getElementById('message-area');
-      messageArea.innerHTML = `<div class="message ${type}">${text}</div>`;
+      const message = document.createElement('div');
+      message.className = `message ${['success', 'error', 'info'].includes(type) ? type : 'info'}`;
+      message.textContent = String(text || 'An unexpected error occurred');
+      messageArea.replaceChildren(message);
       setTimeout(() => {
-        messageArea.innerHTML = '';
+        if (message.isConnected) message.remove();
       }, 8000);
     }
 
@@ -343,8 +352,8 @@
         setButtonLoading('login-btn', false, 'Sign In');
       } catch (error) {
         console.error('Access redirect error:', error);
-        localStorage.removeItem('auth_token');
-        window.location.href = '/login.html';
+        showMessage('Unable to verify access. Your session is preserved; please try again.', 'error');
+        setButtonLoading('login-btn', false, 'Sign In');
       }
     }
 
