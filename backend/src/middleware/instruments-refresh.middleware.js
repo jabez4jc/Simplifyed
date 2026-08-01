@@ -18,6 +18,17 @@ let refreshError = null;
 let lastRefreshDate = null;
 let bypassed = false;
 
+// Config/repair surfaces - see the bypass in checkInstrumentsRefresh below.
+const ADMIN_PATHS = [
+  '/api/v1/instances',
+  '/api/v1/settings',
+  '/api/v1/instruments',
+  '/api/v1/rbac',
+  '/api/v1/audit',
+  '/api/v1/health-check',
+  '/api/v1/polling',
+];
+
 // isTestMode() is imported from core/config.js so there is exactly one definition of
 // "authentication is disabled". Test mode means this is not a real deployment, which is the
 // only condition under which skipping the instruments check is defensible.
@@ -117,6 +128,17 @@ export async function checkInstrumentsRefresh(req, res, next) {
     // loop caused entirely by a trading-readiness check. Who you are does not depend on the
     // instruments cache; only trading does.
     if (req.path === '/api/user' || req.path.startsWith('/api/v1/auth/')) {
+      return next();
+    }
+
+    // Administration endpoints are never gated. The gate exists to stop TRADING against a stale
+    // instruments cache - but the cache can only be refreshed through a healthy instance, and
+    // gating /instances, /settings and /instruments meant that when every instance went
+    // unhealthy the app 503'd the exact screens you need to repair one. A transient broker
+    // outage therefore locked the operator out permanently, with no in-app way back. Reading
+    // and fixing your configuration does not touch the instruments cache, so it must stay
+    // reachable precisely when the cache is broken.
+    if (ADMIN_PATHS.some((prefix) => req.path.startsWith(prefix))) {
       return next();
     }
 
