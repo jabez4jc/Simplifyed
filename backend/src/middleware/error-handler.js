@@ -19,6 +19,23 @@ import {
 } from '../core/errors.js';
 
 /**
+ * The status to answer with when a call to a BROKER failed.
+ *
+ * OpenAlgoError carries the broker's own HTTP status (client.js builds it from `response.status`),
+ * and returning that verbatim conflated "the broker rejected our API key" with "the browser's
+ * session is invalid". api-client.js treats any 401 as the latter: it wipes auth_token and
+ * redirects to /login.html. So one instance with a stale OpenAlgo key logged the operator out of
+ * the dashboard, and re-login did nothing because the next poll of that instance did it again.
+ * 403 is nearly as bad - it is the access-pending signal.
+ *
+ * Upstream auth failures are gateway failures, so they answer 502. The broker's real status is
+ * still in `details.status_code`, and err.message is unchanged, so the UI shows the same text.
+ */
+function upstreamStatus(err) {
+  return err.statusCode === 401 || err.statusCode === 403 ? 502 : err.statusCode;
+}
+
+/**
  * Error handler middleware
  * @param {Error} err - Error object
  * @param {Request} req - Express request
@@ -103,7 +120,7 @@ export function errorHandler(err, req, res, next) {
   }
 
   if (err instanceof OpenAlgoError) {
-    return res.status(err.statusCode).json({
+    return res.status(upstreamStatus(err)).json({
       status: 'error',
       message: err.message,
       code: 'OPENALGO_ERROR',
@@ -112,7 +129,7 @@ export function errorHandler(err, req, res, next) {
   }
 
   if (err instanceof ExternalAPIError) {
-    return res.status(err.statusCode).json({
+    return res.status(upstreamStatus(err)).json({
       status: 'error',
       message: err.message,
       code: 'EXTERNAL_API_ERROR',

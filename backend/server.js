@@ -132,9 +132,14 @@ app.use('/api/v1', auditLogger);
  * Routes
  */
 
-// TradingView broadcast webhook (public token auth)
-app.use('/webhook/tradingview', tradingviewWebhookRoutes);
+// TradingView broadcast webhook (public token auth).
+// auditLogger MUST be registered before the router: it works by attaching a res.on('finish')
+// hook and calling next(), so mounted after the route it is simply never reached - the handler
+// responds and never calls next(). Every webhook-placed order went unaudited, which is the one
+// order path with no human in the loop and therefore the one that most needs the record.
+// (Same trap as the blackout guard that used to sit further down this file.)
 app.use('/webhook/tradingview', auditLogger);
+app.use('/webhook/tradingview', tradingviewWebhookRoutes);
 
 // API v1
 app.use('/api/v1', apiV1Routes);

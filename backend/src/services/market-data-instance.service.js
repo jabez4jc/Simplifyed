@@ -5,7 +5,9 @@
  */
 
 import db from '../core/database.js';
-import log from '../core/logger.js';
+// Named export - the default is the bare winston logger, which bypasses sanitizeMeta and the
+// notification hook. See the matching note in positions.service.js.
+import { log } from '../core/logger.js';
 import { NotFoundError } from '../core/errors.js';
 
 class MarketDataInstanceService {

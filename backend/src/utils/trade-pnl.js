@@ -48,7 +48,13 @@ export function calculateTradeChargesOpenAlgo(
   const symbolUpper = String(symbol || '').toUpperCase();
   const sideUpper = String(side || '').toUpperCase();
 
-  const isOption = /(CE|PE)$/.test(symbolUpper) || /(CE|PE)/.test(symbolUpper);
+  // An option symbol ends in its strike followed by CE/PE (NIFTY28AUG2624000CE) - hence the
+  // required digit, the same test risk-controls.service.js uses. The second, unanchored
+  // `/(CE|PE)/` alternative that used to sit here made the anchored one dead and matched CE/PE
+  // ANYWHERE in the name, so NFO futures on underlyings containing those letters
+  // (PERSISTENT26SEP26FUT, CESC26SEP26FUT) were charged the options exchange fee: 0.0005 instead
+  // of 0.00019, ~2.6x over, plus GST on top of the inflated figure.
+  const isOption = /\d(CE|PE)$/.test(symbolUpper);
   const isFuture = symbolUpper.endsWith('FUT');
 
   let exchangeFeeRate = 0;

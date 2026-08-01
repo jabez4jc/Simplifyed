@@ -8,6 +8,10 @@ import { log } from '../core/logger.js';
 import db from '../core/database.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import instrumentsService from './instruments.service.js';
+// Used by autoRefreshExpiries below. It was referenced without ever being imported, so that whole
+// path threw ReferenceError the moment anything called it (the scheduler that would have is not
+// wired up yet, which is the only reason this never surfaced).
+import marketDataInstanceService from './market-data-instance.service.js';
 import { NotFoundError } from '../core/errors.js';
 import { toISTDate } from '../utils/time.js';
 

@@ -34,7 +34,12 @@ export function auditLogger(req, res, next) {
   res.on('finish', () => {
     if (req.auditLogged) return;
     const status = res.statusCode || 0;
-    const action = `${method} ${req.originalUrl || req.url || ''}`;
+    // Path only - the query string is recorded separately below, where sanitizeValue redacts it.
+    // Keeping it here too wrote the raw value straight into audit_logs, and the TradingView
+    // webhook accepts its trading token as ?token=, so every webhook order persisted that
+    // credential in cleartext to a table any holder of pages.audit.view can read.
+    const rawUrl = req.originalUrl || req.url || '';
+    const action = `${method} ${rawUrl.split('?')[0]}`;
     const metadata = {
       status,
       params: sanitizeValue(req.params || {}),

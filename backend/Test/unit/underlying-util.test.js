@@ -27,12 +27,17 @@ test('absent or malformed expiries yield null, not a wrong date', () => {
   }
 });
 
+// upcomingExpiries drops anything before `now`, so every case below pins it. Reading the real
+// clock instead made these tests pass only until the fixture dates went past - they were red by
+// 28 Jul 2026 for no reason connected to the code under test.
+const NOW = new Date(Date.UTC(2026, 6, 1)); // 1 Jul 2026, before every fixture expiry
+
 test('upcomingExpiries sorts chronologically and drops the past', () => {
   const past = '01-JAN-20';
   const rows = [
     { expiry: '25-AUG-26' }, { expiry: past }, { expiry: '28-JUL-26' }, { expiry: '29-SEP-26' },
   ];
-  const out = upcomingExpiries(rows);
+  const out = upcomingExpiries(rows, NOW);
   assert.ok(!out.includes(past), 'expired contracts must be dropped');
   // Lexical sorting would put 25-AUG before 28-JUL, which is wrong by date.
   assert.deepStrictEqual(out, ['28-JUL-26', '25-AUG-26', '29-SEP-26']);
@@ -41,12 +46,12 @@ test('upcomingExpiries sorts chronologically and drops the past', () => {
 test('mixed formats sort together correctly', () => {
   const out = upcomingExpiries([
     { expiry: '2026-09-01' }, { expiry: '28-JUL-26' }, { expiry: '2026-08-14' },
-  ]);
+  ], NOW);
   assert.deepStrictEqual(out, ['28-JUL-26', '2026-08-14', '2026-09-01']);
 });
 
 test('plain strings are accepted as well as rows', () => {
-  assert.deepStrictEqual(upcomingExpiries(['29-SEP-26', '28-JUL-26']), ['28-JUL-26', '29-SEP-26']);
+  assert.deepStrictEqual(upcomingExpiries(['29-SEP-26', '28-JUL-26'], NOW), ['28-JUL-26', '29-SEP-26']);
 });
 
 /**

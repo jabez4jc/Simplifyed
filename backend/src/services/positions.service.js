@@ -4,7 +4,11 @@
  */
 
 import db from '../core/database.js';
-import log from '../core/logger.js';
+// Named `log`, not the default export - the default is the bare winston logger, whose signature
+// is (message, ...splat). Calls below use the helper's (message, error, meta) form, so with the
+// default import the Error landed in splat[0] and the formatter dropped it: every
+// `log.error('...', error, {...})` here logged a message with no error text at all.
+import { log } from '../core/logger.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';

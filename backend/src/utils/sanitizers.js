@@ -3,6 +3,8 @@
  * Provides functions to sanitize and validate user input
  */
 
+import { createHash, timingSafeEqual } from 'crypto';
+
 // Cloud provider instance-metadata endpoints (AWS/GCP/Azure/DigitalOcean/Alibaba all use the
 // same link-local address). A host_url pointed here would let the server's own metadata
 // credentials be read back through the funds/connection-test response. Deliberately NOT
@@ -102,6 +104,21 @@ export function maskInstancesForResponse(instances) {
  */
 export function isMaskedApiKey(value) {
   return typeof value === 'string' && value.startsWith('*');
+}
+
+/**
+ * Compare two secrets without leaking how far they matched.
+ *
+ * `a !== b` returns as soon as two bytes differ, which times out proportionally to the shared
+ * prefix. Both sides are hashed first so timingSafeEqual always gets equal-length buffers - it
+ * throws on a length mismatch, and that throw would itself be a length oracle.
+ *
+ * Used for the TradingView webhook token (sole auth on a live-order endpoint) and the Telegram
+ * webhook secret.
+ */
+export function timingSafeEqualStr(a, b) {
+  const digest = (v) => createHash('sha256').update(String(v ?? '')).digest();
+  return timingSafeEqual(digest(a), digest(b));
 }
 
 /**

@@ -2,7 +2,7 @@ import config from '../core/config.js';
 import { log } from '../core/logger.js';
 import { UnauthorizedError, ValidationError } from '../core/errors.js';
 import { ORDER_PARAMS } from '../integrations/openalgo/endpoints.js';
-import { maskApiKey, parseIntSafe } from '../utils/sanitizers.js';
+import { maskApiKey, parseIntSafe, timingSafeEqualStr } from '../utils/sanitizers.js';
 import { extractLtp } from '../utils/price-extraction.js';
 import watchlistService from './watchlist.service.js';
 import watchlistSymbolService from './watchlist-symbol.service.js';
@@ -104,7 +104,9 @@ class TradingviewBroadcastService {
     if (!expected) {
       throw new UnauthorizedError('Webhook token is not configured');
     }
-    if (token !== expected) {
+    // Constant-time - this token is the sole authentication on an endpoint that places live
+    // orders. See timingSafeEqualStr.
+    if (!timingSafeEqualStr(token, expected)) {
       throw new UnauthorizedError('Invalid webhook token');
     }
   }

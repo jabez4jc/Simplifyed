@@ -8,6 +8,7 @@ import { log } from '../../core/logger.js';
 import telegramService from '../../services/telegram.service.js';
 import { requireAuth } from '../../middleware/auth.js';
 import { config } from '../../core/config.js';
+import { timingSafeEqualStr } from '../../utils/sanitizers.js';
 
 const router = express.Router();
 
@@ -22,7 +23,7 @@ router.post('/webhook', async (req, res) => {
     // config.js. Without this, anyone who finds the webhook URL could post directly to it.
     if (config.telegram.webhookSecret) {
       const provided = req.get('X-Telegram-Bot-Api-Secret-Token');
-      if (provided !== config.telegram.webhookSecret) {
+      if (!timingSafeEqualStr(provided, config.telegram.webhookSecret)) {
         return res.status(401).json({ ok: false, error: 'Invalid secret token' });
       }
     }
