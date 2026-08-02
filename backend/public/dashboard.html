@@ -14,6 +14,9 @@
         localStorage.getItem('dashboard-theme') || 'dark');
     } catch (_) { /* private mode - fall back to the attribute already on <html> */ }
   </script>
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#0A0A0B">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
   <link rel="stylesheet" href="/css/tailwind.css?v=20251204-0800">
   <link rel="stylesheet" href="/css/type-scale.css?v=20260725-1200">
   <link rel="stylesheet" href="/css/tokens-base.css?v=20260724-1100">
@@ -409,6 +412,7 @@
   <script defer src="/js/dashboard-chart-draw.js?v=20260727-2032"></script>
   <script defer src="/js/dashboard-chart.js?v=20260728-1700"></script>
   <script defer src="/js/dashboard-init.js?v=20260723-0900"></script>
+  <script src="/js/pwa-register.js"></script>
 </body>
 
 </html>
