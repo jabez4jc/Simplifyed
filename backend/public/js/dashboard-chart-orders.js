@@ -14,6 +14,10 @@
  * library's `Position` is a single `{symbol, netQty, avgPrice}` - so those stay as they are
  * rather than being swapped for `PositionMarker`/`BracketGroup`.
  */
+// Order lines redraw when a pushed order_update arrives (dashboard-core.js wsRefreshOrders);
+// this timer only covers a missed push or a dropped browser socket.
+const ORDER_LINES_FALLBACK_MS = 30000;
+
 Object.assign(DashboardApp.prototype, {
   orderLinesState() {
     if (!this._orderLines) {
@@ -38,7 +42,7 @@ Object.assign(DashboardApp.prototype, {
     s.controller = new window.OAC.TradeController(host);
     this.refreshOrderLines();
     if (!s.refreshTimer) {
-      s.refreshTimer = setInterval(() => this.refreshOrderLines(), 5000);
+      s.refreshTimer = setInterval(() => this.refreshOrderLines(), ORDER_LINES_FALLBACK_MS);
     }
   },
 
@@ -118,7 +122,7 @@ Object.assign(DashboardApp.prototype, {
     };
     pane.orderLines = { controller: new window.OAC.TradeController(host), refreshTimer: null };
     this.refreshPaneOrderLines(key);
-    pane.orderLines.refreshTimer = setInterval(() => this.refreshPaneOrderLines(key), 5000);
+    pane.orderLines.refreshTimer = setInterval(() => this.refreshPaneOrderLines(key), ORDER_LINES_FALLBACK_MS);
   },
 
   /** Called from destroyOptionPanes() - the primitives belong to the pane's chart, going away. */

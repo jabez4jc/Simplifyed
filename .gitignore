@@ -47,3 +47,8 @@ oasymbols.csv
 *-export.csv
 *-export.txt
 *.mov
+
+# Test artifacts
+backend/e2e/.runtime.json
+backend/test-results/
+backend/playwright-report/

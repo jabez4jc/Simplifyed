@@ -13,7 +13,8 @@ import riskControlsService from './risk-controls.service.js';
 import riskEventsService from './risk-events.service.js';
 import { extractLtp, extractAveragePrice } from '../utils/price-extraction.js';
 import { normalizeTradebookEntry } from '../utils/tradebook-utils.js';
-import { isGeneralEndpointBlackout } from './instance-health.service.js';
+import marketCalendarService from './market-calendar.service.js';
+import { isCryptoExchange } from '../utils/broker-type.util.js';
 import { normalizeSymbolKey, normalizeExchange } from '../utils/symbol-parsing.util.js';
 
 const TRADE_MODE_MAP = {
@@ -29,7 +30,6 @@ class AutoExitService {
     this.isCycleRunning = false;
     this.pendingExits = new Map();
     this.exitConfirmations = new Map();
-    this.lastBlackoutLogAt = 0;
     const autoExitCfg = config.autoExit || {};
     this.monitorIntervalMs = autoExitCfg.monitorIntervalMs || 5000;
     this.provisionalEntryGraceMs = autoExitCfg.provisionalEntryGraceMs ?? 20000;
@@ -77,11 +77,6 @@ class AutoExitService {
       return;
     }
 
-    if (isGeneralEndpointBlackout()) {
-      this._logBlackoutSkip();
-      return;
-    }
-
     this.isCycleRunning = true;
     try {
       const configLookup = await this._buildAutoExitLookup();
@@ -114,15 +109,6 @@ class AutoExitService {
     }
   }
 
-  _logBlackoutSkip() {
-    const now = Date.now();
-    if (now - this.lastBlackoutLogAt < 5 * 60 * 1000) {
-      return;
-    }
-    this.lastBlackoutLogAt = now;
-    log.info('Auto-exit paused during market blackout window');
-  }
-
   async _evaluatePosition(instance, position, configLookup, tradebook = []) {
     const positionQty = this._getPositionQuantity(position);
     const rawSymbol = position.symbol || position.tradingsymbol || position.trading_symbol;
@@ -134,13 +120,27 @@ class AutoExitService {
       return;
     }
 
-    const key = this._getTrackingKey(instance.id, positionSymbol, positionExchange);
+    // One tracking entry per PRODUCT row. The broker keeps a closed row (quantity 0) for the day
+    // beside a live one in another product (MIS closed, NRML open). Keyed by symbol alone, the
+    // zero row cleared the live row's confirmation every cycle, so a hit target/stop was never
+    // confirmed and the exit never fired - and trailing stops were wiped the same way.
+    const positionProduct = String(position.product || position.product_type || position.producttype || '').toUpperCase();
+    const key = this._getTrackingKey(instance.id, positionSymbol, positionExchange, positionProduct);
 
     if (positionQty === 0) {
       this.pendingExits.delete(key);
       this.exitConfirmations.delete(key);
       riskControlsService.clearTrailingState(key);
       marketDataFeedService.clearFallbackEntryPrice(instance.id, positionExchange, positionSymbol);
+      return;
+    }
+
+    // Evaluate only while this position's own exchange is trading: an exit sent to a closed
+    // exchange is rejected at best, and the prices it would be judged on are stale. This used to
+    // be approximated by a fixed 03:00-08:00 IST pause, which left crypto (24/7) unprotected in
+    // that window and Indian positions evaluated at every other closed hour. The calendar
+    // answers "closed" when it cannot be read, which is the safe way for this to fail.
+    if (!isCryptoExchange(positionExchange) && !(await marketCalendarService.isExchangeOpen(positionExchange))) {
       return;
     }
 
@@ -658,8 +658,8 @@ class AutoExitService {
     return `${normalizedExchange}:${normalizedSymbol}`;
   }
 
-  _getTrackingKey(instanceId, symbol, exchange) {
-    return `${instanceId}:${exchange}:${symbol}`;
+  _getTrackingKey(instanceId, symbol, exchange, product = '') {
+    return `${instanceId}:${exchange}:${symbol}:${product}`;
   }
 
   _isPendingExit(key) {

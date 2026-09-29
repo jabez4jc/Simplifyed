@@ -11,9 +11,10 @@ import {
   ConflictError,
   ValidationError,
 } from '../core/errors.js';
-import { sanitizeString, parseBooleanSafe, normalizeUrl } from '../utils/sanitizers.js';
+import { sanitizeString, parseBooleanSafe, normalizeUrl, maskInstancesForResponse } from '../utils/sanitizers.js';
 import watchlistSymbolService from './watchlist-symbol.service.js';
 import config from '../core/config.js';
+import { isContractExpired } from '../utils/underlying.util.js';
 
 class WatchlistService {
   /**
@@ -84,10 +85,16 @@ class WatchlistService {
         [id]
       );
 
+      // `SELECT i.*` includes api_key, and GET /api/v1/watchlists/:id hands this object straight
+      // to the browser - so every watchlist detail view was shipping live broker credentials to
+      // any user who could read a watchlist, including a Monitor. Masked here rather than in the
+      // route because every caller of this method is a read path; the one code path that needs
+      // real keys (getBroadcastTargets, which builds order-placement targets) runs its own query
+      // and is unaffected.
       const hydrated = await this._hydrateWebhook({
         ...watchlist,
         symbols,
-        instances,
+        instances: maskInstancesForResponse(instances),
       });
 
       return hydrated;
@@ -302,15 +309,17 @@ class WatchlistService {
    * Update symbol in watchlist
    * @param {number} symbolId - Symbol ID
    * @param {Object} updates - Fields to update
+   * @param {number|null} watchlistId - Watchlist the caller addressed the symbol through; the
+   *   symbol must belong to it. See watchlistSymbolService.updateSymbol.
    * @returns {Promise<Object>} - Updated symbol
    */
-  async updateSymbol(symbolId, updates) {
+  async updateSymbol(symbolId, updates, watchlistId = null) {
     try {
       const watchlist = await this._getWatchlistForSymbol(symbolId);
       if (this._isBroadcast(watchlist) || this._isStrategy(watchlist)) {
         throw new ValidationError('This watchlist type does not support symbols');
       }
-      return await watchlistSymbolService.updateSymbol(symbolId, updates);
+      return await watchlistSymbolService.updateSymbol(symbolId, updates, watchlistId);
     } catch (error) {
       if (error instanceof NotFoundError || error instanceof ValidationError) {
         throw error;
@@ -323,14 +332,15 @@ class WatchlistService {
   /**
    * Remove symbol from watchlist
    * @param {number} symbolId - Symbol ID
+   * @param {number|null} watchlistId - Watchlist the caller addressed the symbol through.
    */
-  async removeSymbol(symbolId) {
+  async removeSymbol(symbolId, watchlistId = null) {
     try {
       const watchlist = await this._getWatchlistForSymbol(symbolId);
       if (this._isBroadcast(watchlist) || this._isStrategy(watchlist)) {
         throw new ValidationError('This watchlist type does not support symbols');
       }
-      await watchlistSymbolService.removeSymbol(symbolId);
+      await watchlistSymbolService.removeSymbol(symbolId, watchlistId);
     } catch (error) {
       if (error instanceof NotFoundError) throw error;
       log.error('Failed to remove symbol', error, { symbolId });
@@ -456,7 +466,7 @@ class WatchlistService {
         [watchlistId]
       );
 
-      return symbols;
+      return symbols.map((row) => ({ ...row, is_expired: isContractExpired(row) }));
     } catch (error) {
       log.error('Failed to get symbols with quotes', error, { watchlistId });
       throw error;
@@ -639,14 +649,21 @@ class WatchlistService {
     const normalized = {};
     const errors = [];
 
-    // Name
+    // Name.
+    //
+    // Required on create whether or not the caller mentioned it - guarding only the
+    // sent-but-empty case let a payload with no `name` key through entirely, and the INSERT then
+    // died on the NOT NULL constraint as an unhandled 500. Sent-but-empty on UPDATE is an error
+    // too: silently keeping the old name tells the operator a rename succeeded when it did not.
     if (data.name !== undefined) {
       const name = sanitizeString(data.name);
-      if (!name && !isUpdate) {
+      if (!name) {
         errors.push({ field: 'name', message: 'Name is required' });
-      } else if (name) {
+      } else {
         normalized.name = name;
       }
+    } else if (!isUpdate) {
+      errors.push({ field: 'name', message: 'Name is required' });
     }
 
     // Description

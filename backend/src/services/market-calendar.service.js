@@ -2,6 +2,7 @@ import { log } from '../core/logger.js';
 import marketDataInstanceService from './market-data-instance.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import { toISTDate } from '../utils/time.js';
+import { isCryptoBroker } from '../utils/broker-type.util.js';
 
 const TIMINGS_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 const HOLIDAYS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
@@ -50,22 +51,24 @@ class MarketCalendarService {
     return match ? match[0] : null;
   }
 
-  async _getInstance() {
+  /** The market-data instance, else `via` - any OpenAlgo host answers the calendar endpoints. */
+  async _getInstance(via = null) {
     try {
       return await marketDataInstanceService.getMarketDataInstance();
     } catch (err) {
+      if (via) return via;
       log.warn('No market data instance available for calendar checks', { error: err.message });
       return null;
     }
   }
 
-  async getMarketTimings(dateStr) {
+  async getMarketTimings(dateStr, via = null) {
     const cached = this.timingsCache.get(dateStr);
     if (cached && Date.now() - cached.fetchedAt < TIMINGS_CACHE_TTL_MS) {
       return cached.data || [];
     }
 
-    const instance = await this._getInstance();
+    const instance = await this._getInstance(via);
     if (!instance) return cached?.data || [];
 
     try {
@@ -79,13 +82,13 @@ class MarketCalendarService {
     }
   }
 
-  async getMarketHolidays(year) {
+  async getMarketHolidays(year, via = null) {
     const cached = this.holidaysCache.get(year);
     if (cached && Date.now() - cached.fetchedAt < HOLIDAYS_CACHE_TTL_MS) {
       return cached.byDate;
     }
 
-    const instance = await this._getInstance();
+    const instance = await this._getInstance(via);
     if (!instance) return cached?.byDate || new Map();
 
     try {
@@ -143,10 +146,10 @@ class MarketCalendarService {
     }
   }
 
-  async getHolidayInfo(date = new Date()) {
+  async getHolidayInfo(date = new Date(), via = null) {
     const dateStr = this._formatDate(date);
     const year = this._getYear(date);
-    const holidays = await this.getMarketHolidays(year);
+    const holidays = await this.getMarketHolidays(year, via);
     if (!holidays || holidays.size === 0) return null;
     return holidays.get(dateStr) || null;
   }
@@ -156,13 +159,13 @@ class MarketCalendarService {
     return !!info;
   }
 
-  async isExchangeOpen(exchange, date = new Date()) {
+  async isExchangeOpen(exchange, date = new Date(), via = null) {
     const ex = calendarExchange(exchange);
     if (!ex) return false;
 
     const dateStr = this._formatDate(date);
 
-    const holidayInfo = await this.getHolidayInfo(date);
+    const holidayInfo = await this.getHolidayInfo(date, via);
     if (holidayInfo) {
       if (holidayInfo.openExchanges?.has(ex)) {
         const window = holidayInfo.openExchanges.get(ex);
@@ -176,7 +179,7 @@ class MarketCalendarService {
       // If holiday exists but exchange not explicitly closed/open, fall back to timings.
     }
 
-    const timings = await this.getMarketTimings(dateStr);
+    const timings = await this.getMarketTimings(dateStr, via);
     if (!Array.isArray(timings) || timings.length === 0) {
       return false;
     }
@@ -194,6 +197,22 @@ class MarketCalendarService {
 
     const nowMs = Date.now();
     return nowMs >= start && nowMs <= end;
+  }
+
+  /**
+   * Is any market this instance trades open right now? Gates background polling (order sync,
+   * P&L, positions, funds) so nothing hits the broker after hours. Crypto brokers never close.
+   * NFO/BFO keep NSE/BSE hours, so four exchanges cover every Indian segment; MCX runs latest.
+   * Fails open when today's timings could not be loaded - better an idle poll than a missed fill.
+   */
+  async isInstanceMarketOpen(instance, date = new Date()) {
+    if (isCryptoBroker(instance?.broker)) return true;
+    for (const ex of ['NSE', 'BSE', 'CDS', 'MCX']) {
+      if (await this.isExchangeOpen(ex, date, instance)) return true;
+    }
+    const dateStr = this._formatDate(date);
+    await this.getMarketTimings(dateStr, instance); // a holiday short-circuits isExchangeOpen before this
+    return !this.timingsCache.has(dateStr);
   }
 
   async getNextSessionOpen(exchange, fromDate = new Date(), { maxDays = 7 } = {}) {

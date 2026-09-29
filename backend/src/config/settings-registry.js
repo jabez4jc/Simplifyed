@@ -146,43 +146,8 @@ export const SETTINGS_GROUPS = [
     id: 'trading-hours',
     label: 'Trading Hours',
     description:
-      'When the terminal is allowed to call your brokers, and how the trading day is divided '
-      + 'for P&L. Crypto brokers trade 24/7 and are exempt from the blackout windows below.',
+      'How the trading day is divided for P&L.',
     sections: [
-      {
-        id: 'blackout',
-        label: 'Blackout Windows (IST)',
-        note:
-          'Broker calls are paused inside these windows - useful overnight, when Indian '
-          + 'exchanges are closed and brokers expire sessions. Set start and end to the same '
-          + 'value to disable a window.',
-        fields: [
-          {
-            key: 'market_hours.quote_blackout_start',
-            label: 'Pause quotes from',
-            help: 'Quotes, MultiQuotes and OptionChain stop being requested at this time.',
-            unit: 'time', pair: 'quote-blackout', pairLabel: 'From',
-          },
-          {
-            key: 'market_hours.quote_blackout_end',
-            label: 'Resume quotes at',
-            help: 'Quote endpoints become available again at this time.',
-            unit: 'time', pair: 'quote-blackout', pairLabel: 'Until',
-          },
-          {
-            key: 'market_hours.general_blackout_start',
-            label: 'Pause all other calls from',
-            help: 'Orders, positions, funds and the rest pause at this time.',
-            unit: 'time', pair: 'general-blackout', pairLabel: 'From',
-          },
-          {
-            key: 'market_hours.general_blackout_end',
-            label: 'Resume all other calls at',
-            help: 'Everything resumes at this time.',
-            unit: 'time', pair: 'general-blackout', pairLabel: 'Until',
-          },
-        ],
-      },
       {
         id: 'sessions',
         label: 'Trading Sessions',
@@ -300,17 +265,11 @@ export const SETTINGS_GROUPS = [
           },
           {
             key: 'instance_health.ping_unhealthy_interval_ms',
-            label: 'Retry unhealthy instances every',
-            help: 'How often an instance that failed its last check is retried.',
-            unit: 'ms', min: 30000, max: 3600000,
-          },
-          {
-            key: 'instance_health.ping_unhealthy_max_attempts',
-            label: 'Give up after',
+            label: 'Retry unhealthy instances after',
             help:
-              'Consecutive failures before the terminal stops auto-retrying and waits for a '
-              + 'manual refresh.',
-            unit: 'attempts', min: 1, max: 50,
+              'First retry after an instance fails its check; the wait doubles on each further '
+              + 'failure, up to 10 minutes, and it is never given up on.',
+            unit: 'ms', min: 30000, max: 3600000,
           },
           {
             key: 'instance_health.analyzer_check_interval_ms',

@@ -13,15 +13,15 @@
  * the same blast-radius confirmation as any other order on this screen. Nothing here places an
  * order on its own.
  *
- * All 43 built-in tools are offered (the previous, Lightweight Charts based drawing engine was
- * deliberately restricted to 18 of its 67 - the smaller, more curated set the new engine ships
- * makes that restriction unnecessary). Categories below are this app's own grouping for the rail;
- * the engine's tool registry has no category field of its own.
+ * Every built-in tool the engine registers is offered - 85 as of openalgo-charts 2.4.0, up from
+ * the 43 of 1.x. Categories below are this app's own grouping for the rail; the engine's tool
+ * registry has no category field of its own. Anything the engine registers that is NOT named
+ * below falls into the "More" rail category rather than disappearing, so a library upgrade that
+ * ships new tools exposes them immediately instead of hiding them until this map is edited.
  */
 
-/** Tool id -> rail category. Every id in openalgo-charts' BUILTIN_DRAWING_TOOLS must appear here
- * once - drawToolsIn() silently drops anything missing, which would otherwise be a tool nobody
- * can ever select. */
+/** Tool id -> rail category. Anything absent lands in `more` (see drawToolCategory), so the rail
+ * always offers every registered tool. */
 const TOOL_CATEGORY = {
   'trend-line': 'line', ray: 'line', 'extended-line': 'line', arrow: 'line',
   'horizontal-line': 'line', 'horizontal-ray': 'line', 'vertical-line': 'line', 'cross-line': 'line',
@@ -36,6 +36,25 @@ const TOOL_CATEGORY = {
   text: 'annotation', path: 'annotation', 'price-label': 'annotation', callout: 'annotation',
   'flag-mark': 'annotation', highlighter: 'annotation', brush: 'annotation', polyline: 'annotation',
   curve: 'annotation', 'double-curve': 'annotation', arc: 'annotation',
+
+  // Added in openalgo-charts 2.x. Grouped by what a trader reaches for, not by the library's own
+  // ADVANCED_LINE_TOOLS / ADVANCED_GEOMETRY_TOOLS / PATTERN_DRAWING_TOOLS bundles - those are
+  // release groupings (what shipped together), not usage ones: a pitchfork belongs next to the
+  // channels it is a channel of, whichever release added it.
+  'arrow-left': 'line', 'arrow-right': 'line', 'info-line': 'line', 'trend-angle': 'line',
+  'disjoint-channel': 'channel', 'flat-top-bottom': 'channel', 'regression-channel': 'channel',
+  pitchfork: 'channel', 'schiff-pitchfork': 'channel', 'modified-schiff-pitchfork': 'channel',
+  'inside-pitchfork': 'channel',
+  'fib-extension-two-point': 'fibonacci', 'fib-speed-resistance-fan': 'fibonacci',
+  'trend-fib-time': 'fibonacci', 'fib-circles': 'fibonacci', 'fib-speed-resistance-arcs': 'fibonacci',
+  'fib-wedge': 'fibonacci', 'fib-spiral': 'fibonacci',
+  'gann-square': 'forecasting', 'dedekind-tessellation': 'forecasting', sonic: 'forecasting',
+  supersonic: 'forecasting', 'golden-sonic': 'forecasting', 'golden-supersonic': 'forecasting',
+  'xabcd-pattern': 'pattern', 'abcd-pattern': 'pattern', 'elliott-impulse': 'pattern',
+  'elliott-correction': 'pattern', 'head-shoulders': 'pattern', gartley: 'pattern', bat: 'pattern',
+  butterfly: 'pattern', crab: 'pattern', shark: 'pattern', cypher: 'pattern',
+  note: 'annotation', balloon: 'annotation', comment: 'annotation', signpost: 'annotation',
+  'price-note': 'annotation', table: 'annotation', 'icon-stamp': 'annotation',
 };
 
 /**
@@ -54,7 +73,9 @@ const DRAW_RAIL = [
   { id: 'shape', label: 'Shapes', icon: 'M4 6h11v8H4zM10 11h10v9H10z' },
   { id: 'forecasting', label: 'Forecast', icon: 'M4 18l5-6 4 3 7-9M20 6h-5M20 6v5' },
   { id: 'measurement', label: 'Measure', icon: 'M3 9l6-6 12 12-6 6zM8 8l2 2M11 5l2 2M5 11l2 2' },
+  { id: 'pattern', label: 'Patterns', icon: 'M3 17l4-7 4 5 3-8 3 6 4-3' },
   { id: 'annotation', label: 'Notes', icon: 'M6 5h12M12 5v14M9 19h6' },
+  { id: 'more', label: 'More', icon: 'M6 12h.01M12 12h.01M18 12h.01' },
 ];
 
 const DRAW_ACTIONS = [
@@ -62,6 +83,22 @@ const DRAW_ACTIONS = [
   { id: 'hide', label: 'Hide drawings', icon: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z' },
   { id: 'clear', label: 'Remove all drawings', icon: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6', danger: true },
 ];
+
+/**
+ * One tool's glyph, from the engine's own icon registry rather than a second set drawn here: it
+ * ships path data for every registered tool, so a tool added by a library upgrade arrives with
+ * its picture. Returns '' for anything it has no glyph for, which the flyout renders as a
+ * name-only row exactly as it always did. The markup is the library's own, not user input.
+ */
+function toolGlyph(toolId) {
+  const oac = window.OAC;
+  if (!oac?.iconSvg || !oac.drawingToolIcon?.(toolId)) return '';
+  try {
+    return oac.iconSvg(toolId, { size: 16, className: 'chart-flyout-icon' });
+  } catch (_) {
+    return '';
+  }
+}
 
 Object.assign(DashboardApp.prototype, {
   drawState() {
@@ -112,7 +149,9 @@ Object.assign(DashboardApp.prototype, {
 
     try {
       d.controller = new window.OAC.DrawingController(this.chart, {
-        magnet: true,
+        // 'weak' (2.x) pulls to an O/H/L/C only within a few pixels, so a click on open space
+        // lands where it was made; `true` is the old always-snap behaviour.
+        magnet: 'weak',
         defaultStyle: { color: d.colour },
       });
       this.restoreDrawings();
@@ -196,12 +235,18 @@ Object.assign(DashboardApp.prototype, {
     const controller = this.drawState().controller;
     if (!key || !controller) return;
 
-    let saved = [];
-    try { saved = JSON.parse(localStorage.getItem(key) || '[]'); } catch (_) { return; }
-    if (!Array.isArray(saved) || !saved.length) return;
+    // openalgo-charts 2.x persists `{ version, drawings }` where 1.x persisted a bare array;
+    // `fromJSON` accepts either, but the emptiness check in front of it cannot, so it goes
+    // through `migrateDrawings` - the one place both shapes are understood - first. Without
+    // that, every layout saved by 2.x reads as "not an array" and silently restores nothing.
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(key) || 'null'); } catch (_) { return; }
+    if (!saved) return;
+    const doc = window.OAC?.migrateDrawings ? window.OAC.migrateDrawings(saved) : null;
+    if (doc && !doc.drawings.length) return;
 
     try {
-      controller.fromJSON(saved);
+      controller.fromJSON(doc || saved);
     } catch (error) {
       console.error('Could not restore drawings:', error);
     }
@@ -216,11 +261,16 @@ Object.assign(DashboardApp.prototype, {
     this.renderDrawToolbar();
   },
 
+  /**
+   * 2.x holds a SELECTION, not one id: a shift-click or a body drag over several shapes can put
+   * more than one there, so this removes the list. `selected()` (the first id picked) would
+   * delete one of them and leave the rest looking selected but untouched.
+   */
   deleteSelectedDrawing() {
     const controller = this.drawState().controller;
-    const id = controller?.selected();
-    if (!id) return;
-    controller.remove(id);
+    const ids = controller?.selection() || [];
+    if (!ids.length) return;
+    controller.removeMany(ids);
     this.saveDrawings();
   },
 
@@ -333,12 +383,16 @@ Object.assign(DashboardApp.prototype, {
   /** Tools of one category, from the engine's own registry (see TOOL_CATEGORY above). */
   drawToolsIn(category) {
     if (!window.OAC?.registeredDrawingTools) return [];
-    return window.OAC.registeredDrawingTools().filter((t) => TOOL_CATEGORY[t.id] === category);
+    return window.OAC.registeredDrawingTools().filter((t) => this.drawToolCategory(t.id) === category);
   },
 
-  /** The category a tool belongs to, so the rail can show which button is live. */
+  /**
+   * The category a tool belongs to, so the rail can show which button is live. An unmapped tool
+   * is `more` rather than null: the engine's registry is the source of truth for what exists, and
+   * a tool with no home here is still a tool the user should be able to reach.
+   */
   drawToolCategory(type) {
-    return TOOL_CATEGORY[type] || null;
+    return TOOL_CATEGORY[type] || 'more';
   },
 
   /** Rail entries that still have a tool behind them, so no button opens an empty flyout. */
@@ -423,6 +477,7 @@ Object.assign(DashboardApp.prototype, {
       ${tools.map((t) => `
         <button type="button" class="chart-flyout-item ${d.tool === t.id ? 'active' : ''}"
                 data-tool="${t.id}">
+          ${toolGlyph(t.id)}
           <span>${Utils.escapeHTML(t.name)}</span>
           <span class="chart-flyout-anchors">${t.freehand ? 'drag' : t.points ? `${t.points} pt` : 'click'}</span>
         </button>`).join('')}`;
@@ -445,28 +500,65 @@ Object.assign(DashboardApp.prototype, {
   },
 });
 
+/**
+ * Drawing keyboard editing, mapped by the engine's own `keyToDrawingAction` rather than by a
+ * switch here. It is a pure function of (key event, context) -> action, so the chords stay in
+ * step with the engine's own definition of them, and the app gets the whole keymap instead of
+ * the three chords this used to hand-roll: undo/redo, copy/cut/paste, duplicate, delete, arrow
+ * nudge, and - while a tool is armed - cancel, finish and drop-last-anchor. The engine installs
+ * no listener of its own (only the host knows whether the chart has focus or a dialog is open),
+ * which is why the listener below is still ours.
+ */
 document.addEventListener('keydown', (e) => {
   const app = window.app;
   if (!app || app.currentView !== 'chart') return;
   const tag = (e.target?.tagName || '').toLowerCase();
-  if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+  const editingText = tag === 'input' || tag === 'select' || tag === 'textarea'
+    || e.target?.isContentEditable === true;
 
   const d = app.drawState();
-  if (!d.controller) return;
+  const c = d.controller;
+  if (!c || !window.OAC?.keyToDrawingAction) return;
 
-  if (e.key === 'Delete' || e.key === 'Backspace') {
-    if (d.controller.selected()) {
-      e.preventDefault();
-      app.deleteSelectedDrawing();
+  const placing = Boolean(c.activeTool());
+  const action = window.OAC.keyToDrawingAction(e, {
+    hasSelection: c.selection().length > 0,
+    hasTarget: Boolean(c.hovered()),
+    editingText,
+    placing,
+  });
+
+  // Escape with nothing being placed is not an editing chord, so the mapping returns null for
+  // it - but it is still this app's "put the rail back to the cursor" key.
+  if (!action) {
+    if (e.key === 'Escape' && !editingText) {
+      if (d.tool) { d.tool = null; c.setTool(null); app.renderDrawToolbar(); }
+      c.select(null);
     }
+    return;
   }
-  if (e.key === 'Escape') {
-    if (d.tool) { d.tool = null; d.controller.setTool(null); app.renderDrawToolbar(); }
-    d.controller.select(null);
-  }
-  if ((e.key === 'z' || e.key === 'Z') && (e.metaKey || e.ctrlKey)) {
-    e.preventDefault();
-    if (e.shiftKey) d.controller.redo(); else d.controller.undo();
-    app.saveDrawings();
+
+  e.preventDefault();
+  const ids = c.selection().length ? c.selection() : [c.hovered()].filter(Boolean);
+  // Every action that can change the drawing set is followed by a save; the ones that cannot
+  // (cancel, finish mid-placement) fall through to the pointerup-driven save like any gesture.
+  switch (action.type) {
+    case 'undo': c.undo(); app.saveDrawings(); break;
+    case 'redo': c.redo(); app.saveDrawings(); break;
+    case 'delete': c.removeMany(ids); app.saveDrawings(); break;
+    case 'duplicate': c.duplicate(ids); app.saveDrawings(); break;
+    case 'nudge': c.nudge(c.selection(), action.dx, action.dy); app.saveDrawings(); break;
+    // The clipboard is async (it goes through the OS clipboard, which can be refused); a refusal
+    // still lands in the engine's in-memory clipboard, so nothing is lost either way.
+    case 'copy': c.copy(ids); break;
+    case 'cut': c.cut(ids).then(() => app.saveDrawings()); break;
+    case 'paste': c.paste().then(() => app.saveDrawings()); break;
+    case 'cancel':
+      c.cancel();
+      if (d.tool) { d.tool = null; c.setTool(null); app.renderDrawToolbar(); }
+      break;
+    case 'finish': c.finish(); app.saveDrawings(); break;
+    case 'popAnchor': c.popAnchor(); break;
+    default: break;
   }
 });

@@ -17,6 +17,7 @@ import {
   parseIntSafe,
   parseBooleanSafe,
 } from '../utils/sanitizers.js';
+import { isContractExpired } from '../utils/underlying.util.js';
 
 class WatchlistSymbolService {
   async addSymbol(watchlistId, symbolData) {
@@ -58,13 +59,23 @@ class WatchlistSymbolService {
     return symbol;
   }
 
-  async updateSymbol(symbolId, updates) {
+  /**
+   * @param {number} symbolId
+   * @param {object} updates
+   * @param {number|null} watchlistId  When given, the symbol must belong to this watchlist.
+   *   The HTTP routes always pass it: they are addressed as
+   *   /watchlists/:id/symbols/:symbolId, and without the scope the :id segment was decorative -
+   *   any symbol id could be edited through any watchlist. These rows carry quantity and product
+   *   type, so that is a live trading parameter being changed under another watchlist's name.
+   *   Internal callers that already hold the row omit it.
+   */
+  async updateSymbol(symbolId, updates, watchlistId = null) {
     const existing = await db.get(
       'SELECT * FROM watchlist_symbols WHERE id = ?',
       [symbolId]
     );
 
-    if (!existing) {
+    if (!existing || (watchlistId !== null && Number(existing.watchlist_id) !== Number(watchlistId))) {
       throw new NotFoundError('Symbol');
     }
 
@@ -100,13 +111,14 @@ class WatchlistSymbolService {
     return symbol;
   }
 
-  async removeSymbol(symbolId) {
+  /** @param {number|null} watchlistId - see updateSymbol; scopes the delete to one watchlist. */
+  async removeSymbol(symbolId, watchlistId = null) {
     const existing = await db.get(
       'SELECT * FROM watchlist_symbols WHERE id = ?',
       [symbolId]
     );
 
-    if (!existing) {
+    if (!existing || (watchlistId !== null && Number(existing.watchlist_id) !== Number(watchlistId))) {
       throw new NotFoundError('Symbol');
     }
 
@@ -116,10 +128,13 @@ class WatchlistSymbolService {
   }
 
   async getSymbolsByWatchlist(watchlistId) {
-    return db.all(
+    const rows = await db.all(
       'SELECT * FROM watchlist_symbols WHERE watchlist_id = ? ORDER BY created_at',
       [watchlistId]
     );
+    // An expired contract stays listed so the operator can see and remove it, but is flagged:
+    // the UI disables it and the backend makes no broker calls for it.
+    return rows.map((row) => ({ ...row, is_expired: isContractExpired(row) }));
   }
 
   async findSymbolByWatchlist(watchlistId, exchange, symbol) {
@@ -150,12 +165,16 @@ class WatchlistSymbolService {
     const cleanUnderlying = sanitizeSymbol(underlying);
     if (!watchlistId || !cleanExchange || !cleanUnderlying) return null;
 
-    return db.get(
+    const rows = await db.all(
       `SELECT * FROM watchlist_symbols
        WHERE watchlist_id = ? AND exchange = ? AND (underlying_symbol = ? OR symbol = ?)
-       LIMIT 1`,
+       ORDER BY id`,
       [watchlistId, cleanExchange, cleanUnderlying, cleanUnderlying]
     );
+    // Prefer a live contract: once the operator adds the new month's future, a strategy anchored
+    // by underlying rolls onto it instead of staying stuck on the expired row. With only expired
+    // rows, the expired one is returned so the caller can say why it cannot trade.
+    return rows.find((row) => !isContractExpired(row)) || rows[0] || null;
   }
 
   async searchSymbolsByWatchlist(filters = {}) {
@@ -302,12 +321,42 @@ class WatchlistSymbolService {
       'max_margin_per_trade',
     ];
 
+    // On a partial update, a field that was not sent is left alone. It used to be parsed first -
+    // parseFloatSafe(undefined, null) is null - and written, so editing only a target through the
+    // API wiped the stored stop-loss, trailing stop and every other exit setting.
+    const sent = (field) => !isPartial || data[field] !== undefined;
     for (const field of numericalFields) {
-      applyOrNull(field, parseFloatSafe(data[field], null));
+      if (sent(field)) applyOrNull(field, parseFloatSafe(data[field], null));
     }
 
-    applyOrNull('strike', parseFloatSafe(data.strike, null));
-    applyOrNull('tick_size', parseFloatSafe(data.tick_size, null));
+    // Unit of each mode's target/stop/trailing values: POINTS (default) or PERCENT of entry.
+    for (const field of ['exit_unit_direct', 'exit_unit_futures', 'exit_unit_options']) {
+      if (data[field] !== undefined) {
+        normalized[field] = String(data[field]).trim().toUpperCase() === 'PERCENT' ? 'PERCENT' : 'POINTS';
+      } else if (!isPartial) {
+        normalized[field] = 'POINTS';
+      }
+    }
+
+    if (sent('strike')) applyOrNull('strike', parseFloatSafe(data.strike, null));
+    if (sent('tick_size')) applyOrNull('tick_size', parseFloatSafe(data.tick_size, null));
+
+    // A partial update changes ONLY the fields it was given. Everything above fills defaults for a
+    // full insert (lot_size 1, MIS, tradable_* off, is_enabled on, symbol_type null...), and those
+    // defaults used to be written on every partial update too: updateSymbol(id, { is_enabled: 0 })
+    // - which strategy exits call - reset the row's lot size, product, contract type and tradable
+    // flags, and an API edit of one exit value cleared the others.
+    if (isPartial) {
+      const aliases = {
+        lot_size: ['lot_size', 'lotsize', 'lotSize'],
+        symbol_type: ['symbol_type', 'instrumenttype'],
+        instrumenttype: ['instrumenttype', 'symbol_type'],
+      };
+      for (const key of Object.keys(normalized)) {
+        const sources = aliases[key] || [key];
+        if (!sources.some((k) => data[k] !== undefined)) delete normalized[key];
+      }
+    }
 
     return normalized;
   }

@@ -81,3 +81,22 @@ test('a same-day NFO/MCX expiry stays valid all day - only crypto has an intrada
   const lateInTheDay = new Date(Date.UTC(2026, 6, 27, 18, 0, 0)); // 23:30 IST
   assert.deepStrictEqual(upcomingExpiries(rows, lateInTheDay), ['27-JUL-26', '28-JUL-26']);
 });
+
+/**
+ * Delta Exchange's instruments arrive as DD-MMM-YY ('01-OCT-26'), the same format as NFO. The
+ * cutoff used to key off the YYYY-MM-DD format alone, so it never applied to real crypto rows and
+ * today's settled BTC/ETH options were still offered after 5:30 PM. The caller now says it is
+ * crypto.
+ */
+test('crypto options in DD-MMM-YY format still lapse at 5:30 PM IST when flagged crypto', () => {
+  const rows = [{ expiry: '01-OCT-26' }, { expiry: '02-OCT-26' }];
+  const pastBuffer = new Date(Date.UTC(2026, 9, 1, 12, 20, 0)); // 17:50 IST
+  assert.deepStrictEqual(upcomingExpiries(rows, pastBuffer, { crypto: true }), ['02-OCT-26']);
+  assert.deepStrictEqual(upcomingExpiries(rows, pastBuffer), ['01-OCT-26', '02-OCT-26'], 'NFO/MCX same-day expiry holds all day');
+});
+
+test('just after midnight IST, yesterday\'s expiry is gone - "today" is the IST date, not UTC', () => {
+  const rows = [{ expiry: '29-SEP-26' }, { expiry: '30-SEP-26' }];
+  const justAfterMidnightIST = new Date(Date.UTC(2026, 8, 29, 18, 35, 0)); // 00:05 IST on 30 Sep
+  assert.deepStrictEqual(upcomingExpiries(rows, justAfterMidnightIST), ['30-SEP-26']);
+});

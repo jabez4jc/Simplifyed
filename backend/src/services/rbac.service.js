@@ -39,6 +39,12 @@ class RbacService {
     if (!role) {
       throw new ValidationError('Role not found');
     }
+    // Without this the INSERT fails on the user_roles -> users foreign key, which surfaces as a
+    // 500 "Database error occurred" for what is really "no such user".
+    const user = await db.get(`SELECT id FROM users WHERE id = ?`, [userId]);
+    if (!user) {
+      throw new NotFoundError('User');
+    }
     await db.run(
       `INSERT OR REPLACE INTO user_roles (user_id, role_id, assigned_by)
        VALUES (?, ?, ?)`,
@@ -53,15 +59,32 @@ class RbacService {
       throw new ConflictError('A user with this email already exists');
     }
 
+    // Resolve the role BEFORE creating the account. Creating first and assigning after meant an
+    // unknown role name left a committed, role-less user behind: the admin saw an error, so did
+    // not know the account existed, and retrying with the right role then failed forever on
+    // "a user with this email already exists".
+    const role = await db.get(`SELECT id FROM roles WHERE name = ?`, [roleName]);
+    if (!role) {
+      throw new ValidationError('Role not found');
+    }
+
     const passwordHash = await hashPassword(password);
-    const result = await db.run(
-      `INSERT INTO users (email, is_admin, password_hash) VALUES (?, 0, ?)`,
-      [normalizedEmail, passwordHash]
-    );
 
-    await this.assignRole(result.lastID, roleName, createdBy);
+    // One unit of work: an account without a role is not a usable account, so it must not be a
+    // reachable state.
+    const id = await db.transaction(async (tx) => {
+      const result = await tx.run(
+        `INSERT INTO users (email, is_admin, password_hash) VALUES (?, 0, ?)`,
+        [normalizedEmail, passwordHash]
+      );
+      await tx.run(
+        `INSERT OR REPLACE INTO user_roles (user_id, role_id, assigned_by) VALUES (?, ?, ?)`,
+        [result.lastID, role.id, createdBy || null]
+      );
+      return result.lastID;
+    });
 
-    return { id: result.lastID, email: normalizedEmail, role: roleName };
+    return { id, email: normalizedEmail, role: roleName };
   }
 
   async resetPassword(userId, newPassword) {
@@ -80,16 +103,27 @@ class RbacService {
     if (!role) {
       throw new ValidationError('Role not found');
     }
+    // The route reads `permissions` straight off the request body, so this can be any JSON value.
+    // A string or a number reached .map() and threw a TypeError, answering a malformed request
+    // with a 500.
+    if (!Array.isArray(permissionKeys)) {
+      throw new ValidationError('permissions must be an array of permission keys');
+    }
+
     const existingPerms = await db.all(`SELECT id, key FROM permissions WHERE key IN (${permissionKeys.map(() => '?').join(',') || "''"})`, permissionKeys);
     const permIds = new Set(existingPerms.map(p => p.id));
 
-    await db.run(`DELETE FROM role_permissions WHERE role_id = ?`, [role.id]);
-    for (const id of permIds) {
-      await db.run(
-        `INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?)`,
-        [role.id, id]
-      );
-    }
+    // Atomic: this DELETEs the role's whole permission set before rebuilding it, so a failure
+    // partway through would leave the role stripped of access it is supposed to have.
+    await db.transaction(async (tx) => {
+      await tx.run(`DELETE FROM role_permissions WHERE role_id = ?`, [role.id]);
+      for (const id of permIds) {
+        await tx.run(
+          `INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?)`,
+          [role.id, id]
+        );
+      }
+    });
   }
 }
 

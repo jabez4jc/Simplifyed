@@ -268,8 +268,10 @@ router.post('/batch', requirePermission('orders.place'), async (req, res, next) 
       throw new ValidationError('request_id must be a non-empty string');
     }
 
-    if (!Array.isArray(orders)) {
-      throw new ValidationError('orders must be an array');
+    if (!Array.isArray(orders) || orders.length === 0) {
+      // An empty array is a caller that built the request wrongly, not a batch that succeeded
+      // with nothing in it. Answering 201 told them orders had been placed when none were.
+      throw new ValidationError('orders must be a non-empty array');
     }
 
     if (requestId) {

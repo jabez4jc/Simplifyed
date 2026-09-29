@@ -4,6 +4,7 @@
  */
 
 import { parseFloatSafe } from './sanitizers.js';
+import { isCryptoBroker } from './broker-type.util.js';
 
 export function normalizeBrokerKey(broker) {
   return String(broker || '')
@@ -63,8 +64,14 @@ export function buildMarketOrderSupportMap(value) {
   return map;
 }
 
+/**
+ * An explicit `brokerage.market_order_support` entry wins. Unlisted crypto brokers default to
+ * MARKET (Delta Exchange accepts it; a LIMIT is used only when the caller names a price); unlisted
+ * Indian brokers default to no MARKET - and SEBI's limit-only rule applies on top regardless.
+ */
 export function resolveMarketOrderSupport(broker, map) {
   const normalizedKey = normalizeBrokerKey(broker);
   if (!normalizedKey) return false;
-  return !!(map && map[normalizedKey] === true);
+  if (map && typeof map[normalizedKey] === 'boolean') return map[normalizedKey];
+  return isCryptoBroker(normalizedKey);
 }

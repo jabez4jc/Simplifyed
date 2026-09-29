@@ -15,6 +15,7 @@ import { ValidationError } from '../../core/errors.js';
 import db from '../../core/database.js';
 import riskControlsService from '../../services/risk-controls.service.js';
 import { resolveOptionsUnderlyingKey, upcomingExpiries } from '../../utils/underlying.util.js';
+import { isCryptoExchange } from '../../utils/broker-type.util.js';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -105,13 +106,13 @@ router.get('/option-legs', VIEW, async (req, res, next) => {
     }
 
     // Nearest expiry on or after today unless one is named. Formats differ by exchange
-    // (DD-MMM-YY on NFO/BFO/MCX, YYYY-MM-DD on CRYPTO) - handled in underlying.util.js.
+    // (DD-MMM-YY everywhere, YYYY-MM-DD on some crypto feeds); crypto also lapses at 5:30 PM IST.
     const rows = await db.all(
       `SELECT DISTINCT expiry FROM instruments
         WHERE UPPER(underlying_key) = ? AND instrumenttype IN ('CE','PE') AND expiry IS NOT NULL`,
       [key]
     );
-    const upcoming = upcomingExpiries(rows);
+    const upcoming = upcomingExpiries(rows, new Date(), { crypto: isCryptoExchange(row.exchange) });
     const expiry = wantExpiry || upcoming[0] || null;
 
     if (!expiry) {
@@ -273,7 +274,7 @@ router.get('/', VIEW, async (req, res, next) => {
         timeframe,
         candles: result.candles,
         count: result.candles.length,
-        // stale = the broker could not be reached (blackout / unhealthy instance) and these
+        // stale = the broker could not be reached (unreachable instance) and these
         // candles came from cache. The UI says so rather than implying the data is live.
         stale: result.stale,
         source: result.source,

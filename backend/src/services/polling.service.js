@@ -8,9 +8,41 @@ import { config } from '../core/config.js';
 import instanceService from './instance.service.js';
 import orderService from './order.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
-import marketDataFeedService from './market-data-feed.service.js';
+import marketDataFeedService, { ORDER_STREAM_SWEEP_MS } from './market-data-feed.service.js';
+import openalgoWsService from './openalgo-ws.service.js';
+import marketCalendarService from './market-calendar.service.js';
+import brokerUnitsService from './broker-units.service.js';
 import { ExternalAPIError } from '../core/errors.js';
-import { isGeneralEndpointBlackout } from './instance-health.service.js';
+
+/**
+ * Order status is push-first (OpenAlgo WebSocket `order_update`, api-documentation/v1/
+ * websockets.md) with REST as the fallback:
+ *
+ *  - Each pushed update is applied to the stored order and the cached orderbook at once.
+ *  - While an instance's order stream is live (subscribe_orders acknowledged), the regular
+ *    REST orderbook sync is skipped, except for a sweep every ORDER_STREAM_SWEEP_MS in case a
+ *    push was lost in transit.
+ *  - When the stream comes up (startup or after a reconnect) one REST sync runs straight away,
+ *    for whatever changed while it was down. While it is down, the regular sync runs as it
+ *    always did.
+ */
+function wireOrderStream(pollingService) {
+  openalgoWsService.on('order_update', async ({ instanceId, order }) => {
+    try {
+      // Pushed updates skip openalgoClient.request, so convert broker lot units here too.
+      const instance = await instanceService.getInstanceById(instanceId);
+      await brokerUnitsService.fromBrokerRow(instance, order, openalgoClient);
+      marketDataFeedService.applyOrderUpdate(instanceId, order);
+      await orderService.applyOrderUpdate(instanceId, order);
+    } catch (error) {
+      log.warn('Failed to apply pushed order update', { instanceId, orderid: order?.orderid, error: error.message });
+    }
+  });
+  openalgoWsService.on('order_stream', ({ instanceId, live }) => {
+    log.info(live ? 'Order updates now by push; REST order polling is the fallback' : 'Order push stream down; REST order polling resumes', { instanceId });
+    if (live) pollingService.syncOrdersNow(instanceId);
+  });
+}
 
 class PollingService {
   constructor() {
@@ -23,6 +55,24 @@ class PollingService {
     this.activeWatchlistId = null;
     this.instanceIntervalMs = config.polling.instanceInterval;
     this.healthCheckIntervalMs = config.polling.healthCheckInterval || 60000;
+    this.lastOrderSyncAt = new Map(); // instanceId -> ms, for the sweep while the stream is live
+    wireOrderStream(this);
+  }
+
+  /** One REST order sync now (the catch-up when a push stream comes up). */
+  async syncOrdersNow(instanceId) {
+    try {
+      await orderService.syncOrderStatus(instanceId);
+      this.lastOrderSyncAt.set(instanceId, Date.now());
+    } catch (error) {
+      log.warn('Order catch-up sync failed', { instanceId, error: error.message });
+    }
+  }
+
+  /** REST order sync on this poll tick: always without a live push stream, else only the sweep. */
+  _orderSyncDue(instanceId) {
+    if (!openalgoWsService.isOrderStreamLive(instanceId)) return true;
+    return Date.now() - (this.lastOrderSyncAt.get(instanceId) || 0) >= ORDER_STREAM_SWEEP_MS;
   }
 
   /**
@@ -89,9 +139,6 @@ class PollingService {
    */
   async pollAllInstances() {
     try {
-      if (isGeneralEndpointBlackout()) {
-        return;
-      }
       const startTime = Date.now();
 
       // Get all active instances
@@ -148,14 +195,22 @@ class PollingService {
         return { skipped: true, reason: 'unhealthy' };
       }
 
+      // Nothing moves after hours; manual refresh (refreshInstance) is not gated
+      if (!(await marketCalendarService.isInstanceMarketOpen(instance))) {
+        return { skipped: true, reason: 'market_closed' };
+      }
+
       // Update analyzer status (15s cadence)
       await instanceService.refreshAnalyzerStatus(instanceId);
 
       // Update P&L
       await instanceService.updatePnLData(instanceId);
 
-      // Sync order status
-      await orderService.syncOrderStatus(instanceId);
+      // Sync order status - REST only when no live push stream covers it (see wireOrderStream)
+      if (this._orderSyncDue(instanceId)) {
+        await orderService.syncOrderStatus(instanceId);
+        this.lastOrderSyncAt.set(instanceId, Date.now());
+      }
 
       // Get updated instance
       const updated = await instanceService.getInstanceById(instanceId);
@@ -241,9 +296,6 @@ class PollingService {
    */
   async pollHealthChecks() {
     try {
-      if (isGeneralEndpointBlackout()) {
-        return;
-      }
       const startTime = Date.now();
 
       // Only active instances need health checks - an intentionally disabled instance isn't

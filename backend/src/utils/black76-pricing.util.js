@@ -161,6 +161,35 @@ export function normalizeLeg(raw) {
     volume: pick(raw, ['volume', 'vol', 'traded_volume', 'volumeTraded', 'qty_traded']),
     oi: pick(raw, ['oi', 'open_interest', 'openInterest']),
     lotsize: pick(raw, ['lotsize', 'lot_size', 'lotSize']),
+    // Present only when /optionchain was asked for with_greeks (opengreeks, server-side).
+    implied_volatility: raw.implied_volatility ?? null,
+    delta: raw.delta ?? null,
+    gamma: raw.gamma ?? null,
+    theta: raw.theta ?? null,
+    vega: raw.vega ?? null,
+  };
+}
+
+/**
+ * The leg's server-computed Greeks (OpenAlgo /optionchain with_greeks, which runs opengreeks'
+ * Black-76 core) in this module's own units, or null when the leg has none. opengreeks follows
+ * vollib conventions - IV in percent, vega per 1 vol point, theta per day - where this module
+ * reports IV as a fraction and vega per 1.00 of vol, so the chain renders the same scale either
+ * way.
+ */
+export function serverGreeksForLeg(leg) {
+  const iv = Number(leg?.implied_volatility);
+  if (leg?.implied_volatility == null || !Number.isFinite(iv) || iv <= 0) return null;
+  const num = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Number(v));
+  const vega = num(leg.vega);
+  return {
+    iv: iv / 100,
+    greeks: {
+      delta: num(leg.delta),
+      gamma: num(leg.gamma),
+      theta: num(leg.theta),
+      vega: vega === null ? null : vega * 100,
+    },
   };
 }
 
@@ -247,6 +276,16 @@ export function buildGreeksForRows(rows, meta, forwardSource = 'carry') {
     const processLeg = (leg, isCall) => {
       if (!leg) return null;
       const enrichedLeg = fillMissingLtp({ ...leg });
+      const server = serverGreeksForLeg(enrichedLeg);
+      if (server) {
+        const g = server.greeks;
+        return {
+          ...enrichedLeg,
+          iv: round3(server.iv),
+          greeks: { delta: round3(g.delta), gamma: round3(g.gamma), theta: round3(g.theta), vega: round3(g.vega) },
+        };
+      }
+      // Fallback for an OpenAlgo without with_greeks, or the DB-built chain.
       const ltpNum = Number(enrichedLeg.ltp || 0);
       let iv = null;
       let greeks = null;

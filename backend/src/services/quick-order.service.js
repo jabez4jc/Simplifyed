@@ -22,6 +22,7 @@ import limitPriceService from './limit-price.service.js';
 import pnlSnapshotService from './pnl-snapshot.service.js';
 import brokerCapabilitiesService from './broker-capabilities.service.js';
 import { ValidationError, NotFoundError } from '../core/errors.js';
+import { contractExpiry, isContractExpired } from '../utils/underlying.util.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
 import instrumentsService from './instruments.service.js';
 import { toISTDate, toISTISOString } from '../utils/time.js';
@@ -170,6 +171,10 @@ class QuickOrderService {
             `Enable futures trading in the watchlist symbol settings or map it to a futures instrument.`
         );
       }
+    }
+
+    if (isContractExpired(symbol)) {
+      throw new ValidationError(`${symbol.exchange}:${symbol.symbol} expired on ${contractExpiry(symbol)} - it no longer exists at the broker`);
     }
 
     // Get instances (single or all assigned)
@@ -826,8 +831,9 @@ class QuickOrderService {
       const underlying = this._getFuturesUnderlying(symbol);
 
       if (expiry) {
+        // A perpetual (BTCUSDFUT) has no expiry: the row IS the contract, whatever was sent.
         const matchesWatchlistExpiry = symbol.symbol_type === 'FUTURES'
-          && this._expiryMatchesSymbol(expiry, symbol);
+          && (!contractExpiry(symbol) || this._expiryMatchesSymbol(expiry, symbol));
 
         if (matchesWatchlistExpiry) {
           finalSymbol = symbol.symbol;
@@ -1031,22 +1037,25 @@ class QuickOrderService {
       };
     }
 
-    // Final product enforcement (force NRML for any derivative/futures trade)
+    // Final product enforcement (force NRML for any derivative/futures trade). An EQUITY trade
+    // keeps the chosen product: labelling it FUTURES here sent every watchlist stock order as
+    // NRML, which NSE/BSE reject for the equity segment.
     const finalProduct = this._resolveProductForOrder(product, tradeMode, {
-      symbol_type: 'FUTURES',
+      symbol_type: tradeMode === 'EQUITY' ? (symbol.symbol_type || 'EQUITY') : 'FUTURES',
       exchange: finalExchange,
     });
 
     const orderType = await this._resolveOrderTypeForInstance(instance);
-    const orderPrice = orderType === 'LIMIT'
-      ? (await limitPriceService.resolveLimitPrice({
+    const { pricetype: effectiveOrderType, price: orderPrice } = orderType === 'LIMIT'
+      ? await limitPriceService.resolveMarketablePricing({
+        instanceId: instance?.id,
         exchange: finalExchange,
         symbol: finalSymbol,
         side: algoAction,
         bufferPoints: symbol.limit_buffer_points || 0,
         tickSize: resolvedTickSize,
-      })).price
-      : 0;
+      })
+      : { pricetype: orderType, price: 0 };
 
     const orderPayload = orderPayloadFactory.buildEquityOrder({
       strategy: symbol.watchlist_name || 'default',
@@ -1056,7 +1065,7 @@ class QuickOrderService {
       quantity: orderQuantity,
       position_size: targetPosition,
       product: finalProduct,
-      pricetype: orderType,
+      pricetype: effectiveOrderType,
       price: orderPrice,
     });
 
@@ -1121,7 +1130,7 @@ class QuickOrderService {
       trade_mode: tradeMode,
       quantity: tradeQuantity,
       product: finalProduct,
-      order_type: orderType,
+      order_type: effectiveOrderType,
       price: orderPayload.price,
       order_id: orderResult.orderid,
       status: orderResult.status,
@@ -1337,6 +1346,9 @@ class QuickOrderService {
             position_size: targetStrikePosition,
             currentPosition: currentStrikePosition,
             strike: parsed.strike,
+            // REDUCE/INCREASE adjusts an EXISTING position, so it trades in that position's
+            // product - an MIS position reduced "as NRML" would open an opposite NRML position.
+            product: this._normalizeProduct(position.product) || null,
           });
         } else {
           log.debug('Skipping position - no change needed', {
@@ -1372,7 +1384,7 @@ class QuickOrderService {
 
       const orderType = await this._resolveOrderTypeForInstance(instance);
       const orderPromises = ordersToPlace.map(async order => {
-        const floatProduct = this._resolveProductForOrder(
+        const floatProduct = order.product || this._resolveProductForOrder(
           product,
           'OPTIONS',
           { symbol_type: 'OPTIONS', exchange: derivativeExchange }
@@ -1381,15 +1393,16 @@ class QuickOrderService {
         // Capture fallback entry price per strike (best effort)
         this._captureFallbackEntryPrice(instance, derivativeExchange, order.symbol).catch(() => {});
 
-        const orderPrice = orderType === 'LIMIT'
-          ? (await limitPriceService.resolveLimitPrice({
+        const { pricetype: effectiveOrderType, price: orderPrice } = orderType === 'LIMIT'
+          ? await limitPriceService.resolveMarketablePricing({
+            instanceId: instance?.id,
             exchange: derivativeExchange,
             symbol: order.symbol,
             side: order.action,
             bufferPoints,
             tickSize: optionSymbol?.tick_size || symbol.tick_size,
-          })).price
-          : 0;
+          })
+          : { pricetype: orderType, price: 0 };
 
         const orderDataToSend = orderPayloadFactory.buildOptionsOrder({
           strategy: symbol.watchlist_name || 'default',
@@ -1399,7 +1412,7 @@ class QuickOrderService {
           quantity: order.quantity,
           position_size: order.position_size,
           product: floatProduct,
-          pricetype: orderType,
+          pricetype: effectiveOrderType,
           price: orderPrice,
         });
 
@@ -1454,7 +1467,7 @@ class QuickOrderService {
           options_leg: symbol.options_strike_selection,
           quantity: order.quantity,
           product: floatProduct,
-          order_type: orderType,
+          order_type: effectiveOrderType,
           price: orderDataToSend.price,
           resolved_symbol: optionSymbol.symbol,
           strike_price: order.strike,
@@ -1649,15 +1662,16 @@ class QuickOrderService {
     const repeatUntilClosed = this._shouldRepeatToTarget(currentPosition, targetPosition);
 
     // Prepare order data for OpenAlgo
-    const orderPrice = orderType === 'LIMIT'
-      ? (await limitPriceService.resolveLimitPrice({
+    const { pricetype: effectiveOrderType, price: orderPrice } = orderType === 'LIMIT'
+      ? await limitPriceService.resolveMarketablePricing({
+        instanceId: instance?.id,
         exchange: derivativeExchange,
         symbol: optionSymbol.symbol,
         side: algoAction,
         bufferPoints,
         tickSize: optionSymbol.tick_size || symbol.tick_size,
-      })).price
-      : 0;
+      })
+      : { pricetype: orderType, price: 0 };
 
     const orderDataToSend = orderPayloadFactory.buildOptionsOrder({
       strategy: symbol.watchlist_name || 'default',
@@ -1667,7 +1681,7 @@ class QuickOrderService {
       quantity,
       position_size: targetPosition,
       product: finalProduct,
-      pricetype: orderType,
+      pricetype: effectiveOrderType,
       price: orderPrice,
     });
 
@@ -1719,7 +1733,7 @@ class QuickOrderService {
       options_leg: symbol.options_strike_selection,
       quantity,
       product: finalProduct,
-      order_type: orderType,
+      order_type: effectiveOrderType,
       price: orderDataToSend.price,
       resolved_symbol: optionSymbol.symbol,
       strike_price: strike,
@@ -1902,7 +1916,17 @@ class QuickOrderService {
       let targetSymbol = symbol.symbol;
       let targetExchange = symbol.exchange;
 
-      if (tradeMode === 'FUTURES') {
+      // The row is itself the futures contract to close: a perpetual (no expiry - BTCUSDFUT
+      // used to be "resolved" to a dated BTC future that does not exist, so it could be bought
+      // but never exited), or a dated future when no other expiry was asked for.
+      const rowIsTheContract = tradeMode === 'FUTURES'
+        && (symbol.symbol_type === 'FUTURES' || /FUT$/i.test(symbol.symbol || ''))
+        && (!contractExpiry(symbol) || !userExpiry || this._expiryMatchesSymbol(userExpiry, symbol));
+
+      if (rowIsTheContract) {
+        targetSymbol = symbol.symbol;
+        targetExchange = symbol.exchange;
+      } else if (tradeMode === 'FUTURES') {
         const derivativeExchange = symbol.symbol_type === 'FUTURES'
           ? symbol.exchange
           : derivativeResolutionService.getDerivativeExchange(symbol.exchange);
@@ -1955,11 +1979,13 @@ class QuickOrderService {
         targetExchange = derivativeExchange;
       }
 
+      // Every product: an EXIT closes the symbol. Filtered by the requested product, an EXIT
+      // sent as NRML found no MIS position and reported "No open positions to close".
       const positions = await this._getOpenPositionsForSymbol(
         instance,
         targetSymbol,
         targetExchange,
-        product
+        null
       );
 
       positionsToClose = positions;
@@ -1981,8 +2007,9 @@ class QuickOrderService {
 
         // For EXIT/EXIT_ALL, position_size should be 0 to close completely
         const strategyTag = orderParams.strategy || symbol.watchlist_name || 'default';
-        const orderPrice = orderType === 'LIMIT'
-          ? (await limitPriceService.resolveLimitPrice({
+        const { pricetype: effectiveOrderType, price: orderPrice } = orderType === 'LIMIT'
+          ? await limitPriceService.resolveMarketablePricing({
+            instanceId: instance?.id,
             exchange: position.exchange,
             symbol: position.symbol,
             side: closeAction,
@@ -1990,17 +2017,20 @@ class QuickOrderService {
             tickSize: symbol.tick_size,
             bypassSpreadCheck: true,
             forceLtp: true,
-          })).price
-          : 0;
+          })
+          : { pricetype: orderType, price: 0 };
 
+        // Close in the position's own product - brokers track MIS and NRML separately, so a
+        // close in the other product would open an opposite position instead of flattening.
+        const closeProduct = this._normalizeProduct(position.product) || product;
         const orderPayload = orderPayloadFactory.buildExitOrder({
           strategy: strategyTag,
           exchange: position.exchange,
           symbol: position.symbol,
           action: closeAction,
           quantity: closeQuantity,
-          product,
-          pricetype: orderType,
+          product: closeProduct,
+          pricetype: effectiveOrderType,
           price: orderPrice,
         });
         const orderResult = await orderPlacementService.placeSmartOrder(instance, orderPayload, {
@@ -2037,8 +2067,8 @@ class QuickOrderService {
           action: closeAction,
           trade_mode: tradeMode,
           quantity: closeQuantity,
-          product,
-          order_type: orderType,
+          product: closeProduct,
+          order_type: effectiveOrderType,
           price: orderPayload.price,
           order_id: orderResult.orderid,
           status: orderResult.status,
@@ -2055,15 +2085,30 @@ class QuickOrderService {
           success: false,
           symbol: position.symbol,
           error: error.message,
+          statusCode: error.statusCode,
         });
       }
     }
 
     this._invalidateInstanceCaches(instance.id);
 
+    // A close that failed is a failed exit. It used to come back as "Closed 0 position(s)" with
+    // the caller reporting success - the UI showed the exit done, a strategy leg was marked
+    // closed, and auto-exit stood down for its cooldown while the position stayed open.
+    const failures = closeResults.filter((r) => !r.success);
+    if (failures.length > 0) {
+      const err = new Error(
+        `Could not close ${failures.length} of ${closeResults.length} position(s): `
+        + failures.map((f) => `${f.symbol}: ${f.error}`).join('; ')
+      );
+      err.statusCode = failures[0].statusCode;
+      err.details = closeResults;
+      throw err;
+    }
+
     return {
-      message: `Closed ${closeResults.filter(r => r.success).length} position(s)`,
-      closed_count: closeResults.filter(r => r.success).length,
+      message: `Closed ${closeResults.length} position(s)`,
+      closed_count: closeResults.length,
       details: closeResults,
     };
   }
@@ -2122,8 +2167,9 @@ class QuickOrderService {
         const closeAction = position.quantity > 0 ? 'SELL' : 'BUY';
         const closeQuantity = Math.abs(position.quantity);
 
-        const orderPrice = orderType === 'LIMIT'
-          ? (await limitPriceService.resolveLimitPrice({
+        const { pricetype: effectiveOrderType, price: orderPrice } = orderType === 'LIMIT'
+          ? await limitPriceService.resolveMarketablePricing({
+            instanceId: instance?.id,
             exchange: position.exchange,
             symbol: position.symbol,
             side: closeAction,
@@ -2131,8 +2177,8 @@ class QuickOrderService {
             tickSize: null,
             bypassSpreadCheck: true,
             forceLtp: true,
-          })).price
-          : 0;
+          })
+          : { pricetype: orderType, price: 0 };
 
         const orderPayload = orderPayloadFactory.buildExitOrder({
           strategy: strategy || 'default',
@@ -2141,7 +2187,7 @@ class QuickOrderService {
           action: closeAction,
           quantity: closeQuantity,
           product,
-          pricetype: orderType,
+          pricetype: effectiveOrderType,
           price: orderPrice,
         });
         await orderPlacementService.placeSmartOrder(instance, orderPayload, {
@@ -3117,6 +3163,9 @@ class QuickOrderService {
     }
 
     if (action === 'INCREASE_CE' || action === 'INCREASE_PE') {
+      // Writer action: buy back part of a SHORT. It has nothing to do on a long - the old
+      // min(0, current + Qstep) turned a long of +65 into a target of 0 and squared it off.
+      if (current >= 0) return current;
       const target = current + Qstep;  // Less negative (reduce short)
       return writerGuard ? Math.min(0, target) : target;  // Clamp at 0 if guard enabled
     }
@@ -3127,6 +3176,9 @@ class QuickOrderService {
     }
 
     if (action === 'REDUCE_CE' || action === 'REDUCE_PE') {
+      // Buyer action: sell part of a LONG. Nothing to do on a short - max(0, current - Qstep)
+      // would have turned a short of -65 into 0 and squared it off.
+      if (current <= 0) return current;
       return Math.max(0, current - Qstep);  // Reduce longs, don't go negative
     }
 
@@ -3587,8 +3639,11 @@ class QuickOrderService {
     const isDerivativeSymbol = symbolType === 'FUTURES' || symbolType === 'OPTIONS';
     const isDerivativeExchange = ['NFO', 'BFO', 'MCX'].includes(exch);
 
+    // F&O takes MIS (intraday) or NRML (carry-forward) - the operator's choice is kept. Only CNC,
+    // which is delivery and does not exist for derivatives, becomes NRML. Every F&O order used to
+    // be forced to NRML, overriding an MIS choice (and its intraday margin and auto square-off).
     if (isDerivativeTrade || isDerivativeSymbol || isDerivativeExchange) {
-      return 'NRML';
+      return normalizedProduct === 'MIS' ? 'MIS' : 'NRML';
     }
 
     return normalizedProduct;

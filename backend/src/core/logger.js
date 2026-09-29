@@ -79,7 +79,10 @@ function pushNotification(level, message, meta = {}) {
 const allowedMetaKeys = new Set([
   'trace_id', 'user_id', 'instance_id', 'instance_name', 'order_id', 'event', 'status',
   'duration_ms', 'endpoint', 'method', 'path', 'symbol', 'exchange',
-  'error_code', 'error_message', 'reason', 'count', 'size', 'host', 'port', 'chat_id'
+  'error_code', 'error_message', 'reason', 'count', 'size', 'host', 'port', 'chat_id',
+  // camelCase spellings most services use - without these, every rejection logged its
+  // endpoint and nothing about which instance failed or why
+  'error', 'statusCode', 'instanceId', 'instanceName', 'instance'
 ]);
 
 const kvFormatter = winston.format.printf(({ timestamp, level, message, ...rest }) => {

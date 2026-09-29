@@ -19,7 +19,7 @@ class RiskControlsService {
     }
 
     const mode = this._determineMode(configEntry, symbol);
-    const thresholds = this._getThresholds(configEntry, mode);
+    const thresholds = this._getThresholds(configEntry, mode, entryPrice);
     if (!thresholds) {
       return { mode, reason: null };
     }
@@ -239,8 +239,16 @@ class RiskControlsService {
     return { instanceId, exchange, symbol, side };
   }
 
-  _getThresholds(entry, mode) {
-    const normalizeValue = (value) => (typeof value === 'number' && value > 0 ? value : null);
+  /**
+   * Thresholds for one trade mode, always in points. A mode whose unit is PERCENT
+   * (exit_unit_<mode>, migration 064) has each value taken as a percentage of the entry price:
+   * 1.5% on an entry of 200 is 3 points. POINTS (the default) is used as-is.
+   */
+  _getThresholds(entry, mode, entryPrice = null) {
+    const percent = String(entry[`exit_unit_${mode}`] || 'POINTS').toUpperCase() === 'PERCENT';
+    if (percent && !(Number(entryPrice) > 0)) return null; // a percentage needs an entry price
+    const toPoints = (value) => (percent ? (value * Number(entryPrice)) / 100 : value);
+    const normalizeValue = (value) => (typeof value === 'number' && value > 0 ? toPoints(value) : null);
     const targetPoints = normalizeValue(entry[`target_points_${mode}`]);
     const stoplossPoints = normalizeValue(entry[`stoploss_points_${mode}`]);
     const trailingPoints = normalizeValue(entry[`trailing_stoploss_points_${mode}`]);

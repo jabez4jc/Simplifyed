@@ -222,8 +222,12 @@ class StrategyBuilder {
       ? `<span class="watchlist-card-compact__badge info">Webhook</span>`
       : '';
     const isExpanded = this.expandedStrategies.has(strategy.id);
+    const expired = Boolean(strategy.anchor_expired);
+    const expiredBadge = expired
+      ? `<span class="badge-compact badge-expired" title="${Utils.escapeHTML(strategy.anchor_symbol || '')} has expired - roll the anchor to a live contract">Anchor expired</span>`
+      : '';
     return `
-      <div class="strategy-row-wrapper" data-strategy-id="${strategy.id}">
+      <div class="strategy-row-wrapper${expired ? ' strategy-row-expired' : ''}" data-strategy-id="${strategy.id}">
         <div class="strategy-row">
           <button class="btn-icon-compact" onclick="strategyBuilder.toggleLegs(${strategy.id}, ${watchlistId})" title="${isExpanded ? 'Collapse' : 'Expand'} legs">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="${isExpanded ? 'transform: rotate(90deg);' : ''}">
@@ -234,6 +238,7 @@ class StrategyBuilder {
             <span class="strategy-row__name">${Utils.escapeHTML(strategy.name)}</span>
             <span class="strategy-row__meta">${Utils.escapeHTML(strategy.exchange)}:${Utils.escapeHTML(strategy.underlying)} • ${legCount} leg(s) • Tag: ${Utils.escapeHTML(strategy.broker_tag || `strategy-${strategy.id}`)}</span>
             ${triggerBadge}
+            ${expiredBadge}
           </div>
           <div class="strategy-row__actions">
             <button class="btn-icon-compact" onclick="strategyBuilder.showManageStrategyInstancesModal(${strategy.id}, ${watchlistId})" title="${instanceCount ? 'This strategy trades only its own selected instances' : 'This strategy inherits the container instances - click to scope it to its own'}">
@@ -247,12 +252,12 @@ class StrategyBuilder {
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
               </svg>
             </button>
-            <button class="btn-icon-compact" onclick="strategyBuilder.showAddLegModal(${strategy.id}, ${watchlistId})" title="Add Leg">
+            <button class="btn-icon-compact" ${expired ? 'disabled aria-disabled="true" title="Anchor expired"' : `onclick="strategyBuilder.showAddLegModal(${strategy.id}, ${watchlistId})" title="Add Leg"`}>
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
               </svg>
             </button>
-            <button class="btn btn-buy btn-sm" onclick="strategyBuilder.showExecuteModal(${strategy.id}, ${watchlistId})">
+            <button class="btn btn-buy btn-sm" ${expired ? 'disabled aria-disabled="true" title="Anchor expired - nothing live to trade"' : `onclick="strategyBuilder.showExecuteModal(${strategy.id}, ${watchlistId})"`}>
               Execute
             </button>
             <button class="btn btn-sell btn-sm" onclick="strategyBuilder.showExitModal(${strategy.id}, ${watchlistId})">
@@ -313,9 +318,10 @@ class StrategyBuilder {
       ? `Margin ${leg.qty_value ?? 1} util`
       : `${leg.qty_value ?? 1} ${leg.qty_type === 'FIXED' ? 'qty' : 'lots'}`;
     const exitParts = [];
-    if (leg.target_points != null) exitParts.push(`T:${leg.target_points}`);
-    if (leg.stoploss_points != null) exitParts.push(`SL:${leg.stoploss_points}`);
-    if (leg.trailing_stoploss_points != null) exitParts.push(`TSL:${leg.trailing_stoploss_points}`);
+    const unit = leg.exit_unit === 'PERCENT' ? '%' : '';
+    if (leg.target_points != null) exitParts.push(`T:${leg.target_points}${unit}`);
+    if (leg.stoploss_points != null) exitParts.push(`SL:${leg.stoploss_points}${unit}`);
+    if (leg.trailing_stoploss_points != null) exitParts.push(`TSL:${leg.trailing_stoploss_points}${unit}`);
     const exitMechanismLabel = leg.exit_mechanism === 'GTT' ? ' (GTT)' : '';
     const exitSummary = (exitParts.length ? exitParts.join(' ') : 'No exit config') + exitMechanismLabel;
     const tagSuffix = leg.leg_tag ? ` • Tag: ${Utils.escapeHTML(leg.leg_tag)}` : '';
@@ -835,15 +841,22 @@ class StrategyBuilder {
         <input type="number" step="0.01" id="leg-qty-value-input" class="form-input" value="${leg.qty_value ?? 1}">
       </div>
       <div class="form-group">
-        <label class="form-label">Target (points)</label>
+        <label class="form-label" for="leg-exit-unit-input">Target / Stoploss / Trailing values in</label>
+        <select id="leg-exit-unit-input" class="form-input">
+          <option value="POINTS" ${leg.exit_unit !== 'PERCENT' ? 'selected' : ''}>Points</option>
+          <option value="PERCENT" ${leg.exit_unit === 'PERCENT' ? 'selected' : ''}>% of entry price</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Target</label>
         <input type="number" id="leg-target-input" class="form-input" placeholder="optional" value="${leg.target_points ?? ''}">
       </div>
       <div class="form-group">
-        <label class="form-label">Stoploss (points)</label>
+        <label class="form-label">Stoploss</label>
         <input type="number" id="leg-stoploss-input" class="form-input" placeholder="optional" value="${leg.stoploss_points ?? ''}">
       </div>
       <div class="form-group">
-        <label class="form-label">Trailing Stoploss (points)</label>
+        <label class="form-label">Trailing Stoploss</label>
         <input type="number" id="leg-trailing-input" class="form-input" placeholder="optional" value="${leg.trailing_stoploss_points ?? ''}">
       </div>
       <div class="form-group">
@@ -884,6 +897,7 @@ class StrategyBuilder {
       target_points: target ? parseFloat(target) : null,
       stoploss_points: stoploss ? parseFloat(stoploss) : null,
       trailing_stoploss_points: trailing ? parseFloat(trailing) : null,
+      exit_unit: document.getElementById('leg-exit-unit-input').value === 'PERCENT' ? 'PERCENT' : 'POINTS',
       product_type: document.getElementById('leg-product-type-input').value,
       exit_mechanism: document.getElementById('leg-exit-mechanism-input').value,
       leg_tag: legTag || null,

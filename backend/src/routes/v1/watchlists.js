@@ -6,7 +6,6 @@
 import express from 'express';
 import watchlistService from '../../services/watchlist.service.js';
 import {
-  ConflictError,
   ValidationError,
   ForbiddenError,
 } from '../../core/errors.js';
@@ -108,12 +107,16 @@ router.put('/:id', async (req, res, next) => {
     const keys = Object.keys(req.body || {});
     const statusOnly = keys.length === 1 && keys[0] === 'is_active';
 
+    // ForbiddenError (403), not ConflictError (409). A permission failure and a "someone else
+    // changed this, retry" are different instructions to the caller, and api-client.js branches
+    // on the status: 409 invites a retry that can only fail again, and the UI shows a conflict
+    // message for what is actually a missing permission.
     if (statusOnly) {
       if (!hasPermission(req, 'watchlists.status')) {
-        throw new ConflictError('Insufficient permissions');
+        throw new ForbiddenError('Insufficient permissions');
       }
     } else if (!hasPermission(req, 'watchlists.manage')) {
-      throw new ConflictError('Insufficient permissions');
+      throw new ForbiddenError('Insufficient permissions');
     }
 
     const watchlist = await watchlistService.updateWatchlist(id, req.body);
@@ -215,8 +218,9 @@ router.post('/:id/symbols', requirePermission('watchlists.symbols.manage'), asyn
  */
 router.put('/:id/symbols/:symbolId', requirePermission('watchlists.symbols.manage'), async (req, res, next) => {
   try {
+    const watchlistId = parseInt(req.params.id, 10);
     const symbolId = parseInt(req.params.symbolId, 10);
-    const symbol = await watchlistService.updateSymbol(symbolId, req.body);
+    const symbol = await watchlistService.updateSymbol(symbolId, req.body, watchlistId);
 
     res.json({
       status: 'success',
@@ -234,8 +238,9 @@ router.put('/:id/symbols/:symbolId', requirePermission('watchlists.symbols.manag
  */
 router.delete('/:id/symbols/:symbolId', requirePermission('watchlists.symbols.manage'), async (req, res, next) => {
   try {
+    const watchlistId = parseInt(req.params.id, 10);
     const symbolId = parseInt(req.params.symbolId, 10);
-    await watchlistService.removeSymbol(symbolId);
+    await watchlistService.removeSymbol(symbolId, watchlistId);
 
     res.json({
       status: 'success',

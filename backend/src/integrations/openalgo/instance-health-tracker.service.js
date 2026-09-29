@@ -15,6 +15,32 @@
 import { log } from '../../core/logger.js';
 import { toISTISOString } from '../../utils/time.js';
 
+/**
+ * Longest an unreachable instance is left alone before the next probe. This replaces the old
+ * fixed IST "blackout" clock windows: an OpenAlgo server that is down overnight (the daily broker
+ * re-login) is probed at a growing interval, and is back in use within this long of recovering,
+ * whatever time it recovers at.
+ */
+export const MAX_UNREACHABLE_BACKOFF_MS = 10 * 60 * 1000;
+
+/** `baseMs` doubled per consecutive failure (1st failure = baseMs), capped. */
+export function backoffMs(attempt, baseMs, capMs = MAX_UNREACHABLE_BACKOFF_MS) {
+  return Math.min(baseMs * 2 ** Math.max(0, attempt - 1), capMs);
+}
+
+/**
+ * Whether an error means "the instance could not be reached", as opposed to OpenAlgo answering
+ * with a real error (a 400 for a bad symbol, a 404 for an unknown order). Only the former should
+ * open the circuit - one bad symbol must not take a healthy instance offline.
+ */
+export function isUnreachableError(error) {
+  if (!error) return false;
+  if (error.isHtmlResponse || error.isDnsError) return true;
+  if ([502, 503, 504].includes(error.statusCode)) return true;
+  const msg = String(error.message || '');
+  return /ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|getaddrinfo|fetch failed|timed? ?out|aborted|socket hang up|Invalid JSON response/i.test(msg);
+}
+
 class InstanceHealthTrackerService {
   constructor() {
     // Instance health tracking for circuit breaker pattern
@@ -23,12 +49,12 @@ class InstanceHealthTrackerService {
     // Non-critical errors (5xx, rate-limit): Standard cooldown with exponential backoff, auto-recovers
     this.instanceHealth = new Map(); // key: instanceId -> { failures, cooldownUntil, lastError, isHtml, isDnsError, dnsRetryCount, cooldownCount, requiresManualRefresh }
     this.instanceHealthConfig = {
-      failureThreshold: 3,             // 3 consecutive failures before cooldown (for non-critical errors only)
-      cooldownMs: 5 * 60 * 1000,       // 5 minutes cooldown for non-critical repeated failures
-      dnsCooldownMs: 2 * 60 * 1000,    // 2 minutes cooldown for DNS/HTML errors
-      htmlCooldownMs: 2 * 60 * 1000,   // 2 minutes cooldown for HTML responses
-      maxCooldownMs: 30 * 60 * 1000,   // 30 minutes max cooldown (with exponential backoff for non-critical)
-      maxDnsRetries: 3,                // Max 3 retries for DNS/HTML errors before requiring manual refresh (6 mins total)
+      failureThreshold: 3,             // consecutive failures before cooldown (non-DNS/HTML errors)
+      cooldownMs: 60 * 1000,           // first cooldown for repeated failures, doubling after
+      dnsCooldownMs: 60 * 1000,        // first cooldown for a DNS failure, doubling after
+      htmlCooldownMs: 60 * 1000,       // first cooldown for an HTML error page, doubling after
+      maxCooldownMs: MAX_UNREACHABLE_BACKOFF_MS,
+      maxDnsRetries: 0,                // kept for the circuit-breaker API response shape; unused
     };
   }
 
@@ -44,46 +70,11 @@ class InstanceHealthTrackerService {
     }
 
     const health = this.instanceHealth.get(instanceId);
-    if (!health) return true;
-
-    // Instance requires manual refresh (DNS/HTML errors only) - don't auto-recover
-    if (health.requiresManualRefresh) {
-      return false;
-    }
-
-    const now = Date.now();
-    if (health.cooldownUntil && now < health.cooldownUntil) {
-      return false;
-    }
-
-    // Cooldown expired - check if this was a DNS/HTML error that needs retry tracking
-    const hasCriticalError = health.isDnsError || health.isHtml;
-    if (hasCriticalError && health.dnsRetryCount >= this.instanceHealthConfig.maxDnsRetries) {
-      // Mark as requiring manual refresh for DNS/HTML errors only
-      health.requiresManualRefresh = true;
-      health.cooldownUntil = null; // No more auto-cooldowns
-      this.instanceHealth.set(instanceId, health);
-
-      log.warn('Instance requires manual refresh - max DNS/HTML retries reached', {
-        instanceId,
-        dnsRetryCount: health.dnsRetryCount,
-        isDnsError: health.isDnsError,
-        isHtmlError: health.isHtml,
-        lastError: health.lastError,
-      });
-      return false;
-    }
-
-    // For non-critical errors, auto-recover when cooldown expires
-    if (!hasCriticalError && health.cooldownUntil && now >= health.cooldownUntil) {
-      // Cooldown expired for non-critical error, clear health state
-      this.instanceHealth.delete(instanceId);
-      log.debug('Instance health auto-recovered after cooldown', { instanceId });
-      return true;
-    }
-
-    // Cooldown expired and retries remaining, allow next attempt
-    return true;
+    if (!health?.cooldownUntil) return true;
+    // Once the cooldown lapses the circuit is half-open: the next request is the probe. Its
+    // success clears this state (resetInstanceHealth); its failure opens a longer cooldown,
+    // since cooldownCount is kept until then.
+    return Date.now() >= health.cooldownUntil;
   }
 
   /**
@@ -150,7 +141,7 @@ class InstanceHealthTrackerService {
   recordInstanceFailure(instanceId, error, options = {}) {
     const { isHtml = false, isDnsError = false } = options;
     const now = Date.now();
-    const { failureThreshold, cooldownMs, htmlCooldownMs, dnsCooldownMs, maxCooldownMs, maxDnsRetries } = this.instanceHealthConfig;
+    const { failureThreshold, cooldownMs, htmlCooldownMs, dnsCooldownMs, maxCooldownMs } = this.instanceHealthConfig;
 
     // Check if this is a critical error (DNS or HTML) that requires immediate cooldown
     const isCriticalError = isHtml || isDnsError;
@@ -170,60 +161,26 @@ class InstanceHealthTrackerService {
     health.lastError = error?.message || 'Unknown error';
     health.lastFailureAt = now;
 
-    // For critical errors (DNS/HTML), immediately enter cooldown with retry tracking
-    if (isCriticalError) {
-      // Mark the error type (sticky - once set, stays set until manual refresh)
-      health.isHtml = isHtml || health.isHtml;
-      health.isDnsError = isDnsError || health.isDnsError;
-      health.dnsRetryCount += 1;
-
-      // Check if max retries reached
-      if (health.dnsRetryCount >= maxDnsRetries) {
-        health.requiresManualRefresh = true;
-        health.cooldownUntil = null; // No more automatic retries
-
-        log.error('Instance marked unhealthy - requires manual refresh', {
-          instanceId,
-          dnsRetryCount: health.dnsRetryCount,
-          reason: isDnsError ? 'dns_error' : 'html_response',
-          lastError: health.lastError,
-          message: 'Instance will not be retried until user performs manual refresh',
-        });
-      } else {
-        // Enter 2-minute cooldown for next retry
-        const baseCooldown = isDnsError ? dnsCooldownMs : htmlCooldownMs;
-        health.cooldownUntil = now + baseCooldown;
-
-        log.warn('Instance entered cooldown - will retry (DNS/HTML error)', {
-          instanceId,
-          cooldownMs: baseCooldown,
-          dnsRetryCount: health.dnsRetryCount,
-          maxDnsRetries,
-          retriesRemaining: maxDnsRetries - health.dnsRetryCount,
-          reason: isDnsError ? 'dns_error' : 'html_response',
-          lastError: health.lastError,
-          resumeAt: toISTISOString(health.cooldownUntil),
-        });
-      }
-
-      health.failures = 0; // Reset failure counter after entering cooldown
-    } else if (health.failures >= failureThreshold) {
-      // For non-critical repeated failures, use exponential backoff cooldown
-      // These auto-recover - do NOT set requiresManualRefresh
-
-      // Calculate cooldown with exponential backoff
-      const backoffExponent = Math.min(health.cooldownCount, 3); // Cap at 8x multiplier
-      const backoffMultiplier = Math.pow(2, backoffExponent);
-      const calculatedCooldown = Math.min(cooldownMs * backoffMultiplier, maxCooldownMs);
-
-      health.cooldownUntil = now + calculatedCooldown;
+    // A DNS failure or an HTML error page (the proxy in front of a stopped server) opens the
+    // circuit at once; anything else only after failureThreshold in a row. Either way the
+    // cooldown doubles per consecutive opening up to MAX_UNREACHABLE_BACKOFF_MS, and the
+    // instance always recovers on its own - there is no manual-refresh lockout.
+    health.isHtml = isHtml;
+    health.isDnsError = isDnsError;
+    const inProbe = health.cooldownUntil !== null && now >= health.cooldownUntil;
+    if (isCriticalError || inProbe || health.failures >= failureThreshold) {
       health.cooldownCount += 1;
+      const base = isCriticalError ? (isDnsError ? dnsCooldownMs : htmlCooldownMs) : cooldownMs;
+      const wait = backoffMs(health.cooldownCount, base, maxCooldownMs);
+      health.cooldownUntil = now + wait;
       health.failures = 0;
-
-      log.warn('Instance entered cooldown due to repeated failures (auto-recovers)', {
+      // One line per opening, not per short-circuited call - this is what keeps an overnight
+      // outage from filling the log.
+      log.warn('Instance unreachable - pausing calls to it', {
         instanceId,
-        cooldownMs: calculatedCooldown,
+        cooldownMs: wait,
         cooldownCount: health.cooldownCount,
+        reason: isDnsError ? 'dns_error' : isHtml ? 'html_response' : 'repeated_failures',
         lastError: health.lastError,
         resumeAt: toISTISOString(health.cooldownUntil),
       });

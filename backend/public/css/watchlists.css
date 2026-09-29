@@ -481,6 +481,27 @@
   background-color: var(--color-neutral-50);
 }
 
+/* Expired contract: listed so it can be removed, but no trading, quotes or edits */
+.symbol-row-expired td:not(.col-actions) {
+  opacity: 0.5;
+}
+
+.symbol-row-expired:hover {
+  background-color: transparent;
+}
+
+.symbol-row-expired button[disabled],
+.strategy-row-expired button[disabled] {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.badge-expired {
+  margin-left: var(--space-1);
+  color: var(--color-error);
+  border: 1px solid currentColor;
+}
+
 /* Expand Button */
 .btn-expand-compact {
   width: 24px;

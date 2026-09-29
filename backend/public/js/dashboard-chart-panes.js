@@ -116,6 +116,7 @@ Object.assign(DashboardApp.prototype, {
         <button type="button" class="chart-pane-btn" data-pane-pop="ind-${key}">Ind</button>
         <div class="chart-pane-pop is-wide" data-pane-pop-for="ind-${key}" hidden>
           <div id="chart-pane-ind-${key}" class="chart-ind-bar"></div>
+          <div id="chart-pane-ind-pick-${key}" class="chart-pattern-picker" hidden></div>
           <div id="chart-pane-ind-cfg-${key}" class="chart-ind-config" hidden></div>
         </div>
       </div>`;
@@ -155,11 +156,18 @@ Object.assign(DashboardApp.prototype, {
 
     const chart = window.OAC.createChart(bodyEl, {
       theme: { ...baseTheme, upColor: up, downColor: down, wickUpColor: up, wickDownColor: down },
+      // Same engine options as the main chart (see initChart in dashboard-chart.js) - a CE/PE
+      // pane that labelled its axis in a different zone, or zoomed from a different anchor,
+      // would read as a different instrument sitting next to the one it is an option on.
+      timezone: CHART_TIMEZONE,
+      renderer: 'auto',
+      zoomAnchor: 'right',
+      axisChrome: { barCountdown: true },
     });
     // Independent chart type per pane (see setPaneSeriesType() below) - defaults to candlestick
     // like the main chart, not mirrored FROM the main chart, since "independent" starts at zero.
     const seriesType = this.paneSeriesType(key);
-    const series = chart.addSeries(this.isTransformSeriesType(seriesType) ? 'candlestick' : seriesType);
+    const series = chart.addSeries(this.seriesRenderType(seriesType));
     chart.timeScale.setRightOffset(RIGHT_OFFSET_BARS);
 
     this.optionPanes[key] = { chart, series, contract, candles, seriesType };
@@ -241,7 +249,7 @@ Object.assign(DashboardApp.prototype, {
     pane.seriesType = type;
     this.savePaneSeriesType(key, type);
     try { pane.series?.remove(); } catch (_) { /* disposed */ }
-    pane.series = pane.chart.addSeries(this.isTransformSeriesType(type) ? 'candlestick' : type);
+    pane.series = pane.chart.addSeries(this.seriesRenderType(type));
     this.renderPaneSeries(key);
     this.renderPaneTypeBar(key);
   },
@@ -256,9 +264,9 @@ Object.assign(DashboardApp.prototype, {
     const lastClose = pane.candles?.[pane.candles.length - 1]?.close || 100;
     const box = lastClose >= 10000 ? 5 : lastClose >= 1000 ? 1 : lastClose >= 100 ? 0.5 : 0.1;
     const { bars } = this.computeSeriesBars(pane.candles, pane.seriesType || 'candlestick', box);
-    pane.series.setData(bars.map((b) => ({
-      time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-    })));
+    // Whole bars, not a projection down to OHLC - see renderChartSeries in
+    // dashboard-chart-types.js for why Kagi and P&F need the fields a candle does not read.
+    pane.series.setData(bars);
   },
 
   renderPaneTypeBar(key) {
@@ -290,17 +298,20 @@ Object.assign(DashboardApp.prototype, {
  * per-instance settings) and the toolbar UI on top of it.
  */
 /**
- * `indicatorId` names the openalgo-charts descriptor (see openalgo-charts/indicators); `id` is
- * ours, and exists only so two instances of the same descriptor (sma1/sma2, ema1/ema2/ema3) can
- * each carry their own on/off state and settings - the engine itself is fine with several
- * instances of one descriptor coexisting, it just does not name them for us.
+ * Presets: the handful of slots this app opinionates about, either because it wants SEVERAL
+ * instances of one descriptor (sma1/sma2, ema1/ema2/ema3 - the engine is fine with that, it just
+ * does not name them for us) or because it prefers a different starting point from the
+ * descriptor's own default. Everything else the engine registers is picked up automatically by
+ * indicatorDefs() below, so this list is a set of opinions, not a catalogue.
  *
- * `settings` seeds this app's preferred starting point where it differs from the descriptor's
- * own default (a second SMA at 50, three EMAs instead of one); indicatorConfig() merges it over
+ * `indicatorId` names the openalgo-charts descriptor (see openalgo-charts/indicators); `id` is
+ * ours, and is what the persisted config is keyed by - so these ids must not change.
+ *
+ * `settings` seeds the preferred starting point; indicatorConfig() merges it over
  * `indicatorDefaults()` rather than restating every key, so an upstream default change (colour,
  * source) still comes through untouched.
  */
-const INDICATOR_DEFS = [
+const INDICATOR_PRESETS = [
   { id: 'sma1', indicatorId: 'sma', label: 'SMA', settings: { length: 20 } },
   { id: 'sma2', indicatorId: 'sma', label: 'SMA', settings: { length: 50 } },
   { id: 'ema1', indicatorId: 'ema', label: 'EMA', settings: { length: 9 } },
@@ -324,6 +335,54 @@ const INDICATOR_DEFS = [
   { id: 'ichimoku1', indicatorId: 'ichimoku', label: 'Ichimoku Cloud', settings: {} },
   { id: 'vixfix1', indicatorId: 'williams-vix-fix', label: 'Williams VIX Fix', settings: {} },
 ];
+
+let _indicatorDefs = null;
+let _indicatorDefsFor = 0;
+
+/**
+ * Every indicator slot the app offers: the presets above, plus one slot for each descriptor the
+ * engine registers that no preset already covers.
+ *
+ * openalgo-charts 2.x ships 102 built-ins; a hand-written list offered 22 of them, and every
+ * release that added an indicator quietly widened that gap. The registry is the source of truth,
+ * so a new built-in is on the chart the moment the library is upgraded, with the engine's own
+ * name, category, inputs and defaults behind it.
+ *
+ * A preset id can never collide with a generated one: a descriptor a preset names is excluded
+ * from the generated half, so `vwap` (a preset id that happens to equal its descriptor id) is
+ * listed once.
+ *
+ * Memoized only once the registry actually answers - this can be reached before the bridge
+ * module has run, and caching an empty catalogue would leave the chart with no indicators for
+ * the life of the page.
+ */
+function indicatorDefs() {
+  const registry = window.OAC?.registeredIndicators?.() || [];
+  // Re-derived when the registry grows: an OpenScript study applied after load registers a new
+  // descriptor (see openalgo-charts-bridge.js), and it has to show up in the picker.
+  if (_indicatorDefs && _indicatorDefsFor === registry.length) return _indicatorDefs;
+  if (!registry.length) return INDICATOR_PRESETS;
+  _indicatorDefsFor = registry.length;
+  const covered = new Set(INDICATOR_PRESETS.map((d) => d.indicatorId));
+  const generated = registry
+    .filter((d) => !covered.has(d.id))
+    .map((d) => ({ id: d.id, indicatorId: d.id, label: d.name, settings: {} }));
+  _indicatorDefs = [...INDICATOR_PRESETS, ...generated];
+  return _indicatorDefs;
+}
+
+const OPENSCRIPT_TEMPLATE = `version 1
+
+study("My script", overlay = true)
+
+length = input(20, "Length")
+plot(sma(close, length), "SMA", orange, width = 2)
+`;
+
+/** The engine's own grouping for a slot ('Trend', 'Momentum', ...), for the picker's headings. */
+function indicatorCategory(def) {
+  return window.OAC?.getIndicator?.(def.indicatorId)?.category || 'Other';
+}
 
 /** Below this, the price pane and its axis labels stop being usable. */
 const MIN_CHART_BUDGET_HEIGHT = 360;
@@ -391,7 +450,7 @@ Object.assign(DashboardApp.prototype, {
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch (_) {}
     const cfg = {};
-    for (const def of INDICATOR_DEFS) {
+    for (const def of indicatorDefs()) {
       const s = saved[def.id] || {};
       cfg[def.id] = {
         on: Boolean(s.on),
@@ -451,7 +510,7 @@ Object.assign(DashboardApp.prototype, {
    */
   setIndicatorParam(id, key, raw, scope) {
     const cfg = this.indicatorConfig(scope)[id];
-    const def = INDICATOR_DEFS.find((d) => d.id === id);
+    const def = indicatorDefs().find((d) => d.id === id);
     if (!cfg || !def || cfg.settings[key] === undefined) return false;
     const input = indicatorInputsFor(def.indicatorId).find((i) => i.key === key);
 
@@ -483,15 +542,23 @@ Object.assign(DashboardApp.prototype, {
     return true;
   },
 
+  /** The slots currently switched on, in catalogue order - what the toolbar and the settings
+   * panel both show. With 100+ indicators available, "everything, always" is not a toolbar. */
+  activeIndicatorDefs(scope) {
+    const cfg = this.indicatorConfig(scope);
+    return indicatorDefs().filter((d) => cfg[d.id]?.on);
+  },
+
   renderIndicatorBar() {
     const host = document.getElementById('chart-indicators-bar');
     if (!host) return;
-    const cfg = this.indicatorConfig();
+    const active = this.activeIndicatorDefs();
     host.innerHTML = `
       <span class="chart-toolbar-label">Indicators</span>
-      ${INDICATOR_DEFS.map((d) => `
-        <button type="button" class="chart-ind-btn ${cfg[d.id].on ? 'active' : ''}"
-                data-ind="${d.id}">${Utils.escapeHTML(this.indicatorLabel(d))}</button>`).join('')}
+      <button type="button" class="chart-ind-btn" data-action="add" title="Add an indicator">+ Add</button>
+      ${active.map((d) => `
+        <button type="button" class="chart-ind-btn active" data-ind="${d.id}"
+                title="Click to remove ${Utils.escapeHTML(d.label)}">${Utils.escapeHTML(this.indicatorLabel(d))}</button>`).join('')}
       <button type="button" class="chart-ind-btn ${this.enabledPatterns().length ? 'active' : ''}"
               data-ind="patterns">Patterns</button>
       <button type="button" class="chart-ind-settings" data-action="settings" title="Indicator settings">Settings</button>`;
@@ -500,6 +567,8 @@ Object.assign(DashboardApp.prototype, {
       if (b.dataset.ind === 'patterns') { b.addEventListener('click', () => this.togglePatternPicker()); return; }
       b.addEventListener('click', () => this.toggleIndicator(b.dataset.ind));
     });
+    host.querySelector('[data-action="add"]')
+      .addEventListener('click', () => this.toggleIndicatorPicker());
     host.querySelector('[data-action="settings"]')
       .addEventListener('click', () => this.toggleIndicatorSettings());
   },
@@ -512,16 +581,18 @@ Object.assign(DashboardApp.prototype, {
   renderPaneIndicatorBar(scope) {
     const host = document.getElementById(`chart-pane-ind-${scope}`);
     if (!host) return;
-    const cfg = this.indicatorConfig(scope);
     host.innerHTML = `
-      ${INDICATOR_DEFS.map((d) => `
-        <button type="button" class="chart-ind-btn ${cfg[d.id].on ? 'active' : ''}"
-                data-ind="${d.id}">${Utils.escapeHTML(this.indicatorLabel(d, scope))}</button>`).join('')}
+      <button type="button" class="chart-ind-btn" data-action="add" title="Add an indicator">+ Add</button>
+      ${this.activeIndicatorDefs(scope).map((d) => `
+        <button type="button" class="chart-ind-btn active" data-ind="${d.id}"
+                title="Click to remove ${Utils.escapeHTML(d.label)}">${Utils.escapeHTML(this.indicatorLabel(d, scope))}</button>`).join('')}
       <button type="button" class="chart-ind-settings" data-action="settings" title="Indicator settings">Settings</button>`;
 
     host.querySelectorAll('.chart-ind-btn[data-ind]').forEach((b) => {
       b.addEventListener('click', () => this.toggleIndicator(b.dataset.ind, scope));
     });
+    host.querySelector('[data-action="add"]')
+      .addEventListener('click', () => this.toggleIndicatorPicker(scope));
     host.querySelector('[data-action="settings"]')
       .addEventListener('click', () => this.togglePaneIndicatorSettings(scope));
   },
@@ -566,10 +637,12 @@ Object.assign(DashboardApp.prototype, {
     if (!panel.hidden) { panel.hidden = true; return; }
 
     const cfg = this.indicatorConfig(scope);
+    const active = this.activeIndicatorDefs(scope);
     panel.hidden = false;
     panel.innerHTML = `
       <div class="chart-ind-cfg-grid">
-        ${INDICATOR_DEFS.map((d) => {
+        ${active.length ? '' : '<p class="chart-ind-cfg-note">No indicators on this chart yet — add one from “+ Add”.</p>'}
+        ${active.map((d) => {
           const inputs = indicatorInputsFor(d.indicatorId);
           const settings = cfg[d.id].settings;
           return `
@@ -616,6 +689,140 @@ Object.assign(DashboardApp.prototype, {
 
   togglePaneIndicatorSettings(scope) {
     this.toggleIndicatorSettings(scope);
+  },
+
+  /**
+   * The indicator catalogue: every descriptor openalgo-charts registers, grouped under the
+   * engine's own category ('Trend', 'Momentum', 'Volatility', 'Volume') and filtered by a search
+   * box. This replaces the row of buttons that used to hold every indicator at once - workable
+   * at 22, not at the 102 the library now ships.
+   *
+   * Rows are checkboxes over the SAME toggleIndicator() the toolbar chips use, so an indicator
+   * switched on here is indistinguishable from one switched on there; nothing about placement,
+   * settings or persistence is special-cased to the picker.
+   */
+  toggleIndicatorPicker(scope) {
+    const panel = document.getElementById(scope ? `chart-pane-ind-pick-${scope}` : 'chart-ind-picker');
+    if (!panel) return;
+    if (!panel.hidden) { panel.hidden = true; return; }
+
+    const cfg = this.indicatorConfig(scope);
+    const groups = new Map();
+    for (const def of indicatorDefs()) {
+      const cat = indicatorCategory(def);
+      if (!groups.has(cat)) groups.set(cat, []);
+      groups.get(cat).push(def);
+    }
+
+    panel.hidden = false;
+    panel.innerHTML = `
+      <div class="chart-pat-head">
+        <span>Indicators</span>
+        <input type="search" class="form-input chart-ind-search" data-role="search"
+               placeholder="Search ${indicatorDefs().length} indicators" aria-label="Search indicators" />
+        <span class="chart-pat-count" data-role="count">${this.activeIndicatorDefs(scope).length} on</span>
+        <button type="button" class="chart-ind-settings" data-action="script"
+                title="Write an indicator or strategy in OpenScript">OpenScript…</button>
+        <button type="button" class="chart-ind-settings" data-action="close">Done</button>
+      </div>
+      <div class="chart-pat-list">
+        ${[...groups.entries()].map(([cat, defs]) => `
+          <div class="chart-ind-pick-group" data-group="${Utils.escapeHTML(cat)}">
+            <div class="chart-ind-pick-cat">${Utils.escapeHTML(cat)}</div>
+            ${defs.map((d) => `
+              <label class="chart-pat-row chart-ind-pick-row" data-name="${Utils.escapeHTML(d.label.toLowerCase())}">
+                <input type="checkbox" data-pick="${Utils.escapeHTML(d.id)}" ${cfg[d.id]?.on ? 'checked' : ''} />
+                <span>${Utils.escapeHTML(d.label)}</span>
+              </label>`).join('')}
+          </div>`).join('')}
+      </div>`;
+
+    panel.querySelectorAll('input[data-pick]').forEach((el) =>
+      el.addEventListener('change', () => {
+        this.toggleIndicator(el.dataset.pick, scope);
+        panel.querySelector('[data-role="count"]').textContent = `${this.activeIndicatorDefs(scope).length} on`;
+      }));
+
+    const search = panel.querySelector('[data-role="search"]');
+    search.addEventListener('input', () => {
+      const q = search.value.trim().toLowerCase();
+      panel.querySelectorAll('.chart-ind-pick-row').forEach((row) => {
+        row.hidden = Boolean(q) && !row.dataset.name.includes(q);
+      });
+      // A heading with nothing left under it is noise, so it goes with its rows.
+      panel.querySelectorAll('.chart-ind-pick-group').forEach((group) => {
+        group.hidden = !group.querySelector('.chart-ind-pick-row:not([hidden])');
+      });
+    });
+
+    panel.querySelector('[data-action="close"]').addEventListener('click', () => { panel.hidden = true; });
+    panel.querySelector('[data-action="script"]').addEventListener('click', () => this.openScriptEditor(scope, panel));
+  },
+
+  /**
+   * OpenScript editor, drawn in place of the picker it was opened from. Apply compiles the script
+   * (window.OAC.applyScript), which registers it as an ordinary indicator; it is then switched on
+   * for this chart/pane through the same toggleIndicator() every other indicator uses. Re-applying
+   * an edited script that is already on goes off-then-on, so the live instance is rebuilt from the
+   * new descriptor instead of keeping the old one's calc.
+   */
+  openScriptEditor(scope, panel) {
+    const saved = Object.entries(window.OAC?.savedScripts?.() || {});
+    panel.innerHTML = `
+      <div class="chart-pat-head">
+        <span>OpenScript</span>
+        <select class="form-input" data-role="saved" aria-label="Saved scripts">
+          <option value="">New script</option>
+          ${saved.map(([id]) => `<option value="${Utils.escapeHTML(id)}">${Utils.escapeHTML(id.replace(/^oscript-/, ''))}</option>`).join('')}
+        </select>
+        <button type="button" class="chart-ind-settings" data-action="apply">Apply</button>
+        <button type="button" class="chart-ind-settings" data-action="delete">Delete</button>
+        <button type="button" class="chart-ind-settings" data-action="back">Back</button>
+      </div>
+      <textarea class="form-input chart-script-src" data-role="src" spellcheck="false" rows="14"
+                aria-label="OpenScript source"></textarea>
+      <pre class="chart-script-errors" data-role="errors" hidden></pre>
+      <p class="chart-ind-cfg-note">
+        Language guide: <a href="https://github.com/marketcalls/openscript" target="_blank" rel="noopener">openscript</a>.
+        Strategies draw against a simulated venue only; no orders are placed.
+      </p>`;
+
+    const src = panel.querySelector('[data-role="src"]');
+    const errors = panel.querySelector('[data-role="errors"]');
+    const pick = panel.querySelector('[data-role="saved"]');
+    const scripts = Object.fromEntries(saved);
+    src.value = OPENSCRIPT_TEMPLATE;
+    pick.addEventListener('change', () => { src.value = scripts[pick.value] || OPENSCRIPT_TEMPLATE; errors.hidden = true; });
+
+    panel.querySelector('[data-action="apply"]').addEventListener('click', () => {
+      let descriptor;
+      try {
+        descriptor = window.OAC.applyScript(src.value);
+      } catch (error) {
+        errors.textContent = error.message;
+        errors.hidden = false;
+        return;
+      }
+      errors.hidden = true;
+      const cfg = this.indicatorConfig(scope);
+      if (cfg[descriptor.id]?.on) this.toggleIndicator(descriptor.id, scope);
+      this.toggleIndicator(descriptor.id, scope);
+      Utils.showToast(`${descriptor.name} applied`, 'success');
+      panel.hidden = true;
+    });
+
+    panel.querySelector('[data-action="delete"]').addEventListener('click', () => {
+      if (!pick.value) return;
+      if (this.indicatorConfig(scope)[pick.value]?.on) this.toggleIndicator(pick.value, scope);
+      window.OAC.removeScript(pick.value);
+      Utils.showToast('Script deleted; it leaves the indicator list on the next reload', 'success');
+      panel.hidden = true;
+    });
+
+    panel.querySelector('[data-action="back"]').addEventListener('click', () => {
+      panel.hidden = true;
+      this.toggleIndicatorPicker(scope);
+    });
   },
 
   /**
@@ -671,7 +878,7 @@ Object.assign(DashboardApp.prototype, {
      * ones are still wanted. A few indicators recomputing from scratch is cheap; a permanently
      * stuck blank pane is the alternative.
      */
-    const toRemove = INDICATOR_DEFS.some((def) => !cfg[def.id].on && store.has(def.id));
+    const toRemove = indicatorDefs().some((def) => !cfg[def.id].on && store.has(def.id));
     if (toRemove) {
       const live = [...store.entries()].sort((a, b) => (b[1].paneIndex ?? 0) - (a[1].paneIndex ?? 0));
       for (const [id, api] of live) {
@@ -680,7 +887,7 @@ Object.assign(DashboardApp.prototype, {
       }
     }
 
-    for (const def of INDICATOR_DEFS) {
+    for (const def of indicatorDefs()) {
       const want = cfg[def.id];
       if (!want.on) continue;
       const live = store.get(def.id);
@@ -693,7 +900,13 @@ Object.assign(DashboardApp.prototype, {
       try {
         store.set(def.id, chart.addIndicator(def.indicatorId, want.settings));
       } catch (error) {
-        console.error(`[Chart] indicator ${def.id} failed`, error);
+        // An OpenScript study refuses to start on a chart with no bars yet (OS6010). Nothing is
+        // stored for it, so the next reconcile after data loads adds it; that is not a failure.
+        if (String(error?.message).startsWith('OS6010')) {
+          console.warn(`[Chart] ${def.id} waits for bars`);
+        } else {
+          console.error(`[Chart] indicator ${def.id} failed`, error);
+        }
       }
     }
   },

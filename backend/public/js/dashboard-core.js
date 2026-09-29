@@ -101,6 +101,14 @@ class DashboardApp {
     this.wsRefreshPositions = Utils.debounce(() => {
       if (this.currentView === 'positions') this.renderPositionsView();
     }, 1200);
+    // A pushed order_update (OpenAlgo order stream, relayed by ws-gateway) redraws what shows
+    // orders, instead of waiting on their timers; the server has already folded it into the
+    // orderbook /orders serves.
+    this.wsRefreshOrders = Utils.debounce(() => {
+      if (this.currentView === 'orders') this.loadOrders(this.currentOrderFilter, { ensureView: false });
+      if (this.chart) this.refreshOrderLines?.();
+      for (const key of ['ce', 'pe']) if (this.optionPanes?.[key]?.orderLines) this.refreshPaneOrderLines?.(key);
+    }, 500);
     this.wsRefreshWatchlists = Utils.debounce(() => {
       if (this.currentView === 'watchlists') this._throttledWatchlistRefresh({ showLoader: false });
     }, 800);
@@ -741,6 +749,7 @@ class DashboardApp {
       }
       case 'order_update': {
         this._recordOrderUpdate(msg.payload || {});
+        this.wsRefreshOrders();
         break;
       }
       default:

@@ -13,15 +13,26 @@
  * needed - see js/openalgo-charts-bridge.js, which loads the tiers this app uses and exposes
  * them as `window.OAC` for these classic (non-module) scripts to call into.
  *
- * TIME AXIS: the engine renders its time axis in IST natively from raw UTC seconds (broker
- * candles are true UTC epoch seconds - verified: BSE first candle of the day is 03:45Z =
- * 09:15 IST) - unlike the previous TradingView Lightweight Charts build, no manual IST-offset
- * shift is applied to values handed to the chart. `IST_OFFSET_SECONDS` is still declared here and
- * used by dashboard-chart-live.js for bucket-boundary math (which bar a tick belongs to in IST
- * wall-clock time) - a different job from the display shift this file no longer needs.
+ * TIME AXIS: the engine renders its time axis from raw UTC seconds (broker candles are true UTC
+ * epoch seconds - verified: BSE first candle of the day is 03:45Z = 09:15 IST), so unlike the
+ * previous TradingView Lightweight Charts build, no manual IST-offset shift is applied to values
+ * handed to the chart. Since openalgo-charts 2.x the zone is a real IANA name rather than a fixed
+ * offset (see CHART_TIMEZONE below), which is what makes the axis, the crosshair tag and every
+ * calendar-anchored study (VWAP/TWAP anchors, CPR frames) agree on where a day starts.
+ *
+ * `IST_OFFSET_SECONDS` is still declared here and used by dashboard-chart-live.js for
+ * bucket-boundary math (which bar a tick belongs to in IST wall-clock time) - a different job
+ * from the display shift this file no longer needs. India has no daylight saving, so the fixed
+ * offset is exact for that arithmetic.
  */
 
 const IST_OFFSET_SECONDS = 5.5 * 3600;
+
+/**
+ * The zone every chart on this screen is labelled in. Indian markets, so IST - stated as an IANA
+ * name rather than an offset because that is what the engine's calendar work keys off.
+ */
+const CHART_TIMEZONE = 'Asia/Kolkata';
 
 /**
  * Every timeframe `candle.service.js`'s TIMEFRAME_SECONDS already validates end-to-end for
@@ -158,6 +169,7 @@ Object.assign(DashboardApp.prototype, {
             </button>
             <div class="chart-pop is-wide" data-pop-for="indicators" hidden>
               <div id="chart-indicators-bar" class="chart-ind-bar"></div>
+              <div id="chart-ind-picker" class="chart-pattern-picker" hidden></div>
               <div id="chart-ind-config" class="chart-ind-config" hidden></div>
               <div id="chart-pattern-picker" class="chart-pattern-picker" hidden></div>
             </div>
@@ -443,6 +455,18 @@ Object.assign(DashboardApp.prototype, {
       // .chart-tickets in chart.css) after testing showed this option's effect on them was not
       // reliable enough to depend on for that taller, options-mode layout.
       legendOffset: { top: 26, left: 8 },
+      timezone: CHART_TIMEZONE,
+      // GPU where the device has one, canvas2d where it does not, decided silently at
+      // construction. The webgl tier is imported by the bridge, which is what registers the
+      // backend 'auto' looks for; `chart.rendererKind` reports what was actually taken.
+      renderer: 'auto',
+      // A live chart grows at its right edge, so a wheel zoom holds the latest bar still and
+      // stretches history away from it, rather than holding whatever the cursor happened to be
+      // over.
+      zoomAnchor: 'right',
+      // Corner clock in the chart's own zone, and a countdown to the forming bar's close inside
+      // the last-price tag - both read off the bars, so a timeframe switch is followed.
+      axisChrome: { sessionClock: true, barCountdown: true },
     });
 
     this.chart = chart;
@@ -457,11 +481,13 @@ Object.assign(DashboardApp.prototype, {
     // reassigned map silently orphans the lines it used to hold - they then stay on the chart
     // permanently with no handle left to remove them.
     this._priceLines = [];
-    // Transform-based patterns (Renko etc.) still render through the plain candlestick series -
-    // only the data feeding it differs. See dashboard-chart-types.js.
+    // A transform pattern renders through whichever SeriesType its definition names - candles
+    // for Renko and friends, its own renderer for Point & Figure and Kagi. See
+    // seriesRenderType() in dashboard-chart-types.js.
     const savedType = this._chartType?.type || 'candlestick';
-    const isTransformType = typeof this.isTransformSeriesType === 'function' && this.isTransformSeriesType(savedType);
-    this.candleSeries = chart.addSeries(isTransformType ? 'candlestick' : savedType);
+    this.candleSeries = chart.addSeries(
+      typeof this.seriesRenderType === 'function' ? this.seriesRenderType(savedType) : savedType,
+    );
 
     // Hidden overlay scale ('' priceScaleId): the histogram shares the price pane rather than
     // getting one of its own, same as the old volume-pane-margin trick.
@@ -471,6 +497,24 @@ Object.assign(DashboardApp.prototype, {
     });
     // Pin volume to the bottom fifth so it reads as context, not as a second chart.
     this.volumeSeries.priceScale().setOptions({ marginTop: 0.8, marginBottom: 0 });
+
+    // Session reference levels, drawn by the engine rather than by price lines of this app's
+    // own: it takes the session from the GAPS IN THE BARS rather than from a calendar midnight,
+    // and follows the viewport's right edge, so scrolling back through history moves the
+    // previous close back with it - which a line pinned to one computed price cannot do.
+    // Previous close carries an axis tag (it is the number a trader quotes against); the session
+    // extremes are lines only, so the axis does not fill up with three tags at once.
+    if (window.OAC.PriceLevels) {
+      this._priceLevels = new window.OAC.PriceLevels({
+        timezone: CHART_TIMEZONE,
+        levels: {
+          previousClose: { line: true, label: true },
+          sessionHigh: { line: true, label: false },
+          sessionLow: { line: true, label: false },
+        },
+      });
+      chart.addPrimitive(this._priceLevels, 0);
+    }
   },
 
   /**
@@ -682,6 +726,8 @@ Object.assign(DashboardApp.prototype, {
     this.positionLine = null;
     this.levelLines = null;
     this._priceLines = [];
+    // The primitive was attached to the chart that just went away.
+    this._priceLevels = null;
     if (typeof this.destroyOptionPanes === 'function') this.destroyOptionPanes();
     this.unsyncCharts();
     // Heights are read off the chart's own pane separators, so this has to happen before the

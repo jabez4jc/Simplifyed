@@ -2,15 +2,17 @@ import EventEmitter from 'events';
 import WebSocket from 'ws';
 import { log } from '../core/logger.js';
 import { isCryptoBroker, isCryptoExchange } from '../utils/broker-type.util.js';
-import { isQuoteEndpointBlackout } from './instance-health.service.js';
-import { toISTDate } from '../utils/time.js';
+import { backoffMs } from '../integrations/openalgo/instance-health-tracker.service.js';
 
 const MAX_SYMBOLS_PER_INSTANCE = 500;
 const RETRY_MS = 3000;
+// Reconnect delay doubles per consecutive failed attempt up to this cap, and resets once a
+// connection authenticates. This replaces the fixed IST quote-blackout window: a server that is
+// down overnight is retried every few minutes instead of every 3s, and picked up again within
+// RETRY_MAX_MS of coming back, whatever the time. The app never gives up at this layer.
+const RETRY_MAX_MS = 5 * 60 * 1000;
 // Reconnects for several connections dropped by the same event (a shared proxy blip) are spread
-// out rather than firing in lockstep - a small jitter, not a real backoff curve, since RETRY_MS
-// itself never grows (this app always wants to keep trying, never gives up onto REST at this
-// layer - see openalgo-ws-heartbeat.test.js).
+// out rather than firing in lockstep.
 const RETRY_JITTER_MS = 600;
 // A connection can go "silently dead" - TCP still open, broker-side gone (common behind proxies/
 // load balancers) - with no `close` event ever firing. Nothing here previously asked "are we
@@ -21,42 +23,70 @@ const RETRY_JITTER_MS = 600;
 // the exact same path a real `close` event already uses.
 const WS_LIVENESS_CHECK_MS = 15 * 1000;
 const WS_LIVENESS_TIMEOUT_MS = 45 * 1000;
-const QUOTE_BLACKOUT_END = { hour: 8, minute: 45 };
 const ORDER_UPDATE_CACHE_MAX = 500;
 const ORDER_UPDATE_CACHE_TTL_MS = 10 * 60 * 1000;
 
-function msUntilQuoteBlackoutEnds() {
-  const ist = toISTDate();
-  const nowMinutes = ist.getHours() * 60 + ist.getMinutes();
-  const endMinutes = QUOTE_BLACKOUT_END.hour * 60 + QUOTE_BLACKOUT_END.minute;
-  if (nowMinutes >= endMinutes) return 0;
-  const msUntil = (endMinutes - nowMinutes) * 60 * 1000;
-  const extraMs = (60 - ist.getSeconds()) * 1000 - ist.getMilliseconds();
-  return Math.max(0, msUntil + extraMs);
+const keyToSymbol = (key) => {
+  const [exchange, symbol] = key.split('|');
+  return { exchange, symbol };
+};
+
+/**
+ * The frames that move a connection from `current` to `desired` quote subscriptions: one batched
+ * `unsubscribe` for what is no longer wanted and one batched `subscribe` for what is new, per the
+ * v1 WebSocket spec (`symbols` array, mode by name). Sending one frame per symbol, and never
+ * unsubscribing, used to leave every symbol a watchlist ever held streaming for the life of the
+ * socket.
+ */
+export function quoteSubscriptionFrames(current, desired) {
+  const frames = [];
+  const removed = [...current].filter((k) => !desired.has(k));
+  const added = [...desired].filter((k) => !current.has(k));
+  if (removed.length) {
+    frames.push({
+      action: 'unsubscribe',
+      symbols: removed.map((k) => ({ ...keyToSymbol(k), mode: 'Quote' })),
+    });
+  }
+  if (added.length) {
+    frames.push({ action: 'subscribe', mode: 'Quote', symbols: added.map(keyToSymbol) });
+  }
+  return frames;
 }
 
-function serializeSubscribeQuotes(symbols) {
-  return symbols.map((s) => ({
-    action: 'subscribe',
-    symbol: s.symbol,
-    exchange: s.exchange,
-    mode: 2, // Quote mode (includes LTP)
-  }));
+/** One batched Depth `subscribe` per requested level, for entries not already subscribed. */
+export function depthSubscriptionFrames(current, desired) {
+  const byLevel = new Map();
+  for (const [key, entry] of desired) {
+    if (current.get(key) === entry.depth_level) continue;
+    if (!byLevel.has(entry.depth_level)) byLevel.set(entry.depth_level, []);
+    byLevel.get(entry.depth_level).push({ exchange: entry.exchange, symbol: entry.symbol });
+  }
+  return [...byLevel].map(([depth, symbols]) => ({ action: 'subscribe', mode: 'Depth', depth, symbols }));
 }
 
-function serializeSubscribeDepth(entries) {
-  return entries.map((s) => {
-    const payload = {
-      action: 'subscribe',
-      symbol: s.symbol,
-      exchange: s.exchange,
-      mode: 3, // Depth mode
-    };
-    if (s.depth_level) {
-      payload.depth_level = s.depth_level;
-    }
-    return payload;
-  });
+/**
+ * A `market_data` frame as the cache wants it. The spec puts `symbol`/`exchange` on the envelope
+ * and only prices in `data`; reading them from `data` worked only for brokers that happen to
+ * repeat them there.
+ */
+export function marketDataPayload(msg) {
+  const q = msg?.data;
+  if (msg?.type !== 'market_data' || !q) return null;
+  return {
+    ...q,
+    exchange: String(msg.exchange || q.exchange || '').toUpperCase(),
+    symbol: String(msg.symbol || q.symbol || '').toUpperCase(),
+    mode: msg.mode,
+  };
+}
+
+/**
+ * The spec warns a broker WebSocket and an HTTPS postback can deliver the same transition twice,
+ * and says to deduplicate on these three fields.
+ */
+export function orderUpdateKey(order) {
+  return `${order?.orderid}|${order?.order_status}|${order?.filled_quantity}`;
 }
 
 /**
@@ -109,24 +139,24 @@ class OpenAlgoWsConnection {
     this.onStatus = onStatus;
     this.onDepth = null;
     this.onOrderUpdate = null;
+    this.onOrderStream = null; // (instanceId, live) - see _setOrderStream
+    this.ordersSubscribed = false;
     this.ws = null;
     this.connected = false;
+    this.authed = false;
+    this.closed = false;
     this.desired = new Set();
     this.depthDesired = new Map(); // key -> { exchange, symbol, depth_level }
+    // What the server currently holds for this socket - reset on every (re)connect, since a new
+    // socket starts with nothing subscribed.
+    this.subscribed = new Set();
+    this.depthSubscribed = new Map(); // key -> depth level
     this._connect();
   }
 
   _connect() {
+    if (this.closed) return;
     try {
-      if (isQuoteEndpointBlackout()) {
-        const delay = msUntilQuoteBlackoutEnds() || 5 * 60 * 1000;
-        log.info('OpenAlgo WS connect skipped during quote blackout', {
-          instance: this.instance.name || this.instance.id,
-          retryInMs: delay,
-        });
-        setTimeout(() => this._connect(), delay);
-        return;
-      }
       const wsUrl = buildWsUrl(this.instance);
       if (!wsUrl) {
         log.warn('OpenAlgo WS missing URL', { instance: this.instance.name || this.instance.id });
@@ -137,7 +167,13 @@ class OpenAlgoWsConnection {
       this.ws.on('message', (data) => this._onMessage(data));
       this.ws.on('close', () => this._scheduleReconnect());
       this.ws.on('error', (err) => {
-        log.warn('OpenAlgo WS error', { instance: this.instance.name || this.instance.id, error: err.message });
+        // First failure of a streak is worth a warning; the rest of an outage is not.
+        const level = this.reconnectAttempts ? 'debug' : 'warn';
+        log[level]('OpenAlgo WS error', {
+          instance: this.instance.name || this.instance.id,
+          error: err.message,
+          reconnectAttempts: this.reconnectAttempts || 0,
+        });
       });
       // Protocol-level ping: the `ws` library answers this automatically at the socket level
       // with no application code required. This handler is redundant with that default and is
@@ -157,13 +193,12 @@ class OpenAlgoWsConnection {
     // A fresh connection has heard nothing yet - stamp it now so the liveness watchdog's first
     // check doesn't immediately treat it as stale before the first real message arrives.
     this.lastMessageAt = Date.now();
+    this.authed = false;
+    this.subscribed = new Set();
+    this.depthSubscribed = new Map();
+    // Subscriptions wait for the auth ack (see _onMessage): the spec authenticates first, and
+    // frames sent before it lands are refused by the proxy.
     this._send({ action: 'authenticate', api_key: this.instance.api_key });
-    // Account-level order fill/status stream - same connection as quotes, just a second
-    // subscription. Brokers without a push order-update mechanism simply never send this type;
-    // callers relying on it (see strategyService.reconcileOrderUpdate) already have a
-    // polling-based fallback for those.
-    this._send({ action: 'subscribe_orders' });
-    this._syncSubscriptions();
     this.onStatus?.(this.instance.id, 'connected');
   }
 
@@ -174,15 +209,9 @@ class OpenAlgoWsConnection {
     this.lastMessageAt = Date.now();
     try {
       const msg = JSON.parse(raw.toString());
-      if (msg.type === 'market_data' && msg.data) {
-        const q = msg.data;
-        const payload = {
-          ...q,
-          exchange: (q.exchange || '').toUpperCase(),
-          symbol: (q.symbol || '').toUpperCase(),
-          mode: msg.mode,
-        };
-        if (msg.mode === 3 || q?.depth) {
+      const payload = marketDataPayload(msg);
+      if (payload) {
+        if (msg.mode === 3 || payload.depth) {
           this.onDepth?.(this.instance.id, payload);
         } else {
           this.onQuote?.(this.instance.id, payload);
@@ -191,8 +220,25 @@ class OpenAlgoWsConnection {
       if (msg.type === 'order_update') {
         this.onOrderUpdate?.(this.instance.id, msg);
       }
-      if (msg.type === 'auth' && msg.status !== 'success') {
-        log.warn('OpenAlgo WS auth failed', { instance: this.instance.name || this.instance.id, message: msg.message });
+      // The order stream counts as live only once OpenAlgo acknowledges subscribe_orders - that
+      // ack, not the socket being open, is what REST order polling steps back for.
+      if (msg.type === 'subscribe_orders') {
+        this._setOrderStream(msg.status === 'success');
+        if (msg.status !== 'success') {
+          log.warn('OpenAlgo WS order stream refused', { instance: this.instance.name || this.instance.id, message: msg.message });
+        }
+      }
+      if (msg.type === 'auth') {
+        if (msg.status === 'success') {
+          this.authed = true;
+          this.reconnectAttempts = 0;
+          // Account-level order fill/status stream - same connection as quotes. Brokers without
+          // a push mechanism fall back to server-side orderbook polling upstream.
+          this._send({ action: 'subscribe_orders' });
+          this._syncSubscriptions();
+        } else {
+          log.warn('OpenAlgo WS auth failed', { instance: this.instance.name || this.instance.id, message: msg.message });
+        }
       }
       // Application-level heartbeat, distinct from the protocol-level ping the `ws` library
       // already auto-answers above. Some WS deployments send this instead (or as well) because
@@ -205,13 +251,36 @@ class OpenAlgoWsConnection {
     }
   }
 
+  /**
+   * Drop the current socket without letting its own `close` event schedule another reconnect.
+   * Terminating with the listeners still attached made every watchdog-triggered reconnect (and
+   * every stop()) fire `close` -> _scheduleReconnect a second time, leaving two sockets per
+   * instance - or, after stop(), a socket nobody owned.
+   */
+  _dropSocket() {
+    if (!this.ws) return;
+    this.ws.removeAllListeners();
+    this.ws.on('error', () => { /* late error from a socket already abandoned */ });
+    try { this.ws.terminate(); } catch (_) { /* socket is already closed */ }
+    this.ws = null;
+  }
+
+  _setOrderStream(live) {
+    if (this.ordersSubscribed === live) return;
+    this.ordersSubscribed = live;
+    this.onOrderStream?.(this.instance.id, live);
+  }
+
   _scheduleReconnect() {
-    if (this.ws) {
-      try { this.ws.terminate(); } catch (_) { /* socket is already closed */ }
-    }
+    this._dropSocket();
     this.connected = false;
+    this.authed = false;
+    this._setOrderStream(false);
+    if (this.closed) return;
+    this.reconnectAttempts = (this.reconnectAttempts || 0) + 1;
     const jitter = Math.round((Math.random() * 2 - 1) * RETRY_JITTER_MS);
-    setTimeout(() => this._connect(), Math.max(500, RETRY_MS + jitter));
+    const delay = Math.max(500, backoffMs(this.reconnectAttempts, RETRY_MS, RETRY_MAX_MS) + jitter);
+    setTimeout(() => this._connect(), delay);
     this.onStatus?.(this.instance.id, 'reconnecting');
   }
 
@@ -221,15 +290,11 @@ class OpenAlgoWsConnection {
   }
 
   close() {
-    if (this.ws) {
-      try { this.ws.terminate(); } catch (_) { /* socket is already closed */ }
-    }
+    this.closed = true;
+    this._dropSocket();
     this.connected = false;
-  }
-
-  setSubscriptions(symbols) {
-    this.desired = new Set(symbols.map((s) => `${s.exchange}|${s.symbol}`));
-    this._syncSubscriptions();
+    this.authed = false;
+    this._setOrderStream(false);
   }
 
   setDepthSubscription(symbol, depthLevel = 5) {
@@ -242,19 +307,11 @@ class OpenAlgoWsConnection {
   }
 
   _syncSubscriptions() {
-    if (!this.connected) return;
-    if (this.desired.size === 0 && this.depthDesired.size === 0) return;
-    const symbols = Array.from(this.desired).map((key) => {
-      const [exchange, symbol] = key.split('|');
-      return { exchange, symbol };
-    });
-    if (symbols.length > 0) {
-      serializeSubscribeQuotes(symbols).forEach((msg) => this._send(msg));
-    }
-    if (this.depthDesired.size > 0) {
-      const depthEntries = Array.from(this.depthDesired.values());
-      serializeSubscribeDepth(depthEntries).forEach((msg) => this._send(msg));
-    }
+    if (!this.connected || !this.authed) return;
+    quoteSubscriptionFrames(this.subscribed, this.desired).forEach((msg) => this._send(msg));
+    this.subscribed = new Set(this.desired);
+    depthSubscriptionFrames(this.depthSubscribed, this.depthDesired).forEach((msg) => this._send(msg));
+    this.depthSubscribed = new Map([...this.depthDesired].map(([k, e]) => [k, e.depth_level]));
   }
 }
 
@@ -264,6 +321,7 @@ class OpenAlgoWsService extends EventEmitter {
     this.connections = new Map(); // instanceId -> connection
     this.instances = [];
     this.orderUpdateCache = new Map(); // orderid -> { order, receivedAt } - bounded, TTL'd below
+    this.orderUpdateSeen = new Map(); // orderUpdateKey -> receivedAt, for the spec's dedupe rule
     this._livenessInterval = null;
   }
 
@@ -281,7 +339,9 @@ class OpenAlgoWsService extends EventEmitter {
         );
         const conn = this.connections.get(inst.id);
         conn.onDepth = (instanceId, depth) => this.emit('depth', { instanceId, depth });
+        conn.onOrderStream = (instanceId, live) => this.emit('order_stream', { instanceId, live });
         conn.onOrderUpdate = (instanceId, order) => {
+          if (this._isDuplicateOrderUpdate(order)) return;
           this._recordOrderUpdate(order);
           this.emit('order_update', { instanceId, order });
         };
@@ -301,6 +361,9 @@ class OpenAlgoWsService extends EventEmitter {
     this._livenessInterval = setInterval(() => {
       const now = Date.now();
       for (const conn of this.connections.values()) {
+        // The spec's `ping` action answers with `pong`, so a socket with nothing subscribed
+        // (after hours, or orders-only) still proves it is alive instead of being torn down.
+        if (conn.authed) conn._send({ action: 'ping' });
         if (!isConnectionStale(conn, now)) continue;
         log.warn('OpenAlgo WS liveness check failed - reconnecting', {
           instance: conn.instance?.name || conn.instance?.id,
@@ -317,10 +380,6 @@ class OpenAlgoWsService extends EventEmitter {
    * @param {Array<{symbol:string, exchange:string}>} symbols
    */
   syncAll(symbols = [], preferredInstances = new Map()) {
-    if (isQuoteEndpointBlackout()) {
-      this.stop();
-      return;
-    }
     if (this.connections.size === 0 && this.instances.length > 0) {
       this.start(this.instances);
     }
@@ -331,7 +390,9 @@ class OpenAlgoWsService extends EventEmitter {
     }));
 
     const conns = Array.from(this.connections.values());
-    conns.forEach((c) => c.setSubscriptions([])); // reset
+    // Reset the wanted set only; _syncSubscriptions below diffs it against what each socket
+    // already holds, so an unchanged symbol is neither unsubscribed nor resubscribed.
+    conns.forEach((c) => c.desired.clear());
 
     /**
      * Round-robin never checked whether a connection's BROKER could serve a symbol's exchange
@@ -432,8 +493,30 @@ class OpenAlgoWsService extends EventEmitter {
     return true;
   }
 
+  /**
+   * Whether this instance's order updates are arriving by push right now: socket open,
+   * authenticated, and `subscribe_orders` acknowledged. REST order polling steps back only while
+   * this is true (see polling.service.js).
+   */
+  isOrderStreamLive(instanceId) {
+    const conn = this.connections.get(instanceId);
+    return Boolean(conn?.connected && conn.authed && conn.ordersSubscribed);
+  }
+
   hasActiveConnections() {
     return this.getActiveConnectionCount() > 0;
+  }
+
+  _isDuplicateOrderUpdate(order) {
+    const key = orderUpdateKey(order);
+    const seen = this.orderUpdateSeen.get(key);
+    const now = Date.now();
+    if (seen && now - seen < ORDER_UPDATE_CACHE_TTL_MS) return true;
+    this.orderUpdateSeen.set(key, now);
+    if (this.orderUpdateSeen.size > ORDER_UPDATE_CACHE_MAX) {
+      this.orderUpdateSeen.delete(this.orderUpdateSeen.keys().next().value);
+    }
+    return false;
   }
 
   _recordOrderUpdate(order) {

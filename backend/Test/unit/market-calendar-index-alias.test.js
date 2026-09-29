@@ -73,3 +73,59 @@ test('an exchange with no alias is unaffected', async () => {
   assert.strictEqual(await svc.isExchangeOpen('CRYPTO'), false, 'no CRYPTO entry in this fixture');
   mock.timers.reset();
 });
+
+test('isInstanceMarketOpen gates background polling: closed after MCX, crypto always open, unknown calendar fails open', async () => {
+  const svc = await loadServiceWithTimings([NSE_WINDOW, MCX_WINDOW], 1785180000000); // after MCX end_time
+  const indian = { broker: 'fyers' };
+  assert.strictEqual(await svc.isInstanceMarketOpen(indian), true, 'no timings loaded yet - fail open');
+  svc.timingsCache.set(svc._formatDate(), { data: [], fetchedAt: Date.now() });
+  assert.strictEqual(await svc.isInstanceMarketOpen(indian), false, 'every Indian exchange closed');
+  assert.strictEqual(await svc.isInstanceMarketOpen({ broker: 'deltaexchange' }), true);
+  mock.timers.reset();
+});
+
+/**
+ * A trading holiday where MCX runs only its evening session (e.g. Dussehra, 20 Oct 2026): NSE,
+ * BSE, NFO and BFO are shut all day, MCX opens at 17:00. Index F&O must read closed all day,
+ * MCX F&O closed in the morning and open in the evening, and crypto open throughout.
+ */
+test('MCX evening session on a trading holiday: index F&O closed, MCX F&O evening only, crypto open', async () => {
+  const at = (hhmm) => new Date(`2026-10-20T${hhmm}:00+05:30`).getTime();
+  const svc = await loadServiceWithTimings([], at('11:00'));
+  svc.getMarketHolidays = async () => new Map([['2026-10-20', {
+    date: '2026-10-20',
+    holiday_type: 'TRADING_HOLIDAY',
+    closedExchanges: new Set(['NSE', 'BSE', 'NFO', 'BFO', 'CDS']),
+    openExchanges: new Map([['MCX', { start: at('17:00'), end: at('23:55') }]]),
+  }]]);
+  svc.timingsCache.set('2026-10-20', { data: [], fetchedAt: Date.now() });
+  const indian = { broker: 'kotak' };
+  const crypto = { broker: 'deltaexchange' };
+
+  for (const ex of ['NFO', 'BFO', 'NSE_INDEX', 'BSE_INDEX', 'MCX']) {
+    assert.strictEqual(await svc.isExchangeOpen(ex), false, `${ex} is shut at 11:00 on the holiday`);
+  }
+  assert.strictEqual(await svc.isInstanceMarketOpen(indian), false, 'no Indian session at 11:00 - no polling');
+  assert.strictEqual(await svc.isInstanceMarketOpen(crypto), true);
+
+  mock.timers.setTime(at('18:30'));
+  assert.strictEqual(await svc.isExchangeOpen('MCX'), true, 'MCX evening session');
+  assert.strictEqual(await svc.isExchangeOpen('NFO'), false, 'index F&O stays shut in the evening');
+  assert.strictEqual(await svc.isInstanceMarketOpen(indian), true, 'MCX positions need polling in the evening');
+  mock.timers.reset();
+});
+
+test('an ordinary day: NFO/BFO close with the equity session, MCX runs to 23:55', async () => {
+  const at = (hhmm) => new Date(`2026-10-21T${hhmm}:00+05:30`).getTime();
+  const window = (exchange, from, to) => ({ exchange, start_time: at(from), end_time: at(to) });
+  const svc = await loadServiceWithTimings(
+    [window('NFO', '09:15', '15:30'), window('BFO', '09:15', '15:30'), window('MCX', '09:00', '23:55')],
+    at('15:45')
+  );
+  assert.strictEqual(await svc.isExchangeOpen('NFO'), false);
+  assert.strictEqual(await svc.isExchangeOpen('BFO'), false);
+  assert.strictEqual(await svc.isExchangeOpen('MCX'), true);
+  mock.timers.setTime(at('23:56'));
+  assert.strictEqual(await svc.isExchangeOpen('MCX'), false, 'MCX closes at 23:55');
+  mock.timers.reset();
+});

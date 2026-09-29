@@ -40,7 +40,6 @@ test('the trading knobs an operator actually needs are editable', () => {
     'market_data_feed.quote_ttl_idle_ms',
     'market_data_feed.position_interval_active_ms',
     'market_data_feed.max_order_spread_pct',
-    'market_hours.quote_blackout_start',
     'rate_limits.rps_per_instance',
     'openalgo.request_timeout_ms',
     'instance_health.ping_healthy_interval_ms',
@@ -57,18 +56,6 @@ test('numeric bounds reject values that would hammer a broker', () => {
   assert.ok(validateValue('rate_limits.rps_per_instance', 0));
   assert.ok(validateValue('rate_limits.rps_per_instance', 10000));
   assert.strictEqual(validateValue('rate_limits.rps_per_instance', 5), null);
-});
-
-test('blackout windows must be 24-hour HH:MM', () => {
-  assert.strictEqual(validateValue('market_hours.quote_blackout_start', '08:45'), null);
-  assert.strictEqual(validateValue('market_hours.quote_blackout_start', '00:00'), null);
-  assert.strictEqual(validateValue('market_hours.quote_blackout_start', '23:59'), null);
-  for (const bad of ['8:45', '24:00', '08:60', 'morning', '', '0845']) {
-    assert.ok(
-      validateValue('market_hours.quote_blackout_start', bad),
-      `${JSON.stringify(bad)} must be rejected`
-    );
-  }
 });
 
 test('every field is well-formed and uniquely keyed', () => {

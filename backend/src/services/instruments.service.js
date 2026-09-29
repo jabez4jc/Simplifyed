@@ -14,7 +14,8 @@ import { toISTDate } from '../utils/time.js';
 import { isTestMode } from '../core/config.js';
 import { toISTISOString } from '../utils/time.js';
 import cron from 'node-cron';
-import { isCryptoBroker } from '../utils/broker-type.util.js';
+import { isCryptoBroker, isCryptoExchange } from '../utils/broker-type.util.js';
+import { parseExpiry, upcomingExpiries, isContractExpired } from '../utils/underlying.util.js';
 
 const MONTH_ABBR_TO_NUMBER = {
   JAN: '01', FEB: '02', MAR: '03', APR: '04',
@@ -72,12 +73,63 @@ class InstrumentsService {
       timezone: 'Asia/Kolkata',
     });
     log.info('Crypto instruments daily refresh cron scheduled (17:31 IST)');
+    // Expired contracts cease to exist: purge after crypto's 17:30 lapse (plus the sync buffer in
+    // underlying.util.js) and just after midnight for Indian segments, which settle end of day.
+    this.expiryPurgeCrons = ['50 17 * * *', '5 0 * * *'].map((when) =>
+      cron.schedule(when, () => this.purgeExpired().catch((error) => log.error('Expired instruments purge failed', error)), {
+        timezone: 'Asia/Kolkata',
+      }));
+    this.purgeExpired().catch((error) => log.error('Expired instruments purge failed', error));
   }
 
   stopCryptoDailyRefresh() {
+    (this.expiryPurgeCrons || []).forEach((job) => job.stop());
+    this.expiryPurgeCrons = [];
     if (!this.cryptoRefreshCron) return;
     this.cryptoRefreshCron.stop();
     this.cryptoRefreshCron = null;
+  }
+
+  /**
+   * Expired contracts cease to exist, so they must not stay in the cache - an order, a lot or
+   * tick lookup, or a position check must never resolve against one. Indian segments settle at
+   * end of day; crypto lapses at 5:30 PM IST (upcomingExpiries holds the rule). Rows with no
+   * expiry (cash, indices, perpetuals) and unparseable expiries are left alone.
+   * @returns {Promise<number>} rows removed
+   */
+  async purgeExpired(now = new Date()) {
+    const rows = await db.all(
+      "SELECT exchange, expiry, COUNT(*) AS n FROM instruments WHERE expiry IS NOT NULL AND expiry != '' GROUP BY exchange, expiry"
+    );
+    let removed = 0;
+    for (const row of rows) {
+      if (!parseExpiry(row.expiry)) continue;
+      const alive = upcomingExpiries([row.expiry], now, { crypto: isCryptoExchange(row.exchange) }).length > 0;
+      if (alive) continue;
+      await db.run('DELETE FROM instruments WHERE exchange = ? AND expiry = ?', [row.exchange, row.expiry]);
+      removed += row.n;
+    }
+    if (removed > 0) log.info('Purged expired contracts from the instruments cache', { count: removed });
+    await this.disableExpiredWatchlistSymbols(now);
+    return removed;
+  }
+
+  /**
+   * Watchlist rows for expired contracts are switched off (is_enabled = 0) so nothing - polling,
+   * WS subscriptions, quick orders, auto-exit - treats them as live. The rows stay, flagged
+   * is_expired, so the operator sees what expired and can remove it or add the new contract.
+   */
+  async disableExpiredWatchlistSymbols(now = new Date()) {
+    const rows = await db.all('SELECT id, exchange, symbol, trading_symbol, expiry FROM watchlist_symbols WHERE is_enabled = 1')
+      .catch(() => []);
+    const expired = rows.filter((row) => isContractExpired(row, now));
+    for (const row of expired) {
+      await db.run('UPDATE watchlist_symbols SET is_enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [row.id]);
+    }
+    if (expired.length > 0) {
+      log.info('Disabled expired watchlist symbols', { count: expired.length, reason: expired.map((r) => r.symbol).join(', ') });
+    }
+    return expired.length;
   }
 
   async _refreshCryptoInstruments() {
@@ -357,6 +409,7 @@ class InstrumentsService {
         }
       });
 
+      await this.purgeExpired();
       const duration = Date.now() - startTime;
 
       // Update refresh log with success
@@ -1058,6 +1111,7 @@ class InstrumentsService {
         SELECT id, symbol, name FROM instruments
       `);
 
+      await this.purgeExpired();
       const duration = Date.now() - startTime;
 
       // Get final count
@@ -1400,6 +1454,7 @@ class InstrumentsService {
         });
       }
 
+      await this.purgeExpired();
       const duration = Date.now() - startTime;
 
       // Get final count

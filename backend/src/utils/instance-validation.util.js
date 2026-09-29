@@ -19,17 +19,30 @@ import {
  * Normalize and validate instance data
  * @param {Object} data - Raw instance payload
  * @param {boolean} isUpdate - Whether this is a partial update (relaxes required-field checks)
+ *
+ * `isUpdate` relaxes REQUIREDNESS - a partial update need not carry every field. It does not
+ * relax VALIDITY. A field the caller actually sent, with a value that cannot be stored, is an
+ * error in both modes.
+ *
+ * This distinction used to be missing: on update, anything that failed to parse was dropped from
+ * the result instead of raising, so the UPDATE ran without it and the API answered 200 "Instance
+ * updated successfully". An operator who mistyped a host URL, or blanked a name, was told the
+ * edit had been saved when nothing had changed - the failure mode you cannot detect by looking
+ * at the screen. See Test/integration/instances.test.js.
  */
 export function normalizeInstanceData(data, isUpdate = false) {
   const normalized = {};
   const errors = [];
 
+  // Sent-but-empty means "clear this" for a nullable column, and is an error for a required one.
+  const isBlank = (v) => v === null || v === '' || (typeof v === 'string' && !v.trim());
+
   // Name
   if (data.name !== undefined) {
     const name = sanitizeString(data.name);
-    if (!name && !isUpdate) {
+    if (!name) {
       errors.push({ field: 'name', message: 'Name is required' });
-    } else if (name) {
+    } else {
       normalized.name = name;
     }
   }
@@ -37,9 +50,9 @@ export function normalizeInstanceData(data, isUpdate = false) {
   // Host URL
   if (data.host_url !== undefined) {
     const hostUrl = normalizeUrl(data.host_url);
-    if (!hostUrl && !isUpdate) {
+    if (!hostUrl) {
       errors.push({ field: 'host_url', message: 'Valid host URL is required' });
-    } else if (hostUrl) {
+    } else {
       normalized.host_url = hostUrl;
     }
   }
@@ -47,9 +60,9 @@ export function normalizeInstanceData(data, isUpdate = false) {
   // API Key
   if (data.api_key !== undefined) {
     const apiKey = sanitizeApiKey(data.api_key);
-    if (!apiKey && !isUpdate) {
+    if (!apiKey) {
       errors.push({ field: 'api_key', message: 'API key is required' });
-    } else if (apiKey) {
+    } else {
       normalized.api_key = apiKey;
     }
   }
@@ -71,18 +84,23 @@ export function normalizeInstanceData(data, isUpdate = false) {
     normalized.multiplier = 1;
   }
 
-  // Session-level risk controls
-  if (data.session_target_profit !== undefined) {
-    const val = parseFloat(data.session_target_profit);
-    if (!Number.isNaN(val)) {
-      normalized.session_target_profit = val;
+  // Session-level risk controls.
+  //
+  // Both columns are nullable and both are safety limits, so an emptied box has to mean "no
+  // limit" and reach the database as NULL. Dropping the field instead left the OLD figure in
+  // force while the form showed it as cleared - an instance that keeps cutting off at a target
+  // the operator believes they removed.
+  for (const field of ['session_target_profit', 'session_max_loss']) {
+    if (data[field] === undefined) continue;
+    if (isBlank(data[field])) {
+      normalized[field] = null;
+      continue;
     }
-  }
-
-  if (data.session_max_loss !== undefined) {
-    const val = parseFloat(data.session_max_loss);
-    if (!Number.isNaN(val)) {
-      normalized.session_max_loss = val;
+    const val = parseFloat(data[field]);
+    if (Number.isNaN(val)) {
+      errors.push({ field, message: `${field} must be a number, or empty to clear it` });
+    } else {
+      normalized[field] = val;
     }
   }
 
@@ -91,12 +109,15 @@ export function normalizeInstanceData(data, isUpdate = false) {
     normalized.broker = sanitizeString(data.broker);
   }
 
-  // Market data role
+  // Market data role. The column has a CHECK constraint, so an unrecognised value could never
+  // have been stored anyway - silently ignoring it just moved the failure out of sight.
   if (data.market_data_role !== undefined) {
     const validRoles = ['none', 'primary', 'secondary'];
     const role = String(data.market_data_role).toLowerCase();
     if (validRoles.includes(role)) {
       normalized.market_data_role = role;
+    } else {
+      errors.push({ field: 'market_data_role', message: `market_data_role must be one of: ${validRoles.join(', ')}` });
     }
   }
 

@@ -13,4 +13,18 @@ export function isCryptoExchange(exchange) {
   return (exchange || '').toUpperCase() === 'CRYPTO';
 }
 
+/**
+ * SEBI requires retail algo orders on Indian exchanges (NSE, BSE, NFO, BFO, MCX, CDS, ...) to be
+ * LIMIT orders. Crypto is outside that rule and Delta Exchange accepts MARKET orders. An empty
+ * exchange counts as Indian: when in doubt, refuse MARKET.
+ */
+export function requiresLimitOrders(exchange) {
+  return !isCryptoExchange(exchange);
+}
+
+/** Can this broker take a MARKET order on this exchange? Broker support alone is not enough. */
+export function marketOrderAllowed(brokerSupportsMarket, exchange) {
+  return Boolean(brokerSupportsMarket) && !requiresLimitOrders(exchange);
+}
+
 export { CRYPTO_BROKERS };

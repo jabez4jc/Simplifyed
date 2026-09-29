@@ -5,7 +5,7 @@
  *
  * Read-only with respect to trading: it places no orders and touches no position state. The
  * only broker call it makes is `history`, which already routes through the OpenAlgo client's
- * rate limiter, retry policy, circuit breaker and blackout guard.
+ * rate limiter, retry policy and circuit breaker.
  *
  * Instance selection is deliberately asymmetric to the rest of the app. Orders fan out to every
  * associated instance; candles come from exactly ONE. OHLC for a symbol is the same market fact
@@ -143,7 +143,7 @@ class CandleService {
    * Fetch candles for a range, preferring cache.
    *
    * Returns `{ candles, source, stale, instanceId }`. `stale: true` means the broker could not
-   * be reached (blackout, unhealthy instance, no pool) and the caller is looking at cache only -
+   * be reached (unreachable instance, no pool) and the caller is looking at cache only -
    * surfaced so the UI can say so rather than implying the data is live.
    */
   async getCandles({ exchange, symbol, timeframe, from, to }) {
@@ -191,7 +191,7 @@ class CandleService {
 
       return { candles: cached, source: 'broker', stale: false, instanceId: instance.id };
     } catch (error) {
-      // Blackout, unhealthy instance or an unsupported symbol. Cached candles are still the
+      // Unreachable instance or an unsupported symbol. Cached candles are still the
       // best answer available, so serve them and mark the response stale rather than 500.
       log.warn('Candle fetch failed, serving cache', {
         exchange: ex, symbol: sym, error: error.message,

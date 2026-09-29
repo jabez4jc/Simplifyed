@@ -79,6 +79,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           <input
             type="text"
             class="form-input w-full max-w-md"
+            aria-label="Search instances"
             placeholder="Search instances by name, broker, URL, or role..."
             value="${Utils.escapeHTML(this.instanceSearchQuery || '')}"
             oninput="app.handleInstanceSearch(this.value)"

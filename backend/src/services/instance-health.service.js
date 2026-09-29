@@ -1,12 +1,12 @@
 import cron from 'node-cron';
 import { log } from '../core/logger.js';
 import settingsService from './settings.service.js';
-import config from '../core/config.js';
 import instanceService from './instance.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import db from '../core/database.js';
-import { toISTDate, toISTISOString } from '../utils/time.js';
+import { toISTISOString } from '../utils/time.js';
 import marketCalendarService from './market-calendar.service.js';
+import { isCryptoBroker, isCryptoExchange } from '../utils/broker-type.util.js';
 import { ValidationError } from '../core/errors.js';
 
 async function createNotification(title, body, severity = 'warn') {
@@ -33,40 +33,6 @@ const DEFAULT_TESTS = {
   // degraded once the contract expires. Admins can add current contracts from Settings.
   optionchain: [],
 };
-
-function getIstDate() {
-  return toISTDate();
-}
-
-function _isWithinWindow(istDate, startHour, startMinute, endHour, endMinute) {
-  const minutes = istDate.getHours() * 60 + istDate.getMinutes();
-  const start = startHour * 60 + startMinute;
-  const end = endHour * 60 + endMinute;
-  return minutes >= start && minutes < end;
-}
-
-function _parseTimeWindow(value, fallback) {
-  if (!value || typeof value !== 'string') return fallback;
-  const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
-  if (!match) return fallback;
-  const hour = Math.min(23, Math.max(0, parseInt(match[1], 10)));
-  const minute = Math.min(59, Math.max(0, parseInt(match[2], 10)));
-  return { hour, minute };
-}
-
-function isQuoteEndpointBlackout() {
-  const ist = getIstDate();
-  const start = _parseTimeWindow(config.marketHours?.quoteBlackoutStart, { hour: 2, minute: 0 });
-  const end = _parseTimeWindow(config.marketHours?.quoteBlackoutEnd, { hour: 8, minute: 45 });
-  return _isWithinWindow(ist, start.hour, start.minute, end.hour, end.minute);
-}
-
-function isGeneralEndpointBlackout() {
-  const ist = getIstDate();
-  const start = _parseTimeWindow(config.marketHours?.generalBlackoutStart, { hour: 3, minute: 0 });
-  const end = _parseTimeWindow(config.marketHours?.generalBlackoutEnd, { hour: 8, minute: 0 });
-  return _isWithinWindow(ist, start.hour, start.minute, end.hour, end.minute);
-}
 
 async function getTestConfig() {
   try {
@@ -153,7 +119,7 @@ async function updateInstanceEndpoint(instance, endpoint, ok, reason = null) {
 async function testQuotes(instance, tests) {
   try {
     // Fetch in bulk to reduce calls; re-use existing getQuotes helper
-    const res = await openalgoClient.getQuotes(instance, tests, { returnErrors: true });
+    const res = await openalgoClient.getQuotes(instance, tests, { returnErrors: true, perSymbol: true });
     const quotes = res?.quotes || [];
     for (const t of tests) {
       const q = quotes.find((q) => q.symbol === t.symbol && q.exchange === t.exchange);
@@ -211,7 +177,7 @@ class InstanceHealthService {
   }
 
   start() {
-    // Every 3 hours (skips blackout window inside runHealthChecks)
+    // Every 3 hours (exchanges that are closed are skipped inside runHealthChecks)
     this.cron = cron.schedule('0 0 */3 * * *', () => this.runHealthChecks(), {
       timezone: 'Asia/Kolkata',
     });
@@ -223,11 +189,6 @@ class InstanceHealthService {
   }
 
   async runHealthChecks() {
-    if (isQuoteEndpointBlackout()) {
-      log.warn('Health checks skipped during quote blackout (02:00-08:45 IST)');
-      return;
-    }
-
     const cfg = await getTestConfig();
     const instances = await instanceService.getAllInstances({ is_active: true });
     const exchangeOpenCache = new Map();
@@ -249,20 +210,26 @@ class InstanceHealthService {
       return filtered;
     };
 
+    // Probe each instance only with symbols from the segment its broker trades - Delta Exchange
+    // probed with NSE:SBIN "failed" its quotes check every cycle, and an Indian broker would fail
+    // a CRYPTO probe the same way. A segment with no applicable test is simply not probed.
+    const forInstance = (inst, tests) => tests.filter((t) =>
+      isCryptoBroker(inst.broker) === isCryptoExchange(t.exchange || t.brexchange || t.exch));
+
     for (const inst of instances) {
-      const quoteTests = await filterByOpenExchange(cfg.quotes || DEFAULT_TESTS.quotes);
+      const quoteTests = forInstance(inst, await filterByOpenExchange(cfg.quotes || DEFAULT_TESTS.quotes));
       if (quoteTests.length > 0) {
         const quoted = await testQuotes(inst, quoteTests);
         await updateInstanceEndpoint(inst, 'quotes', quoted.ok, quoted.reason);
       }
 
-      const multiTests = await filterByOpenExchange(cfg.multiquotes || DEFAULT_TESTS.multiquotes);
+      const multiTests = forInstance(inst, await filterByOpenExchange(cfg.multiquotes || DEFAULT_TESTS.multiquotes));
       if (multiTests.length > 0) {
         const mquoted = await testMultiQuotes(inst, multiTests);
         await updateInstanceEndpoint(inst, 'multiquotes', mquoted.ok, mquoted.reason);
       }
 
-      const optionTests = await filterByOpenExchange(cfg.optionchain || DEFAULT_TESTS.optionchain);
+      const optionTests = forInstance(inst, await filterByOpenExchange(cfg.optionchain || DEFAULT_TESTS.optionchain));
       if (optionTests.length > 0) {
         const ocResults = [];
         for (const t of optionTests) {
@@ -289,4 +256,3 @@ class InstanceHealthService {
 }
 
 export default new InstanceHealthService();
-export { isQuoteEndpointBlackout, isGeneralEndpointBlackout };

@@ -13,34 +13,6 @@ import { isEditable, validateValue, SETTINGS_GROUPS, SETTINGS_FIELDS } from '../
 
 const ESSENTIAL_SETTINGS = [
   {
-    key: 'market_hours.quote_blackout_start',
-    value: '02:00',
-    description: 'Block quote endpoints (Quotes/MultiQuotes/OptionChain) starting this time (IST).',
-    category: 'market_hours',
-    dataType: 'string',
-  },
-  {
-    key: 'market_hours.quote_blackout_end',
-    value: '08:45',
-    description: 'Resume quote endpoints after this time (IST).',
-    category: 'market_hours',
-    dataType: 'string',
-  },
-  {
-    key: 'market_hours.general_blackout_start',
-    value: '03:00',
-    description: 'Block other OpenAlgo endpoints starting this time (IST).',
-    category: 'market_hours',
-    dataType: 'string',
-  },
-  {
-    key: 'market_hours.general_blackout_end',
-    value: '08:00',
-    description: 'Resume other OpenAlgo endpoints after this time (IST).',
-    category: 'market_hours',
-    dataType: 'string',
-  },
-  {
     key: 'instance_health.ping_healthy_interval_ms',
     value: '300000',
     description: 'How often healthy instances are pinged (ms).',
@@ -50,14 +22,7 @@ const ESSENTIAL_SETTINGS = [
   {
     key: 'instance_health.ping_unhealthy_interval_ms',
     value: '180000',
-    description: 'How often unhealthy instances are pinged before pausing (ms).',
-    category: 'instance_health',
-    dataType: 'number',
-  },
-  {
-    key: 'instance_health.ping_unhealthy_max_attempts',
-    value: '5',
-    description: 'Stop auto-pinging after this many failures; requires manual refresh.',
+    description: 'First retry delay for an unhealthy instance; doubles per failure, max 10 min (ms).',
     category: 'instance_health',
     dataType: 'number',
   },
@@ -299,8 +264,16 @@ class SettingsService extends EventEmitter {
         }
 
         settings[row.category][row.key] = {
+          // rawValue must follow the same rule as value. Masking one while shipping the other
+          // unmasked in the very same object defeats the mask entirely: these objects are
+          // returned straight to the browser by GET /api/v1/settings and friends. Nothing is
+          // flagged is_sensitive today, so this is latent rather than live - but the masking
+          // code and the schema column both exist to be used, and the first secret stored here
+          // would have been published. Internal readers of rawValue (config.js,
+          // limit-price.service, broker-capabilities.service) only ever read non-sensitive
+          // settings, which are unaffected.
           value: row.is_sensitive ? this.maskValue(row.value) : parsedValue,
-          rawValue: row.value,
+          rawValue: row.is_sensitive ? this.maskValue(row.value) : row.value,
           description: row.description,
           dataType: row.data_type,
           isSensitive: !!row.is_sensitive,
@@ -349,8 +322,16 @@ class SettingsService extends EventEmitter {
         }
 
         settings[row.key] = {
+          // rawValue must follow the same rule as value. Masking one while shipping the other
+          // unmasked in the very same object defeats the mask entirely: these objects are
+          // returned straight to the browser by GET /api/v1/settings and friends. Nothing is
+          // flagged is_sensitive today, so this is latent rather than live - but the masking
+          // code and the schema column both exist to be used, and the first secret stored here
+          // would have been published. Internal readers of rawValue (config.js,
+          // limit-price.service, broker-capabilities.service) only ever read non-sensitive
+          // settings, which are unaffected.
           value: row.is_sensitive ? this.maskValue(row.value) : parsedValue,
-          rawValue: row.value,
+          rawValue: row.is_sensitive ? this.maskValue(row.value) : row.value,
           description: row.description,
           dataType: row.data_type,
           isSensitive: !!row.is_sensitive,
@@ -400,8 +381,9 @@ class SettingsService extends EventEmitter {
 
       return {
         key: row.key,
+        // See the note above - rawValue is masked in step with value.
         value: row.is_sensitive ? this.maskValue(row.value) : parsedValue,
-        rawValue: row.value,
+        rawValue: row.is_sensitive ? this.maskValue(row.value) : row.value,
         description: row.description,
         category: row.category,
         dataType: row.data_type,
@@ -623,17 +605,12 @@ class SettingsService extends EventEmitter {
       'polling.health_check_interval_ms': '60000',
       'instance_health.ping_healthy_interval_ms': '300000',
       'instance_health.ping_unhealthy_interval_ms': '180000',
-      'instance_health.ping_unhealthy_max_attempts': '5',
       'instance_health.analyzer_check_interval_ms': '15000',
       'openalgo.request_timeout_ms': '15000',
       'openalgo.critical.max_retries': '5',
       'openalgo.critical.retry_delay_ms': '1000',
       'openalgo.non_critical.max_retries': '3',
       'openalgo.non_critical.retry_delay_ms': '1000',
-      'market_hours.quote_blackout_start': '02:00',
-      'market_hours.quote_blackout_end': '08:45',
-      'market_hours.general_blackout_start': '03:00',
-      'market_hours.general_blackout_end': '08:00',
       'market_data_feed.quote_ttl_idle_ms': '12000',
       'market_data_feed.quote_ttl_active_ms': '7000',
       'market_data_feed.position_interval_idle_ms': '20000',

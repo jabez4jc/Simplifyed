@@ -1,10 +1,10 @@
 /**
  * Instance Health Check Service
  * Pings an instance's broker connection and manages the ping-cadence/backoff cache used
- * to throttle health checks and require manual refresh after repeated failures.
+ * to throttle health checks, backing off (never giving up) while an instance is unreachable.
  * Extracted from instance.service.js - owns healthCache. Named to avoid collision with the
- * existing, unrelated src/services/instance-health.service.js (which exports
- * isGeneralEndpointBlackout for endpoint-blackout-window checks, a different concern).
+ * existing, unrelated src/services/instance-health.service.js (scheduled endpoint capability
+ * tests, a different concern).
  * A single ping opportunistically also refreshes/reuses the analyzer-mode cache to avoid a
  * second broker round trip, so this service depends on instance-analyzer.service.js for
  * that cache rather than reaching into it directly.
@@ -14,13 +14,13 @@ import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import config from '../core/config.js';
 import openalgoClient from '../integrations/openalgo/client.js';
+import { backoffMs } from '../integrations/openalgo/instance-health-tracker.service.js';
 import instanceService from './instance.service.js';
 import instanceAnalyzerService, { DEFAULT_ANALYZER_TTL_MS } from './instance-analyzer.service.js';
 import { staggeredInstanceRequest } from '../utils/instance-request-throttle.util.js';
 
 const DEFAULT_PING_HEALTHY_MS = 5 * 60 * 1000;
 const DEFAULT_PING_UNHEALTHY_MS = 3 * 60 * 1000;
-const DEFAULT_MAX_UNHEALTHY_PINGS = 5;
 
 class InstanceHealthCheckService {
   constructor() {
@@ -43,9 +43,6 @@ class InstanceHealthCheckService {
       };
 
       if (!force) {
-        if (state.requiresManualRefresh) {
-          return instance;
-        }
         if (state.nextPingAt && now < state.nextPingAt) {
           return instance;
         }
@@ -114,7 +111,6 @@ class InstanceHealthCheckService {
 
       const pingHealthyMs = config.instanceHealth?.pingHealthyIntervalMs ?? DEFAULT_PING_HEALTHY_MS;
       const pingUnhealthyMs = config.instanceHealth?.pingUnhealthyIntervalMs ?? DEFAULT_PING_UNHEALTHY_MS;
-      const maxUnhealthy = config.instanceHealth?.pingUnhealthyMaxAttempts ?? DEFAULT_MAX_UNHEALTHY_PINGS;
 
       if (healthStatus === 'healthy') {
         this.healthCache.set(id, {
@@ -123,12 +119,13 @@ class InstanceHealthCheckService {
           requiresManualRefresh: false,
         });
       } else {
+        // Pinged again at a growing interval rather than written off after N failures, so an
+        // instance that was down (overnight, say) is seen healthy again on its own.
         const attempts = (state.unhealthyAttempts || 0) + 1;
-        const requiresManualRefresh = attempts >= maxUnhealthy;
         this.healthCache.set(id, {
-          nextPingAt: requiresManualRefresh ? null : Date.now() + pingUnhealthyMs,
+          nextPingAt: Date.now() + backoffMs(attempts, pingUnhealthyMs),
           unhealthyAttempts: attempts,
-          requiresManualRefresh,
+          requiresManualRefresh: false,
         });
       }
 

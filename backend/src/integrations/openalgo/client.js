@@ -6,15 +6,17 @@
 import { Agent, ProxyAgent } from 'undici';
 import { EventEmitter } from 'events';
 import { log } from '../../core/logger.js';
-import { OpenAlgoError } from '../../core/errors.js';
+import { OpenAlgoError, ValidationError } from '../../core/errors.js';
+import { requiresLimitOrders } from '../../utils/broker-type.util.js';
+import brokerUnitsService from '../../services/broker-units.service.js';
+import { contractExpiry, isContractExpired } from '../../utils/underlying.util.js';
 import config from '../../core/config.js';
 import { toISTISOString } from '../../utils/time.js';
 import { maskApiKey } from '../../utils/sanitizers.js';
 import settingsService from '../../services/settings.service.js';
-import { isGeneralEndpointBlackout, isQuoteEndpointBlackout } from '../../services/instance-health.service.js';
-import instanceHealthTrackerService from './instance-health-tracker.service.js';
+
+import instanceHealthTrackerService, { isUnreachableError } from './instance-health-tracker.service.js';
 import resolutionCacheService from './resolution-cache.service.js';
-import { isCryptoBroker } from '../../utils/broker-type.util.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -30,6 +32,89 @@ const ERROR_LIMITS = {
 /**
  * OpenAlgo HTTP Client with HTTP/2 multiplexing support
  */
+/**
+ * Broker order timestamps arrive as IST wall-clock with no zone ('2026-09-29 10:52:02', seen on
+ * Kotak, Fyers and Delta). new Date() would read that in the SERVER's zone - right on an IST
+ * machine, 5.5h off on a UTC one - so it is pinned to +05:30. Zoned/ISO values pass through.
+ */
+export function parseBrokerTimestamp(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 0;
+  const bare = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(raw);
+  const ms = new Date(bare ? `${raw.replace(' ', 'T')}+05:30` : raw).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+/**
+ * A broker's error message as text. Some rejections carry an object (field validation errors,
+ * e.g. {"quantity": ["..."]}); interpolated as-is that became "OpenAlgo: [object Object]" and
+ * hid the reason entirely.
+ */
+function brokerMessage(message) {
+  if (message === undefined || message === null || message === '') return '';
+  return typeof message === 'string' ? message : JSON.stringify(message);
+}
+
+const FAST_READ_ENDPOINTS = new Set(['quotes', 'multiquotes', 'depth', 'symbol']);
+
+// Calls about ONE contract: refused outright for an expired one. multiquotes is filtered instead.
+const SINGLE_CONTRACT_ENDPOINTS = new Set([
+  'placeorder', 'placesmartorder', 'splitorder', 'modifyorder', 'quotes', 'depth', 'symbol', 'openposition',
+]);
+
+/**
+ * An expired contract no longer exists at any broker: asking about it only earns a "Symbol not
+ * found" rejection (per instance, per poll) and ordering it cannot succeed. Refuse single-contract
+ * calls, and drop expired symbols from multiquotes and basket orders.
+ */
+export function withoutExpiredContracts(endpoint, data) {
+  const refuse = (row) => {
+    throw new ValidationError(`${row.exchange}:${row.symbol} has expired (${contractExpiry(row)}) - it no longer exists at the broker`);
+  };
+  if (SINGLE_CONTRACT_ENDPOINTS.has(endpoint)) {
+    if (data?.symbol && isContractExpired(data)) refuse(data);
+    return data;
+  }
+  if (endpoint === 'basketorder' && Array.isArray(data?.orders)) {
+    const expired = data.orders.find((o) => isContractExpired(o));
+    if (expired) refuse(expired); // never send part of a basket
+    return data;
+  }
+  if (endpoint === 'multiquotes' && Array.isArray(data?.symbols)) {
+    const live = data.symbols.filter((s) => !isContractExpired(s));
+    if (live.length === 0) throw new ValidationError('Every requested symbol has expired');
+    return live.length === data.symbols.length ? data : { ...data, symbols: live };
+  }
+  return data;
+}
+const FAST_READ_TIMEOUT_MS = 5000;
+
+/** Endpoints that send orders, and where their order rows live in the payload. */
+const ORDER_ENDPOINTS = {
+  placeorder: (d) => [d],
+  placesmartorder: (d) => [d],
+  splitorder: (d) => [d],
+  modifyorder: (d) => [d],
+  basketorder: (d) => (Array.isArray(d?.orders) ? d.orders : []),
+};
+
+/**
+ * Last line of SEBI's limit-only rule for Indian exchanges: whatever priced the order upstream,
+ * a MARKET or SL-M order for NSE/BSE/NFO/BFO/MCX/CDS never leaves this process. Crypto is exempt.
+ */
+export function assertLimitOnlyCompliance(endpoint, data) {
+  const rows = ORDER_ENDPOINTS[endpoint]?.(data) || [];
+  for (const row of rows) {
+    const pricetype = String(row?.pricetype || '').toUpperCase();
+    if ((pricetype === 'MARKET' || pricetype === 'SL-M') && requiresLimitOrders(row?.exchange)) {
+      throw new ValidationError(
+        `Refusing ${pricetype} order for ${row?.exchange || 'unknown exchange'}:${row?.symbol || '?'} - `
+        + 'SEBI requires LIMIT orders on Indian exchanges and no limit price could be set'
+      );
+    }
+  }
+}
+
 class OpenAlgoClient extends EventEmitter {
   constructor() {
     super();
@@ -145,6 +230,19 @@ class OpenAlgoClient extends EventEmitter {
 
   getInstanceHealthStatus(instanceId) {
     return instanceHealthTrackerService.getInstanceHealthStatus(instanceId, this.circuitBreakerDisabled);
+  }
+
+  /**
+   * Circuit-breaker thresholds, delegated like every other tracker accessor above.
+   *
+   * GET /instances/:id/circuit-breaker reads `openalgoClient.instanceHealthConfig.maxDnsRetries`
+   * to build its "nothing recorded yet" response - and that is the response it gives for any
+   * instance that has NOT been failing, i.e. the normal case. Without this delegate the property
+   * was undefined and the endpoint threw a TypeError, so the one instance state the endpoint
+   * exists to report as fine was the one state it could not report at all.
+   */
+  get instanceHealthConfig() {
+    return instanceHealthTrackerService.instanceHealthConfig;
   }
 
   getInstanceCooldownRemaining(instanceId) {
@@ -324,23 +422,35 @@ class OpenAlgoClient extends EventEmitter {
    * @param {boolean} options.isCritical - Whether this is a critical operation (default: false)
    * @returns {Promise<Object>} - API response
    */
+  /**
+   * Every broker call. Two boundary rules wrap the transport in _request:
+   *  - SEBI limit-only compliance on order endpoints (assertLimitOnlyCompliance).
+   *  - Broker quantity units: order quantities go out in the broker's own lot units and
+   *    position/order/trade quantities come back in canonical units (broker-units.service.js).
+   *    `data` stays canonical inside _request, so its retry/duplicate checks compare like with
+   *    like; only the wire payload is converted.
+   */
   async request(instance, endpoint, data = {}, method = 'POST', options = {}) {
-    const endpointKey = (endpoint || '').toLowerCase();
-    const isQuoteEndpoint =
-      endpointKey.includes('quotes') ||
-      endpointKey.includes('optionchain') ||
-      endpointKey.includes('depth');
-    // The blackout windows exist to pause calls during Indian market off-hours - crypto
-    // brokers trade 24/7 and have no such window, so they're exempt entirely.
-    const inBlackout = !isCryptoBroker(instance?.broker)
-      && (isQuoteEndpoint ? isQuoteEndpointBlackout() : isGeneralEndpointBlackout());
-    if (inBlackout && !options?.skipMarketCheck) {
-      const err = new Error(
-        isQuoteEndpoint
-          ? 'Market closed (Quotes/MultiQuotes/OptionChain/WebSocket calls paused 02:00-08:45 IST)'
-          : 'Market closed (OpenAlgo calls paused 03:00-08:00 IST)'
+    assertLimitOnlyCompliance(endpoint, data);
+    data = withoutExpiredContracts(endpoint, data);
+    const wireData = await brokerUnitsService.toBroker(instance, endpoint, data, this);
+    const response = await this._request(instance, endpoint, data, method, { ...options, wireData });
+    return brokerUnitsService.fromBroker(instance, endpoint, data, response, this);
+  }
+
+  async _request(instance, endpoint, data = {}, method = 'POST', options = {}) {
+    // Circuit breaker in place of the old fixed IST blackout windows: calls are paused only while
+    // this instance is actually unreachable (instance-health-tracker.service.js), and resume on
+    // their own once a probe after the cooldown succeeds. Critical calls (orders) always go
+    // through - a user action should never be refused on the strength of an earlier failure.
+    if (!options?.isCritical && !options?.ignoreCircuit && instance?.id != null && !this.isInstanceHealthy(instance.id)) {
+      const resumeIn = Math.ceil(instanceHealthTrackerService.getInstanceCooldownRemaining(instance.id) / 1000);
+      const err = new OpenAlgoError(
+        `Instance ${instance.name || instance.id} is unreachable - calls paused, next probe in ${resumeIn}s`,
+        endpoint
       );
-      err.code = 'MARKET_CLOSED';
+      err.code = 'INSTANCE_UNREACHABLE';
+      err.statusCode = 503;
       throw err;
     }
     const { host_url, api_key } = instance;
@@ -351,10 +461,17 @@ class OpenAlgoClient extends EventEmitter {
     }
 
     const url = `${host_url}/api/v1/${endpoint}`;
-    const payload = { ...data, apikey: api_key };
-    const maskedPayload = { ...data, apikey: maskApiKey(api_key) };
+    const wire = options.wireData || data;
+    const payload = { ...wire, apikey: api_key };
+    const maskedPayload = { ...wire, apikey: maskApiKey(api_key) };
     const instKey = this._instanceKey(instance);
-    const timeoutOverride = this._getInstanceTimeoutMs(instance);
+    // Market-data reads get a short timeout: a broker stall (seen on Kotak: 15s hangs, while a
+    // 20-call burst peaks at ~2.7s) should cost seconds, not stall order pricing - which now
+    // falls through to other sources. Orders and books keep the full timeout.
+    const baseTimeout = this._getInstanceTimeoutMs(instance);
+    const timeoutOverride = FAST_READ_ENDPOINTS.has(endpoint)
+      ? Math.min(baseTimeout ?? this.timeout, FAST_READ_TIMEOUT_MS)
+      : baseTimeout;
     this._persistMeta(instKey, instance);
 
     // Select retry configuration based on operation type
@@ -369,6 +486,18 @@ class OpenAlgoClient extends EventEmitter {
     // Fast path (default): defer snapshot until a retry is needed to save ~300-500ms on first attempt
     let initialPosition = null;
     let initialPositionFetched = false;
+    // The retry check below compares the position before and after. Snapshotting lazily (on the
+    // first retry) takes "before" AFTER a timed-out attempt that may already have filled, so no
+    // change shows and the retry places a DUPLICATE. placeorder has no target to protect it, so
+    // it snapshots up front. placesmartorder is idempotent by its target and skips the extra call.
+    if (endpoint === 'placeorder') {
+      try {
+        initialPosition = await this._getPositionForOrder(instance, data);
+        initialPositionFetched = true;
+      } catch (error) {
+        log.warn('Could not snapshot position before placeorder', { endpoint, symbol: data.symbol, error: error.message });
+      }
+    }
     if (isOrderPlacement && !this.fastSnapshotMode) {
       try {
         initialPosition = await this._getPositionForOrder(instance, data);
@@ -399,6 +528,7 @@ class OpenAlgoClient extends EventEmitter {
     // Retry with exponential backoff
     let lastError;
     let attemptsUsed = 0;
+    const requestStartedAt = Date.now();
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         attemptsUsed = attempt + 1;
@@ -435,10 +565,35 @@ class OpenAlgoClient extends EventEmitter {
           timeout_ms: timeoutOverride ?? this.timeout,
         });
 
+        if (instance.id != null) this.resetInstanceHealth(instance.id);
+        // A retried order that comes back "success" without an order id: the first attempt timed
+        // out but DID reach the broker, so the retry found the target position already met and
+        // placed nothing. The order exists - recover its id from the order book rather than
+        // record it without one.
+        if (isOrderPlacement && attempt > 0 && response?.status === 'success' && !response.orderid && !response.order_id) {
+          const recovered = await this._findOrderIdFromOrderBook(instance, data).catch(() => null);
+          log.warn(recovered ? 'Order id recovered from the order book after a timed-out attempt' : 'Order placed by a timed-out attempt - order id not found in the order book', {
+            endpoint, symbol: data.symbol, exchange: data.exchange, instance_name: instance.name, order_id: recovered,
+          });
+          if (recovered) return { ...response, orderid: recovered };
+        }
         return response;
       } catch (error) {
         lastError = error;
         this._recordError(instKey, error, endpoint);
+
+        // An unreachable instance: open/extend its circuit. A background call gives up at once
+        // rather than retrying a host that is down - those retries, multiplied across every
+        // poller, were the error flood the blackout windows used to paper over.
+        if (isUnreachableError(error)) {
+          if (instance.id != null) {
+            this.recordInstanceFailure(instance.id, error, {
+              isHtml: !!error.isHtmlResponse,
+              isDnsError: !!error.isDnsError,
+            });
+          }
+          if (!isCritical) throw error;
+        }
 
         // Don't retry on client errors (4xx) - these indicate bad requests.
         //
@@ -451,10 +606,13 @@ class OpenAlgoClient extends EventEmitter {
         //
         // Rate limiting is the one broker-side rejection that IS worth retrying, since the next
         // attempt sits behind this client's own throttle and a backoff delay.
-        const isTransientRejection = /rate limit|too many requests|try again/i.test(error.message || '');
-        const isDeterministicRejection =
-          (error.statusCode >= 400 && error.statusCode < 500) ||
-          (error.statusCode < 400 && !isTransientRejection);
+        // OpenAlgo's limiter answers 429 with a bare "2 per 1 second", which no message test
+        // caught - so rate limits were treated as final and orders were dropped.
+        const isTransientRejection = error.statusCode === 429
+          || /rate limit|too many requests|try again|per \d+ (second|minute)/i.test(error.message || '');
+        // No status code = a network failure, which stays retryable as before.
+        const isDeterministicRejection = !isTransientRejection
+          && Number.isFinite(error.statusCode) && error.statusCode < 500;
 
         if (isDeterministicRejection) {
           log.warn('OpenAlgo rejected the request - not retrying', {
@@ -486,6 +644,22 @@ class OpenAlgoClient extends EventEmitter {
 
         // For order placement requests, check if order was actually placed before retrying
         // Snapshot is captured lazily on the first retry to avoid adding latency to attempt 0
+        // An order whose outcome is unknown (timeout, network or 5xx) must never be re-sent blind.
+        // Observed live on Fyers: an exit timed out after it had filled, the position book still
+        // lagged, so the position-targeted retry saw the position open and SOLD AGAIN - a short
+        // where there should have been flat. Look for the order in the book first; only retry if
+        // it never appears. A 429 is a definite "not placed" and retries straight away.
+        if (isOrderPlacement && attempt < maxRetries && error.statusCode !== 429) {
+          const landed = await this._awaitOrderInBook(instance, data, requestStartedAt);
+          if (landed) {
+            log.warn('Order landed despite the error - confirmed from the order book, not re-sent', {
+              endpoint, symbol: data.symbol, exchange: data.exchange, instance_name: instance.name,
+              order_id: landed, error: error.message,
+            });
+            return { status: 'success', orderid: landed, message: 'Order placed (confirmed from the order book after an error)' };
+          }
+        }
+
         if (isOrderPlacement && attempt < maxRetries) {
           if (!initialPositionFetched) {
             try {
@@ -1054,7 +1228,7 @@ class OpenAlgoClient extends EventEmitter {
           response_message: responseData?.message,
         };
         throw new OpenAlgoError(
-          responseData.message || `HTTP ${response.status}: ${response.statusText}`,
+          brokerMessage(responseData.message) || `HTTP ${response.status}: ${response.statusText}`,
           url,
           response.status,
           details
@@ -1068,7 +1242,7 @@ class OpenAlgoClient extends EventEmitter {
           response_message: responseData?.message,
         };
         throw new OpenAlgoError(
-          responseData.message || 'OpenAlgo API returned error status',
+          brokerMessage(responseData.message) || 'OpenAlgo API returned error status',
           url,
           response.status,
           details
@@ -1189,8 +1363,8 @@ class OpenAlgoClient extends EventEmitter {
    * @param {Object} instance - Instance configuration
    * @returns {Promise<Object>} - { orders, statistics }
    */
-  async getOrderBook(instance) {
-    const response = await this.request(instance, 'orderbook');
+  async getOrderBook(instance, options = {}) {
+    const response = await this.request(instance, 'orderbook', {}, 'POST', options);
     // OpenAlgo returns either a bare array or { orders: [...] } depending on broker and version.
     // Normalize here so callers get one shape. Every caller but one already re-implemented this
     // (order-placement.service.js, market-data-feed.service.js, the order-id lookup below);
@@ -1321,10 +1495,35 @@ class OpenAlgoClient extends EventEmitter {
    * @param {Array<Object>} symbols - Array of {exchange, symbol}
    * @param {Object} options - Options
    * @param {boolean} options.returnErrors - Return error info for failed quotes (for fallback handling)
+   * @param {boolean} options.perSymbol - Skip the /multiquotes batch and hit /quotes per symbol
+   *   (capability probes of /quotes itself, and fallbacks that already tried /multiquotes)
    * @returns {Promise<Object>} - { quotes: [], failed: [] }
    */
   async getQuotes(instance, symbols, options = {}) {
-    const { returnErrors = false } = options;
+    const { returnErrors = false, perSymbol = false } = options;
+
+    // One /multiquotes request instead of N /quotes requests wherever the instance supports it;
+    // only the symbols it could not answer go on to the per-symbol path below.
+    if (!perSymbol && symbols.length > 1 && instance?.supports_multiquotes) {
+      try {
+        const multi = await this.getMultiQuotes(instance, symbols, { returnErrors: true });
+        let { quotes, failed } = multi;
+        if (failed.length) {
+          const retry = await this.getQuotes(
+            instance,
+            failed.map(({ symbol, exchange }) => ({ symbol, exchange })),
+            { ...options, perSymbol: true, returnErrors: true }
+          );
+          quotes = [...quotes, ...retry.quotes];
+          failed = retry.failed;
+        }
+        return returnErrors ? { quotes, failed } : quotes;
+      } catch (error) {
+        log.warn('multiquotes failed, falling back to per-symbol quotes', {
+          instance: instance?.name, count: symbols.length, error: error.message,
+        });
+      }
+    }
     const instanceMeta = {
       instance_id: instance?.id || instance?.instance_id,
       instance_name: instance?.name,
@@ -1440,7 +1639,7 @@ class OpenAlgoClient extends EventEmitter {
           symbol: entry?.symbol,
           exchange: entry?.exchange,
         }))
-        .filter((entry) => entry.symbol && entry.exchange)
+        .filter((entry) => entry.symbol && entry.exchange && !isContractExpired(entry))
       : [];
 
     if (payloadSymbols.length === 0) {
@@ -1614,6 +1813,9 @@ class OpenAlgoClient extends EventEmitter {
    * @returns {Promise<Object>} - { ltp: number, quote: Object, source: string, attempts: number }
    */
   async getLtpWithRetry(instanceOrPool, exchange, symbol, options = {}) {
+    if (isContractExpired({ exchange, symbol })) {
+      throw new ValidationError(`${exchange}:${symbol} has expired - it has no LTP`);
+    }
     const {
       maxRounds = 2,      // Number of complete rounds through all instances
       baseDelayMs = 50,
@@ -1705,7 +1907,7 @@ class OpenAlgoClient extends EventEmitter {
             'quotes',
             { exchange, symbol },
             'POST',
-            { skipRateLimit: true } // LTP is critical, skip rate limit
+            { skipRateLimit: true, ignoreCircuit: true } // order-critical; this helper does its own health filtering
           );
 
           const quote = response.data || {};
@@ -1765,8 +1967,6 @@ class OpenAlgoClient extends EventEmitter {
                               error.message.includes('ECONNREFUSED')
                             ));
 
-          // Record failure with circuit breaker
-          this.recordInstanceFailure(instance.id, error, { isHtml, isDnsError });
 
           log.warn('LTP fetch failed, trying next instance', {
             instance: instance.name,
@@ -1909,8 +2109,7 @@ class OpenAlgoClient extends EventEmitter {
       instance,
       'market/timings',
       { date },
-      'POST',
-      { skipMarketCheck: true }
+      'POST'
     );
     return response.data || [];
   }
@@ -1938,8 +2137,7 @@ class OpenAlgoClient extends EventEmitter {
       instance,
       'market/holidays',
       payload,
-      'POST',
-      { skipMarketCheck: true }
+      'POST'
     );
     return response.data || [];
   }
@@ -2209,10 +2407,13 @@ class OpenAlgoClient extends EventEmitter {
    * @param {Object} options - Options
    * @param {boolean} options.skipBackoff - Skip backoff check for critical operations
    * @param {number} options.strikeCount - Number of strikes above/below ATM (optional)
+   * @param {number} options.greeksRate - When set, asks OpenAlgo to attach IV/delta/gamma/theta/
+   *   vega to every leg (`with_greeks`), computed server-side by opengreeks' Black-76 core from
+   *   the quotes the chain already fetched. Annualised percentage, e.g. 6.75.
    * @returns {Promise<Object>} - Option chain data
    */
   async getOptionChain(instance, symbol, expiry, exchange = 'NFO', options = {}) {
-    const { skipBackoff = false, strikeCount = null } = options;
+    const { skipBackoff = false, strikeCount = null, greeksRate = null } = options;
     const payload = {
       underlying: symbol,
       exchange,
@@ -2223,8 +2424,15 @@ class OpenAlgoClient extends EventEmitter {
     if (strikeCount) {
       payload.strike_count = strikeCount;
     }
+    if (greeksRate !== null) {
+      payload.with_greeks = true;
+      payload.interest_rate = greeksRate;
+    }
 
-    const response = await this.request(instance, 'optionchain', payload, 'POST', { skipRateLimit: skipBackoff });
+    const response = await this.request(instance, 'optionchain', payload, 'POST', {
+      skipRateLimit: skipBackoff,
+      ignoreCircuit: skipBackoff,
+    });
     return response.data || response;
   }
 
@@ -2303,8 +2511,6 @@ class OpenAlgoClient extends EventEmitter {
                             error.message.includes('ECONNREFUSED')
                           ));
 
-        // Record failure with circuit breaker
-        this.recordInstanceFailure(instance.id, error, { isHtml, isDnsError });
 
         log.warn('Option chain fetch failed, trying next instance', {
           instance: instance.name,
@@ -2504,25 +2710,6 @@ class OpenAlgoClient extends EventEmitter {
       isCritical: false,
     });
     return response;
-  }
-
-  // ==========================================
-  // Contract Info APIs
-  // ==========================================
-
-  /**
-   * Get contract information
-   * @param {Object} instance - Instance configuration
-   * @param {string} exchange - Exchange code
-   * @param {string} symbol - Trading symbol
-   * @returns {Promise<Object>} - Contract details
-   */
-  async getContractInfo(instance, exchange, symbol) {
-    const response = await this.request(instance, 'contractinfo', {
-      exchange,
-      symbol,
-    });
-    return response.data || response;
   }
 
   // ==========================================
@@ -2726,9 +2913,39 @@ class OpenAlgoClient extends EventEmitter {
    * @param {Object} orderData - Order data (symbol, exchange, product, action, quantity)
    * @returns {Promise<string|null>} - Order ID or null if not found
    */
-  async _findOrderIdFromOrderBook(instance, orderData) {
+  /**
+   * Poll the order book for an order matching `orderData` placed since `since`. Returns its id,
+   * or null if none shows up within the checks (it was then most likely never placed).
+   */
+  async _awaitOrderInBook(instance, orderData, since, { checks = 3, delayMs = 1500 } = {}) {
+    let looked = false;
+    let lastError = null;
+    for (let i = 0; i < checks; i += 1) {
+      if (i) await new Promise((resolve) => setTimeout(resolve, delayMs));
+      try {
+        const id = await this._findOrderIdFromOrderBook(instance, orderData, { since, rethrow: true });
+        looked = true;
+        if (id) return id;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (looked) return null; // the book was read and the order is not in it - safe to retry
+    // The book could not be read at all, so whether the order landed is UNKNOWN. Re-sending
+    // would risk a duplicate (seen live on Kotak: a stalled exit had filled, the book timed out,
+    // the retry sold again and left a short). Refuse, and say what to check.
+    const err = new OpenAlgoError(
+      `Order outcome unknown for ${orderData.exchange}:${orderData.symbol} on ${instance.name} - the request failed and the order book could not be read (${lastError?.message}). It may have been placed: check the order book before retrying.`,
+      'placesmartorder',
+      504
+    );
+    err.code = 'ORDER_OUTCOME_UNKNOWN';
+    throw err;
+  }
+
+  async _findOrderIdFromOrderBook(instance, orderData, { since = null, rethrow = false } = {}) {
     try {
-      const orderBookResponse = await this.getOrderBook(instance);
+      const orderBookResponse = await this.getOrderBook(instance, { ignoreCircuit: true });
       const orders = orderBookResponse?.orders || orderBookResponse || [];
 
       if (!Array.isArray(orders) || orders.length === 0) {
@@ -2750,7 +2967,9 @@ class OpenAlgoClient extends EventEmitter {
       // Calculate time window (60 seconds) for filtering recent orders only
       const now = Date.now();
       const timeWindowMs = 60 * 1000; // 60 seconds
-      const earliestAllowedTime = now - timeWindowMs;
+      // With `since`, only orders from this request count (2s allowance for second-granular
+      // broker timestamps) - an identical order a minute earlier must not be mistaken for it.
+      const earliestAllowedTime = since ? since - 2000 : now - timeWindowMs;
 
       // Invalid order statuses that should be excluded
       const invalidStatuses = ['CANCELLED', 'REJECTED', 'FAILED', 'cancelled', 'rejected', 'failed'];
@@ -2766,7 +2985,7 @@ class OpenAlgoClient extends EventEmitter {
         const qtyWithinTolerance = qtyDiff <= requestedQty * quantityTolerance;
 
         // Check if order is within time window
-        const orderTime = new Date(order.timestamp || 0).getTime();
+        const orderTime = parseBrokerTimestamp(order.timestamp);
         const withinTimeWindow = orderTime >= earliestAllowedTime;
 
         // Check if order status is valid (not cancelled/rejected/failed)
@@ -2800,8 +3019,8 @@ class OpenAlgoClient extends EventEmitter {
       // Sort by timestamp descending (most recent first)
       // Handle various timestamp formats
       matchingOrders.sort((a, b) => {
-        const timeA = new Date(a.timestamp || 0).getTime();
-        const timeB = new Date(b.timestamp || 0).getTime();
+        const timeA = parseBrokerTimestamp(a.timestamp);
+        const timeB = parseBrokerTimestamp(b.timestamp);
         return timeB - timeA; // Descending order
       });
 
@@ -2828,6 +3047,7 @@ class OpenAlgoClient extends EventEmitter {
         exchange: orderData.exchange,
         error: error.message,
       });
+      if (rethrow) throw error;
       return null;
     }
   }

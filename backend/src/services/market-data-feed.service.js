@@ -13,6 +13,9 @@
 import EventEmitter from 'events';
 import { createHash } from 'crypto';
 import instanceService from './instance.service.js';
+import { isCryptoBroker, isCryptoExchange } from '../utils/broker-type.util.js';
+import { isContractExpired } from '../utils/underlying.util.js';
+import { ValidationError } from '../core/errors.js';
 import marketDataInstanceService from './market-data-instance.service.js';
 import watchlistService from './watchlist.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
@@ -21,10 +24,9 @@ import { log } from '../core/logger.js';
 import db from '../core/database.js';
 import { extractAveragePrice, extractLtp } from '../utils/price-extraction.js';
 import openalgoWsService from './openalgo-ws.service.js';
-import { isGeneralEndpointBlackout, isQuoteEndpointBlackout } from './instance-health.service.js';
+import { backoffMs } from '../integrations/openalgo/instance-health-tracker.service.js';
 import marketCalendarService from './market-calendar.service.js';
 import marketDataCircuitBreakerService from './market-data-circuit-breaker.service.js';
-import { isCryptoExchange } from '../utils/broker-type.util.js';
 
 const DEFAULT_QUOTE_INTERVAL = 5000;               // 5 seconds for quote refresh (WS primary; REST uses TTL)
 const DEFAULT_QUOTE_TTL_IDLE_MS = 15000;
@@ -34,6 +36,9 @@ const DEFAULT_POSITION_INTERVAL_ACTIVE = 8000;     // 8 seconds when positions o
 const DEFAULT_TRADEBOOK_INTERVAL_IDLE = 30000;
 const DEFAULT_TRADEBOOK_INTERVAL_ACTIVE = 8000;
 const DEFAULT_ORDERBOOK_INTERVAL = 30000;
+// How often REST re-reads orders while the WebSocket order stream is live - a safety net for a
+// push lost in transit, not the refresh path. Shared with polling.service.js.
+export const ORDER_STREAM_SWEEP_MS = 3 * 60 * 1000;
 const DEFAULT_FUNDS_INTERVAL = 3 * 60 * 1000;      // 3 minutes for funds refresh (sequential)
 
 // TTL configurations
@@ -116,7 +121,6 @@ class MarketDataFeedService extends EventEmitter {
     this.multiQuoteCooldownActiveMs = MULTI_QUOTE_COOLDOWN_ACTIVE_MS;
     this.healthPingHealthyMs = config.instanceHealth?.pingHealthyIntervalMs || 5 * 60 * 1000;
     this.healthPingUnhealthyMs = config.instanceHealth?.pingUnhealthyIntervalMs || 3 * 60 * 1000;
-    this.healthPingUnhealthyMaxAttempts = config.instanceHealth?.pingUnhealthyMaxAttempts || 5;
     this.orderbookCache = new Map();
     this.orderbookRefreshTimestamps = new Map();
     this.tradebookCache = new Map();
@@ -260,7 +264,6 @@ class MarketDataFeedService extends EventEmitter {
 
     this.healthPingHealthyMs = cfg.instanceHealth?.pingHealthyIntervalMs || 5 * 60 * 1000;
     this.healthPingUnhealthyMs = cfg.instanceHealth?.pingUnhealthyIntervalMs || 3 * 60 * 1000;
-    this.healthPingUnhealthyMaxAttempts = cfg.instanceHealth?.pingUnhealthyMaxAttempts || 5;
 
     this.QUOTE_TTL_MS = Math.max(this.quoteTtlIdleMs, TTL_DISPLAY);
     this.QUOTE_TTL_ORDER_MS = TTL_ORDER_CRITICAL;
@@ -329,9 +332,6 @@ class MarketDataFeedService extends EventEmitter {
    * Quotes (per market-data instance)
    */
   async refreshQuotes({ force = false } = {}) {
-    if (isQuoteEndpointBlackout()) {
-      return;
-    }
     const now = Date.now();
     const targetInterval = this._getQuoteTtlMs();
     if (!force && now - this.lastQuoteRefreshAt < targetInterval) {
@@ -397,8 +397,12 @@ class MarketDataFeedService extends EventEmitter {
           const maxRetries = 2;
           let lastError = null;
 
-          const symbolsForInst = pendingSymbols.slice(0, MULTI_QUOTE_SYMBOL_LIMIT);
-          if (symbolsForInst.length === 0) break;
+          // Only this instance's own segment - an Indian broker asked for a crypto option (or
+          // Delta for NIFTY) can only reject it, and each rejection counted against the instance.
+          const symbolsForInst = pendingSymbols
+            .filter((s) => this._tradesExchange(inst, s.exchange))
+            .slice(0, MULTI_QUOTE_SYMBOL_LIMIT);
+          if (symbolsForInst.length === 0) continue;
 
           for (let attempt = 0; attempt <= maxRetries; attempt++) {
             try {
@@ -609,29 +613,25 @@ class MarketDataFeedService extends EventEmitter {
   }
 
   async fetchDepthForSymbol(exchange, symbol, options = {}) {
+    if (isContractExpired({ exchange, symbol })) return null; // expired - nothing to ask for
     const {
       depthLevel = DEFAULT_DEPTH_LEVEL,
       staleMs = this.QUOTE_TTL_ORDER_MS,
       wsRetries = 5,
       wsRetryDelayMs = 200,
       maxInstances = 3,
+      preferInstanceId = null,
     } = options;
 
-    const exchangeOpen = await marketCalendarService.isExchangeOpen(exchange);
+    // The calendar gate saves polling calls; it must not decide an order. On the order path
+    // (preferInstanceId set) the broker says whether the market is open - a calendar that failed
+    // to load would otherwise refuse every Indian order now that MARKET is not a fallback.
+    const exchangeOpen = preferInstanceId || await marketCalendarService.isExchangeOpen(exchange);
     if (!exchangeOpen) {
       const cachedClosed = this.getCachedDepthEntry(exchange, symbol, staleMs);
       if (cachedClosed) {
         const { bid, ask } = this._extractBestBidAskFromDepth(cachedClosed.depth);
         return { ...cachedClosed, bid, ask, source: cachedClosed.source || 'cache_closed' };
-      }
-      return null;
-    }
-
-    if (!isCryptoExchange(exchange) && isQuoteEndpointBlackout()) {
-      const cached = this.getCachedDepthEntry(exchange, symbol, staleMs);
-      if (cached) {
-        const { bid, ask } = this._extractBestBidAskFromDepth(cached.depth);
-        return { ...cached, bid, ask, source: cached.source || 'cache' };
       }
       return null;
     }
@@ -680,7 +680,7 @@ class MarketDataFeedService extends EventEmitter {
 
     // REST fallback
     try {
-      const pool = await marketDataInstanceService.getMarketDataPool();
+      const pool = await this._depthPoolFor(exchange, preferInstanceId);
       if (pool.length === 0) return null;
       for (const inst of pool) {
         try {
@@ -699,6 +699,32 @@ class MarketDataFeedService extends EventEmitter {
     }
 
     return null;
+  }
+
+  /**
+   * Instances to ask for REST depth, in order: the ordering instance first (it holds the broker
+   * session and knows its own symbols), then pool members that trade this exchange at all. The
+   * pool mixes crypto and Indian brokers, and asking Delta Exchange for NSE:SBIN is a wasted
+   * round trip and a 400 on the order path.
+   */
+  /**
+   * Does this instance's broker trade this exchange at all? The market-data pool mixes Delta
+   * Exchange with Indian brokers; asking either for the other's symbols is a guaranteed
+   * "Symbol not found" per instance per poll (seen live: Maha asked for CRYPTO:BTCUSDFUT).
+   */
+  _tradesExchange(instance, exchange) {
+    return isCryptoBroker(instance?.broker) === isCryptoExchange(exchange);
+  }
+
+  async _depthPoolFor(exchange, preferInstanceId = null) {
+    const crypto = isCryptoExchange(exchange);
+    const pool = (await marketDataInstanceService.getMarketDataPool())
+      .filter((inst) => this._tradesExchange(inst, exchange));
+    if (!preferInstanceId) return pool;
+    const preferred = pool.find((inst) => inst.id === preferInstanceId)
+      || await instanceService.getInstanceById(preferInstanceId).catch(() => null);
+    if (!preferred || isCryptoBroker(preferred.broker) !== crypto) return pool;
+    return [preferred, ...pool.filter((inst) => inst.id !== preferred.id)];
   }
 
   _getQuoteTtlMs() {
@@ -805,18 +831,10 @@ class MarketDataFeedService extends EventEmitter {
     const unique = this._dedupeSymbols(symbols);
     if (unique.length === 0) return [];
 
-    // Skip the blackout-driven cache-only fallback when the whole batch is crypto (trades
-    // 24/7, no Indian market hours to pause for). A mixed Indian+crypto batch still falls
-    // back to cache to preserve the existing pause behavior for the Indian symbols in it.
-    const allCrypto = unique.every((s) => isCryptoExchange(s.exchange));
-    if (!allCrypto && isQuoteEndpointBlackout()) {
-      const { cached } = this.getCachedQuotesForSymbols(unique, { ttlMs, orderCritical });
-      return cached;
-    }
-
     // Check cache first with appropriate TTL
     const { cached, missing } = this.getCachedQuotesForSymbols(unique, { ttlMs, orderCritical });
-    const openMissing = await this._filterSymbolsByMarketOpen(missing);
+    // Order-critical lookups skip the calendar gate for the same reason as fetchDepthForSymbol.
+    const openMissing = orderCritical ? missing : await this._filterSymbolsByMarketOpen(missing);
 
     // Return cached if all symbols are fresh
     if (openMissing.length === 0) {
@@ -855,7 +873,7 @@ class MarketDataFeedService extends EventEmitter {
         const batchPromises = chunks.map(async (chunk, idx) => {
           const inst = pool[idx % pool.length];
           try {
-            const quotes = await openalgoClient.getQuotes(inst, chunk);
+            const quotes = await openalgoClient.getQuotes(inst, chunk, { perSymbol: true });
             return { success: true, quotes: Array.isArray(quotes) ? quotes : [], inst };
           } catch (error) {
             log.warn('Batch quote fetch failed', { instance: inst.name, error: error.message });
@@ -904,6 +922,7 @@ class MarketDataFeedService extends EventEmitter {
     try {
       const instances = await instanceService.getAllInstances({ is_active: true });
       for (const inst of instances) {
+        if (!force && !(await marketCalendarService.isInstanceMarketOpen(inst))) continue;
         const madeLiveCall = await this.refreshPositionsForInstance(inst.id, { force });
         // Per-instance jitter to smooth RPS - only needed when a real broker call happened;
         // idle/cached instances just no-op and shouldn't stall the batch loop.
@@ -933,16 +952,14 @@ class MarketDataFeedService extends EventEmitter {
    */
   async refreshPositionsForInstance(instanceId, { force = false } = {}) {
     try {
-      if (isGeneralEndpointBlackout()) {
-        return false;
-      }
       if (this._isInstanceUnhealthy(instanceId)) {
-        log.warn('Skipping positions refresh - instance unhealthy', { instanceId });
+        log.debug('Skipping positions refresh - instance unhealthy', { instanceId });
         return false;
       }
-      if (!force && !this._hasActiveRisk(instanceId)) {
-        return false;
-      }
+      // No "known risk only" gate here: it meant a position the server did not open itself
+      // (broker terminal, direct OpenAlgo, another process, opened while the server was down)
+      // was never fetched - so auto-exit never saw it and its target/stop never fired. The
+      // stateful TTL below already paces idle instances (30s) vs ones with open risk (8s).
       const circuitKey = this._getCircuitKey(instanceId, 'positions');
       if (this._shouldSkipPolling(circuitKey)) {
         return false;
@@ -1090,13 +1107,6 @@ class MarketDataFeedService extends EventEmitter {
 
       // Fetch live
       try {
-        if (isGeneralEndpointBlackout()) {
-          const cached = this.positionCache.get(instanceId);
-          if (cached?.data) {
-            return { instanceId, positions: cached.data, success: true, fromCache: true, skipped: true };
-          }
-          return { instanceId, positions: [], success: false, fromCache: false, skipped: true, error: 'Blackout window' };
-        }
         const circuitKey = this._getCircuitKey(instanceId, 'positions');
         if (this._shouldSkipPolling(circuitKey)) {
           const cached = this.positionCache.get(instanceId);
@@ -1199,6 +1209,7 @@ class MarketDataFeedService extends EventEmitter {
     try {
       const instances = await instanceService.getAllInstances({ is_active: true });
       for (const inst of instances) {
+        if (!force && !(await marketCalendarService.isInstanceMarketOpen(inst))) continue;
         const madeLiveCall = await this.refreshFundsForInstance(inst.id, { force });
         if (madeLiveCall) {
           await this._sleep(Math.floor(Math.random() * FEED_STAGGER_MS) + FEED_STAGGER_MS);
@@ -1228,11 +1239,8 @@ class MarketDataFeedService extends EventEmitter {
       log.debug('Skipping funds refresh for instance - non-critical polling paused', { instanceId });
       return false;
     }
-    if (isGeneralEndpointBlackout()) {
-      return false;
-    }
     if (this._isInstanceUnhealthy(instanceId)) {
-      log.warn('Skipping funds refresh - instance unhealthy', { instanceId });
+      log.debug('Skipping funds refresh - instance unhealthy', { instanceId });
       return false;
     }
 
@@ -1330,7 +1338,9 @@ class MarketDataFeedService extends EventEmitter {
         }
       });
 
-      const openSymbols = await this._filterSymbolsByMarketOpen(symbolList);
+      // Expired contracts no longer exist - polling them only earns a rejection per instance.
+      const liveSymbols = symbolList.filter((s) => !isContractExpired(s));
+      const openSymbols = await this._filterSymbolsByMarketOpen(liveSymbols);
       return this._filterPausedSymbols(openSymbols);
     } catch (error) {
       log.warn('Failed to build global symbol list', { error: error.message });
@@ -1342,16 +1352,18 @@ class MarketDataFeedService extends EventEmitter {
     const now = Date.now();
     const last = this.orderbookRefreshTimestamps.get(instanceId);
     const cache = this.orderbookCache.get(instanceId);
-    const ttlMs = this._getStatefulTtlMs('orderbook', instanceId);
+    let ttlMs = this._getStatefulTtlMs('orderbook', instanceId);
+    // While OpenAlgo pushes this instance's order updates, applyOrderUpdate keeps the cached
+    // orderbook current, so REST is only the safety sweep, not the refresh.
+    if (cache && openalgoWsService.isOrderStreamLive(instanceId)) {
+      ttlMs = Math.max(ttlMs, ORDER_STREAM_SWEEP_MS);
+    }
 
     if (ttlMs === Number.POSITIVE_INFINITY) {
       return cache || null;
     }
-    if (isGeneralEndpointBlackout()) {
-      return cache || null;
-    }
     if (this._isInstanceUnhealthy(instanceId)) {
-      log.warn('Skipping orderbook refresh - instance unhealthy', { instanceId });
+      log.debug('Skipping orderbook refresh - instance unhealthy', { instanceId });
       return cache || null;
     }
 
@@ -1376,6 +1388,25 @@ class MarketDataFeedService extends EventEmitter {
     }
   }
 
+  /**
+   * Fold one pushed `order_update` into the cached orderbook: the matching row is updated in
+   * place (or added, for an order placed outside this app), and the open-order state that drives
+   * polling cadence is recomputed from the result. With no cached orderbook yet there is nothing
+   * to patch; the next read fetches one.
+   */
+  applyOrderUpdate(instanceId, order) {
+    const cache = this.orderbookCache.get(instanceId);
+    if (!cache || !order?.orderid) return;
+    const list = Array.isArray(cache.data) ? cache.data : cache.data?.orders || cache.data?.data;
+    if (!Array.isArray(list)) return;
+    const { type: _type, user_id: _user, mode: _mode, broker: _broker, ...fields } = order;
+    const idx = list.findIndex((row) => String(row.orderid ?? row.order_id) === String(order.orderid));
+    if (idx >= 0) list[idx] = { ...list[idx], ...fields };
+    else list.push(fields);
+    cache.fetchedAt = Date.now();
+    this._updateOpenOrderState(instanceId, list);
+  }
+
   invalidateOrderbook(instanceId) {
     this.orderbookCache.delete(instanceId);
     this._updateOpenOrderState(instanceId, []);
@@ -1390,11 +1421,8 @@ class MarketDataFeedService extends EventEmitter {
     if (ttlMs === Number.POSITIVE_INFINITY) {
       return cache || null;
     }
-    if (isGeneralEndpointBlackout()) {
-      return cache || null;
-    }
     if (this._isInstanceUnhealthy(instanceId)) {
-      log.warn('Skipping tradebook refresh - instance unhealthy', { instanceId });
+      log.debug('Skipping tradebook refresh - instance unhealthy', { instanceId });
       return cache || null;
     }
 
@@ -1438,9 +1466,6 @@ class MarketDataFeedService extends EventEmitter {
 
   async _pingInstancesHeartbeat() {
     try {
-      if (isGeneralEndpointBlackout()) {
-        return;
-      }
       const instances = await instanceService.getAllInstances({ is_active: true });
       const now = Date.now();
       for (const inst of instances) {
@@ -1452,16 +1477,9 @@ class MarketDataFeedService extends EventEmitter {
           unhealthyAttempts: 0,
           requiresManualRefresh: false,
         };
-        if (state.requiresManualRefresh) {
-          this.instanceHealth.set(inst.id, state);
-          continue;
-        }
-        if (state.healthy === false && state.unhealthyAttempts >= this.healthPingUnhealthyMaxAttempts) {
-          this.instanceHealth.set(inst.id, { ...state, requiresManualRefresh: true });
-          continue;
-        }
-        const interval = state.healthy !== false ? this.healthPingHealthyMs : this.healthPingUnhealthyMs;
-        if (now >= state.nextPing || now - state.lastPing >= interval) {
+        // An unhealthy instance is pinged at a growing interval (see _markInstanceUnhealthy)
+        // rather than written off after N failures, so it rejoins on its own once it answers.
+        if (now >= state.nextPing) {
           await this._maybePingInstance(inst);
         }
       }
@@ -1495,14 +1513,14 @@ class MarketDataFeedService extends EventEmitter {
   async _markInstanceUnhealthy(instanceId, reason = null) {
     const prev = this.instanceHealth.get(instanceId) || {};
     const attempts = (prev.unhealthyAttempts || 0) + 1;
-    const requiresManualRefresh = attempts >= this.healthPingUnhealthyMaxAttempts;
+    const nextPing = Date.now() + backoffMs(attempts, this.healthPingUnhealthyMs);
     this.instanceHealth.set(instanceId, {
       healthy: false,
       lastPing: Date.now(),
-      nextPing: requiresManualRefresh ? null : Date.now() + this.healthPingUnhealthyMs,
+      nextPing,
       notified: prev.notified || false,
       unhealthyAttempts: attempts,
-      requiresManualRefresh,
+      requiresManualRefresh: false,
       lastError: reason || prev.lastError || null,
     });
 
@@ -1515,10 +1533,10 @@ class MarketDataFeedService extends EventEmitter {
         this.instanceHealth.set(instanceId, {
           healthy: false,
           lastPing: Date.now(),
-          nextPing: requiresManualRefresh ? null : Date.now() + this.healthPingUnhealthyMs,
+          nextPing,
           notified: true,
           unhealthyAttempts: attempts,
-          requiresManualRefresh,
+          requiresManualRefresh: false,
           lastError: reason || prev.lastError || null,
         });
       } catch (err) {
@@ -1577,8 +1595,11 @@ class MarketDataFeedService extends EventEmitter {
         continue;
       }
 
+      const mine = pendingSymbols.filter((sym) => this._tradesExchange(inst, sym.exchange));
+      if (mine.length === 0) continue;
+
       try {
-        const { quotes, failed } = await openalgoClient.getMultiQuotes(inst, pendingSymbols, { returnErrors: true });
+        const { quotes, failed } = await openalgoClient.getMultiQuotes(inst, mine, { returnErrors: true });
         const validQuotes = [];
         const invalidSymbols = new Set(failed.map(f => `${(f.exchange || '').toUpperCase()}|${(f.symbol || '').toUpperCase()}`));
 
@@ -1633,7 +1654,7 @@ class MarketDataFeedService extends EventEmitter {
         exchange: `${s.exchange || ''}`,
         symbol: `${s.symbol || ''}`,
       }))
-      .filter((s) => s.exchange && s.symbol);
+      .filter((s) => s.exchange && s.symbol && this._tradesExchange(instance, s.exchange));
 
     if (normalizedSymbols.length === 0) {
       return [];
@@ -1684,6 +1705,7 @@ class MarketDataFeedService extends EventEmitter {
     const seen = new Set();
     const result = [];
     symbols.forEach((s) => {
+      if (isContractExpired(s)) return; // expired - nothing to quote
       const key = this._symbolKey(s.exchange, s.symbol);
       if (!seen.has(key)) {
         seen.add(key);
@@ -1828,6 +1850,10 @@ class MarketDataFeedService extends EventEmitter {
    * @returns {Promise<Object>} - { ltp, quote, source, attempts }
    */
   async fetchLtpForSymbol(exchange, symbol, options = {}) {
+    // An expired contract no longer exists: fail at once rather than burn retries on it.
+    if (isContractExpired({ exchange, symbol })) {
+      throw new ValidationError(`${exchange}:${symbol} has expired - it has no LTP`);
+    }
     const {
       maxRounds = 2,
       bypassCache = false,
@@ -1857,7 +1883,8 @@ class MarketDataFeedService extends EventEmitter {
       // previewing or resolving legs outside market hours - it never sets an actual order price,
       // and a real order attempt is still subject to the broker's own closed-market rejection.
       try {
-        const pool = await marketDataInstanceService.getMarketDataPool();
+        const pool = (await marketDataInstanceService.getMarketDataPool())
+          .filter((inst) => this._tradesExchange(inst, exchange));
         if (pool.length > 0) {
           const closedResult = await openalgoClient.getLtpWithRetry(pool, exchange, symbol, {
             maxRounds: 1,
@@ -1876,12 +1903,6 @@ class MarketDataFeedService extends EventEmitter {
       }
 
       throw new Error(`Market closed for ${exchange}:${symbol}`);
-    }
-
-    // The quote-blackout window pauses Indian broker API traffic outside NSE/BSE hours -
-    // crypto trades 24/7 and already passed the exchangeOpen check above, so it's exempt.
-    if (!isCryptoExchange(exchange) && isQuoteEndpointBlackout()) {
-      throw new Error('Market closed for quotes (02:00-08:45 IST)');
     }
 
     // Prefer WebSocket quotes when available
@@ -1944,8 +1965,9 @@ class MarketDataFeedService extends EventEmitter {
       }
     }
 
-    // Get market data pool for retry/failover
-    const pool = await marketDataInstanceService.getMarketDataPool();
+    // Get market data pool for retry/failover - only instances whose broker trades this exchange
+    const pool = (await marketDataInstanceService.getMarketDataPool())
+      .filter((inst) => this._tradesExchange(inst, exchange));
     if (pool.length === 0) {
       throw new Error('No market data instances available for LTP fetch');
     }
@@ -2249,7 +2271,7 @@ class MarketDataFeedService extends EventEmitter {
     if (['complete', 'completed', 'filled'].includes(status)) return 'complete';
     if (['cancelled', 'canceled'].includes(status)) return 'cancelled';
     if (['rejected'].includes(status)) return 'rejected';
-    if (['trigger_pending'].includes(status)) return 'trigger_pending';
+    if (['trigger_pending', 'trigger pending'].includes(status)) return 'trigger_pending';
     if (['partial', 'partially_filled', 'partiallyfilled'].includes(status)) return 'partial';
     if (['open', 'pending'].includes(status)) return status;
     return status || 'unknown';

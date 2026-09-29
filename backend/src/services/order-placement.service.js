@@ -12,6 +12,11 @@ import orderRetryService from './order-retry.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import { extractLtp } from '../utils/price-extraction.js';
 import brokerCapabilitiesService from './broker-capabilities.service.js';
+import limitPriceService from './limit-price.service.js';
+import { requiresLimitOrders } from '../utils/broker-type.util.js';
+
+// ponytail: fixed 0.5% stop protection band; make it a setting if it needs tuning per segment.
+const SLM_PROTECTION_PCT = 0.005;
 import { normalizeSymbolKey, normalizeExchange, normalizeProduct } from '../utils/symbol-parsing.util.js';
 
 class OrderPlacementService {
@@ -32,7 +37,8 @@ class OrderPlacementService {
   async placeSmartOrder(instance, payload, context = {}) {
     // CRITICAL: Validate order parameters before placing order
     try {
-      const supportsMarketOrders = await brokerCapabilitiesService.supportsMarketOrders(instance?.broker);
+      // Exchange-aware: false for every Indian exchange (SEBI limit-only), whatever the broker says.
+      const supportsMarketOrders = await brokerCapabilitiesService.supportsMarketOrders(instance?.broker, payload?.exchange);
 
       // Validate required fields
       orderValidation.validateSymbol(payload.symbol);
@@ -49,14 +55,26 @@ class OrderPlacementService {
       // Default to MARKET if pricetype is undefined (per order-payload.factory.js defaults)
       let effectivePriceType = (payload.pricetype || 'MARKET').toUpperCase();
 
-      if (supportsMarketOrders && effectivePriceType === 'LIMIT') {
-        payload = {
-          ...payload,
-          pricetype: 'MARKET',
-          price: '0',
-        };
-        effectivePriceType = 'MARKET';
+      // SEBI: Indian brokers take no SL-M from algos. Convert it to a stop-loss LIMIT (SL) that
+      // fills like SL-M would, but with a bounded worst price.
+      if (effectivePriceType === 'SL-M' && requiresLimitOrders(payload.exchange)) {
+        payload = await this._convertStopMarketToStopLimit(payload, context);
+        effectivePriceType = 'SL';
       }
+
+      // A LIMIT order is sent as a LIMIT. There is deliberately no LIMIT -> MARKET conversion.
+      //
+      // There used to be one, gated only on the broker supporting market orders, and it rewrote
+      // the order to `pricetype: MARKET, price: '0'`. Its intent was to undo the app's OWN
+      // detour: callers that mean "fill now" price a marketable LIMIT off the quote when the
+      // broker has no MARKET support. But that detour is only ever taken when market orders are
+      // NOT supported (see quick-order.service._resolveOrderTypeForInstance), so the branch
+      // could never fire for a synthesised limit - the only orders that reached it were limits
+      // the OPERATOR chose, which is precisely the case it must not touch. A chart right-click
+      // "Buy Limit @ 64,190.76" was turned into an immediate market fill.
+      //
+      // order.service.js guards this at its own layer (see its RESTING_TYPES check); this layer
+      // was silently undoing that decision one call later. See Test/integration/orders.test.js.
 
       if (supportsMarketOrders && effectivePriceType === 'MARKET') {
         payload = {
@@ -66,8 +84,16 @@ class OrderPlacementService {
       }
 
       if (!supportsMarketOrders && effectivePriceType === 'MARKET') {
-        payload = await this._convertMarketToLimit(payload, context);
-        effectivePriceType = payload.pricetype || 'LIMIT';
+        payload = await this._convertMarketToLimit(payload, { ...context, instance });
+        effectivePriceType = (payload.pricetype || 'LIMIT').toUpperCase();
+        if (effectivePriceType === 'MARKET' && requiresLimitOrders(payload.exchange)) {
+          throw new ValidationError(
+            `No price available for ${payload.exchange}:${payload.symbol} - order refused rather than sent as MARKET (SEBI limit-only)`
+          );
+        }
+        if (effectivePriceType === 'MARKET') {
+          payload = { ...payload, price: '0' };
+        }
       }
 
       // For LIMIT, SL, SL-M orders, price validation is required
@@ -403,6 +429,31 @@ class OrderPlacementService {
     });
   }
 
+  /**
+   * SL-M -> SL for Indian exchanges. Limit = trigger -/+ the caller's buffer, else a protection
+   * band of SLM_PROTECTION_PCT of the trigger, rounded AWAY from the trigger to the tick so the
+   * stop still fills through a fast move. SELL stops (long exits) sit below, BUY stops above.
+   */
+  async _convertStopMarketToStopLimit(payload, context = {}) {
+    const trigger = Number(payload?.trigger_price);
+    const side = (payload?.action || '').toUpperCase();
+    if (!Number.isFinite(trigger) || trigger <= 0) {
+      throw new ValidationError(`SL-M order for ${payload?.exchange}:${payload?.symbol} has no trigger price`);
+    }
+    if (!['BUY', 'SELL'].includes(side)) {
+      throw new ValidationError(`Invalid action for SL-M conversion: ${payload?.action}`);
+    }
+    const given = Number(context?.limitBufferPoints);
+    const buffer = Number.isFinite(given) && given > 0 ? given : trigger * SLM_PROTECTION_PCT;
+    const tickSize = context?.tickSize ?? await limitPriceService.resolveTickSize(payload.exchange, payload.symbol);
+    const raw = side === 'BUY' ? trigger + buffer : trigger - buffer;
+    const price = this._roundToTick(raw > 0 ? raw : trigger, tickSize, side);
+    log.info('[OrderPlacement] SL-M converted to SL (SEBI)', {
+      exchange: payload.exchange, symbol: payload.symbol, action: side, trigger, price,
+    });
+    return { ...payload, pricetype: 'SL', price };
+  }
+
   async _convertMarketToLimit(payload, context = {}) {
     const exchange = payload?.exchange;
     const symbol = payload?.symbol;
@@ -414,12 +465,28 @@ class OrderPlacementService {
       throw new ValidationError(`Invalid action for MARKET conversion: ${payload?.action}`);
     }
 
-    const ltpResult = await marketDataFeedService.fetchLtpForSymbol(exchange, symbol, {
-      orderCritical: true,
-    });
-    const ltp = ltpResult?.ltp || extractLtp(ltpResult?.quote);
+    // Pricing the limit ourselves is an optimisation over OpenAlgo's own MARKET -> LIMIT
+    // conversion, which uses a wider buffer. With no LTP from the feed or the ordering instance,
+    // the payload comes back as MARKET: placeSmartOrder refuses it for Indian exchanges (SEBI
+    // limit-only) and only crypto goes through unconverted.
+    let ltpResult = null;
+    try {
+      ltpResult = await marketDataFeedService.fetchLtpForSymbol(exchange, symbol, {
+        orderCritical: true,
+      });
+    } catch (quoteError) {
+      log.warn('[OrderPlacement] Feed LTP lookup failed', {
+        exchange, symbol, action: side, error: quoteError.message,
+      });
+    }
+
+    const ltp = ltpResult?.ltp || extractLtp(ltpResult?.quote)
+      || await limitPriceService.instanceLtp(context?.instance, exchange, symbol);
     if (!ltp || ltp <= 0) {
-      throw new ValidationError(`Unable to resolve LTP for ${exchange}:${symbol}`);
+      log.warn('[OrderPlacement] No LTP - sending MARKET unconverted', {
+        exchange, symbol, action: side,
+      });
+      return payload;
     }
 
     let bufferPoints = Number(context?.limitBufferPoints);
@@ -435,7 +502,8 @@ class OrderPlacementService {
       price = ltp;
     }
 
-    price = this._roundToTick(price, context?.tickSize, side);
+    const tickSize = context?.tickSize ?? await limitPriceService.resolveTickSize(exchange, symbol);
+    price = this._roundToTick(price, tickSize, side);
 
     log.info('[OrderPlacement] MARKET converted to LIMIT', {
       exchange,

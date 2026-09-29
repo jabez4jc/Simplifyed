@@ -105,10 +105,6 @@ class SettingsHandler {
         icon: '🧪',
         description: 'Symbols used for endpoint capability tests'
       },
-      'market_hours': {
-        icon: '🕒',
-        description: 'Blackout windows for OpenAlgo endpoints'
-      },
       'trading': {
         icon: '🗓️',
         description: 'Session windows used for intraday risk resets'
@@ -388,7 +384,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       'market_data_feed': 'Market Data Feed',
       'instance_health': 'Instance Health',
       'instance_health_tests': 'Instance Health Tests',
-      'market_hours': 'Market Hours',
       'trading': 'Trading Sessions',
       'streaming': 'Streaming',
       'system': 'System'
@@ -431,7 +426,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       'polling.health_check_interval_ms': 'Interval for OpenAlgo endpoint capability/health checks.',
       'instance_health.ping_healthy_interval_ms': 'Ping cadence while instances are healthy.',
       'instance_health.ping_unhealthy_interval_ms': 'Ping cadence while unhealthy; stops after the max attempts.',
-      'instance_health.ping_unhealthy_max_attempts': 'After this many failed pings, auto checks pause until manual refresh.',
       'instance_health.analyzer_check_interval_ms': 'How often analyzer mode health is verified.',
       'market_data_feed.quote_ttl_idle_ms': 'Fallback quote cache TTL when no open positions.',
       'market_data_feed.quote_ttl_active_ms': 'Fallback quote cache TTL when open positions exist.',
@@ -444,10 +438,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       'market_data_feed.multiquote_cooldown_active_ms': 'Minimum delay between MultiQuotes calls when positions exist.',
       'market_data_feed.funds_interval_ms': 'Funds refresh cadence.',
       'market_data_feed.max_order_spread_pct': 'Maximum bid/ask spread (decimal) allowed for limit pricing.',
-      'market_hours.quote_blackout_start': 'Quotes/MultiQuotes/OptionChain are blocked starting this time (IST).',
-      'market_hours.quote_blackout_end': 'Quotes/MultiQuotes/OptionChain resume after this time (IST).',
-      'market_hours.general_blackout_start': 'Other OpenAlgo endpoints are blocked starting this time (IST).',
-      'market_hours.general_blackout_end': 'Other OpenAlgo endpoints resume after this time (IST).',
       'trading_sessions': 'Defines session windows in IST used for session P&L baselines and auto cutoffs.',
       'brokerage.market_order_support': 'When enabled for a broker, all orders will be sent as MARKET orders.',
     };

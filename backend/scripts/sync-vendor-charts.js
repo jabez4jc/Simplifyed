@@ -32,3 +32,28 @@ for (const file of ['LICENSE', 'NOTICE']) {
 const { version } = JSON.parse(fs.readFileSync(path.join(src, 'package.json'), 'utf8'));
 fs.writeFileSync(path.join(dest, 'VERSION'), `${version}\n`);
 console.log(`[sync-vendor-charts] vendored openalgo-charts ${version} -> public/vendor/openalgo-charts`);
+
+/**
+ * OpenScript: the compiler/engine (`dist/core`) and the chart adapter (`dist/adapters/charts`).
+ * Both are dependency-free native ESM trees with relative imports only, so they are served as-is.
+ * The editor and CodeMirror adapters are left out: they import CodeMirror by bare specifier,
+ * which a page with no bundler cannot resolve.
+ */
+const scriptSrc = path.join(here, '..', 'node_modules', 'openalgo-script');
+const scriptDest = path.join(here, '..', 'public', 'vendor', 'openalgo-script');
+if (fs.existsSync(scriptSrc)) {
+  fs.rmSync(scriptDest, { recursive: true, force: true });
+  for (const tree of ['core', 'adapters/charts']) {
+    fs.cpSync(path.join(scriptSrc, 'dist', tree), path.join(scriptDest, tree), {
+      recursive: true,
+      filter: (from) => fs.statSync(from).isDirectory() || from.endsWith('.js'),
+    });
+  }
+  for (const file of ['LICENSE', 'NOTICE']) {
+    const from = path.join(scriptSrc, file);
+    if (fs.existsSync(from)) fs.copyFileSync(from, path.join(scriptDest, file));
+  }
+  const scriptVersion = JSON.parse(fs.readFileSync(path.join(scriptSrc, 'package.json'), 'utf8')).version;
+  fs.writeFileSync(path.join(scriptDest, 'VERSION'), `${scriptVersion}\n`);
+  console.log(`[sync-vendor-charts] vendored openalgo-script ${scriptVersion} -> public/vendor/openalgo-script`);
+}

@@ -30,6 +30,7 @@ import idempotencyService from './src/services/idempotency.service.js';
 import { requireAuth, optionalAuth, verifyLocalToken } from './src/middleware/auth.js';
 import { errorHandler, notFoundHandler } from './src/middleware/error-handler.js';
 import { correlationId, requestLogger, bodyParserErrorHandler } from './src/middleware/request-logger.js';
+import { noStore } from './src/middleware/no-store.js';
 import { checkInstrumentsRefresh, evaluateStartupReadiness } from './src/middleware/instruments-refresh.middleware.js';
 import { auditLogger } from './src/middleware/audit-logger.js';
 
@@ -152,6 +153,12 @@ app.use(optionalAuth);
 // Instruments refresh check (runs in background after authentication)
 app.use(checkInstrumentsRefresh);
 
+// API responses must never be cached - see middleware/no-store.js. Mounted on the API paths
+// only: express.static below still gets to cache the frontend assets, which is what it is for.
+app.use('/api/v1', noStore);
+app.use('/api/user', noStore);
+app.use('/webhook', noStore);
+
 // Audit logger for mutating API requests
 app.use('/api/v1', auditLogger);
 
@@ -202,11 +209,8 @@ app.get('/api/user', requireAuth, (req, res) => {
 // Static files (frontend)
 app.use(express.static('public'));
 
-// Blackout windows are enforced per broker call in integrations/openalgo/client.js, which is
-// also the only layer that knows the instance's broker - and therefore the only one that can
-// exempt 24/7 crypto brokers (see isCryptoBroker there). An app-level guard used to sit here,
-// but it was registered after the API routes above, so it only ever saw requests no route
-// matched; it never blocked a real call, and moving it earlier would have broken crypto.
+// Unreachable instances are paused per broker call by the circuit breaker in
+// integrations/openalgo/client.js; there is no app-level time-of-day guard.
 
 // 404 handler
 app.use(notFoundHandler);

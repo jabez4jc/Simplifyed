@@ -1044,6 +1044,59 @@
   padding: 2px 0;
 }
 
+/* Indicator picker (see toggleIndicatorPicker in dashboard-chart-panes.js). It reuses the
+   pattern picker's shell; these add the category headings, the search box, and the display:none
+   that `hidden` alone cannot do against the flex rows above. */
+.chart-ind-pick-cat {
+  padding: var(--space-2) 0 var(--space-1);
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-neutral-500);
+}
+
+.chart-ind-pick-row {
+  font-size: var(--font-size-3xs);
+  color: var(--color-neutral-700);
+  cursor: pointer;
+}
+
+.chart-ind-pick-row[hidden],
+.chart-ind-pick-group[hidden] { display: none; }
+
+.chart-ind-search {
+  width: 220px;
+  padding: 2px var(--space-2);
+  font-size: var(--font-size-3xs);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.chart-script-src,
+.chart-script-errors {
+  display: block;
+  width: calc(100% - 2 * var(--space-2));
+  margin: var(--space-2);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--font-size-3xs);
+  white-space: pre;
+  overflow: auto;
+}
+
+.chart-script-src {
+  resize: vertical;
+  tab-size: 4;
+}
+
+.chart-script-errors {
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+  color: var(--color-danger, #dc2626);
+  background: var(--color-surface);
+}
+
 .chart-pat-name {
   display: flex;
   align-items: center;
@@ -1338,6 +1391,14 @@
   background: var(--color-primary);
   color: var(--color-primary-content);
 }
+
+/* Tool glyph from openalgo-charts' own icon registry (see toolGlyph in dashboard-chart-draw.js).
+   It paints with currentColor, so the active row needs no second asset. */
+.chart-flyout-icon { flex: 0 0 16px; }
+
+/* The name takes the slack, so the anchor hint stays pinned right whether or not a glyph is
+   present. */
+.chart-flyout-item > span:not(.chart-flyout-anchors) { flex: 1 1 auto; }
 
 .chart-flyout-anchors { color: var(--color-neutral-400); font-variant-numeric: tabular-nums; }
 

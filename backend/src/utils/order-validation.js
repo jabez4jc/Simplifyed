@@ -159,7 +159,7 @@ export function validateExchange(exchange) {
     throw new ValidationError('Exchange is required and must be a valid string');
   }
 
-  const validExchanges = ['NSE', 'BSE', 'NFO', 'BFO', 'MCX', 'CDS'];
+  const validExchanges = ['NSE', 'BSE', 'NFO', 'BFO', 'MCX', 'CDS', 'BCD', 'NCO', 'NSE_INDEX', 'BSE_INDEX', 'CRYPTO'];
   const normalizedExchange = exchange.toUpperCase().trim();
 
   if (!validExchanges.includes(normalizedExchange)) {

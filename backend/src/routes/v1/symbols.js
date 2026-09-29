@@ -19,6 +19,7 @@ import marketDataFeedService from '../../services/market-data-feed.service.js';
 import symbolResolutionService from '../../services/symbol-resolution.service.js';
 import optionGreeksService from '../../services/option-greeks.service.js';
 import { requireAuth } from '../../middleware/auth.js';
+import { isContractExpired } from '../../utils/underlying.util.js';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -150,15 +151,24 @@ router.post('/quotes', async (req, res, next) => {
     }
 
     const ttlMs = 2000;
-    const { cached, missing } = marketDataFeedService.getCachedQuotesForSymbols(symbols, ttlMs);
+    const { cached, missing } = marketDataFeedService.getCachedQuotesForSymbols(symbols, { ttlMs });
     let liveQuotes = [];
 
     if (missing.length > 0) {
       if (instanceId) {
         const instance = await instanceService.getInstanceById(parseInt(instanceId, 10));
-        const quoteResult = await openalgoClient.getQuotes(instance, missing, { returnErrors: true });
+        // Ask the named instance only for live symbols its broker trades; anything else goes
+        // through the feed, which routes per segment (and skips expired contracts).
+        const mine = missing.filter((s) => marketDataFeedService._tradesExchange(instance, s.exchange) && !isContractExpired(s));
+        const others = missing.filter((s) => !mine.includes(s));
+        const quoteResult = mine.length
+          ? await openalgoClient.getQuotes(instance, mine, { returnErrors: true })
+          : { quotes: [], failed: [] };
         const quotes = Array.isArray(quoteResult?.quotes) ? quoteResult.quotes : [];
-        const failed = Array.isArray(quoteResult?.failed) ? quoteResult.failed : [];
+        const failed = [
+          ...(Array.isArray(quoteResult?.failed) ? quoteResult.failed : []),
+          ...others,
+        ];
         if (quotes.length > 0) {
           marketDataFeedService.setQuoteSnapshot(instance.id, quotes);
           liveQuotes = liveQuotes.concat(quotes);

@@ -1,7 +1,6 @@
 import config from '../core/config.js';
 import { log } from '../core/logger.js';
 import { UnauthorizedError, ValidationError } from '../core/errors.js';
-import { ORDER_PARAMS } from '../integrations/openalgo/endpoints.js';
 import { maskApiKey, parseIntSafe, timingSafeEqualStr } from '../utils/sanitizers.js';
 import { extractLtp } from '../utils/price-extraction.js';
 import watchlistService from './watchlist.service.js';
@@ -13,6 +12,23 @@ import orderRetryService from './order-retry.service.js';
 import instanceService from './instance.service.js';
 import brokerCapabilitiesService from './broker-capabilities.service.js';
 import marginSizingService from './margin-sizing.service.js';
+import { requiresLimitOrders } from '../utils/broker-type.util.js';
+import limitPriceService from './limit-price.service.js';
+import brokerUnitsService from './broker-units.service.js';
+import openalgoClient, { assertLimitOnlyCompliance } from '../integrations/openalgo/client.js';
+
+// OpenAlgo v1 order constants (openalgo-docs api-documentation/v1/order-constants.md). The
+// exchange list is VALID_EXCHANGES in full; OpenAlgo 400s anything else, and the connected
+// broker's capabilities narrow it further downstream.
+const ORDER_PARAMS = {
+  exchanges: [
+    'NSE', 'NFO', 'CDS', 'BSE', 'BFO', 'BCD', 'MCX', 'NCDEX', 'NCO',
+    'NSE_INDEX', 'BSE_INDEX', 'MCX_INDEX', 'GLOBAL_INDEX', 'CRYPTO',
+  ],
+  products: ['CNC', 'MIS', 'NRML'],
+  pricetypes: ['MARKET', 'LIMIT', 'SL', 'SL-M'],
+  actions: ['BUY', 'SELL'],
+};
 
 const DEFAULT_PAYLOAD = {
   pricetype: 'MARKET',
@@ -308,16 +324,17 @@ class TradingviewBroadcastService {
     }
 
     let broker = target?.broker || null;
-    if (!broker && target?.instance_id) {
+    let targetInstance = null;
+    if (target?.instance_id) {
       try {
-        const instance = await instanceService.getInstanceById(target.instance_id);
-        broker = instance?.broker || null;
+        targetInstance = await instanceService.getInstanceById(target.instance_id);
+        broker = broker || targetInstance?.broker || null;
       } catch {
-        broker = null;
+        targetInstance = null;
       }
     }
 
-    const supportsMarketOrders = await brokerCapabilitiesService.supportsMarketOrders(broker);
+    const supportsMarketOrders = await brokerCapabilitiesService.supportsMarketOrders(broker, payload.exchange);
     if (supportsMarketOrders) {
       return {
         ...payload,
@@ -329,20 +346,28 @@ class TradingviewBroadcastService {
     const symbol = payload.symbol;
     const action = payload.action;
     const bufferPct = this._resolveBufferPct(payload.strategy, watchlist);
-    const ltpResult = await marketDataFeedService.fetchLtpForSymbol(exchange, symbol, {
-      orderCritical: true,
-    });
-    const ltp = ltpResult?.ltp || extractLtp(ltpResult?.quote);
+    // A broadcast is a fill-now signal. With no usable LTP, crypto may go as MARKET, but an
+    // Indian exchange refuses this target (SEBI limit-only) - see _marketOrRefuse.
+    let ltpResult = null;
+    try {
+      ltpResult = await marketDataFeedService.fetchLtpForSymbol(exchange, symbol, {
+        orderCritical: true,
+      });
+    } catch (quoteError) {
+      log.warn('Feed LTP lookup failed for broadcast', { exchange, symbol, error: quoteError.message });
+    }
+    const ltp = ltpResult?.ltp || extractLtp(ltpResult?.quote)
+      || await limitPriceService.instanceLtp(targetInstance, exchange, symbol);
 
     if (!ltp || ltp <= 0) {
-      throw new ValidationError(`Unable to resolve LTP for ${exchange}:${symbol}`);
+      return this._marketOrRefuse(payload, 'no LTP');
     }
 
     const buffer = ltp * (bufferPct / 100);
     const side = this._isBuyAction(action) ? 'BUY' : 'SELL';
     const rawPrice = side === 'BUY' ? ltp + buffer : ltp - buffer;
     if (!Number.isFinite(rawPrice) || rawPrice <= 0) {
-      throw new ValidationError(`Invalid LIMIT price for ${exchange}:${symbol}`);
+      return this._marketOrRefuse(payload, `computed price ${rawPrice} invalid`);
     }
 
     const tickSize = await this._resolveTickSize(exchange, symbol);
@@ -353,6 +378,18 @@ class TradingviewBroadcastService {
       pricetype: 'LIMIT',
       price,
     };
+  }
+
+  /** Crypto: send MARKET. Indian exchanges: throw, which fails only this broadcast target. */
+  _marketOrRefuse(payload, reason) {
+    if (requiresLimitOrders(payload.exchange)) {
+      log.error('Broadcast target refused - no limit price (SEBI limit-only)', {
+        exchange: payload.exchange, symbol: payload.symbol, reason,
+      });
+      throw new ValidationError(`No limit price for ${payload.exchange}:${payload.symbol} (${reason}) - MARKET not allowed`);
+    }
+    log.warn('Broadcast sending MARKET', { exchange: payload.exchange, symbol: payload.symbol, reason });
+    return { ...payload, pricetype: 'MARKET', price: 0 };
   }
 
   _resolveBufferPct(strategy, watchlist) {
@@ -418,8 +455,16 @@ class TradingviewBroadcastService {
       await bucket.consume();
     }
 
+    // Broadcasts post straight to OpenAlgo, not through openalgoClient.request, so the same two
+    // boundary rules are applied here: SEBI limit-only, and the target broker's lot units.
+    assertLimitOnlyCompliance('placesmartorder', payload);
+    let wirePayload = payload;
+    if (target.instance_id) {
+      const instance = await instanceService.getInstanceById(target.instance_id);
+      wirePayload = await brokerUnitsService.toBroker(instance, 'placesmartorder', payload, openalgoClient);
+    }
     const body = JSON.stringify({
-      ...payload,
+      ...wirePayload,
       apikey: target.apikey,
     });
 
@@ -571,7 +616,9 @@ class TradingviewBroadcastService {
           return {
             ok: false,
             status,
-            error: `HTTP ${status}`,
+            // The broker's own reason ("MIS orders cannot be placed after square-off time"),
+            // not just the status - an alert that failed must say why.
+            error: data?.message ? `HTTP ${status}: ${typeof data.message === 'string' ? data.message : JSON.stringify(data.message)}` : `HTTP ${status}`,
             attempts: attempt,
             durationMs,
           };

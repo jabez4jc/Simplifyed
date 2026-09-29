@@ -18,11 +18,16 @@ import {
   nearestStrikeToSpot,
   stripDerivativeSuffix,
 } from '../utils/black76-pricing.util.js';
+import { isCryptoBroker, isCryptoExchange } from '../utils/broker-type.util.js';
 
 async function enrichWithQuotes(rows, exchangeLabel) {
   try {
     const quoteExchange = exchangeLabel === 'NSE_INDEX' ? 'NFO' : exchangeLabel;
-    const pool = await marketDataInstanceService.getPoolForEndpoint('multiquotes');
+    // Only instances whose broker trades this segment: a BTC chain priced via Kotak (or NIFTY via
+    // Delta) is a per-strike "Symbol not found".
+    const crypto = isCryptoExchange(quoteExchange);
+    const pool = (await marketDataInstanceService.getPoolForEndpoint('multiquotes'))
+      .filter((inst) => isCryptoBroker(inst.broker) === crypto);
     if (!pool.length) return rows;
 
     const healthy = pool.filter((i) => i.health_status === 'healthy');
@@ -613,7 +618,8 @@ class OptionChainService {
               expiry: brokerExpiry,
               underlying,
             });
-            // First try with the requested expiry
+            // expiry_date is mandatory on /optionchain, so there is no expiry-less retry: it could
+            // only come back 400. Greeks ride the same call (opengreeks Black-76, server-side).
             data = await openalgoClient.getOptionChain(
               instance,
               underlying,
@@ -622,22 +628,9 @@ class OptionChainService {
               {
                 strikeCount: strikeWindow || 8, // limit to max 8 per side
                 skipBackoff: true,
+                greeksRate: riskFreeRateForSymbol(underlying) * 100,
               }
             );
-
-            // Retry without expiry to let broker return nearest/next if none for requested
-            if (!data || !Array.isArray(data.chain) || !data.chain.length) {
-              data = await openalgoClient.getOptionChain(
-                instance,
-              underlying,
-              null,
-              exch,
-              {
-                strikeCount: strikeWindow || 8,
-                skipBackoff: true,
-              }
-            );
-            }
 
             if (data && Array.isArray(data.chain) && data.chain.length) {
               // Stick with the exchange that worked
@@ -692,7 +685,10 @@ class OptionChainService {
         })
         .sort((a, b) => a.strike - b.strike);
 
-      const enriched = await enrichWithQuotes(rows, exchangeLabel);
+      // The chain already carries live quotes (and the Greeks computed from them) when
+      // quotes_included is set; re-fetching them via multiquotes cost a second call and could
+      // leave the prices out of step with the Greeks.
+      const enriched = lastData.quotes_included ? rows : await enrichWithQuotes(rows, exchangeLabel);
 
       const spotResolved = await resolveSpotQuote(
         underlying,

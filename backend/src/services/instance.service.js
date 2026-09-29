@@ -223,10 +223,16 @@ class InstanceService {
       // Normalize updates
       const normalized = normalizeInstanceData(updates, true);
 
-      // If host URL or API key changed, re-test connection and auto-detect broker
+      // Re-test the connection only when the credentials ACTUALLY changed.
+      //
+      // The edit form posts every field it renders, so host_url is present on every save whether
+      // or not it was touched. Testing on mere presence meant renaming an instance, or clearing
+      // a session target, blocked on a live broker round-trip - and on an instance that is down
+      // (the exact reason someone opens this form) that is a request that sits on the network
+      // timeout before it can save anything.
       const shouldRetestConnection =
-        normalized.host_url !== undefined ||
-        normalized.api_key !== undefined;
+        (normalized.host_url !== undefined && normalized.host_url !== existing.host_url) ||
+        (normalized.api_key !== undefined && normalized.api_key !== existing.api_key);
 
       if (shouldRetestConnection) {
         const connectionPayload = {

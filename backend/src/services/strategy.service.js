@@ -12,6 +12,29 @@ import crypto from 'crypto';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { NotFoundError, ValidationError } from '../core/errors.js';
+import { contractExpiry, isContractExpired, upcomingExpiries, resolveOptionsUnderlyingKey } from '../utils/underlying.util.js';
+import { isCryptoExchange } from '../utils/broker-type.util.js';
+
+/** 'POINTS' (default) or 'PERCENT' - the unit of a target/stop-loss/trailing value. */
+export function normalizeExitUnit(value) {
+  return String(value || '').trim().toUpperCase() === 'PERCENT' ? 'PERCENT' : 'POINTS';
+}
+
+/** A target/stop value in points: PERCENT is taken of the entry price. */
+export function toExitPoints(value, unit, entryPrice) {
+  const v = Number(value);
+  if (!Number.isFinite(v) || v <= 0) return value ?? null;
+  return normalizeExitUnit(unit) === 'PERCENT' ? (v * Number(entryPrice)) / 100 : v;
+}
+
+/** A strategy anchored on an expired contract (e.g. a rolled-over future) resolves nothing live. */
+function assertAnchorLive(anchor) {
+  if (isContractExpired(anchor)) {
+    throw new ValidationError(
+      `Strategy anchor ${anchor.exchange}:${anchor.symbol} expired on ${contractExpiry(anchor)} - roll it to a live contract`
+    );
+  }
+}
 import { sanitizeSymbol, sanitizeExchange, sanitizeStrategyTag, parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
 import watchlistSymbolService from './watchlist-symbol.service.js';
 import watchlistService from './watchlist.service.js';
@@ -25,6 +48,7 @@ import instanceService from './instance.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import orderRepository from './order-repository.js';
 import gttService from './gtt.service.js';
+import limitPriceService from './limit-price.service.js';
 
 const VALID_EXIT_MECHANISMS = ['POLLING', 'GTT'];
 
@@ -36,7 +60,7 @@ const VALID_QTY_TYPES = ['LOTS', 'FIXED', 'MARGIN_BASED'];
 
 class StrategyService {
   async listStrategies(watchlistId) {
-    return db.all(
+    const rows = await db.all(
       `SELECT s.*,
          (SELECT COUNT(*) FROM strategy_legs WHERE strategy_id = s.id) as leg_count,
          (SELECT COUNT(*) FROM strategy_instances WHERE strategy_id = s.id) as instance_count
@@ -45,6 +69,12 @@ class StrategyService {
        ORDER BY s.created_at DESC`,
       [watchlistId]
     );
+    // Flag strategies whose anchor contract has expired: the UI disables Execute for them.
+    return Promise.all(rows.map(async (row) => {
+      const anchor = await watchlistSymbolService.findAnchorByWatchlist(row.watchlist_id, row.exchange, row.underlying)
+        .catch(() => null);
+      return { ...row, anchor_expired: Boolean(anchor && isContractExpired(anchor)), anchor_symbol: anchor?.symbol || null };
+    }));
   }
 
   async getStrategyWithLegs(strategyId) {
@@ -109,12 +139,20 @@ class StrategyService {
         // dated contracts exist (e.g. NATGASMINI28JUL26FUT), so an exact-match lookup on the
         // plain underlying name the user typed always fails. Fall back to the nearest
         // non-expired FUT contract under this underlying from the local instruments cache.
-        const nearestFut = await db.get(
-          `SELECT * FROM instruments
-           WHERE underlying_key = ? AND exchange = ? AND instrumenttype = 'FUT' AND expiry >= date('now')
-           ORDER BY expiry ASC LIMIT 1`,
-          [underlying, exchange]
+        // Expiries are 'DD-MMM-YY' text, so `expiry >= date('now')` compared '19-OCT-26' with
+        // '2026-09-29' as strings - never true for a real contract - and ORDER BY sorted them
+        // alphabetically. Pick the nearest live one in JS with the shared expiry rule.
+        // Crypto has no dated futures to anchor on - the perpetual (BTC -> BTCUSDFUT) is it.
+        const futures = await db.all(
+          isCryptoExchange(exchange)
+            ? `SELECT * FROM instruments WHERE exchange = ? AND instrumenttype = 'PERPFUT' AND symbol IN (?, ?)`
+            : `SELECT * FROM instruments WHERE exchange = ? AND instrumenttype = 'FUT' AND underlying_key = ?`,
+          isCryptoExchange(exchange) ? [exchange, `${underlying}USDFUT`, `${underlying}USDTFUT`] : [exchange, underlying]
         );
+        const nearestExpiry = upcomingExpiries(futures, new Date(), { crypto: isCryptoExchange(exchange) })[0];
+        const nearestFut = isCryptoExchange(exchange)
+          ? futures[0] || null // perpetuals carry no expiry
+          : futures.find((row) => row.expiry === nearestExpiry) || null;
         if (!nearestFut) {
           throw new ValidationError(
             `No tradable contract found for ${exchange}:${underlying} - check the symbol name or that instruments are synced`
@@ -138,8 +176,11 @@ class StrategyService {
         // findAnchorByWatchlist matches on, and what quickOrderService._resolveOptionSymbolForInstance
         // /derivativeResolutionService use as the option chain's root name, so option legs keep
         // dynamically resolving the current nearest expiry across monthly contract rollovers
-        // even though this row's own `symbol` is a point-in-time dated contract.
-        underlying_symbol: underlying,
+        // even though this row's own `symbol` is a point-in-time dated contract. For a crypto
+        // perpetual that root is the bare asset (BTCUSDFUT -> BTC), where its options live.
+        underlying_symbol: (await resolveOptionsUnderlyingKey({
+          symbol: resolved.resolvedSymbol || underlying, exchange, underlying_symbol: underlying,
+        })) || underlying,
         token: resolved.token,
         symbol_type: resolved.symbol_type || resolved.symbolType,
         instrumenttype: resolved.instrumenttype,
@@ -285,8 +326,8 @@ class StrategyService {
         strategy_id, leg_order, option_type, action, strike_policy, strike_offset,
         qty_type, qty_value, product_type,
         target_points, stoploss_points, trailing_stoploss_points, trailing_activation_points,
-        exit_mechanism, leg_tag
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        exit_mechanism, leg_tag, exit_unit
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         strategyId,
         resolvedOrder,
@@ -303,6 +344,7 @@ class StrategyService {
         normalized.trailing_activation_points,
         normalized.exit_mechanism,
         normalized.leg_tag,
+        normalized.exit_unit,
       ]
     );
 
@@ -331,7 +373,7 @@ class StrategyService {
         option_type = ?, action = ?, strike_policy = ?, strike_offset = ?,
         qty_type = ?, qty_value = ?, product_type = ?,
         target_points = ?, stoploss_points = ?, trailing_stoploss_points = ?, trailing_activation_points = ?,
-        exit_mechanism = ?, leg_tag = ?,
+        exit_mechanism = ?, leg_tag = ?, exit_unit = ?,
         updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [
@@ -348,6 +390,7 @@ class StrategyService {
         normalized.trailing_activation_points,
         normalized.exit_mechanism,
         normalized.leg_tag,
+        normalized.exit_unit,
         legId,
       ]
     );
@@ -416,6 +459,7 @@ class StrategyService {
     if (!anchorSymbol) {
       throw new ValidationError(`Underlying ${strategy.exchange}:${strategy.underlying} must first be added as a symbol in this watchlist`);
     }
+    assertAnchorLive(anchorSymbol);
     const instance = await this._getSingleActiveInstance(instanceId);
     const resolved = await this._resolveLeg({ leg, anchorSymbol, instance });
     return { legId, ...resolved };
@@ -466,6 +510,7 @@ class StrategyService {
         `Underlying ${strategy.exchange}:${strategy.underlying} must first be added as a symbol in this watchlist`
       );
     }
+    assertAnchorLive(anchorSymbol);
 
     const instances = instanceId
       ? [await this._getSingleActiveInstance(instanceId)]
@@ -572,12 +617,21 @@ class StrategyService {
     for (const execRow of openExecutions) {
       const leg = legById.get(execRow.strategy_leg_id);
       try {
+        // The executed contract itself is what gets closed. An equity leg was sent as FUTURES
+        // and a futures leg without its type, so the close path re-resolved a future from the
+        // underlying through the broker - failing for stocks, and for futures whenever the
+        // broker's search did not return the contract.
+        const isFutureContract = /FUT$/i.test(execRow.resolved_symbol || '');
         const closeResult = await quickOrderService.closePosition(
           instance,
-          { symbol: execRow.resolved_symbol, exchange: execRow.resolved_exchange },
+          {
+            symbol: execRow.resolved_symbol,
+            exchange: execRow.resolved_exchange,
+            symbol_type: leg?.option_type ? 'OPTIONS' : isFutureContract ? 'FUTURES' : 'EQUITY',
+          },
           {
             product: execRow.product,
-            tradeMode: leg?.option_type ? 'OPTIONS' : 'FUTURES',
+            tradeMode: leg?.option_type ? 'OPTIONS' : isFutureContract ? 'FUTURES' : 'EQUITY',
             strategy: strategy.broker_tag || `strategy-${strategy.id}`,
           }
         );
@@ -632,7 +686,9 @@ class StrategyService {
           success: closeSuccess,
           resolvedSymbol: execRow.resolved_symbol,
           exitOrderId,
-          error: closeSuccess ? null : 'Exit order failed',
+          // The broker's reason, not a generic label - e.g. "MIS orders cannot be placed after
+          // square-off time" was reported only as "Exit order failed".
+          error: closeSuccess ? null : (detail?.error || detail?.message || closeResult?.message || 'Exit order failed'),
         });
       } catch (error) {
         log.warn('Failed to exit strategy leg', { strategyId: strategy.id, legId: execRow.strategy_leg_id, error: error.message });
@@ -640,8 +696,11 @@ class StrategyService {
       }
     }
 
+    const failures = legOutcomes.filter((l) => !l.success);
     return {
-      success: legOutcomes.every((l) => l.success),
+      success: failures.length === 0,
+      // Surface why at the instance level too - callers (UI, webhook response) read `error`.
+      error: failures.length ? failures.map((l) => `leg ${l.legId}: ${l.error}`).join('; ') : undefined,
       legs: legOutcomes,
     };
   }
@@ -964,7 +1023,7 @@ class StrategyService {
         symbol: r.symbol,
         exchange: r.exchange,
         action: r.leg.action,
-        quantity: r.quantity,
+        quantity: String(r.quantity), // Kotak's OpenAlgo rejects a number: "Not a valid string"
         product: r.product,
         pricetype: 'MARKET',
       }));
@@ -973,13 +1032,40 @@ class StrategyService {
       log.warn('Strategy margin preview failed', { strategyId: strategy.id, instanceId: instance.id, error: error.message });
     }
 
+    // Pricing phase - every leg goes out as a marketable LIMIT, not a MARKET order.
+    //
+    // A MARKET order is not actually placed as one: OpenAlgo (or the broker's own smart-order
+    // conversion) rewrites it to a LIMIT with a buffer wide enough that the resting price sits
+    // nowhere near the touch, which is unusable on NSE/BSE/MCX. Pricing it here off the live
+    // quote is the same marketable-LIMIT logic every other order path in this app already uses
+    // (see quickOrderService / orderService), and this basket path was the last one bypassing
+    // it - it calls openalgoClient.placeBasketOrder directly, so orderPlacementService's
+    // MARKET -> LIMIT backstop never saw these legs.
+    //
+    // With nothing to price from, resolveMarketablePricing refuses Indian legs (SEBI
+    // limit-only) and lets crypto legs go MARKET.
+    const legBufferPoints = parseFloatSafe(anchorSymbol.limit_buffer_points, 0) || 0;
+    for (const r of orderable) {
+      const pricing = await limitPriceService.resolveMarketablePricing({
+        instanceId: instance.id,
+        exchange: r.exchange,
+        symbol: r.symbol,
+        side: r.leg.action,
+        bufferPoints: legBufferPoints,
+        tickSize: r.tick_size ?? anchorSymbol.tick_size ?? null,
+      });
+      r.pricetype = pricing.pricetype;
+      r.price = pricing.price;
+    }
+
     // Batch placement - one broker call for every resolved leg on this instance.
     const basketOrders = orderable.map((r) => ({
       symbol: r.symbol,
       exchange: r.exchange,
       action: r.leg.action,
       quantity: r.quantity,
-      pricetype: 'MARKET',
+      pricetype: r.pricetype,
+      price: r.price,
       product: r.product,
     }));
 
@@ -1040,9 +1126,9 @@ class StrategyService {
           symbol: r.symbol,
           side: r.leg.action,
           quantity: r.quantity,
-          orderType: 'MARKET',
+          orderType: r.pricetype,
           productType: r.product,
-          price: 0,
+          price: r.price,
           trigger_price: 0,
           status: legSuccess ? 'open' : 'rejected',
           orderId: basketResult?.orderid || null,
@@ -1084,7 +1170,8 @@ class StrategyService {
         resolvedExchange: r.exchange,
         quantity: r.quantity,
         orderId: basketResult?.orderid || null,
-        error: legSuccess ? null : (basketResult?.message || 'Order failed'),
+        // Per-leg reason, else the basket-level one (a whole-basket rejection has no per-leg results).
+        error: legSuccess ? null : (basketResult?.message || basketResponse?.message || 'Order failed'),
       });
     }
 
@@ -1093,9 +1180,11 @@ class StrategyService {
     }
 
     const allOutcomes = [...skippedOutcomes, ...legOutcomes];
+    const failures = allOutcomes.filter((l) => !l.success);
 
     return {
-      success: allOutcomes.every((l) => l.success),
+      success: failures.length === 0,
+      error: failures.length ? failures.map((l) => `leg ${l.legId}: ${l.error}`).join('; ') : undefined,
       marginPreview,
       legs: allOutcomes,
     };
@@ -1117,6 +1206,7 @@ class StrategyService {
         symbol: anchorSymbol.symbol,
         exchange: anchorSymbol.exchange,
         lot_size: anchorSymbol.lot_size,
+        tick_size: anchorSymbol.tick_size,
         product: quickOrderService._resolveProductForOrder(leg.product_type, tradeMode, anchorSymbol),
       };
     }
@@ -1135,6 +1225,7 @@ class StrategyService {
       symbol: optionSymbol.symbol,
       exchange: optionSymbol.exchange,
       lot_size: optionSymbol.lot_size,
+      tick_size: optionSymbol.tick_size ?? anchorSymbol.tick_size,
       product: quickOrderService._resolveProductForOrder(leg.product_type, 'OPTIONS', {
         symbol_type: 'OPTIONS',
         exchange: optionSymbol.exchange,
@@ -1208,8 +1299,9 @@ class StrategyService {
         product,
         quantity,
         entryPrice,
-        stoplossPoints: leg.stoploss_points,
-        targetPoints: leg.target_points,
+        // A PERCENT leg is converted on the actual fill price.
+        stoplossPoints: toExitPoints(leg.stoploss_points, leg.exit_unit, entryPrice),
+        targetPoints: toExitPoints(leg.target_points, leg.exit_unit, entryPrice),
         watchlistId,
         symbolId: anchorSymbol.id,
         strategyLegId: leg.id,
@@ -1238,6 +1330,7 @@ class StrategyService {
     if (!hasAnyExitConfig) {
       return;
     }
+    exitConfig[`exit_unit_${modeSuffix}`] = normalizeExitUnit(leg.exit_unit);
 
     const existing = await watchlistSymbolService.findSymbolByWatchlist(watchlistId, exchange, symbol);
     if (existing) {
@@ -1310,6 +1403,8 @@ class StrategyService {
       trailing_activation_points: parseFloatSafe(data.trailing_activation_points, null),
       exit_mechanism: exitMechanism,
       leg_tag: sanitizeStrategyTag(data.leg_tag),
+      // Unit of this leg's target/stop/trailing values: POINTS (default) or PERCENT of entry.
+      exit_unit: normalizeExitUnit(data.exit_unit),
     };
   }
 }

@@ -23,6 +23,8 @@ const PLAIN_SERIES_TYPES = [
   { type: 'area', label: 'Area' },
   { type: 'hlc-area', label: 'HLC Area' },
   { type: 'baseline', label: 'Baseline' },
+  { type: 'column', label: 'Columns' },
+  { type: 'histogram', label: 'Histogram' },
 ];
 
 /**
@@ -33,13 +35,39 @@ const PLAIN_SERIES_TYPES = [
 const TRANSFORM_SERIES_TYPES = {
   'heikin-ashi': { label: 'Heikin Ashi', needsBoxSize: false, factory: () => new window.OAC.HeikinAshiTransform() },
   renko: { label: 'Renko', needsBoxSize: true, factory: (box) => new window.OAC.RenkoTransform({ boxSize: box }) },
-  'range-bars': { label: 'Range Bars', needsBoxSize: true, factory: (box) => new window.OAC.RangeBarsTransform({ range: box }) },
+  'range-bars': { label: 'Range Bars', needsBoxSize: true, boxLabel: 'Range', factory: (box) => new window.OAC.RangeBarsTransform({ range: box }) },
   'line-break': { label: 'Line Break', needsBoxSize: false, factory: () => new window.OAC.LineBreakTransform({ lines: 3 }) },
+  // Added in openalgo-charts 2.x. Unlike the four above, these two have renderers of their own -
+  // a column of X/O glyphs and a stepped yang/yin line are not candles - so `renderAs` names the
+  // SeriesType the engine must build the series with. Importing the transform tier (see
+  // js/openalgo-charts-bridge.js) is what registers those two renderers.
+  'point-figure': {
+    label: 'Point & Figure', needsBoxSize: true, renderAs: 'point-figure',
+    factory: (box) => new window.OAC.PointFigureTransform({ boxSize: box }),
+  },
+  kagi: {
+    label: 'Kagi', needsBoxSize: true, boxLabel: 'Reversal', renderAs: 'kagi',
+    factory: (box) => new window.OAC.KagiTransform({ reversal: box }),
+  },
 };
 
 /** True when `type` is a bar-transform pattern (Renko etc.), not a plain SeriesType. */
 function isTransformSeriesType(type) {
   return Boolean(TRANSFORM_SERIES_TYPES[type]);
+}
+
+/**
+ * The SeriesType the engine should actually build a series with for `type`.
+ *
+ * Heikin Ashi / Renko / Range Bars / Line Break are candles fed different data, so they render
+ * as `candlestick`; Point & Figure and Kagi have custom renderers of their own and render as
+ * themselves. Every call site that builds the price series goes through this, so a transform
+ * added later needs no parallel edit in the main chart, the CE pane and the PE pane.
+ */
+function seriesRenderType(type) {
+  const def = TRANSFORM_SERIES_TYPES[type];
+  if (!def) return type;
+  return def.renderAs || 'candlestick';
 }
 
 /**
@@ -65,6 +93,7 @@ function computeSeriesBars(candles, type, boxSize) {
 
 Object.assign(DashboardApp.prototype, {
   isTransformSeriesType,
+  seriesRenderType,
   computeSeriesBars,
 
   chartTypeState() {
@@ -110,7 +139,7 @@ Object.assign(DashboardApp.prototype, {
         </button>`).join('')}
       ${transformDef?.needsBoxSize ? `
         <label class="chart-lots">
-          <span>Box size</span>
+          <span>${transformDef.boxLabel || 'Box size'}</span>
           <input id="chart-type-box-size" type="number" class="form-input chart-qty-input"
                  value="${boxSize}" min="0.01" step="0.01" />
         </label>` : ''}
@@ -137,9 +166,7 @@ Object.assign(DashboardApp.prototype, {
     s.type = type;
     this.saveChartTypePref();
     try { this.candleSeries?.remove(); } catch (_) { /* disposed */ }
-    // Transform types (Renko etc.) render through the plain candlestick renderer - only the DATA
-    // feeding it differs, not the series type itself.
-    this.candleSeries = this.chart.addSeries(isTransformSeriesType(type) ? 'candlestick' : type);
+    this.candleSeries = this.chart.addSeries(seriesRenderType(type));
     this.renderChartSeries();
     this.renderChartTypeBar();
     if (typeof this.restoreChartView === 'function') this.restoreChartView();
@@ -156,9 +183,10 @@ Object.assign(DashboardApp.prototype, {
     const box = s.boxSize ?? (this.chartTickSize ? this.chartTickSize() * 10 : 1);
     const { bars, transform } = computeSeriesBars(this.chartCandles, s.type, box);
     s.transform = transform;
-    this.candleSeries.setData(bars.map((b) => ({
-      time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-    })));
+    // Bars go in whole, not projected down to OHLC: Kagi encodes its line weight in `volume`
+    // and P&F carries `boxSize`/`boxes` per column, and a renderer that is handed five keys it
+    // did not ask for ignores them, where one missing the key it reads draws the wrong picture.
+    this.candleSeries.setData(bars);
   },
 
   /**
@@ -176,9 +204,7 @@ Object.assign(DashboardApp.prototype, {
         time: closedBar.ts, open: closedBar.open, high: closedBar.high,
         low: closedBar.low, close: closedBar.close, volume: closedBar.volume,
       });
-      for (const el of elements) {
-        this.candleSeries.update({ time: el.time, open: el.open, high: el.high, low: el.low, close: el.close });
-      }
+      for (const el of elements) this.candleSeries.update(el);
     } catch (_) { /* series disposed */ }
   },
 });

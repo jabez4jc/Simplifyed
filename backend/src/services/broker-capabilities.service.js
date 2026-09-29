@@ -8,6 +8,7 @@ import {
   buildMarketOrderSupportMap,
   resolveMarketOrderSupport,
 } from '../utils/brokerage.js';
+import { marketOrderAllowed } from '../utils/broker-type.util.js';
 
 const MARKET_SUPPORT_SETTING = 'brokerage.market_order_support';
 const CACHE_TTL_MS = 5000;
@@ -43,9 +44,14 @@ class BrokerCapabilitiesService {
     return map;
   }
 
-  async supportsMarketOrders(broker) {
+  /**
+   * With an exchange, also applies SEBI's limit-only rule: false for every Indian exchange,
+   * whatever the broker supports. Callers that know the exchange must pass it.
+   */
+  async supportsMarketOrders(broker, exchange = undefined) {
     const map = await this._getMarketOrderSupportMap();
-    return resolveMarketOrderSupport(broker, map);
+    const brokerSupports = resolveMarketOrderSupport(broker, map);
+    return exchange === undefined ? brokerSupports : marketOrderAllowed(brokerSupports, exchange);
   }
 }
 

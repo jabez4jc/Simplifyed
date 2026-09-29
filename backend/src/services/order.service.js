@@ -120,7 +120,7 @@ class OrderService {
 
       const supportsMarketOrders = callerChosePrice
         ? null // not consulted - the caller's price type stands
-        : await brokerCapabilitiesService.supportsMarketOrders(instance.broker);
+        : await brokerCapabilitiesService.supportsMarketOrders(instance.broker, normalized.exchange);
 
       if (callerChosePrice) {
         log.info('Honouring caller-specified resting order', {
@@ -131,7 +131,10 @@ class OrderService {
         normalized.pricetype = 'MARKET';
         normalized.price = 0;
       } else {
-        const limitResult = await limitPriceService.resolveLimitPrice({
+        // Fill-now caller: price a marketable LIMIT off the quote. With no price, Indian
+        // exchanges refuse (SEBI limit-only); crypto may go MARKET. See resolveMarketablePricing.
+        const pricing = await limitPriceService.resolveMarketablePricing({
+          instanceId,
           exchange: normalized.exchange,
           symbol: normalized.symbol,
           side: normalized.action,
@@ -139,8 +142,8 @@ class OrderService {
           tickSize,
         });
 
-        normalized.pricetype = 'LIMIT';
-        normalized.price = limitResult.price;
+        normalized.pricetype = pricing.pricetype;
+        normalized.price = pricing.price;
       }
 
       finalOrderType = normalized.pricetype;
@@ -520,9 +523,13 @@ class OrderService {
       return { cancelled: 0, total: 0 };
     }
 
+    // Only rows the broker knows about. A local row can sit 'pending' without a broker order id
+    // (e.g. a response that carried none); cancelling it sent orderid:null, which the broker
+    // rejects ("Field may not be null") on every EXIT.
     const pending = await db.all(
       `SELECT id FROM watchlist_orders
-       WHERE instance_id = ? AND symbol = ? AND status IN ('pending', 'open')`,
+       WHERE instance_id = ? AND symbol = ? AND status IN ('pending', 'open')
+         AND order_id IS NOT NULL AND order_id != ''`,
       [instanceId, symbol]
     );
 
@@ -646,7 +653,11 @@ class OrderService {
     if (!instance) {
       throw new NotFoundError('Instance');
     }
-    return openalgoClient.getOrderStatus(instance, { orderid: orderId });
+    // `strategy` is mandatory on /orderstatus; OpenAlgo rejects the request with 400 without it.
+    return openalgoClient.getOrderStatus(instance, {
+      orderid: orderId,
+      strategy: instance.strategy_tag || 'default',
+    });
   }
 
   /**
@@ -735,6 +746,27 @@ class OrderService {
   }
 
   /**
+   * Apply one pushed `order_update` (OpenAlgo WebSocket, see openalgo-ws.service.js) to the
+   * stored order it refers to - the push-driven counterpart of syncOrderStatus, without the
+   * orderbook round trip. Only pending/open rows move, so a late or duplicate event can never
+   * reopen an order that has already reached a final status.
+   * @returns {Promise<boolean>} whether a row changed
+   */
+  async applyOrderUpdate(instanceId, order) {
+    const orderId = order?.orderid;
+    if (!orderId) return false;
+    const status = this._mapOrderStatus(order.order_status);
+    const result = await db.run(
+      `UPDATE watchlist_orders
+       SET status = ?, broker_order_id = ?, metadata = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE instance_id = ? AND (order_id = ? OR broker_order_id = ?)
+         AND status IN ('pending', 'open') AND status != ?`,
+      [status, orderId, JSON.stringify(order), instanceId, orderId, orderId, status]
+    );
+    return (result?.changes || 0) > 0;
+  }
+
+  /**
    * Map broker order status to internal status
    * @private
    */
@@ -745,6 +777,9 @@ class OrderService {
       complete: 'complete',
       cancelled: 'cancelled',
       rejected: 'rejected',
+      // An expired order is as final as a cancelled one; mapped to 'pending' it would sit
+      // "pending" forever and be polled forever.
+      expired: 'cancelled',
       'trigger pending': 'pending',
       'partially filled': 'open',
     };

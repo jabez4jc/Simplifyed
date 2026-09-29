@@ -53,7 +53,9 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             </thead>
             <tbody>
               ${Utils.renderCappedRows(symbols.map(sym => `
-                <tr class="symbol-row-compact"
+                <tr class="symbol-row-compact${sym.is_expired ? ' symbol-row-expired' : ''}"
+                    ${sym.is_expired ? 'aria-disabled="true" title="Expired - this contract no longer exists. Remove it or add the current contract."' : ''}
+                    data-expired="${sym.is_expired ? 1 : 0}"
                     data-symbol-id="${sym.id}"
                     data-symbol="${Utils.escapeHTML(sym.symbol)}"
                     data-exchange="${Utils.escapeHTML(sym.exchange)}"
@@ -68,9 +70,9 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
                       class="btn-expand-compact"
                       data-watchlist-id="${watchlistId}"
                       data-symbol-id="${sym.id}"
-                      data-toggle-symbol="${sym.id}"
+                      ${sym.is_expired ? 'disabled aria-disabled="true"' : `data-toggle-symbol="${sym.id}"`}
                       type="button"
-                      title="Expand trading controls">
+                      title="${sym.is_expired ? 'Expired - no trading' : 'Expand trading controls'}">
                       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
                       </svg>
@@ -83,7 +85,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
                       ${sym.symbol_type || 'UNKNOWN'}
                     </span>
                   </td>
-                  <td class="col-expiry">${sym.expiry ? Utils.escapeHTML(sym.expiry) : '-'}</td>
+                  <td class="col-expiry">${sym.expiry ? Utils.escapeHTML(sym.expiry) : '-'}${sym.is_expired ? ' <span class="badge-compact badge-expired">Expired</span>' : ''}</td>
                   <td class="col-strike">${sym.strike ? sym.strike : '-'}</td>
                   <td class="col-lot">${sym.lot_size || sym.lotsize || 1}</td>
                   <td class="col-ltp ltp-cell" data-symbol-id="${sym.id}">
@@ -97,7 +99,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
                   </td>
                   <td class="col-actions">
                     <div class="actions-group">
-                      <button class="btn-icon-table" onclick="app.showEditSymbolModal(${watchlistId}, ${sym.id})" title="Edit">
+                      <button class="btn-icon-table" ${sym.is_expired ? 'disabled aria-disabled="true" title="Expired - remove it instead"' : `onclick="app.showEditSymbolModal(${watchlistId}, ${sym.id})" title="Edit"`}>
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                         </svg>
@@ -476,25 +478,21 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         return;
       }
 
-      // Prepare symbols array for quotes API
-      const symbolsForQuotes = symbols.map(s => ({
-        exchange: s.exchange,
-        symbol: s.symbol
-      }));
+      // Expired or disabled rows are never quoted - an expired contract no longer exists.
+      const symbolsForQuotes = symbols
+        .filter(s => !s.is_expired && s.is_enabled !== 0)
+        .map(s => ({ exchange: s.exchange, symbol: s.symbol }));
 
-      // Batch and distribute across instances (3–5 per request, round-robin)
-      const batchSize = Math.max(3, Math.min(5, Math.ceil(symbolsForQuotes.length / mdInstances.length)));
-      const chunks = this.chunkArray(symbolsForQuotes, batchSize);
+      // One request; the server picks, per symbol, an instance whose broker trades that segment.
+      // Round-robining batches across instances here sent crypto symbols to Indian brokers and
+      // index symbols to Delta Exchange - each a guaranteed "Symbol not found".
       let allQuotes = [];
-      for (let i = 0; i < chunks.length; i++) {
-        const inst = mdInstances[i % mdInstances.length];
+      if (symbolsForQuotes.length > 0) {
         try {
-          const resp = await api.getQuotes(chunks[i], inst.id);
-          if (resp?.data?.length) {
-            allQuotes = allQuotes.concat(resp.data);
-          }
+          const resp = await api.getQuotes(symbolsForQuotes);
+          if (resp?.data?.length) allQuotes = resp.data;
         } catch (err) {
-          console.warn('Quote batch failed for instance', inst.name, err.message);
+          console.warn('Quote refresh failed', err.message);
         }
       }
 
@@ -810,8 +808,12 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       cached.changePercent = changePercent;
     }
 
+    // Traded volume only grows through a session, so 0 after a positive value is a source that
+    // does not carry volume (index ticks, some WS modes) - not a real reading. Keep the last one.
+    const volumeDroppedToZero = Number(quote.volume) === 0 && Number(cached.volume) > 0;
+
     // Update volume if changed OR cell is empty/placeholder
-    if (quote.volume !== undefined && (cached.volume !== quote.volume || hasPlaceholder(volumeCell))) {
+    if (quote.volume !== undefined && !volumeDroppedToZero && (cached.volume !== quote.volume || hasPlaceholder(volumeCell))) {
       const valueChanged = cached.volume !== quote.volume && !hasPlaceholder(volumeCell);
       const span = getOrCreateSpan(volumeCell);
       span.textContent = Utils.formatNumber(quote.volume);

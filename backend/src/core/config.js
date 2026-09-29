@@ -274,15 +274,7 @@ class Config {
     this.instanceHealth = {
       pingHealthyIntervalMs: getEnvInt('INSTANCE_HEALTH_PING_HEALTHY_MS', 300000),
       pingUnhealthyIntervalMs: getEnvInt('INSTANCE_HEALTH_PING_UNHEALTHY_MS', 180000),
-      pingUnhealthyMaxAttempts: getEnvInt('INSTANCE_HEALTH_PING_UNHEALTHY_MAX', 5),
       analyzerCheckIntervalMs: getEnvInt('INSTANCE_HEALTH_ANALYZER_CHECK_MS', 15000),
-    };
-
-    this.marketHours = {
-      quoteBlackoutStart: getEnv('MARKET_BLACKOUT_QUOTES_START', '02:00'),
-      quoteBlackoutEnd: getEnv('MARKET_BLACKOUT_QUOTES_END', '08:45'),
-      generalBlackoutStart: getEnv('MARKET_BLACKOUT_GENERAL_START', '03:00'),
-      generalBlackoutEnd: getEnv('MARKET_BLACKOUT_GENERAL_END', '08:00'),
     };
 
     this.openalgo = {
@@ -390,13 +382,8 @@ class Config {
 
       this.instanceHealth.pingHealthyIntervalMs = await getSettingInt('instance_health.ping_healthy_interval_ms', this.instanceHealth.pingHealthyIntervalMs);
       this.instanceHealth.pingUnhealthyIntervalMs = await getSettingInt('instance_health.ping_unhealthy_interval_ms', this.instanceHealth.pingUnhealthyIntervalMs);
-      this.instanceHealth.pingUnhealthyMaxAttempts = await getSettingInt('instance_health.ping_unhealthy_max_attempts', this.instanceHealth.pingUnhealthyMaxAttempts);
       this.instanceHealth.analyzerCheckIntervalMs = await getSettingInt('instance_health.analyzer_check_interval_ms', this.instanceHealth.analyzerCheckIntervalMs);
 
-      this.marketHours.quoteBlackoutStart = await getSetting('market_hours.quote_blackout_start', this.marketHours.quoteBlackoutStart);
-      this.marketHours.quoteBlackoutEnd = await getSetting('market_hours.quote_blackout_end', this.marketHours.quoteBlackoutEnd);
-      this.marketHours.generalBlackoutStart = await getSetting('market_hours.general_blackout_start', this.marketHours.generalBlackoutStart);
-      this.marketHours.generalBlackoutEnd = await getSetting('market_hours.general_blackout_end', this.marketHours.generalBlackoutEnd);
       this.autoExit.monitorIntervalMs = await getSettingInt('auto_exit.monitor_interval_ms', this.autoExit.monitorIntervalMs);
       this.autoExit.pendingExitCooldownMs = await getSettingInt('auto_exit.pending_cooldown_ms', this.autoExit.pendingExitCooldownMs);
       this.autoExit.provisionalEntryGraceMs = await getSettingInt('auto_exit.provisional_entry_grace_ms', this.autoExit.provisionalEntryGraceMs);

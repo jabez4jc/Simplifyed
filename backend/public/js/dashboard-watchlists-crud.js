@@ -197,31 +197,40 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     const autoExitFieldsHtml = this.autoExitModes
       .map((modeConfig) => `
         <div class="border rounded-lg p-3 modal-sub-panel shadow-sm">
-          <div class="text-sm font-semibold mb-2">${modeConfig.label} auto exits</div>
+          <div class="flex items-center justify-between mb-2">
+            <div class="text-sm font-semibold">${modeConfig.label} auto exits</div>
+            <label class="text-xs text-neutral-500 flex items-center gap-2">
+              Values in
+              <select name="exit_unit_${modeConfig.key}" class="form-select form-select-sm" aria-label="${modeConfig.label} auto exit unit">
+                <option value="POINTS" ${String(symbolData[`exit_unit_${modeConfig.key}`] || 'POINTS').toUpperCase() !== 'PERCENT' ? 'selected' : ''}>Points</option>
+                <option value="PERCENT" ${String(symbolData[`exit_unit_${modeConfig.key}`] || '').toUpperCase() === 'PERCENT' ? 'selected' : ''}>% of entry</option>
+              </select>
+            </label>
+          </div>
         <div class="grid gap-2 sm:grid-cols-4">
           <div class="form-group">
-            <label class="form-label">Target (points)</label>
+            <label class="form-label">Target</label>
             <input type="number" name="target_points_${modeConfig.key}"
                    class="form-input" step="0.01" min="0"
                    value="${formatAutoExitValue(`target_points_${modeConfig.key}`)}"
                    placeholder="e.g., 20">
           </div>
           <div class="form-group">
-            <label class="form-label">Stop loss (points)</label>
+            <label class="form-label">Stop loss</label>
             <input type="number" name="stoploss_points_${modeConfig.key}"
                    class="form-input" step="0.01" min="0"
                    value="${formatAutoExitValue(`stoploss_points_${modeConfig.key}`)}"
                    placeholder="e.g., 15">
           </div>
           <div class="form-group">
-            <label class="form-label">Trailing SL (points)</label>
+            <label class="form-label">Trailing SL</label>
             <input type="number" name="trailing_stoploss_points_${modeConfig.key}"
                    class="form-input" step="0.01" min="0"
                    value="${formatAutoExitValue(`trailing_stoploss_points_${modeConfig.key}`)}"
                    placeholder="e.g., 10">
           </div>
           <div class="form-group">
-            <label class="form-label">Trail activation (points)</label>
+            <label class="form-label">Trail activation</label>
             <input type="number" name="trailing_activation_points_${modeConfig.key}"
                    class="form-input" step="0.01" min="0"
                    value="${formatAutoExitValue(`trailing_activation_points_${modeConfig.key}`)}"
@@ -392,6 +401,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         readAutoExitValue(`trailing_stoploss_points_${mode.key}`);
       autoExitData[`trailing_activation_points_${mode.key}`] =
         readAutoExitValue(`trailing_activation_points_${mode.key}`);
+      autoExitData[`exit_unit_${mode.key}`] = form[`exit_unit_${mode.key}`]?.value === 'PERCENT' ? 'PERCENT' : 'POINTS';
     });
 
     const context = this.symbolConfigContext || {};
