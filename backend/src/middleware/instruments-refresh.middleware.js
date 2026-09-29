@@ -24,7 +24,6 @@ const ADMIN_PATHS = [
   '/api/v1/settings',
   '/api/v1/instruments',
   '/api/v1/rbac',
-  '/api/v1/audit',
   '/api/v1/health-check',
   '/api/v1/polling',
 ];

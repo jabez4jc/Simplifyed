@@ -34,12 +34,90 @@
  * @property {number}  [min]     Inclusive bound, enforced server-side.
  * @property {number}  [max]     Inclusive bound, enforced server-side.
  * @property {string}  [pair]    Fields sharing a pair id render side by side (idle vs active).
- * @property {boolean} [advanced] Hidden behind "Show advanced" - correct default, rarely touched.
+ *
+ * A group with `advanced: true` sits in the collapsed "Advanced" panel: timing, rate and retry
+ * values whose defaults suit almost everyone. Everyday groups render up front.
  */
 
 export const SETTINGS_GROUPS = [
   {
+    id: 'orders-costs',
+    label: 'Orders & Costs',
+    description:
+      'Guardrails applied when placing orders, and the brokerage assumptions used to turn raw '
+      + 'fills into net P&L.',
+    sections: [
+      {
+        id: 'execution',
+        label: 'Execution Guardrails',
+        fields: [
+          {
+            key: 'market_data_feed.max_order_spread_pct',
+            label: 'Maximum bid/ask spread',
+            help:
+              'Orders are held back when the spread is wider than this, as a share of price '
+              + '(0.01 = 1%). Protects against filling into an illiquid book.',
+            unit: 'percent', min: 0, max: 1,
+          },
+        ],
+      },
+      {
+        id: 'brokerage',
+        label: 'Brokerage',
+        note: 'Used for net P&L only. It does not change what your broker actually charges.',
+        fields: [
+          {
+            key: 'brokerage.default',
+            label: 'Default brokerage per trade',
+            help: 'Applied to any broker without a specific rate below.',
+            unit: 'currency', min: 0, max: 10000,
+          },
+          {
+            key: 'brokerage.by_broker',
+            label: 'Per-broker rates',
+            help: 'Overrides the default for named brokers.',
+            editor: 'broker-map',
+          },
+          {
+            key: 'brokerage.market_order_support',
+            label: 'Market order support',
+            help:
+              'Crypto brokers take market orders unless you switch them off here. Indian '
+              + 'exchanges (NSE, BSE, NFO, BFO, MCX, CDS) always get a limit order priced from the '
+              + 'market depth, as SEBI requires for algo orders - this switch cannot change that.',
+            editor: 'broker-flags',
+          },
+        ],
+      },
+    ],
+  },
+
+  {
+    id: 'trading-hours',
+    label: 'Trading Hours',
+    description:
+      'How the trading day is divided for P&L.',
+    sections: [
+      {
+        id: 'sessions',
+        label: 'Trading Sessions',
+        fields: [
+          {
+            key: 'trading_sessions',
+            label: 'Session windows',
+            help:
+              'Windows used as P&L baselines and auto-exit cutoffs. Each entry needs a label, '
+              + 'a start and an end in IST.',
+            editor: 'sessions',
+          },
+        ],
+      },
+    ],
+  },
+
+  {
     id: 'market-data',
+    advanced: true,
     label: 'Market Data',
     description:
       'How often the terminal pulls fresh data from your brokers. Lower values mean fresher '
@@ -143,30 +221,8 @@ export const SETTINGS_GROUPS = [
   },
 
   {
-    id: 'trading-hours',
-    label: 'Trading Hours',
-    description:
-      'How the trading day is divided for P&L.',
-    sections: [
-      {
-        id: 'sessions',
-        label: 'Trading Sessions',
-        fields: [
-          {
-            key: 'trading_sessions',
-            label: 'Session windows',
-            help:
-              'Windows used as P&L baselines and auto-exit cutoffs. Each entry needs a label, '
-              + 'a start and an end in IST.',
-            editor: 'sessions',
-          },
-        ],
-      },
-    ],
-  },
-
-  {
     id: 'broker-connection',
+    advanced: true,
     label: 'Broker Connection',
     description:
       'Timeouts, retries and request ceilings for calls to your OpenAlgo instances. These exist '
@@ -276,57 +332,6 @@ export const SETTINGS_GROUPS = [
             label: 'Analyzer-mode check every',
             help: 'How often the terminal re-reads whether an instance is in analyzer mode.',
             unit: 'ms', min: 5000, max: 600000, advanced: true,
-          },
-        ],
-      },
-    ],
-  },
-
-  {
-    id: 'orders-costs',
-    label: 'Orders & Costs',
-    description:
-      'Guardrails applied when placing orders, and the brokerage assumptions used to turn raw '
-      + 'fills into net P&L.',
-    sections: [
-      {
-        id: 'execution',
-        label: 'Execution Guardrails',
-        fields: [
-          {
-            key: 'market_data_feed.max_order_spread_pct',
-            label: 'Maximum bid/ask spread',
-            help:
-              'Orders are held back when the spread is wider than this, as a share of price '
-              + '(0.01 = 1%). Protects against filling into an illiquid book.',
-            unit: 'percent', min: 0, max: 1,
-          },
-        ],
-      },
-      {
-        id: 'brokerage',
-        label: 'Brokerage',
-        note: 'Used for net P&L only. It does not change what your broker actually charges.',
-        fields: [
-          {
-            key: 'brokerage.default',
-            label: 'Default brokerage per trade',
-            help: 'Applied to any broker without a specific rate below.',
-            unit: 'currency', min: 0, max: 10000,
-          },
-          {
-            key: 'brokerage.by_broker',
-            label: 'Per-broker rates',
-            help: 'Overrides the default for named brokers.',
-            editor: 'broker-map',
-          },
-          {
-            key: 'brokerage.market_order_support',
-            label: 'Market order support',
-            help:
-              'Which brokers accept market orders. Those that do not are sent a limit order '
-              + 'priced at the touch instead.',
-            editor: 'broker-flags',
           },
         ],
       },

@@ -25,7 +25,8 @@ import { trackOrders, closeEverythingOpened } from './cleanup.js';
  */
 
 const LIVE_ENABLED = process.env.RUN_LIVE_TESTS === 'true';
-const INDIAN = ['Jz Kotak', 'Jz Fyers', 'Maha', 'Ana'];
+// Workflow suite: Maha and Ana are reserved for the live order tests (live-orders, live-fno).
+const INDIAN = ['Jz Kotak', 'Jz Fyers'];
 const CRYPTO = ['Jabez Crypto'];
 const TAG = `LIVE TEST ${new Date().toISOString().slice(0, 16)}`;
 
@@ -73,6 +74,7 @@ async function uiExpiry(exchange, name, type) {
   const rowsE = await db.all('SELECT DISTINCT expiry FROM instruments WHERE exchange = ? AND name = ? AND instrumenttype = ?', [exchange, name, type]);
   const dmy = upcomingExpiries(rowsE, new Date(), { crypto: isCryptoExchange(exchange) })[0];
   assert.ok(dmy, `no live ${type} expiry for ${exchange}:${name}`);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dmy)) return dmy; // crypto feeds may already send ISO
   const [d, m, y] = dmy.split('-');
   return `20${y}-${MONTHS[m]}-${d}`;
 }
@@ -228,7 +230,7 @@ async function assertFlat(orders) {
 }
 
 // ---------------------------------------------------------------------------
-// Watchlist quick orders - Indian (fanned out to Kotak, Fyers, Maha, Ana)
+// Watchlist quick orders - Indian (fanned out to Jz Kotak and Jz Fyers)
 // ---------------------------------------------------------------------------
 
 /** Skip a test whose exchange is closed - after hours the analyzer and resolution behave differently. */
@@ -369,7 +371,7 @@ async function runStrategy(label, scope, legCount) {
   await assertFlat([...placed, ...sent.slice(exitMark)]);
 }
 
-live('strategy: NIFTY hedge (BUY CE ATM + SELL PE OTM2) executes on all four Indian instances, then exits flat', async (t) => {
+live('strategy: NIFTY hedge (BUY CE ATM + SELL PE OTM2) executes on both Indian instances, then exits flat', async (t) => {
   if (await skipIfClosed(t, 'NFO')) return;
   await runStrategy('NIFTY hedge', INDIAN, 2);
 });

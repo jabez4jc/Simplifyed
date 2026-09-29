@@ -32,8 +32,8 @@ class StrategyBuilder {
     }
     Utils.showToast(
       enabled
-        ? 'Quick Trade Mode on - Execute/Exit now fire immediately, no confirmation'
-        : 'Quick Trade Mode off - Execute/Exit will ask for confirmation again',
+        ? 'Confirmation off - Execute/Exit run the moment you click'
+        : 'Confirmation on - Execute/Exit will ask you to confirm first',
       enabled ? 'warning' : 'info'
     );
   }
@@ -196,13 +196,13 @@ class StrategyBuilder {
       <div class="strategies-section" id="strategies-section-${watchlistId}">
         <div class="strategies-section__header">
           <h5 class="strategies-section__title">Strategies</h5>
-          <label class="text-sm text-neutral-500" style="display: flex; align-items: center; gap: 6px; cursor: pointer;" title="When on, Execute/Exit (whole strategy and per-leg) fire immediately with no confirmation dialog.">
+          <label class="text-sm text-neutral-500" style="display: flex; align-items: center; gap: 6px; cursor: pointer;" title="Tick to send Execute/Exit the moment you click, without asking you to confirm.">
             <input type="checkbox" class="form-checkbox" ${quickTradeChecked} onchange="strategyBuilder.toggleQuickTradeMode(this.checked)">
-            Quick Trade Mode
+            Skip confirmation
           </label>
-          <label class="text-sm text-neutral-500" style="display: flex; align-items: center; gap: 6px; cursor: pointer;" title="When on, Execute adds to a leg that already has an open position instead of skipping it (scale in). Off by default to guard against accidental double-clicks duplicating an order.">
+          <label class="text-sm text-neutral-500" style="display: flex; align-items: center; gap: 6px; cursor: pointer;" title="Off (default): Execute skips any leg that already has an open position, so a double-click cannot double your size. Tick to add to those legs instead.">
             <input type="checkbox" class="form-checkbox" ${allowScaleInChecked} onchange="strategyBuilder.toggleAllowScaleIn(this.checked)">
-            Allow Scale-In
+            Add to open legs
           </label>
           <button class="btn btn-buy btn-sm" onclick="strategyBuilder.showCreateStrategyModal(${watchlistId})">
             + New Strategy
@@ -281,7 +281,9 @@ class StrategyBuilder {
     const container = document.getElementById(`strategy-legs-${strategyId}`);
     if (!container) return;
 
-    if (this.expandedStrategies.has(strategyId)) {
+    // Decide from what is on screen: adding a leg records the strategy as expanded before the
+    // list is shown, and trusting the set here collapsed a list that was never visible.
+    if (container.style.display !== 'none') {
       this.expandedStrategies.delete(strategyId);
       container.style.display = 'none';
       return;
@@ -927,6 +929,8 @@ class StrategyBuilder {
       Utils.showToast('Leg added', 'success');
       this.closeModal({ checkDirty: false });
       this.expandedStrategies.add(strategyId);
+      const legs = document.getElementById(`strategy-legs-${strategyId}`);
+      if (legs) legs.style.display = '';
       await this._refreshLegCountOnly(strategyId, watchlistId);
       await this._loadAndRenderLegs(strategyId, watchlistId);
     } catch (error) {

@@ -82,6 +82,19 @@ export function marketDataPayload(msg) {
 }
 
 /**
+ * Where a `market_data` frame goes. A Depth-mode frame (mode 3) is depth. A Quote-mode frame is a
+ * quote - and ALSO depth when the broker attaches a book to it. Delta Exchange does that for
+ * BTCUSDFUT and not for ETHUSDFUT; routing every frame with a book to depth only meant BTC's price
+ * never reached the quote cache, so its watchlist row, chart and order preview never streamed.
+ */
+export function routeMarketData(msg) {
+  const payload = marketDataPayload(msg);
+  if (!payload) return { quote: null, depth: null };
+  if (msg.mode === 3) return { quote: null, depth: payload };
+  return { quote: payload, depth: payload.depth ? payload : null };
+}
+
+/**
  * The spec warns a broker WebSocket and an HTTPS postback can deliver the same transition twice,
  * and says to deduplicate on these three fields.
  */
@@ -209,14 +222,9 @@ class OpenAlgoWsConnection {
     this.lastMessageAt = Date.now();
     try {
       const msg = JSON.parse(raw.toString());
-      const payload = marketDataPayload(msg);
-      if (payload) {
-        if (msg.mode === 3 || payload.depth) {
-          this.onDepth?.(this.instance.id, payload);
-        } else {
-          this.onQuote?.(this.instance.id, payload);
-        }
-      }
+      const { quote, depth } = routeMarketData(msg);
+      if (quote) this.onQuote?.(this.instance.id, quote);
+      if (depth) this.onDepth?.(this.instance.id, depth);
       if (msg.type === 'order_update') {
         this.onOrderUpdate?.(this.instance.id, msg);
       }

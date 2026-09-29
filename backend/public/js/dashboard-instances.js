@@ -123,30 +123,18 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       return '<p class="text-center text-neutral-600">No instances found</p>';
     }
 
-    // Fixed widths for consistent alignment (12 cols without bulk checkbox)
-    // [Name, Broker, Multiplier, Status, Health, Mode, Limits, P&L, Balance, Session Limits, Cutoff Reason, Actions]
-    const baseColWidths = ['190px', '120px', '90px', '90px', '90px', '100px', '100px', '140px', '110px', '190px', '120px', '140px'];
-    const colWidths = showBulkActions ? ['40px', ...baseColWidths] : baseColWidths;
-
     return `
       <table class="table instances-table">
-        <colgroup>
-          ${colWidths.map(w => `<col style="width:${w};">`).join('')}
-        </colgroup>
         <thead>
             <tr>
               ${showBulkActions ? '<th><input type="checkbox" id="select-all-instances" onchange="app.toggleSelectAllInstances(this.checked)"></th>' : ''}
-              <th>Name</th>
-              <th>Broker</th>
-              <th class="text-right">Multiplier</th>
-              <th>Status</th>
+              <th>Instance</th>
               <th>Health</th>
               <th>Mode</th>
-              <th>Limits</th>
+              <th title="Broker request-rate and error budget. OK means well within limits.">Rate limits</th>
               <th class="text-right">P&L</th>
               <th class="text-right">Balance</th>
-              <th>Session Limits</th>
-              <th>Cutoff Reason</th>
+              <th title="Daily profit target and loss limit for this instance">Session limits</th>
               <th>Actions</th>
             </tr>
         </thead>
@@ -154,53 +142,46 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           ${instances.map(instance => `
             <tr>
               ${showBulkActions ? `<td><input type="checkbox" class="instances-bulk-checkbox" data-instance-id="${instance.id}" onchange="app.updateBulkActionsState()"></td>` : ''}
-              <td class="font-medium">${Utils.escapeHTML(instance.name)}</td>
-              <td>${Utils.escapeHTML(instance.broker || 'N/A')}</td>
-              <td class="text-right">${instance.multiplier != null ? Utils.formatNumber(instance.multiplier, 0) : '1'}</td>
               <td>
-                ${instance.is_active
-        ? '<span class="badge badge-success">Active</span>'
-        : '<span class="badge badge-neutral">Inactive</span>'}
+                <div class="font-medium">${Utils.escapeHTML(instance.name)}</div>
+                <div class="text-xs text-neutral-500 whitespace-nowrap">
+                  ${Utils.escapeHTML(instance.broker || 'N/A')}${Number(instance.multiplier) > 1
+        ? ` · <span title="Every order quantity sent to this instance is multiplied by this">qty ×${Utils.formatNumber(instance.multiplier, 0)}</span>`
+        : ''}
+                </div>
               </td>
-              <td>${Utils.getStatusBadge(instance.health_status || 'unknown')}</td>
+              <td>${instance.is_active
+        ? Utils.getStatusBadge(instance.health_status || 'unknown')
+        : '<span class="badge badge-neutral" title="Switched off: no data is fetched and no orders are sent">Inactive</span>'}</td>
               <td>
                 ${instance.is_analyzer_mode
-        ? '<span class="badge badge-warning">A</span>'
-        : '<span class="badge badge-success">L</span>'}
+        ? '<span class="badge badge-warning" title="Analyzer mode: orders are simulated, no real money">Analyzer</span>'
+        : '<span class="badge badge-success" title="Live mode: orders go to the exchange with real money">Live</span>'}
               </td>
               <td>${this.renderLimitBadge(instance.limit_metrics)}</td>
               <td class="text-right">
-                <div class="flex items-center justify-end gap-2">
-                  <span class="${Utils.getPnLColorClass(instance.total_pnl)}">
-                    ${Utils.formatCurrency(instance.total_pnl || 0)}
-                  </span>
-                  ${instance.is_analyzer_mode
-        ? '<span class="badge badge-warning">A</span>'
-        : '<span class="badge badge-success">L</span>'}
-                </div>
+                <span class="whitespace-nowrap ${Utils.getPnLColorClass(instance.total_pnl)}">${Utils.formatCurrency(instance.total_pnl || 0)}</span>
               </td>
-              <td class="text-right">
+              <td class="text-right whitespace-nowrap">
                 ${instance.available_balance != null
-        ? Utils.formatCurrency(instance.available_balance)
+        ? Utils.formatCurrency(instance.available_balance, 0)
         : '<span class="text-neutral-400">-</span>'}
               </td>
               <td>
-                <div class="text-sm">
-                  <div><span class="text-neutral-500">Target:</span> ${instance.session_target_profit != null ? Utils.formatCurrency(instance.session_target_profit) : '—'}</div>
-                  <div><span class="text-neutral-500">Max Loss:</span> ${instance.session_max_loss != null ? Utils.formatCurrency(instance.session_max_loss) : '—'}</div>
+                <div class="text-sm whitespace-nowrap">
+                  <div><span class="text-neutral-500">Target:</span> ${instance.session_target_profit != null ? Utils.formatCurrency(instance.session_target_profit, 0) : '—'}</div>
+                  <div><span class="text-neutral-500">Max Loss:</span> ${instance.session_max_loss != null ? Utils.formatCurrency(instance.session_max_loss, 0) : '—'}</div>
+                  ${instance.session_cutoff_reason
+        ? `<div class="text-xs text-exit mt-1">Stopped: ${Utils.escapeHTML(instance.session_cutoff_reason.replace(/_/g, ' '))}</div>`
+        : ''}
                 </div>
               </td>
               <td>
-                ${instance.session_cutoff_reason
-        ? `<div class="text-[11px] text-neutral-500 mt-1">${Utils.escapeHTML(instance.session_cutoff_reason.replace(/_/g, ' '))}</div>`
-        : '<span class="text-neutral-400">—</span>'}
-              </td>
-              <td>
-                <div class="flex gap-2">
+                <div class="instance-row-actions">
                   <button class="btn btn-neutral btn-outline btn-sm"
                           onclick="app.refreshInstance(${instance.id})"
-                          title="Refresh">
-                    🔄
+                          title="Re-check health, balance and P&L now">
+                    Refresh
                   </button>
                   <button class="btn btn-neutral btn-outline btn-sm"
                           onclick="app.showEditInstanceModal(${instance.id})">
@@ -278,7 +259,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
 
             <div class="form-group">
               <label class="form-label">API Key *</label>
-              <input type="text" name="api_key" id="instance-api-key" class="form-input" required>
+              <input type="password" name="api_key" id="instance-api-key" class="form-input" autocomplete="off" required>
             </div>
 
             <div class="form-group">
@@ -461,12 +442,12 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     const brokerField = document.getElementById('instance-broker');
 
     if (!hostUrl || !apiKey) {
-      statusEl.textContent = '⚠️ Please enter Host URL and API Key first';
+      statusEl.textContent = 'Please enter Host URL and API Key first';
       statusEl.style.color = 'var(--color-warning)';
       return;
     }
 
-    statusEl.textContent = '⏳ Testing connection...';
+    statusEl.textContent = 'Testing connection...';
     statusEl.style.color = 'var(--color-info)';
 
     try {
@@ -474,16 +455,16 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
 
       if (response.status === 'success' && response.data?.broker) {
         brokerField.value = response.data.broker;
-        statusEl.textContent = `✅ Connection successful! Broker: ${response.data.broker}`;
+        statusEl.textContent = `Connection successful! Broker: ${response.data.broker}`;
         statusEl.style.color = 'var(--color-profit)';
         Utils.showToast(`Connected successfully to ${response.data.broker}`, 'success');
       } else {
-        statusEl.textContent = '❌ ' + (response.message || 'Connection failed');
+        statusEl.textContent = '' + (response.message || 'Connection failed');
         statusEl.style.color = 'var(--color-loss)';
         Utils.showToast(response.message || 'Connection test failed', 'error');
       }
     } catch (error) {
-      statusEl.textContent = '❌ ' + error.message;
+      statusEl.textContent = '' + error.message;
       statusEl.style.color = 'var(--color-loss)';
       Utils.showToast('Connection test failed: ' + error.message, 'error');
     }
@@ -507,12 +488,12 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     const apiKey = apiKeyInput.value;
 
     if (!hostUrl || !apiKey) {
-      statusEl.textContent = '⚠️ Please enter Host URL and API Key first';
+      statusEl.textContent = 'Please enter Host URL and API Key first';
       statusEl.style.color = 'var(--color-warning)';
       return;
     }
 
-    statusEl.textContent = '⏳ Testing connection...';
+    statusEl.textContent = 'Testing connection...';
     statusEl.style.color = 'var(--color-info)';
 
     try {
@@ -520,16 +501,16 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
 
       if (response.status === 'success' && response.data?.broker) {
         brokerField.value = response.data.broker;
-        statusEl.textContent = `✅ Connection successful! Broker: ${response.data.broker}`;
+        statusEl.textContent = `Connection successful! Broker: ${response.data.broker}`;
         statusEl.style.color = 'var(--color-profit)';
         Utils.showToast(`Connected successfully to ${response.data.broker}`, 'success');
       } else {
-        statusEl.textContent = '❌ ' + (response.message || 'Connection failed');
+        statusEl.textContent = '' + (response.message || 'Connection failed');
         statusEl.style.color = 'var(--color-loss)';
         Utils.showToast(response.message || 'Connection test failed', 'error');
       }
     } catch (error) {
-      statusEl.textContent = '❌ ' + error.message;
+      statusEl.textContent = '' + error.message;
       statusEl.style.color = 'var(--color-loss)';
       Utils.showToast('Connection test failed: ' + error.message, 'error');
     }
@@ -544,12 +525,12 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     const statusEl = document.getElementById('apikey-status');
 
     if (!hostUrl || !apiKey) {
-      statusEl.textContent = '⚠️ Please enter Host URL and API Key first';
+      statusEl.textContent = 'Please enter Host URL and API Key first';
       statusEl.style.color = 'var(--color-warning)';
       return;
     }
 
-    statusEl.textContent = '⏳ Validating API key with funds endpoint...';
+    statusEl.textContent = 'Validating API key with funds endpoint...';
     statusEl.style.color = 'var(--color-info)';
 
     try {
@@ -558,16 +539,16 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       if (response.status === 'success') {
         const funds = response.data?.funds;
         const cash = funds?.availablecash || 'N/A';
-        statusEl.textContent = `✅ API Key valid! Available Cash: ₹${cash}`;
+        statusEl.textContent = `API Key valid! Available Cash: ₹${cash}`;
         statusEl.style.color = 'var(--color-profit)';
         Utils.showToast('API key validated successfully', 'success');
       } else {
-        statusEl.textContent = '❌ ' + (response.message || 'Invalid API key');
+        statusEl.textContent = '' + (response.message || 'Invalid API key');
         statusEl.style.color = 'var(--color-loss)';
         Utils.showToast(response.message || 'API key validation failed', 'error');
       }
     } catch (error) {
-      statusEl.textContent = '❌ ' + error.message;
+      statusEl.textContent = '' + error.message;
       statusEl.style.color = 'var(--color-loss)';
       Utils.showToast('API key validation failed: ' + error.message, 'error');
     }

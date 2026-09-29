@@ -34,11 +34,11 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
       // ignore localStorage errors (private mode, etc.)
     }
     const btn = document.getElementById('quick-trade-mode-btn');
-    if (btn) btn.textContent = `Quick Trade Mode: ${enabled ? 'On' : 'Off'}`;
+    if (btn) btn.textContent = `Confirm before ordering: ${enabled ? 'Off' : 'On'}`;
     Utils.showToast(
       enabled
-        ? 'Quick Trade Mode on - Buy/Sell now fire immediately, no confirmation'
-        : 'Quick Trade Mode off - Buy/Sell will ask for confirmation again',
+        ? 'Confirmation off - Buy/Sell orders are sent the moment you click'
+        : 'Confirmation on - Buy/Sell will ask you to confirm first',
       enabled ? 'warning' : 'info'
     );
   }

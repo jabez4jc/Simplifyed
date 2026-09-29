@@ -310,7 +310,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             </div>
             <div class="border rounded-lg modal-section-bg p-4 space-y-3">
               <p class="text-sm font-semibold text-neutral-600">
-                Optional auto-exit thresholds (points)
+                Optional auto-exit: target and stop-loss, in points or % of entry price
               </p>
               <div class="space-y-3">
                 ${autoExitFieldsHtml}

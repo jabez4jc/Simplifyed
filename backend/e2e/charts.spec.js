@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { login, gotoDashboard, switchView, collectPageErrors, assertNoPageErrors } from './helpers.js';
+import { instance } from './broker.js';
 
 /**
  * The charting engine, exercised in a real browser.
@@ -43,6 +44,22 @@ test.beforeEach(async ({ page }) => {
   await gotoDashboard(page);
   await page.waitForFunction(() => Boolean(window.OAC), null, { timeout: 15000 });
 });
+
+/**
+ * The chart draws from watchlist symbols, and the e2e copy holds only instances - so give it one,
+ * through the app's own API client: BTC futures on the crypto account, which quotes 24x7.
+ */
+async function ensureChartSymbol(page) {
+  const crypto = await instance('Jabez Crypto');
+  await page.evaluate(async (instanceId) => {
+    const name = 'E2E Chart';
+    const list = (await api.getWatchlists()).data || [];
+    if (list.some((w) => w.name === name)) return;
+    const wl = (await api.createWatchlist({ name })).data;
+    await api.assignInstance(wl.id, instanceId);
+    await api.addSymbol(wl.id, { symbol: 'BTCUSDFUT', exchange: 'CRYPTO' });
+  }, crypto.id);
+}
 
 test('the bridge publishes every export the chart code calls', async ({ page }) => {
   const missing = await page.evaluate(() => {
@@ -244,6 +261,7 @@ test('the drawing keymap maps the chords the chart binds', async ({ page }) => {
 
 test('the chart view builds a chart with the engine options this app asks for', async ({ page }) => {
   const errors = collectPageErrors(page);
+  await ensureChartSymbol(page);
   await switchView(page, 'chart');
 
   // The view builds its chart once a symbol resolves; a seeded e2e database may have none, in
@@ -273,6 +291,7 @@ test('the chart view builds a chart with the engine options this app asks for', 
 
 test('an OpenScript study applied from the picker is registered and switched on', async ({ page }) => {
   const errors = collectPageErrors(page);
+  await ensureChartSymbol(page);
   await switchView(page, 'chart');
   await page.click('[data-pop="indicators"]');
   await page.evaluate(() => window.app.toggleIndicatorPicker());

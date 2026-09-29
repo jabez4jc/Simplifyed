@@ -984,3 +984,29 @@
   letter-spacing: 0.04em;
   vertical-align: middle;
 }
+
+/* Everyday groups stack; the Advanced panel starts collapsed. */
+.settings-group-body + .settings-group-body,
+.settings-advanced { margin-top: var(--space-8); }
+
+.settings-advanced {
+  border: 1px solid var(--color-neutral-200);
+  border-radius: 8px;
+  padding: var(--space-4);
+}
+
+.settings-advanced-summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--color-neutral-900);
+}
+
+.settings-advanced-note {
+  display: block;
+  font-weight: 400;
+  font-size: var(--font-size-sm);
+  color: var(--color-neutral-600);
+  margin-top: var(--space-1);
+}
+
+.settings-advanced[open] .settings-advanced-summary { margin-bottom: var(--space-4); }

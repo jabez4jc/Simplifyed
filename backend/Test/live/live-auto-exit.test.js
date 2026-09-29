@@ -25,7 +25,8 @@ import { trackOrders, closeEverythingOpened } from './cleanup.js';
 
 const LIVE_ENABLED = process.env.RUN_LIVE_TESTS === 'true';
 const TAG = `LIVE AUTOEXIT ${new Date().toISOString().slice(0, 16)}`;
-const INDIAN = ['Maha'];
+// Workflow suite: Maha and Ana are reserved for the live order tests.
+const INDIAN = ['Jz Fyers'];
 const CRYPTO = ['Jabez Crypto'];
 
 let instances = [];
@@ -50,7 +51,7 @@ before(async () => {
   await db.connect();
   touched = trackOrders();
   hasUnits = (await db.all('PRAGMA table_info(watchlist_symbols)')).some((c) => c.name === 'exit_unit_futures');
-  instances = await db.all(`SELECT * FROM instances WHERE name IN ('Maha', 'Jabez Crypto')`);
+  instances = await db.all(`SELECT * FROM instances WHERE name IN ('Jz Fyers', 'Jabez Crypto')`);
   for (const inst of instances) await assertAnalyzerModeAtBroker(inst);
 
   const mk = async (label, names) => {

@@ -16,7 +16,10 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
         throw new Error('Expansion row not found in DOM');
       }
 
-      if (this.expandedRows.has(rowKey)) {
+      // Ask the DOM, not expandedRows: a re-render draws every row closed while expandedRows
+      // still remembers it open, so the first click "collapsed" an already-hidden panel and the
+      // operator saw nothing happen.
+      if (expansionRow.style.display !== 'none') {
         // Collapse
         expansionRow.style.display = 'none';
         if (toggleBtn) {

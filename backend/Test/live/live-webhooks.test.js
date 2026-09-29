@@ -25,7 +25,8 @@ import { trackOrders, closeEverythingOpened } from './cleanup.js';
  */
 
 const LIVE_ENABLED = process.env.RUN_LIVE_TESTS === 'true';
-const INDIAN = ['Jz Kotak', 'Jz Fyers', 'Maha', 'Ana'];
+// Workflow suite: Maha and Ana are reserved for the live order tests (live-orders, live-fno).
+const INDIAN = ['Jz Kotak', 'Jz Fyers'];
 const CRYPTO = ['Jabez Crypto'];
 const TAG = `LIVE WEBHOOK ${new Date().toISOString().slice(0, 16)}`;
 
@@ -188,7 +189,7 @@ live('a wrong token is refused and nothing is placed', async () => {
 // Broadcast watchlist webhooks
 // ---------------------------------------------------------------------------
 
-live('broadcast: NIFTY future BUY then flatten, to all four Indian instances, as LIMIT', async () => {
+live('broadcast: NIFTY future BUY then flatten, to both Indian instances, as LIMIT', async () => {
   const fut = await nearestFuture('NFO', 'NIFTY');
   await broadcastRoundTrip('Indian', INDIAN, 'NFO', fut.symbol, fut.lotsize);
 });

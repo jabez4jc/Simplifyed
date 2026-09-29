@@ -22,7 +22,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     return `
       <div class="card">
         <div class="card-header">
-          <h3 class="card-title">🔐 Role & User Access</h3>
+          <h3 class="card-title">Role & User Access</h3>
           <p class="text-sm text-neutral-600 mt-1">Assign role permissions and control user access.</p>
         </div>
         <div class="p-6" id="rbac-root">

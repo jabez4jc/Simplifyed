@@ -5,7 +5,7 @@
 
 import express from 'express';
 import db from '../../core/database.js';
-import orderMonitorService from '../../services/order-monitor.service.js';
+import autoExitService from '../../services/auto-exit.service.js';
 import { requireAuth } from '../../middleware/auth.js';
 
 const router = express.Router();
@@ -17,7 +17,12 @@ router.use(requireAuth);
  */
 router.get('/status', async (req, res) => {
   try {
-    const status = orderMonitorService.getStatus();
+    // The real monitor is auto-exit (targets, stop-losses, trailing stops). This used to report
+    // a retired stub that always said "inactive", telling the operator nothing watched their exits.
+    const status = {
+      is_monitoring: Boolean(autoExitService.isRunning),
+      interval_ms: autoExitService.monitorIntervalMs || null,
+    };
 
     const eligibleInstances = await db.all(`
       SELECT COUNT(*) as count

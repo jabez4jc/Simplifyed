@@ -43,8 +43,9 @@ Object.assign(SettingsHandler.prototype, {
         }
       }
     }
-    if (!this.activeGroup || !data.groups.some((g) => g.id === this.activeGroup)) {
-      this.activeGroup = data.groups[0]?.id || null;
+    const advanced = data.groups.filter((g) => g.advanced);
+    if (!this.activeGroup || !advanced.some((g) => g.id === this.activeGroup)) {
+      this.activeGroup = advanced[0]?.id || null;
     }
     return data;
   },
@@ -64,22 +65,27 @@ Object.assign(SettingsHandler.prototype, {
     return `${(mins / 60).toFixed(1)} hours`;
   },
 
-  fieldHint(field) {
-    if (field.unit === 'ms') return this.humanizeMs(field.value);
+  /** Default shown next to every value; a spread also shows what the typed decimal means. */
+  fieldHint(field, value = field.value) {
+    const def = field.default;
+    const hasDef = def !== undefined && def !== '' && !field.editor;
     if (field.unit === 'percent') {
-      const pct = Number(field.value) * 100;
-      return Number.isFinite(pct) ? `${parseFloat(pct.toFixed(4))}% of price` : '';
+      const pct = (v) => `${parseFloat((Number(v) * 100).toFixed(4))}%`;
+      const now = Number.isFinite(Number(value)) ? `= ${pct(value)} of price` : '';
+      return [now, hasDef ? `Default: ${pct(def)}` : ''].filter(Boolean).join(' · ');
     }
-    if (field.unit === 'currency') return `₹${field.value} per trade`;
-    if (field.unit === 'attempts') return `${field.value} consecutive failures`;
-    return '';
+    if (!hasDef) return '';
+    if (field.unit === 'ms') return `Default: ${this.humanizeMs(def)}`;
+    if (field.unit === 'currency') return `Default: ₹${def} per trade`;
+    return `Default: ${def}`;
   },
 
   renderSchemaNav() {
-    if (!this.schema?.groups?.length) return '';
+    const groups = (this.schema?.groups || []).filter((g) => g.advanced);
+    if (!groups.length) return '';
     return `
-      <nav class="settings-group-nav" aria-label="Settings sections">
-        ${this.schema.groups.map((g) => `
+      <nav class="settings-group-nav" aria-label="Advanced settings sections">
+        ${groups.map((g) => `
           <button type="button"
                   class="settings-group-tab ${g.id === this.activeGroup ? 'active' : ''}"
                   data-group="${g.id}"
@@ -113,13 +119,23 @@ Object.assign(SettingsHandler.prototype, {
       // platform time picker. The server re-checks the format regardless.
       control = `<input type="time" id="${id}" data-key="${field.key}" data-type="string"
                         class="form-input settings-time-input" value="${Utils.escapeHTML(String(field.value))}" />`;
+    } else if (field.unit === 'ms') {
+      // Stored in ms so it round-trips exactly; edited in seconds, which is how people think.
+      const secs = (v) => (v === undefined ? undefined : Number(v) / 1000);
+      control = `
+        <div class="settings-input-wrapper">
+          <input type="number" id="${id}" data-key="${field.key}" data-type="number" data-scale="1000"
+                 class="form-input settings-number-input" value="${secs(field.value)}" step="any"
+                 ${field.min !== undefined ? `min="${secs(field.min)}"` : ''}
+                 ${field.max !== undefined ? `max="${secs(field.max)}"` : ''} />
+          <span class="settings-input-suffix">seconds</span>
+        </div>`;
     } else if (field.dataType === 'number') {
       control = `
         <div class="settings-input-wrapper">
           <input type="number" id="${id}" data-key="${field.key}" data-type="number"
                  class="form-input settings-number-input" value="${Utils.escapeHTML(String(field.value))}"
                  ${bounds.join(' ')} />
-          ${field.unit === 'ms' ? '<span class="settings-input-suffix">ms</span>' : ''}
           ${field.unit === 'currency' ? '<span class="settings-input-suffix">₹</span>' : ''}
         </div>`;
     } else {
@@ -167,8 +183,7 @@ Object.assign(SettingsHandler.prototype, {
     `;
   },
 
-  renderSchemaGroup() {
-    const group = this.schema?.groups?.find((g) => g.id === this.activeGroup);
+  renderSchemaGroup(group = this.schema?.groups?.find((g) => g.id === this.activeGroup)) {
     if (!group) return '<p class="text-neutral-500">No settings available.</p>';
     return `
       <div class="settings-group-body">
@@ -183,15 +198,37 @@ Object.assign(SettingsHandler.prototype, {
 
   switchGroup(groupId) {
     this.activeGroup = groupId;
-    const host = document.getElementById('settings-schema-host');
-    if (host) host.innerHTML = this.renderSchemaShell();
-    this.bindSchemaInputs();
+    const host = document.getElementById('settings-advanced-body');
+    if (host) host.innerHTML = this.renderAdvancedBody();
   },
 
+  renderAdvancedBody() {
+    return `${this.renderSchemaNav()}${this.renderSchemaGroup()}`;
+  },
+
+  /**
+   * Everyday groups render up front. Timing, rate and retry values live in a collapsed
+   * Advanced panel: their defaults suit almost everyone and a wrong value can get an
+   * instance rate-limited.
+   */
   renderSchemaShell() {
+    const groups = this.schema?.groups || [];
+    const simple = groups.filter((g) => !g.advanced);
+    const hasAdvanced = groups.some((g) => g.advanced);
     return `
-      ${this.renderSchemaNav()}
-      ${this.renderSchemaGroup()}
+      ${simple.map((g) => this.renderSchemaGroup(g)).join('')}
+      ${hasAdvanced ? `
+        <details class="settings-advanced" ${this.advancedOpen ? 'open' : ''}
+                 ontoggle="settings.advancedOpen = this.open">
+          <summary class="settings-advanced-summary">
+            Advanced - for troubleshooting
+            <span class="settings-advanced-note">How often data refreshes, broker request limits,
+              timeouts and retries. The defaults work for almost everyone.</span>
+          </summary>
+          <div id="settings-advanced-body">${this.renderAdvancedBody()}</div>
+          <button type="button" class="btn btn-neutral btn-outline btn-sm mt-3"
+                  onclick="settings.resetSettings()">Restore advanced defaults</button>
+        </details>` : ''}
     `;
   },
 
@@ -227,7 +264,7 @@ Object.assign(SettingsHandler.prototype, {
     if (!hintEl) return;
     const field = this.findSchemaField(key);
     if (!field) return;
-    hintEl.textContent = this.fieldHint({ ...field, value: input.value });
+    hintEl.textContent = this.fieldHint(field, input.value);
   },
 
   findSchemaField(key) {

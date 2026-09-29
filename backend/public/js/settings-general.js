@@ -14,7 +14,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       return `
         <div class="card">
           <div class="card-header">
-            <h3 class="card-title">⚙️ Application Settings</h3>
+            <h3 class="card-title">Application settings</h3>
           </div>
           <div class="p-6">
             <p class="text-neutral-600 text-sm">
@@ -29,7 +29,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       <div class="space-y-4">
         <div class="card">
           <div class="card-header">
-            <h3 class="card-title">⚙️ Application Settings</h3>
+            <h3 class="card-title">Application settings</h3>
           </div>
           <div class="p-6">
             ${this.renderApplicationSettings()}
@@ -45,7 +45,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     return `
       <div class="card">
         <div class="card-header">
-          <h3 class="card-title">📡 Live Streaming (beta)</h3>
+          <h3 class="card-title">Live Streaming (beta)</h3>
           <p class="text-sm text-neutral-600 mt-1">
             Use WebSocket streaming for quotes/positions/funds when available. Falls back to polling automatically.
           </p>
@@ -75,8 +75,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         <div class="settings-header">
           <div class="settings-header-info">
             <p class="text-sm text-neutral-600">
-              Only settings that take effect without a restart appear here. Changes apply when
-              you click Save.
+              Changes apply as soon as you click Save - no restart needed.
             </p>
           </div>
           <div class="settings-search-wrapper">
@@ -105,9 +104,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         <div class="settings-actions">
           <button class="btn btn-buy" onclick="settings.saveSettings()" ${this.isSaving ? 'disabled' : ''}>
             ${this.isSaving ? 'Saving...' : 'Save Changes'}
-          </button>
-          <button class="btn btn-neutral btn-outline" onclick="settings.resetSettings()" ${this.isSaving ? 'disabled' : ''}>
-            Reset to Defaults
           </button>
         </div>
       </div>
@@ -363,9 +359,9 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       <div class="trading-session-row flex flex-wrap items-center gap-3" data-index="${idx}">
         <div class="w-24 text-sm font-semibold text-neutral-600">Session ${idx + 1}</div>
         <div class="flex items-center gap-2 flex-1 min-w-[220px]">
-          <input type="time" class="form-input trading-session-input" data-key="${key}" data-index="${idx}" data-field="start" value="${Utils.escapeHTML(s.start || '')}">
+          <input type="time" class="form-input trading-session-input" data-key="${key}" data-index="${idx}" data-field="start" aria-label="Session ${idx + 1} start" value="${Utils.escapeHTML(s.start || '')}">
           <span class="text-neutral-500 text-sm">to</span>
-          <input type="time" class="form-input trading-session-input" data-key="${key}" data-index="${idx}" data-field="end" value="${Utils.escapeHTML(s.end || '')}">
+          <input type="time" class="form-input trading-session-input" data-key="${key}" data-index="${idx}" data-field="end" aria-label="Session ${idx + 1} end" value="${Utils.escapeHTML(s.end || '')}">
         </div>
       </div>
     `).join('');
@@ -399,6 +395,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
               data-key="${key}"
               data-type="json"
               data-broker="${Utils.escapeHTML(broker)}"
+              aria-label="${Utils.escapeHTML(broker)} brokerage per order"
               data-skip-setting-change="true"
               value="${rate}"
               oninput="settings.handleBrokerageChange(this)"
@@ -412,11 +409,11 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       <div class="settings-brokerage-table">
         <div class="flex flex-wrap gap-2 items-end mb-3">
           <div class="flex-1 min-w-[180px]">
-            <label class="form-label text-xs mb-1">Broker key</label>
+            <label class="form-label text-xs mb-1" for="brokerage-new-key">Broker key</label>
             <input type="text" class="form-input" id="brokerage-new-key" placeholder="e.g. fivepaisa" data-skip-setting-change="true">
           </div>
           <div class="w-[160px]">
-            <label class="form-label text-xs mb-1">Brokerage</label>
+            <label class="form-label text-xs mb-1" for="brokerage-new-rate">Brokerage</label>
             <input type="number" class="form-input" id="brokerage-new-rate" placeholder="20" data-skip-setting-change="true">
           </div>
           <button type="button" class="btn btn-neutral btn-outline btn-sm" onclick="settings.addBrokerageEntry()">
@@ -435,7 +432,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
           </tbody>
         </table>
         <div class="text-xs text-neutral-500 mt-2">
-          Add new brokers by editing JSON in this setting via the API if needed.
+          Use Add Broker above for a broker that is not listed.
         </div>
       </div>
     `;
@@ -450,23 +447,13 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       supportMap = {};
     }
 
-    const brokerageSetting = this.displaySettings?.brokerage?.['brokerage.by_broker']
-      || this.settings?.brokerage?.['brokerage.by_broker']
-      || {};
-    let brokers = {};
-    try {
-      const source = brokerageSetting.pendingValue ?? brokerageSetting.rawValue ?? brokerageSetting.value;
-      brokers = typeof source === 'string' ? JSON.parse(source) : source;
-      if (!brokers || typeof brokers !== 'object') brokers = {};
-    } catch (e) {
-      brokers = {};
-    }
-
-    const rows = Object.keys(brokers)
-      .sort((a, b) => a.localeCompare(b))
+    // Only crypto brokers are listed: Indian exchanges always get limit orders, whatever this
+    // says. Crypto brokers take market orders unless switched off (mirrors CRYPTO_BROKERS in
+    // src/utils/broker-type.util.js).
+    const rows = ['deltaexchange']
       .map((broker) => {
         const rawSupport = supportMap?.[broker];
-        const isSupported = rawSupport === true || rawSupport === 'true' || rawSupport === 1;
+        const isSupported = !(rawSupport === false || rawSupport === 'false' || rawSupport === 0);
         return `
           <tr>
             <td class="text-sm font-medium">${Utils.escapeHTML(broker)}</td>
@@ -508,7 +495,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
           </tbody>
         </table>
         <div class="text-xs text-neutral-500 mt-2">
-          Enable market orders only for brokers that support them. Limit-order pacing is used otherwise.
+          Applies to crypto only. Indian exchanges always receive limit orders.
         </div>
       </div>
     `;
@@ -581,6 +568,9 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     let value;
     if (input.type === 'checkbox') {
       value = input.checked ? 'true' : 'false';
+    } else if (input.dataset.scale) {
+      // Seconds on screen, milliseconds in storage.
+      value = input.value === '' ? '' : String(Math.round(Number(input.value) * Number(input.dataset.scale)));
     } else {
       value = input.value;
     }
@@ -863,22 +853,19 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       return;
     }
 
-    if (this.activeCategory === 'streaming') {
-      this.applyStreamingPreference(false);
-      Utils.showToast('Streaming preference reset', 'success');
-      await this.refreshSettings();
-      return;
-    }
-
-    if (!confirm('Are you sure you want to reset all settings to their default values? This action cannot be undone.')) {
+    if (!confirm('Put every advanced setting (refresh timings, request limits, timeouts and retries) back to its default?')) {
       return;
     }
 
     try {
-      const resetKeys = Object.keys(this.settings[this.activeCategory] || {});
+      const resetKeys = (this.schema?.groups || [])
+        .filter((g) => g.advanced)
+        .flatMap((g) => g.sections.flatMap((sec) => sec.fields))
+        .filter((f) => f.default !== undefined && f.default !== '')
+        .map((f) => f.key);
 
       for (const key of resetKeys) {
-        await this.authFetch(`/api/v1/settings/${key}/reset`, { method: 'POST' });
+        await this.authFetch(`/api/v1/settings/${encodeURIComponent(key)}/reset`, { method: 'POST' });
       }
 
       Utils.showToast('Settings reset to defaults', 'success');
@@ -895,7 +882,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
   updateSaveButton() {
     const btn = document.querySelector('[onclick="settings.saveSettings()"]');
     if (btn) {
-      btn.textContent = this.isSaving ? '💾 Saving...' : '💾 Save Changes';
+      btn.textContent = this.isSaving ? 'Saving...' : 'Save Changes';
       btn.disabled = this.isSaving || !this.canEditApplicationSettings();
     }
   }

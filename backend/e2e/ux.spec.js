@@ -16,7 +16,7 @@ import { login, switchView, waitForApp, collectPageErrors, assertNoPageErrors } 
 
 const VIEWS = [
   'dashboard', 'instances', 'watchlists', 'orders', 'positions',
-  'trades', 'strategies', 'settings', 'notifications', 'audit', 'daily-pnl-snapshots',
+  'trades', 'strategies', 'settings', 'notifications', 'daily-pnl-snapshots', 'chart',
 ];
 
 test.describe('accessibility', () => {
@@ -268,6 +268,16 @@ test.describe('feedback', () => {
 
     await expect(page.locator('.toast, .alert, [role=status], [role=alert]').first())
       .toBeVisible({ timeout: 10000 });
+  });
+
+  test('pausing and resuming data fetching works and says so', async ({ page }) => {
+    // togglePause once referenced a variable from another method and threw on every click.
+    const errors = collectPageErrors(page);
+    await page.click('#pause-toggle-btn');
+    await expect(page.locator('#toast-container')).toContainText('Paused');
+    await page.click('#pause-toggle-btn');
+    await expect(page.locator('#toast-container')).toContainText('Resumed');
+    assertNoPageErrors(errors);
   });
 
   test('the dashboard survives the API being unreachable', async ({ page }) => {

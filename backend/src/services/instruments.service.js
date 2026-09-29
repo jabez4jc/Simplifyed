@@ -499,9 +499,10 @@ class InstrumentsService {
         throw new ValidationError('Search query must contain valid characters');
       }
 
-      // Wrap as phrase prefix to prevent FTS5 operators (AND/OR/NOT) from being parsed
-      // The "*" inside quotes tells FTS5 to do phrase prefix matching
-      const ftsQuery = `"${sanitizedQuery}*"`;
+      // Quoted so FTS5 operators (AND/OR/NOT) are taken literally; the prefix star goes OUTSIDE
+      // the quotes. Inside them it was tokenized away, so "BTCUSD*" only ever matched the exact
+      // token BTCUSD and never found BTCUSDFUT.
+      const ftsQuery = `"${sanitizedQuery}" *`;
 
       log.debug('Searching instruments', {
         query: sanitizedQuery,
@@ -534,11 +535,32 @@ class InstrumentsService {
         params.push(instrumenttype);
       }
 
-      // Order by FTS5 rank (relevance) and limit results
-      sql += ' ORDER BY fts.rank LIMIT ?';
-      params.push(validatedLimit);
+      // FTS rank alone put SBIN's future above SBIN itself. Over-fetch, drop anything expired,
+      // then rank: exact symbol, same underlying, then cash/index, futures, options - nearest
+      // expiry first.
+      const upper = sanitizedQuery.toUpperCase();
+      sql += ' ORDER BY (i.symbol = ?) DESC, (i.instrumenttype IN (\'CE\', \'PE\')) ASC, fts.rank LIMIT ?';
+      params.push(upper, validatedLimit * 4);
 
-      const results = await db.all(sql, params);
+      const typeRank = (r) => {
+        const t = String(r.instrumenttype || '').toUpperCase();
+        if (t === 'CE' || t === 'PE') return 3;
+        if (t.includes('FUT')) return 2;
+        return 1;
+      };
+      const expiryTime = (r) => parseExpiry(r.expiry)?.getTime() ?? 0;
+      const now = new Date();
+      const results = (await db.all(sql, params))
+        .filter((r) => !isContractExpired(r, now))
+        .sort((a, b) => (
+          (a.symbol === upper ? 0 : 1) - (b.symbol === upper ? 0 : 1)
+          // NIFTY's own futures before the fifty other indices whose names start with NIFTY.
+          || (String(a.name).toUpperCase() === upper ? 0 : 1) - (String(b.name).toUpperCase() === upper ? 0 : 1)
+          || typeRank(a) - typeRank(b)
+          || expiryTime(a) - expiryTime(b)
+          || (a.rank ?? 0) - (b.rank ?? 0)
+        ))
+        .slice(0, validatedLimit);
 
       log.info('Instrument search completed', {
         query: sanitizedQuery,

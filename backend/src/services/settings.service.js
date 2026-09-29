@@ -105,7 +105,7 @@ const ESSENTIAL_SETTINGS = [
   },
   {
     key: 'market_data_feed.max_order_spread_pct',
-    value: '0.02',
+    value: '0.1',
     description: 'Maximum bid/ask spread (as a decimal) allowed for limit pricing.',
     category: 'market_data_feed',
     dataType: 'number',
@@ -621,8 +621,14 @@ class SettingsService extends EventEmitter {
       'market_data_feed.multiquote_cooldown_idle_ms': '15000',
       'market_data_feed.multiquote_cooldown_active_ms': '9000',
       'market_data_feed.funds_interval_ms': '180000',
-      'market_data_feed.max_order_spread_pct': '0.02',
+      'market_data_feed.max_order_spread_pct': '0.1',
       'settings.cache_duration_ms': '5000',
+      'brokerage.default': '20',
+      'rate_limits.rps_per_instance': '5',
+      'rate_limits.rpm_per_instance': '300',
+      'rate_limits.orders_per_second': '10',
+      'rate_limits.smart_orders_per_second': '2',
+      'rate_limits.max_concurrent_tasks': '10',
       'brokerage.market_order_support': JSON.stringify({}),
       'trading_sessions': JSON.stringify([
         { label: 'Session 1', start: '09:00', end: '11:30' },
@@ -680,7 +686,7 @@ class SettingsService extends EventEmitter {
       else if (row.data_type === 'json') {
         try { value = JSON.parse(row.value); } catch { value = null; }
       }
-      return { ...field, value, dataType: row.data_type };
+      return { ...field, value, dataType: row.data_type, default: this.getDefaultValue(field.key) };
     };
 
     const missing = [];

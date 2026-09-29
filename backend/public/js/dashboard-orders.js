@@ -9,6 +9,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
   async renderOrdersView() {
     const contentArea = document.getElementById('content-area');
     this.currentOrderFilter = this.currentOrderFilter || '';
+    await this.ensureInstancesLoaded();
 
     contentArea.innerHTML = `
       <div class="ops-page orders-page">
@@ -16,7 +17,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           <div class="ops-title-wrap">
             <p class="ops-kicker">Order Flow</p>
             <h2 class="ops-title">Orders</h2>
-            <p class="ops-subtitle">Realtime orderbook with broker rollups and instance health context.</p>
+            <p class="ops-subtitle">Today's orders at each broker. Instances with open orders are expanded; click any other to see its orders.</p>
           </div>
           <div class="ops-controls">
             <select id="orders-filter" class="form-select" onchange="app.filterOrders(this.value)">
@@ -43,43 +44,38 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         <div class="ops-panel">
           <div class="ops-section-header">
             <div>
-              <h3 class="ops-section-title">Order History</h3>
-              <p class="ops-section-subtitle">Stored watchlist orders with provenance fields.</p>
+              <h3 class="ops-section-title">Order history</h3>
+              <p class="ops-section-subtitle">Every order this app sent - from watchlists, strategies and webhooks - newest first.</p>
             </div>
             <div class="ops-inline-actions">
-              <input id="order-history-instance" class="input input-bordered input-sm" placeholder="Instance ID" />
-              <input id="order-history-status" class="input input-bordered input-sm" placeholder="Status" />
+              <select id="order-history-instance" class="form-select" onchange="app.loadOrderHistory()">
+                <option value="">All instances</option>
+                ${(this.instances || []).map((i) => `<option value="${i.id}">${Utils.escapeHTML(i.name)}</option>`).join('')}
+              </select>
+              <select id="order-history-status" class="form-select" onchange="app.loadOrderHistory()">
+                <option value="">Any status</option>
+                <option value="complete">Filled</option>
+                <option value="open">Open</option>
+                <option value="rejected">Rejected / failed</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
               <button class="btn btn-outline btn-sm" onclick="app.loadOrderHistory()">Refresh</button>
+              <button class="btn btn-neutral btn-outline btn-sm" onclick="app.syncQuickOrdersHistory()"
+                      title="Ask the broker for the latest status of recent orders">Update from broker</button>
             </div>
           </div>
           <div class="ops-panel-body" id="order-history-panel">
             <div class="text-center text-neutral-500">Loading order history…</div>
           </div>
         </div>
-
-        <div class="ops-panel">
-          <div class="ops-section-header">
-            <div>
-              <h3 class="ops-section-title">Quick Orders</h3>
-              <p class="ops-section-subtitle">Quick order ledger with provenance and broker sync status.</p>
-            </div>
-            <div class="ops-inline-actions">
-              <input id="quick-orders-instance" class="input input-bordered input-sm" placeholder="Instance ID" />
-              <input id="quick-orders-days" class="input input-bordered input-sm" placeholder="Days" value="7" />
-              <button class="btn btn-outline btn-sm" onclick="app.loadQuickOrdersHistory()">Refresh</button>
-              <button class="btn btn-neutral btn-outline btn-sm" onclick="app.syncQuickOrdersHistory()">Sync Broker Status</button>
-            </div>
-          </div>
-          <div class="ops-panel-body" id="quick-orders-panel">
-            <div class="text-center text-neutral-500">Loading quick orders…</div>
-          </div>
-        </div>
       </div>
     `;
 
-    await this.loadOrders(this.currentOrderFilter, { ensureView: false, refresh: true });
-    await this.loadOrderHistory();
-    await this.loadQuickOrdersHistory();
+    // Side by side: the history is local and instant, and must not wait on every broker's book.
+    await Promise.all([
+      this.loadOrders(this.currentOrderFilter, { ensureView: false, refresh: true }),
+      this.loadOrderHistory(),
+    ]);
   }
 
   async loadOrders(status = '', options = {}) {
@@ -124,13 +120,41 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     const panel = document.getElementById('order-history-panel');
     if (!panel) return;
     try {
-      const instanceInput = document.getElementById('order-history-instance');
-      const statusInput = document.getElementById('order-history-status');
-      const filters = {};
-      if (instanceInput?.value) filters.instanceId = instanceInput.value.trim();
-      if (statusInput?.value) filters.status = statusInput.value.trim();
-      const response = await api.getOrders(filters);
-      this.renderOrderHistoryTable(response.data || []);
+      const instanceId = document.getElementById('order-history-instance')?.value || '';
+      const status = document.getElementById('order-history-status')?.value || '';
+      const filters = instanceId ? { instanceId } : {};
+      // Two ledgers record orders: broker orders (watchlist_orders) and the click that caused
+      // them (quick_orders). Show one list: broker rows win, clicks that never reached the
+      // broker (refused, failed) are added so nothing goes missing.
+      const [placed, quick] = await Promise.all([
+        api.getOrders(filters).then((r) => r.data || []),
+        api.getQuickOrders({ ...filters, limit: 500 }).then((r) => r.data || []).catch(() => []),
+      ]);
+      const names = new Map((this.instances || []).map((i) => [String(i.id), i.name]));
+      const seen = new Set(placed.map((o) => String(o.order_id || '')).filter(Boolean));
+      const rows = [
+        ...placed.map((o) => ({
+          at: o.placed_at, instance: o.instance_name || names.get(String(o.instance_id)),
+          symbol: o.symbol, exchange: o.exchange, side: o.side, quantity: o.quantity,
+          product: o.product_type, status: o.status, message: o.message, source: o.source,
+        })),
+        ...quick.filter((q) => !q.order_id || !seen.has(String(q.order_id))).map((q) => ({
+          at: q.created_at, instance: names.get(String(q.instance_id)),
+          symbol: q.resolved_symbol || q.symbol, exchange: q.exchange, side: q.action,
+          quantity: q.quantity, product: q.product, status: q.broker_status || q.status,
+          message: q.reason || q.message, source: q.source,
+        })),
+      ];
+      const wanted = (row) => {
+        if (!status) return true;
+        const st = String(row.status || '').toLowerCase();
+        if (status === 'rejected') return st === 'rejected' || st === 'failed' || st === 'error';
+        if (status === 'open') return st === 'open' || st === 'pending' || st === 'trigger pending';
+        return st === status || (status === 'complete' && st === 'success');
+      };
+      this.renderOrderHistoryTable(
+        rows.filter(wanted).sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))
+      );
     } catch (error) {
       panel.innerHTML = `
         <div class="text-center space-y-2 py-4">
@@ -145,98 +169,26 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     const panel = document.getElementById('order-history-panel');
     if (!panel) return;
     if (!orders.length) {
-      panel.innerHTML = '<p class="text-center text-neutral-600">No order history found.</p>';
+      panel.innerHTML = '<p class="text-center text-neutral-600">No orders yet.</p>';
       return;
     }
+    const sourceLabel = (src) => ({
+      quickorder: 'Watchlist', watchlist_quick_action: 'Watchlist', manual_batch: 'Watchlist',
+      strategy_manual: 'Strategy', strategy_webhook: 'Webhook', webhook: 'Webhook',
+      manual: 'Manual', auto_exit: 'Auto-exit', live_test: 'Test', live_test_cleanup: 'Test',
+    })[src] || (src ? String(src).replace(/_/g, ' ') : '-');
 
-    const rows = orders.map((order) => `
+    const rowsHtml = orders.map((o) => `
       <tr>
-        <td>${Utils.escapeHTML(order.symbol || '-')}</td>
-        <td>${Utils.escapeHTML(order.exchange || '-')}</td>
-        <td>${Utils.escapeHTML(order.side || '-')}</td>
-        <td>${order.quantity ?? '-'}</td>
-        <td>${Utils.escapeHTML(order.status || '-')}</td>
-        <td>${Utils.escapeHTML(order.instance_name || order.instance_id || '-')}</td>
-        <td>${Utils.escapeHTML(order.watchlist_name || order.watchlist_id || '-')}</td>
-        <td>${Utils.escapeHTML(order.source || '-')}</td>
-        <td>${Utils.escapeHTML(order.trigger_type || '-')}</td>
-        <td class="text-xs">${Utils.escapeHTML(order.request_id || '-')}</td>
-        <td class="text-xs">${Utils.escapeHTML(order.correlation_id || '-')}</td>
-        <td>${Utils.escapeHTML(order.user_id || '-')}</td>
-        <td class="text-right">${Utils.formatDateTime(order.placed_at, true)}</td>
-      </tr>
-    `).join('');
-
-    panel.innerHTML = `
-      <div class="table-container overflow-x-auto">
-        <table class="table">
-          <thead>
-            <tr>
-              <th>Symbol</th>
-              <th>Exchange</th>
-              <th>Side</th>
-              <th>Qty</th>
-              <th>Status</th>
-              <th>Instance</th>
-              <th>Watchlist</th>
-              <th>Source</th>
-              <th>Trigger</th>
-              <th>Request ID</th>
-              <th>Correlation</th>
-              <th>User ID</th>
-              <th class="text-right">Placed</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
-    `;
-  }
-
-  async loadQuickOrdersHistory() {
-    const panel = document.getElementById('quick-orders-panel');
-    if (!panel) return;
-    try {
-      const instanceInput = document.getElementById('quick-orders-instance');
-      const filters = { limit: 200 };
-      if (instanceInput?.value) filters.instanceId = instanceInput.value.trim();
-      const response = await api.getQuickOrders(filters);
-      this.renderQuickOrdersTable(response.data || []);
-    } catch (error) {
-      panel.innerHTML = `
-        <div class="text-center space-y-2 py-4">
-          <p class="text-error">${Utils.escapeHTML(error.message || 'Failed to load quick orders')}</p>
-          <button class="btn btn-neutral btn-outline btn-sm" onclick="app.loadQuickOrdersHistory()">Retry</button>
-        </div>
-      `;
-    }
-  }
-
-  renderQuickOrdersTable(orders = []) {
-    const panel = document.getElementById('quick-orders-panel');
-    if (!panel) return;
-    if (!orders.length) {
-      panel.innerHTML = '<p class="text-center text-neutral-600">No quick orders found.</p>';
-      return;
-    }
-
-    const rowsHtml = orders.map((order) => `
-      <tr>
-        <td>${Utils.escapeHTML(order.underlying || '-')}</td>
-        <td>${Utils.escapeHTML(order.symbol || '-')}</td>
-        <td>${Utils.escapeHTML(order.exchange || '-')}</td>
-        <td>${Utils.escapeHTML(order.action || '-')}</td>
-        <td>${Utils.escapeHTML(order.trade_mode || '-')}</td>
-        <td>${order.quantity ?? '-'}</td>
-        <td>${Utils.escapeHTML(order.status || '-')}</td>
-        <td>${Utils.escapeHTML(order.broker_status || '-')}</td>
-        <td>${Utils.escapeHTML(order.source || '-')}</td>
-        <td>${Utils.escapeHTML(order.trigger_type || '-')}</td>
-        <td class="text-xs">${Utils.escapeHTML(order.request_id || '-')}</td>
-        <td class="text-xs">${Utils.escapeHTML(order.correlation_id || '-')}</td>
-        <td>${Utils.escapeHTML(order.user_id || '-')}</td>
-        <td class="text-right">${Utils.formatDateTime(order.created_at, true)}</td>
-        <td class="text-right">${order.last_sync_at ? Utils.formatDateTime(order.last_sync_at, true) : '-'}</td>
+        <td class="text-xs">${Utils.formatDateTime(o.at, true)}</td>
+        <td>${Utils.escapeHTML(o.instance || '-')}</td>
+        <td>${Utils.escapeHTML(o.symbol || '-')} <span class="text-xs text-neutral-500">${Utils.escapeHTML(o.exchange || '')}</span></td>
+        <td>${Utils.escapeHTML(o.side || '-')}</td>
+        <td>${o.quantity ?? '-'}</td>
+        <td>${Utils.escapeHTML(o.product || '-')}</td>
+        <td>${Utils.escapeHTML(o.status || '-')}</td>
+        <td>${Utils.escapeHTML(sourceLabel(o.source))}</td>
+        <td class="text-xs">${Utils.escapeHTML(o.message || '')}</td>
       </tr>
     `);
 
@@ -245,45 +197,35 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         <table class="table">
           <thead>
             <tr>
-              <th>Underlying</th>
+              <th>Time</th>
+              <th>Instance</th>
               <th>Symbol</th>
-              <th>Exchange</th>
-              <th>Action</th>
-              <th>Mode</th>
+              <th>Side</th>
               <th>Qty</th>
+              <th>Product</th>
               <th>Status</th>
-              <th>Broker Status</th>
-              <th>Source</th>
-              <th>Trigger</th>
-              <th>Request ID</th>
-              <th>Correlation</th>
-              <th>User ID</th>
-              <th class="text-right">Created</th>
-              <th class="text-right">Last Sync</th>
+              <th>From</th>
+              <th>Broker message</th>
             </tr>
           </thead>
-          <tbody>${Utils.renderCappedRows(rowsHtml, { colspan: 15 })}</tbody>
+          <tbody>${Utils.renderCappedRows(rowsHtml, { colspan: 9 })}</tbody>
         </table>
       </div>
     `;
   }
 
   async syncQuickOrdersHistory() {
-    try {
-      const instanceInput = document.getElementById('quick-orders-instance');
-      const daysInput = document.getElementById('quick-orders-days');
-      const instanceId = instanceInput?.value ? parseInt(instanceInput.value, 10) : null;
-      if (!instanceId || Number.isNaN(instanceId)) {
-        Utils.showToast('Enter a valid Instance ID to sync', 'error');
-        return;
-      }
-      const days = daysInput?.value ? parseInt(daysInput.value, 10) : 7;
-      await api.syncQuickOrders(instanceId, days);
-      Utils.showToast('Quick orders synced', 'success');
-      await this.loadQuickOrdersHistory();
-    } catch (error) {
-      Utils.showToast(`Failed to sync quick orders: ${error.message}`, 'error');
-    }
+    const selected = document.getElementById('order-history-instance')?.value;
+    const ids = selected
+      ? [selected]
+      : (this.instances || []).filter((i) => i.is_active).map((i) => i.id);
+    const results = await Promise.allSettled(ids.map((id) => api.syncQuickOrders(id, 7)));
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    Utils.showToast(
+      failed ? `Updated from broker (${failed} instance${failed > 1 ? 's' : ''} failed)` : 'Updated from broker',
+      failed ? 'warning' : 'success'
+    );
+    await this.loadOrderHistory();
   }
 
   renderOrdersPanel(orders = []) {
@@ -319,7 +261,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           <div class="ops-section-header">
             <div>
               <h3 class="ops-section-title">Live Execution</h3>
-              <p class="ops-section-subtitle">Active broker instances running in live mode.</p>
+              <p class="ops-section-subtitle">Instances trading real money.</p>
             </div>
             <span class="ops-count-pill">${liveCount} orders</span>
           </div>
@@ -331,7 +273,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           <div class="ops-section-header">
             <div>
               <h3 class="ops-section-title">Analyzer Mode</h3>
-              <p class="ops-section-subtitle">Paper-trading instances with full orderbook visibility.</p>
+              <p class="ops-section-subtitle">Instances in analyzer (paper-trading) mode - no real money.</p>
             </div>
             <span class="ops-count-pill">${analyzerCount} orders</span>
           </div>
@@ -399,7 +341,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             <span class="ops-summary-value-sm">${stats.total_rejected_orders || 0}</span>
           </div>
         </div>
-        <div class="ops-summary-footnote">Snapshot based on OpenAlgo orderbook</div>
+        <div class="ops-summary-footnote">From each broker's order book</div>
       </div>
     `;
   }
@@ -436,7 +378,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     const openOrders = orders.filter(o => ['open', 'pending'].includes(o.status)).length;
 
     return `
-      <details class="instance-card" data-instance-id="${instanceEntry.instance_id}" ${isOpen || orders.length ? 'open' : ''}>
+      <details class="instance-card" data-instance-id="${instanceEntry.instance_id}" ${isOpen || openOrders ? 'open' : ''}>
         <summary class="instance-card-header">
           <div class="instance-info">
             <div class="instance-title">${title}</div>
@@ -571,7 +513,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             </tr>
           </thead>
           <tbody>
-            ${Utils.renderCappedRows(rowsHtml, { colspan: 12 })}
+            ${Utils.renderCappedRows(rowsHtml, { colspan: 12, pageSize: 20 })}
           </tbody>
         </table>
       </div>

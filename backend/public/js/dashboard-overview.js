@@ -150,7 +150,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       <div class="mb-4">
         <div class="flex items-center mb-2">
           <h2 class="text-xl font-semibold">Live Trading</h2>
-          <span class="ml-2 px-2 py-1 text-xs font-semibold badge-v-live rounded">L</span>
+          <span class="ml-2 px-2 py-1 text-xs font-semibold badge-v-live rounded" title="Instances trading real money">Real money</span>
           <button class="btn btn-neutral btn-outline btn-sm ml-auto" onclick="app.refreshDashboardMetrics({ force: true, showToast: true })">
             ↻ Refresh Metrics
           </button>
@@ -160,7 +160,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             <div class="stat-label">P&L (net)</div>
             <div class="stat-value ${Utils.getPnLColorClass(metrics.live.total_pnl)}">
               <span id="live-pnl-value">${Utils.formatCurrency(metrics.live.total_pnl)}</span>
-              <span class="badge badge-success ml-2">L</span>
             </div>
           </div>
 
@@ -194,14 +193,13 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         <div class="mb-6">
           <div class="flex items-center mb-2">
             <h2 class="text-xl font-semibold text-neutral-600">Analyzer Mode</h2>
-            <span class="ml-2 px-2 py-1 text-xs font-semibold badge-v-analyzer rounded">A</span>
+            <span class="ml-2 px-2 py-1 text-xs font-semibold badge-v-analyzer rounded" title="Instances in analyzer mode: simulated orders">Simulated</span>
           </div>
           <div class="stats-grid stats-grid-centered opacity-75">
             <div class="stat-card">
               <div class="stat-label">P&L (net)</div>
               <div class="stat-value ${Utils.getPnLColorClass(metrics.analyzer.total_pnl)}">
                 <span id="analyzer-pnl-value">${Utils.formatCurrency(metrics.analyzer.total_pnl)}</span>
-                <span class="badge badge-warning ml-2">A</span>
               </div>
             </div>
 

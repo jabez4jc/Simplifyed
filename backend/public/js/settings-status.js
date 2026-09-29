@@ -12,7 +12,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         <!-- Monitor Status Section -->
         <div class="card">
           <div class="card-header">
-            <h3 class="card-title">📊 Order Monitor Status</h3>
+            <h3 class="card-title">Auto-exit (targets &amp; stop-losses)</h3>
           </div>
           <div class="p-6">
             ${await this.renderMonitorStatusSection()}
@@ -34,21 +34,21 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         <div class="space-y-4">
           <div class="settings-stat-box p-4 border border-neutral-200">
             <p class="text-sm text-neutral-700">
-              The Order Monitor tracks targets for live and analyzer instances when they have open positions. It checks on a fixed
-              interval and uses the latest position/quote data to evaluate targets. Live instances emit alerts; analyzer instances simulate exits.
+              Auto-exit watches every open position that has a target, stop-loss or trailing stop set on its watchlist symbol
+              or strategy leg, and closes it when the level is reached. It works the same on live and analyzer instances.
             </p>
           </div>
           <div class="grid grid-cols-3 gap-4">
             <div class="settings-stat-box p-4 border border-neutral-200">
-              <p class="text-sm text-neutral-600">Monitoring Status</p>
-              <p class="text-lg font-semibold ${status.is_monitoring ? 'text-success-600' : 'text-neutral-500'}">
-                ${status.is_monitoring ? '✅ Active' : '⏸️ Inactive'}
+              <p class="text-sm text-neutral-600">Status</p>
+              <p class="text-lg font-semibold ${status.is_monitoring ? 'text-success-600' : 'text-error'}">
+                ${status.is_monitoring ? 'Running' : 'Stopped - exits are NOT being watched'}
               </p>
             </div>
             <div class="settings-stat-box p-4 border border-neutral-200">
-              <p class="text-sm text-neutral-600">Check Interval</p>
+              <p class="text-sm text-neutral-600">Checks every</p>
               <p class="text-lg font-semibold text-neutral-800">
-                ${status.interval_ms / 1000}s
+                ${status.interval_ms ? `${status.interval_ms / 1000} seconds` : '-'}
               </p>
             </div>
             <div class="settings-stat-box p-4 border border-neutral-200">
@@ -61,8 +61,8 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
 
           <div class="settings-method-card method-info p-4">
             <p class="text-sm text-info-800">
-              ℹ️ The order monitor checks live and analyzer positions every ${status.interval_ms / 1000} seconds,
-              but only evaluates instances that have open positions.
+              A level must hold for a moment before auto-exit acts, so a single stray tick does not close a position.
+              Brokers refuse MIS exits after the 15:15 IST square-off - those are closed by the broker's own square-off.
             </p>
           </div>
         </div>

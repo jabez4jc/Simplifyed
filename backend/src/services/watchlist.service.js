@@ -131,7 +131,9 @@ class WatchlistService {
         [
           normalized.name,
           normalized.description,
-          normalized.is_active ? 1 : 0,
+          // Active unless the caller says otherwise. `undefined ? 1 : 0` made every watchlist
+          // created from the dashboard inactive, and an inactive watchlist is never quoted.
+          normalized.is_active === false ? 0 : 1,
           normalized.type || 'standard',
           normalized.is_broadcast ? 1 : 0,
           normalized.webhook_slug || null,

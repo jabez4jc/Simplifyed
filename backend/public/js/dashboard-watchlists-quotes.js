@@ -130,50 +130,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     }
   }
 
-  async showWsSubscriptions() {
-    try {
-      const res = await api.request('/telemetry/ws-subscriptions');
-      const subs = res?.data || [];
-      const modal = document.createElement('div');
-      modal.className = 'modal-overlay';
-      const content = subs.map((s) => `
-        <details class="border border-base-200 rounded-lg p-3 bg-base-100">
-          <summary class="flex items-center justify-between gap-2 cursor-pointer">
-            <div>
-              <div class="font-semibold">${Utils.escapeHTML(s.instanceName || `Instance ${s.instanceId}`)}</div>
-              <div class="text-xs text-neutral-500">${Utils.escapeHTML(s.websocketUrl || 'ws unavailable')}</div>
-            </div>
-            <div class="text-xs text-neutral-500">${s.subscriptionCount || 0} symbols · ${s.connected ? 'Connected' : 'Disconnected'}</div>
-          </summary>
-          ${s.symbols && s.symbols.length ? `
-            <div class="mt-2 grid grid-cols-2 md:grid-cols-3 gap-2 text-xs">
-              ${s.symbols.slice(0, 200).map(sym => `<span class="badge badge-neutral">${Utils.escapeHTML(sym.exchange || '')}:${Utils.escapeHTML(sym.symbol || '')}</span>`).join('')}
-            </div>
-            ${s.symbols.length > 200 ? `<p class="text-xs text-neutral-500 mt-2">+${s.symbols.length - 200} more…</p>` : ''}
-          ` : '<p class="text-xs text-neutral-500 mt-2">No symbols subscribed</p>'}
-        </details>
-      `).join('');
-
-      modal.innerHTML = `
-        <div class="modal-content" style="max-width: 800px;">
-          <div class="modal-header">
-            <h3>WebSocket Subscriptions</h3>
-          </div>
-          <div class="modal-body space-y-3" style="max-height: 70vh; overflow-y: auto;">
-            ${content || '<p class="text-neutral-600 text-sm">No WebSocket subscriptions found.</p>'}
-          </div>
-          <div class="modal-footer">
-            <button class="btn btn-neutral btn-outline" onclick="Utils.closeModal(this)">Close</button>
-          </div>
-        </div>
-      `;
-
-      document.body.appendChild(modal);
-    } catch (err) {
-      Utils.showToast(err?.message || 'Failed to load WS subscriptions', 'error');
-    }
-  }
-
   async renderBroadcastWatchlist(watchlistId) {
     const { data: watchlist } = await api.getWatchlistById(watchlistId);
     const instances = watchlist.instances || [];
@@ -339,6 +295,9 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     // Stop existing poller if any
     this.stopWatchlistPolling(watchlistId);
     if (this.isWsStreamingActive()) {
+      // Streaming only delivers the NEXT tick. Fill the rows now, or a newly added symbol sits
+      // at "-" until the feed happens to push it - seen for over a minute on a fresh watchlist.
+      await this.updateWatchlistQuotes(watchlistId, { force: true });
       this.updateWatchlistQuoteMeta(watchlistId, { statusText: 'Streaming active' });
       return;
     }
@@ -445,7 +404,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
 
   async updateWatchlistQuotes(watchlistId, { force = false } = {}) {
     if (this.isPaused && !force) return;
-    if (this.isWsStreamingActive()) {
+    if (this.isWsStreamingActive() && !force) {
       return;
     }
     try {

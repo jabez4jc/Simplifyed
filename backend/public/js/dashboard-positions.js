@@ -45,12 +45,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
               <button class="btn btn-outline btn-sm" onclick="app.renderPositionsView()">
                 Refresh
               </button>
-              <button class="btn btn-outline btn-sm" onclick="app.toggleSnapshotResync()">
-                Auto Resync: ${this.autoSnapshotResyncEnabled ? 'On' : 'Off'}
-              </button>
-              <button class="btn btn-outline btn-sm" onclick="app.resyncAllPositionsFromSnapshots()">
-                Resync snapshots
-              </button>
               <button class="btn btn-exit btn-sm" onclick="app.closeAllPositionsGlobal()">
                 Close All Positions
               </button>
@@ -219,10 +213,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           </div>
         </div>
         <div class="instance-actions">
-          <button class="btn btn-outline btn-sm"
-                  onclick="event.stopPropagation(); app.resyncPositionsFromSnapshot(${inst.instance_id})">
-            Resync
-          </button>
           <button class="btn btn-exit btn-sm"
                   onclick="event.stopPropagation(); app.closeAllPositions(${inst.instance_id})">
             Close All
@@ -271,25 +261,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     });
   }
 
-  async resyncPositionsFromSnapshot(instanceId) {
-    try {
-      const res = await api.getPositionSnapshot(instanceId, { refresh: true });
-      const positions = res?.data?.positions || [];
-      this.positionsInstanceStore.set(String(instanceId), positions);
-      const body = document.querySelector(
-        `details[data-instance-id="${instanceId}"] .instance-positions-body`
-      );
-      if (body) {
-        body.innerHTML = this.renderPositionsBody(positions, { instance_id: instanceId });
-        body.dataset.loaded = 'true';
-      }
-      Utils.showToast(`Positions resynced for instance ${instanceId}`, 'success');
-    } catch (error) {
-      console.error('Failed to resync positions snapshot', error);
-      Utils.showToast('Failed to resync positions snapshot', 'error');
-    }
-  }
-
   async resyncAllPositionsFromSnapshots() {
     try {
       const instances = (this.latestAllPositionsData?.instances || []).map((i) => i.instance_id);
@@ -301,28 +272,12 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         instances.map((id) => api.getPositionSnapshot(id, { refresh: true }).catch(() => null))
       );
       await this.renderPositionsView();
-      Utils.showToast('Positions resynced from snapshots', 'success');
     } catch (error) {
       console.error('Failed to resync all positions snapshots', error);
       Utils.showToast('Failed to resync all positions snapshots', 'error');
     }
   }
 
-  toggleSnapshotResync() {
-    this.autoSnapshotResyncEnabled = !this.autoSnapshotResyncEnabled;
-    this.persistSnapshotResyncPreference(this.autoSnapshotResyncEnabled);
-    Utils.showToast(`Auto snapshot resync ${this.autoSnapshotResyncEnabled ? 'enabled' : 'disabled'}`, 'info');
-    // Restart interval if applicable
-    if (['watchlists', 'positions'].includes(this.currentView)) {
-      this.startSnapshotResync(this.currentView);
-    }
-    // Refresh UI buttons to reflect state
-    if (this.currentView === 'positions') {
-      this.renderPositionsView();
-    } else if (this.currentView === 'watchlists') {
-      this.renderWatchlistsView();
-    }
-  }
   /**
    * Close all positions
    */

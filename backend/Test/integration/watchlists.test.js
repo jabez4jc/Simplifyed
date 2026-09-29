@@ -124,6 +124,8 @@ test('creating a watchlist persists it', async () => {
   const row = await db.get('SELECT * FROM watchlists WHERE name = ?', ['Momentum']);
   assert.ok(row);
   assert.strictEqual(row.description, 'breakouts');
+  // Seen live: every dashboard-created watchlist was inactive, and an inactive one is never quoted.
+  assert.strictEqual(row.is_active, 1, 'a new watchlist must be active');
 });
 
 test('creating a watchlist with no name is refused', async () => {

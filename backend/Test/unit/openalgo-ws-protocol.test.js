@@ -5,6 +5,7 @@ import {
   depthSubscriptionFrames,
   marketDataPayload,
   orderUpdateKey,
+  routeMarketData,
 } from '../../src/services/openalgo-ws.service.js';
 
 /**
@@ -68,4 +69,23 @@ test('order updates dedupe on orderid + order_status + filled_quantity, so a par
   const full = { orderid: '1', order_status: 'complete', filled_quantity: 10 };
   assert.strictEqual(orderUpdateKey(partial), orderUpdateKey({ ...partial }));
   assert.notStrictEqual(orderUpdateKey(partial), orderUpdateKey(full));
+});
+
+test('a quote frame that carries a book is still a quote - BTCUSDFUT on Delta Exchange', () => {
+  // Captured live: Delta attaches `depth` to Quote-mode (mode 2) frames for BTCUSDFUT only.
+  const btc = {
+    type: 'market_data', symbol: 'BTCUSDFUT', exchange: 'CRYPTO', mode: 2,
+    data: { ltp: 84350.5, bid_price: 84353.5, ask_price: 84354, depth: { buy: [{ price: 84237, quantity: 1 }], sell: [] } },
+  };
+  const routed = routeMarketData(btc);
+  assert.strictEqual(routed.quote?.ltp, 84350.5, 'the price must reach the quote cache');
+  assert.ok(routed.depth?.depth, 'and the book the depth cache');
+
+  const eth = { type: 'market_data', symbol: 'ETHUSDFUT', exchange: 'CRYPTO', mode: 2, data: { ltp: 2739.5 } };
+  assert.deepStrictEqual([!!routeMarketData(eth).quote, routeMarketData(eth).depth], [true, null]);
+
+  const depthOnly = { type: 'market_data', symbol: 'NIFTY', exchange: 'NSE_INDEX', mode: 3, data: { ltp: 1, depth: { buy: [], sell: [] } } };
+  assert.deepStrictEqual([routeMarketData(depthOnly).quote, !!routeMarketData(depthOnly).depth], [null, true]);
+
+  assert.deepStrictEqual(routeMarketData({ type: 'order_update' }), { quote: null, depth: null });
 });

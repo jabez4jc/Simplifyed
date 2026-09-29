@@ -13,9 +13,9 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         <!-- Instruments Cache Section -->
         <div class="card">
           <div class="card-header">
-            <h3 class="card-title">📊 Instruments Cache</h3>
+            <h3 class="card-title">Instruments Cache</h3>
             <p class="text-sm text-neutral-600 mt-1">
-              Manage broker instruments cache. Upload CSV file or refresh from broker API.
+              The list of tradable symbols used for search, lot sizes and expiries. It refreshes itself on the first login each day, and expired contracts are removed automatically - you only need this to force a refresh.
             </p>
           </div>
           <div class="p-6">
@@ -27,9 +27,9 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         <!-- Instances Import / Export Section -->
         <div class="card">
           <div class="card-header">
-            <h3 class="card-title">🗂️ Instances Import / Export</h3>
+            <h3 class="card-title">Instances Import / Export</h3>
             <p class="text-sm text-neutral-600 mt-1">
-              Admin-only: export all instances to CSV or import/update from CSV (upsert by host_url).
+              Back up your broker instances to a CSV file, or restore them from one.
             </p>
           </div>
           <div class="p-6 space-y-3">
@@ -40,9 +40,9 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         <!-- Watchlists Import / Export Section -->
         <div class="card">
           <div class="card-header">
-            <h3 class="card-title">🗂️ Watchlists Import / Export</h3>
+            <h3 class="card-title">Watchlists Import / Export</h3>
             <p class="text-sm text-neutral-600 mt-1">
-              Admin-only: export all watchlists, symbols, and instance mappings, or import/update from CSV.
+              Back up your watchlists (with their symbols and linked instances) to a CSV file, or restore them from one.
             </p>
           </div>
           <div class="p-6 space-y-3">
@@ -68,14 +68,14 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
           <div class="settings-sub-panel">
             <div class="flex items-center justify-between mb-4">
               <div>
-                <h3 class="text-lg font-semibold text-neutral-900">📊 Instruments Cache Overview</h3>
+                <h3 class="text-lg font-semibold text-neutral-900">Instruments Cache Overview</h3>
                 <p class="text-sm text-neutral-600 mt-1">
-                  Local cache of broker instruments for fast symbol search
+                  What is currently loaded
                 </p>
               </div>
               <div class="flex items-center gap-2">
                 <div class="px-3 py-1.5 rounded-full text-sm font-medium ${(stats.total || 0) > 0 ? 'bg-success-100 text-success-700' : 'bg-neutral-100 text-neutral-600'}">
-                  ${(stats.total || 0) > 0 ? '✅ Loaded' : '⏸️ Empty'}
+                  ${(stats.total || 0) > 0 ? 'Loaded' : 'Empty'}
                 </div>
               </div>
             </div>
@@ -108,13 +108,12 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
 
           <!-- Data Import Methods -->
           <div class="settings-sub-panel">
-            <h3 class="text-lg font-semibold text-neutral-900 mb-4">💾 Import Methods</h3>
+            <h3 class="text-lg font-semibold text-neutral-900 mb-4">Import Methods</h3>
 
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <!-- CSV Upload Card -->
               <div class="settings-method-card method-primary">
                 <div class="flex items-start gap-3">
-                  <div class="text-2xl">📁</div>
                   <div class="flex-1">
                     <h4 class="font-semibold text-primary-900 mb-2">Upload CSV File</h4>
                     <p class="text-xs text-primary-800 mb-3">
@@ -132,7 +131,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
                         onclick="settings.uploadInstrumentsCSV()"
                         id="upload-csv-btn"
                       >
-                        📤 Upload & Import
+                        Upload & Import
                       </button>
                       <div id="upload-progress" class="hidden">
                         <div class="settings-status-box">
@@ -147,7 +146,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
               <!-- Fetch from Instance Card -->
               <div class="settings-method-card method-success">
                 <div class="flex items-start gap-3">
-                  <div class="text-2xl">🔄</div>
                   <div class="flex-1">
                     <h4 class="font-semibold text-success-900 mb-2">Fetch from Instance</h4>
                     <p class="text-xs text-success-800 mb-3">
@@ -162,12 +160,12 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
                         onclick="settings.fetchFromInstance()"
                         id="fetch-instance-btn"
                       >
-                        🚀 Start Fetch
+                        Start Fetch
                       </button>
                       <div id="fetch-progress" class="hidden">
                         <div class="settings-status-box">
                           <p class="text-xs text-success-800 font-medium" id="fetch-status">Initializing...</p>
-                          <p class="text-xs text-success-700 mt-1">⏱️ This may take several minutes</p>
+                          <p class="text-xs text-success-700 mt-1">This can take a few minutes.</p>
                         </div>
                       </div>
                     </div>
@@ -177,19 +175,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
             </div>
           </div>
 
-          <!-- Additional Options -->
-          <div class="bg-info-50 rounded-lg border border-info-200 p-4">
-            <div class="flex items-start gap-3">
-              <div class="text-xl">💡</div>
-              <div>
-                <h4 class="font-semibold text-info-900 mb-1">Additional Options</h4>
-                <p class="text-sm text-info-800">
-                  You can also refresh instruments from the broker API via the main dashboard.
-                  The cache automatically refreshes daily on first login.
-                </p>
-              </div>
-            </div>
-          </div>
         </div>
       `;
 
@@ -230,7 +215,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       progressDiv.classList.remove('hidden');
       statusText.textContent = 'Uploading file...';
       uploadBtn.disabled = true;
-      uploadBtn.textContent = '⏳ Uploading...';
+      uploadBtn.textContent = 'Uploading...';
 
       // Create form data
       const formData = new FormData();
@@ -250,7 +235,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
 
       // Show success
       const result = data.data;
-      statusText.textContent = `✅ Success! Imported ${result.finalCount.toLocaleString()} instruments in ${result.duration}`;
+      statusText.textContent = `Success! Imported ${result.finalCount.toLocaleString()} instruments in ${result.duration}`;
 
       Utils.showToast(
         `Successfully imported ${result.finalCount.toLocaleString()} instruments`,
@@ -266,11 +251,11 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       }, 2000);
     } catch (error) {
       console.error('[Settings] CSV upload error:', error);
-      statusText.textContent = `❌ Error: ${Utils.escapeHTML(error.message)}`;
+      statusText.textContent = `Error: ${Utils.escapeHTML(error.message)}`;
       Utils.showToast(`Upload failed: ${Utils.escapeHTML(error.message)}`, 'error');
     } finally {
       uploadBtn.disabled = false;
-      uploadBtn.textContent = '📤 Upload CSV';
+      uploadBtn.textContent = 'Upload CSV';
     }
   }
 
@@ -347,7 +332,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       progressDiv.classList.remove('hidden');
       statusText.textContent = 'Starting fetch from instance...';
       fetchBtn.disabled = true;
-      fetchBtn.textContent = '⏳ Fetching...';
+      fetchBtn.textContent = 'Fetching...';
 
       // Call the API
       const response = await this.authFetch('/api/v1/instruments/fetch-from-instance', {
@@ -370,11 +355,11 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       this.pollFetchStatus(instanceId, statusText, fetchBtn, progressDiv);
     } catch (error) {
       console.error('[Settings] Fetch from instance error:', error);
-      statusText.textContent = `❌ Error: ${Utils.escapeHTML(error.message)}`;
+      statusText.textContent = `Error: ${Utils.escapeHTML(error.message)}`;
       statusText.classList.add('text-error');
       Utils.showToast(`Fetch failed: ${Utils.escapeHTML(error.message)}`, 'error');
       fetchBtn.disabled = false;
-      fetchBtn.textContent = '🔄 Fetch from Instance';
+      fetchBtn.textContent = 'Fetch from Instance';
     }
   }
 
@@ -395,13 +380,13 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
           const status = data.data;
 
           // Update status display
-          statusText.textContent = `⏳ ${status.message}`;
+          statusText.textContent = `${status.message}`;
           statusText.classList.remove('text-error', 'text-success');
           statusText.classList.add('text-info');
 
           // If completed, show success and stop polling
           if (status.status === 'completed') {
-            statusText.textContent = `✅ ${status.message} (Total: ${status.totalInstruments.toLocaleString()} instruments)`;
+            statusText.textContent = `${status.message} (Total: ${status.totalInstruments.toLocaleString()} instruments)`;
             statusText.classList.remove('text-info');
             statusText.classList.add('text-success');
 
@@ -411,7 +396,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
             );
 
             fetchBtn.disabled = false;
-            fetchBtn.textContent = '🔄 Fetch from Instance';
+            fetchBtn.textContent = 'Fetch from Instance';
 
             // Refresh settings view after completion
             setTimeout(() => {
@@ -423,24 +408,24 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
 
           // If error, show error and stop polling
           if (status.status === 'error') {
-            statusText.textContent = `❌ ${status.message}`;
+            statusText.textContent = `${status.message}`;
             statusText.classList.remove('text-info');
             statusText.classList.add('text-error');
 
             Utils.showToast(`Fetch failed: ${status.message}`, 'error');
 
             fetchBtn.disabled = false;
-            fetchBtn.textContent = '🔄 Fetch from Instance';
+            fetchBtn.textContent = 'Fetch from Instance';
             return; // Stop polling
           }
         } else if (response.status === 404) {
           // Fetch completed (no longer in activeFetches)
-          statusText.textContent = '✅ Fetch completed!';
+          statusText.textContent = 'Fetch completed!';
           statusText.classList.remove('text-info');
           statusText.classList.add('text-success');
 
           fetchBtn.disabled = false;
-          fetchBtn.textContent = '🔄 Fetch from Instance';
+          fetchBtn.textContent = 'Fetch from Instance';
 
           setTimeout(() => {
             this.renderSettingsView();
@@ -453,11 +438,11 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         if (Date.now() - startTime < maxDuration) {
           setTimeout(poll, pollInterval);
         } else {
-          statusText.textContent = '⚠️ Fetch timeout (still running in background)';
+          statusText.textContent = 'Fetch timeout (still running in background)';
           statusText.classList.remove('text-info');
           statusText.classList.add('text-warning');
           fetchBtn.disabled = false;
-          fetchBtn.textContent = '🔄 Fetch from Instance';
+          fetchBtn.textContent = 'Fetch from Instance';
         }
       } catch (error) {
         console.error('[Settings] Error polling fetch status:', error);
@@ -479,14 +464,14 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
           <button class="btn btn-buy btn-sm" onclick="settings.exportInstancesCsv()" id="btn-export-instances">
             Export Instances CSV
           </button>
-          <span class="text-xs text-neutral-500">Exports all instance fields (excluding timestamps) to CSV.</span>
+          <span class="text-xs text-neutral-500">Includes each instance's name, URL and settings.</span>
         </div>
         <div class="flex gap-2 items-center flex-wrap">
           <input type="file" accept=".csv,text/csv" id="instances-csv-file" class="input input-sm" />
           <button class="btn btn-neutral btn-outline btn-sm" onclick="settings.importInstancesCsv()" id="btn-import-instances">
             Import Instances CSV
           </button>
-          <span class="text-xs text-neutral-500">Upserts by host_url. Blank cells are ignored.</span>
+          <span class="text-xs text-neutral-500">An instance with the same URL is updated; others are added. Blank cells leave a value unchanged.</span>
         </div>
       </div>
     `;
@@ -560,7 +545,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
           <button class="btn btn-neutral btn-outline btn-sm" onclick="settings.importWatchlistsCsv()" id="btn-import-watchlists">
             Import Watchlists CSV
           </button>
-          <span class="text-xs text-neutral-500">Upserts by watchlist name; symbols by (watchlist_id, symbol, exchange); mappings by (watchlist_id, instance_id).</span>
+          <span class="text-xs text-neutral-500">A watchlist with the same name is updated, including its symbols and linked instances; others are added.</span>
         </div>
       </div>
     `;

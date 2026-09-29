@@ -148,10 +148,6 @@ class APIClient {
     return this.request('/notifications');
   }
 
-  async getAuditLogs(filters = {}) {
-    const params = new URLSearchParams(filters);
-    return this.request(`/audit?${params}`);
-  }
   async markNotificationRead(id) {
     return this.request(`/notifications/${id}/read`, { method: 'POST' });
   }

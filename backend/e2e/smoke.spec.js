@@ -49,7 +49,8 @@ test('a discarded token sends the operator back to the login form', async ({ pag
   await expect(page).toHaveURL(/dashboard\.html/);
 
   await page.evaluate(() => localStorage.removeItem('auth_token'));
-  await page.goto('/dashboard.html');
+  // The page redirects while it loads, so wait only for the response, not the load event.
+  await page.goto('/dashboard.html', { waitUntil: 'commit' });
 
   await expect(page).toHaveURL(/login\.html/, { timeout: 15000 });
 });

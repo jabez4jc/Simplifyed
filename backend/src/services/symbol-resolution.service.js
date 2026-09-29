@@ -52,7 +52,7 @@ class SymbolResolutionService {
   async searchSymbols(query, exchange) {
     const q = (query || '').trim();
     if (!q) return [];
-    return instrumentsService.searchInstruments(q, exchange);
+    return instrumentsService.searchInstruments(q, { exchange: exchange || null });
   }
 }
 

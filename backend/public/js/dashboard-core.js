@@ -34,7 +34,7 @@ class DashboardApp {
     this.watchlistQuoteSnapshots = new Map();
     this.isSidebarCollapsed = false;
     this.quickOrder = window.quickOrder || null;
-    this.validViews = ['dashboard', 'instances', 'watchlists', 'chart', 'strategies', 'orders', 'trades', 'positions', 'daily-pnl-snapshots', 'settings', 'notifications', 'audit', 'api-playground'];
+    this.validViews = ['dashboard', 'instances', 'watchlists', 'chart', 'strategies', 'orders', 'trades', 'positions', 'daily-pnl-snapshots', 'settings', 'notifications'];
     this.suppressHashChange = false;
     this._throttledWatchlistRefresh = Utils.throttle((opts = {}) => {
       this.refreshWatchlistPositions(opts);
@@ -71,7 +71,6 @@ class DashboardApp {
     this.snapshotResyncInterval = null;
     this.lastSnapshotResyncAt = 0;
     this.isSnapshotResyncing = false;
-    this.autoSnapshotResyncEnabled = this.loadSnapshotResyncPreference();
     // Symbol lookup for streaming updates
     this.watchlistSymbolIndex = new Map(); // exchange|symbol -> [{ watchlistId, symbolId }]
     this.watchlistSymbolIndexByWatchlist = new Map(); // watchlistId -> [{ key, symbolId }]
@@ -129,8 +128,6 @@ class DashboardApp {
       'daily-pnl-snapshots': 'pages.daily_pnl.view',
       settings: 'pages.settings.view',
       notifications: 'pages.notifications.view',
-      audit: 'pages.audit.view',
-      'api-playground': 'pages.api_playground.view',
     };
   }
   async ensureInstancesLoaded() {
@@ -304,24 +301,6 @@ class DashboardApp {
     }
   }
 
-  loadSnapshotResyncPreference() {
-    try {
-      const stored = localStorage.getItem('autoSnapshotResyncEnabled');
-      if (stored === 'false') return false;
-      return true;
-    } catch (_) {
-      return true;
-    }
-  }
-
-  persistSnapshotResyncPreference(enabled) {
-    try {
-      localStorage.setItem('autoSnapshotResyncEnabled', enabled ? 'true' : 'false');
-    } catch (_) {
-      // ignore
-    }
-  }
-
   applySidebarState() {
     document.body.classList.toggle('sidebar-collapsed', this.isSidebarCollapsed);
     const drawerRoot = document.querySelector('.drawer');
@@ -353,12 +332,6 @@ class DashboardApp {
       Utils.showToast('Paused all background data fetching', 'info');
       this.stopAllWatchlistPolling();
       this.stopTradesPolling();
-    }
-
-    // Dispose the chart when navigating away; createChart attaches a ResizeObserver and canvas
-    // that survive the innerHTML swap otherwise.
-    if (this.currentView === 'chart' && viewName !== 'chart') {
-      if (typeof this.destroyChart === 'function') this.destroyChart();
       this.stopPositionsPolling();
       if (this.pollingInterval) {
         clearInterval(this.pollingInterval);
@@ -987,6 +960,12 @@ class DashboardApp {
       this.stopTradesPolling();
     }
 
+    // Dispose the chart when navigating away; createChart attaches a ResizeObserver and canvas
+    // that survive the innerHTML swap otherwise.
+    if (this.currentView === 'chart' && viewName !== 'chart' && typeof this.destroyChart === 'function') {
+      this.destroyChart();
+    }
+
     if (this.currentView === 'dashboard' && viewName !== 'dashboard') {
       this.stopTelemetryRefresh();
       this.stopDashboardMetricsRefresh();
@@ -1010,7 +989,6 @@ class DashboardApp {
       positions: 'Positions',
       settings: 'Settings',
       notifications: 'Notifications',
-      'api-playground': 'API Playground',
       'daily-pnl-snapshots': 'Daily P&L Snapshots',
     };
 
@@ -1059,12 +1037,6 @@ class DashboardApp {
           break;
         case 'notifications':
           await this.renderNotificationsView();
-          break;
-        case 'audit':
-          await this.renderAuditView();
-          break;
-        case 'api-playground':
-          await this.renderApiPlaygroundView();
           break;
         default:
           contentArea.innerHTML = '<p>View not found</p>';
@@ -1151,8 +1123,8 @@ class DashboardApp {
  *   dashboard    own metrics and telemetry intervals
  *   trades       own 5s poller
  *   chart        own candle refresh and live feed
- *   strategies, audit, daily-pnl-snapshots   static until acted on
- *   settings, api-playground                 hold unsaved input; re-rendering destroys it
+ *   strategies, daily-pnl-snapshots          static until acted on
+ *   settings                                 holds unsaved input; re-rendering destroys it
  *
  * Anything added here must update data in place. A full re-render is a page refresh in
  * everything but name.

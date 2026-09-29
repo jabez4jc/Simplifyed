@@ -1359,19 +1359,14 @@ class MarketDataFeedService extends EventEmitter {
       ttlMs = Math.max(ttlMs, ORDER_STREAM_SWEEP_MS);
     }
 
-    if (ttlMs === Number.POSITIVE_INFINITY) {
-      return cache || null;
-    }
-    if (this._isInstanceUnhealthy(instanceId)) {
+    // A forced refresh (the Orders page Refresh button) always reaches the broker.
+    if (!force && this._isInstanceUnhealthy(instanceId)) {
       log.debug('Skipping orderbook refresh - instance unhealthy', { instanceId });
       return cache || null;
     }
 
     if (!force && cache && last && now - last < ttlMs) {
       return cache;
-    }
-    if (!force && !this._hasActiveRisk(instanceId)) {
-      return cache || null;
     }
 
     try {
@@ -1755,7 +1750,10 @@ class MarketDataFeedService extends EventEmitter {
       return active ? this.positionIntervalActiveMs : this.positionIntervalIdleMs;
     }
     if (feed === 'orderbook') {
-      return hasOrdersForInstance ? this.orderbookIntervalMs : Number.POSITIVE_INFINITY;
+      // Idle instances refresh at the idle position pace. This used to be "never" (Infinity):
+      // the book was only fetched once the feed already knew of open orders - which it can only
+      // learn from the book - so the Orders page showed 0 orders on accounts with hundreds.
+      return hasOrdersForInstance ? this.orderbookIntervalMs : this.positionIntervalIdleMs;
     }
     if (feed === 'tradebook') {
       const active = hasOpenForInstance || hasOrdersForInstance;

@@ -59,29 +59,14 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             <span class="watchlists-count">${this.watchlists.length} lists</span>
           </div>
           <div class="watchlists-toolbar-right">
-            <button class="btn-icon" onclick="app.resyncQuotesFromSnapshots()" title="Resync quotes (snapshot)">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.5 12A7.5 7.5 0 116 6.75M6 6.75V3m0 3.75h3.75" />
-              </svg>
+            <button class="btn btn-outline btn-sm" id="quick-trade-mode-btn" onclick="quickOrder.toggleQuickTradeMode()" title="On (default): every Buy/Sell asks you to confirm first. Off: orders are sent the moment you click.">
+              Confirm before ordering: ${window.quickOrder && quickOrder.isQuickTradeMode() ? 'Off' : 'On'}
             </button>
-            <button class="btn btn-neutral btn-sm" onclick="app.showWsSubscriptions()" title="View WebSocket subscriptions">
-              WS Subs
+            <button class="btn btn-outline btn-sm" onclick="app.renderWatchlistsView()" title="Reload watchlists, prices and positions">
+              Refresh
             </button>
-            <button class="btn btn-outline btn-sm" onclick="app.toggleSnapshotResync()" title="Toggle auto snapshot resync">
-              Auto Resync: ${this.autoSnapshotResyncEnabled ? 'On' : 'Off'}
-            </button>
-            <button class="btn btn-outline btn-sm" id="quick-trade-mode-btn" onclick="quickOrder.toggleQuickTradeMode()" title="When off (default), Buy/Sell asks for confirmation before firing a live order. Turn on to skip the confirmation once you've verified your setup.">
-              Quick Trade Mode: ${window.quickOrder && quickOrder.isQuickTradeMode() ? 'On' : 'Off'}
-            </button>
-            <button class="btn-icon" onclick="app.renderWatchlistsView()" title="Refresh data">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h4M20 20v-5h-4M5 9a7 7 0 0112-4M19 15a7 7 0 01-12 4" />
-              </svg>
-            </button>
-            <button class="btn-icon" onclick="app.togglePositionsPanel()" title="Toggle positions panel" id="toggle-positions-btn">
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2-2v2m8 0V6a2 2 0 012 2v6a2 2 0 01-2 2H8a2 2 0 01-2-2V8a2 2 0 012-2h8z" />
-              </svg>
+            <button class="btn btn-outline btn-sm" onclick="app.togglePositionsPanel()" title="Show or hide your open positions" id="toggle-positions-btn">
+              Open positions
             </button>
             <button class="btn btn-buy btn-compact" onclick="app.showAddWatchlistModal()">
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
@@ -306,7 +291,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       for (const wlId of expandedIds) {
         await this.updateWatchlistQuotes(wlId, { force: true });
       }
-      Utils.showToast('Quotes resynced from snapshots', 'success');
     } catch (error) {
       console.error('Failed to resync quotes', error);
       Utils.showToast('Failed to resync quotes', 'error');
@@ -332,7 +316,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     this.stopSnapshotResync();
     // Only start for targeted views
     if (!['watchlists', 'positions'].includes(viewName)) return;
-    if (!this.autoSnapshotResyncEnabled) return;
     const intervalMs = 60000; // 60s gentle resync
     this.snapshotResyncInterval = setInterval(() => {
       // Avoid hammering while paused or busy

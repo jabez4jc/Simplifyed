@@ -33,7 +33,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           <div class="ops-title-wrap">
             <p class="ops-kicker">Tradebook</p>
             <h2 class="ops-title">Trades</h2>
-            <p class="ops-subtitle">Live tradebook snapshots grouped by instance with auto-refresh.</p>
+            <p class="ops-subtitle">Today's fills at each broker. Click an instance to see its trades.</p>
           </div>
           <div class="ops-controls">
             <span id="trades-last-updated" class="ops-meta">Waiting for updates…</span>
@@ -133,7 +133,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           <div class="ops-section-header">
             <div>
               <h3 class="ops-section-title">Live Execution</h3>
-              <p class="ops-section-subtitle">Tradebook entries from live instances.</p>
+              <p class="ops-section-subtitle">Instances trading real money.</p>
             </div>
             <span class="ops-count-pill">${liveCount} trades</span>
           </div>
@@ -145,7 +145,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           <div class="ops-section-header">
             <div>
               <h3 class="ops-section-title">Analyzer Mode</h3>
-              <p class="ops-section-subtitle">Simulation trades grouped by analyzer instances.</p>
+              <p class="ops-section-subtitle">Instances in analyzer (paper-trading) mode - no real money.</p>
             </div>
             <span class="ops-count-pill">${analyzerCount} trades</span>
           </div>
@@ -292,7 +292,8 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         : Utils.escapeHTML(latestTrade.timestamp || ''))
       : '-';
     const bodyRows = this.renderTradesRows(trades);
-    const shouldOpen = preserveOpen || trades.length > 0;
+    // Collapsed by default: thousands of analyzer fills made this page 20,000px tall.
+    const shouldOpen = preserveOpen;
 
     return `
       <details class="instance-card" data-instance-id="${instanceEntry.instance_id}" ${shouldOpen ? 'open' : ''}>
@@ -382,7 +383,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
 
   renderTradesTableShell(rowsHtml) {
     const tbody = rowsHtml.length
-      ? Utils.renderCappedRows(rowsHtml, { colspan: 8 })
+      ? Utils.renderCappedRows(rowsHtml, { colspan: 8, pageSize: 20 })
       : '<tr><td colspan="8" class="text-center text-neutral-500">No trades</td></tr>';
     return `
       <div class="table-container overflow-x-auto">
