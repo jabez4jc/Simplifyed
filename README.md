@@ -9,7 +9,7 @@ Simplifyed Admin is the control plane for running multiple OpenAlgo broker insta
 - **Unified dashboard** – Collapsible navigation, stacked watchlists, help affordances, and quick access to positions and orders.
 - **Buyer/Writer options workflow** – FLOAT_OFS strike selection, operating‑mode toggles, expiry management, option preview with auto‑resolved CE/PE symbols.
 - **Shared market‑data feed** – Quotes, positions, and funds are polled once per interval and cached for every admin session.
-- **Charting** – Historical candles per watchlist symbol (TradingView Lightweight Charts, self-hosted), with a candle cache that keeps chart traffic off the live trading rate limit and keeps charts readable during broker blackout windows.
+- **Charting** – Historical candles per watchlist symbol (TradingView Lightweight Charts, self-hosted), with a candle cache that keeps chart traffic off the live trading rate limit and keeps charts readable while a broker is unreachable.
 - **Multi-leg strategies & GTT** – Webhook-triggerable strategies with per-leg risk config, exit orders tracked as GTT triggers.
 - **SQLite + services layer** – Instruments cache, option chain builder, expiry calendar, quick‑order execution engine, and health monitoring. One embedded database file, no external DB service.
 - **Local email/password auth** – Built into the app, no external identity provider. `POST /api/v1/auth/register` bootstraps the first admin and then closes itself; further accounts are created by an admin under Settings → Access Control, with role-based permissions.
@@ -26,10 +26,10 @@ Simplifyed Admin is the control plane for running multiple OpenAlgo broker insta
 │   ├── src/                    # Express server, routes, services, integrations
 │   ├── migrations/             # SQLite migrations (single squashed 000_initial_schema.js)
 │   ├── scripts/                # Utility scripts (imports, maintenance)
-│   ├── Test/                   # node:test unit/integration tests
+│   ├── Test/                   # node:test: unit + services (offline logic), integration + live (real brokers)
+│   ├── e2e/                    # Playwright browser tests against the real brokers
 │   ├── package.json            # Backend dependencies + scripts
 │   └── server.js               # Entry point (starts feed service + Express)
-├── import-instruments*.sh/py   # Helpers for seeding instruments cache
 ├── install.sh / uninstall-instance.sh  # Ubuntu production install/uninstall (Nginx + systemd + Let's Encrypt)
 └── README.md                   # This file
 ```
@@ -86,16 +86,15 @@ npm install
 cp .env.example .env
 ```
 
-`.env.example` documents every supported key. Two are **required** - the server exits at startup if either is missing:
+`.env.example` documents every supported key. One is **required** - the server exits at startup without it:
 
 ```
-SESSION_SECRET=   # signs the session cookie used for WebSocket gateway auth
-JWT_SECRET=       # signs local email/password login tokens
+JWT_SECRET=       # signs login tokens (REST and the WebSocket gateway)
 ```
 
-Generate each with `openssl rand -hex 32`. Everything else has a working default.
+Generate it with `openssl rand -hex 32`. Everything else has a working default.
 
-One more key is worth setting deliberately: `WEBHOOK_TOKEN` is the *only* auth on the TradingView broadcast endpoint, which places live orders. Leave it empty and the endpoint rejects everything; set it and treat it as a trading credential.
+One more key is worth setting deliberately: `WEBHOOK_TOKEN` is the *only* auth on the TradingView broadcast endpoint, which places live orders. Leave it empty and the endpoint rejects everything; set it and treat it as a trading credential. To replace it later, use **Settings → Access Control → Rotate token** - the new token takes effect immediately and overrides the `.env` value from then on.
 
 #### 4. Run migrations
 
@@ -153,34 +152,55 @@ npm run set-password -- you@example.com new-password
 | `npm run migrate`       | Runs pending SQLite migrations (`backend/migrations`). |
 | `npm run migrate:rollback` | Rolls back the most recently applied migration. |
 | `npm run build:css`     | Builds Tailwind/DaisyUI CSS for `public/css`. |
-| `npm test`              | Runs the full `Test/` suite (`node --test`). |
-| `npm run test:unit` | Runs just `Test/unit`. |
+| `npm test`              | Offline logic tests, then the integration tests against the real brokers. |
+| `npm run test:logic`    | `Test/unit` + `Test/services` - offline, no broker. |
+| `npm run test:unit`     | Just `Test/unit`. |
+| `npm run test:integration` | `Test/integration` - every route and flow on Jz Kotak, Jz Fyers and Jabez Crypto (analyzer mode), one file at a time. |
+| `npm run test:e2e`      | Playwright browser tests on a copy of those three instances (port 3111). |
+| `npm run test:live`     | Live order tests on all five instances, including Maha and Ana. |
+| `npm run test:all`      | `npm test`, then `npm run test:e2e`. |
 | `npm run lint` / `npm run format` | ESLint / Prettier over `src/`. |
+
+Every test that touches a broker uses the real instances in `database/simplifyed.db` (copied, never written), confirms analyzer mode at the broker before any order, and closes everything it opened. There is no fake broker. See [ARCHITECTURE.md §13.5](ARCHITECTURE.md) for the rules.
+
+---
+
+## Using the Dashboard
+
+| Page | What it is for |
+| --- | --- |
+| **Dashboard** | Totals for real-money and simulated (analyzer) accounts: P&L, trades, turnover, balance. |
+| **Instances** | Your OpenAlgo accounts. Add one (Test Connection detects the broker), edit, switch between Analyzer and Live, set session target/max loss and a quantity multiplier. |
+| **Watchlists** | Symbols you trade, mapped to the instances that should receive the orders. Expand a row to trade it; set targets and stop-losses in points or % of entry. A *broadcast* watchlist shows the TradingView webhook URL to paste into an alert. |
+| **Chart** | Candles for any watchlist symbol, with indicators, drawing tools and order entry. |
+| **Positions** | Open positions per instance, with exit buttons. |
+| **Orders** | The live order book per instance, and one Order history of everything this app sent (filter by instance and status; "From" shows Watchlist, Strategy, Webhook, Manual or Test). |
+| **Trades** | Fills per instance. |
+| **Strategies** | Multi-leg strategies: add legs, Execute on all mapped instances, Exit All, or trigger from TradingView. |
+| **Daily P&L** | End-of-day P&L snapshots. |
+| **Notifications** | Health and system alerts. |
+| **Settings** | *General*: order costs, trading hours, and two broker limits (orders per second, response timeout). *Access Control*: users, roles and the webhook token. *Data Management*: instruments and CSV import/export. *System Status*: health. |
+
+**Kill switch** (top bar, red): after a confirmation, it cancels every pending order, closes every open position on every instance (live and analyzer, with LIMIT orders), and switches every instance to analyzer mode. Going back to live is manual, per instance. If a live instance still has positions it cannot close, it is left live and named in the result so you can close them at the broker.
+
+Indian exchanges only ever receive LIMIT orders (SEBI); a "market" order is priced from live depth or quotes. Crypto takes MARKET unless you give a price.
 
 ---
 
 ## Common Tasks
 
-### Import instruments
+### Instruments (symbols and contracts)
 
-Use one of the helper scripts to populate the `instruments` table (required for option-chain resolution and symbol search). Example:
+The instruments cache fills itself: it is refreshed from a healthy instance when it goes stale, crypto contracts are refreshed daily at 17:31 IST, and expired contracts are dropped. To refresh by hand, use **Settings → Data Management** (fetch from an instance, or upload an OpenAlgo symbols CSV).
 
-```bash
-./import-instruments.sh --exchange NFO --instance-id 12
-```
+### Accounts
 
-### Seed settings/users
+The first admin is created with `POST /api/v1/auth/register` (it closes once any user exists); everyone else is added under **Settings → Access Control**. A lost password is reset there by an admin, or on the server with `npm run set-password -- <email> <new-password>`.
 
-If you need default settings or an admin account, add seed data through migrations or SQLite CLI:
+### Caches
 
-```bash
-sqlite3 backend/database/simplifyed.db ".tables"
-```
-
-### Rebuild/refresh caches
-
-- **Market data feed** starts automatically (quotes/positions/funds). Restart the server if you change feed configuration.
-- **Expiry cache**: schedule auto-refresh via `expiry-management.service` or trigger manually via the `/symbols/expiry` route with `instanceId`.
+- **Market data feed** starts automatically (quotes/positions/funds) after the first login. Its intervals are under Settings → Advanced → Market data.
+- **Expiries** are read from the instruments cache; `/symbols/expiry?...&instanceId=` fetches them from the broker when the cache has none.
 
 ### Uninstall an instance
 
@@ -204,9 +224,9 @@ sudo ./uninstall-instance.sh --dir /opt/simplifyed-dev
 | Symptom | Fix |
 | ------- | --- |
 | `SQLITE_ERROR: no such table: ...` on startup | Run `npm run migrate` to create the expected schema. |
-| Quotes or positions missing | Ensure at least one watchlist is expanded. Verify the market-data instance role is set (primary/secondary) and that the shared feed is running (check logs). |
+| Quotes or positions missing | Tick "Use this instance for market data" on at least one healthy instance (Instances → Edit), and check the feed status pill in the top bar. |
 | Options quick order fails with “Symbol does not support options trading” | Edit the watchlist symbol and enable `tradable_options`, or ensure the underlying is mapped in the instruments cache. |
-| Unable to see options expiries | Refresh instruments cache (import script) or call `/symbols/expiry?symbol=...&instanceId=...` once to seed the DB. |
+| Unable to see options expiries | Refresh the instruments cache under Settings → Data Management. |
 
 Logs stream to stdout via Winston; check the console for `[info]`/`[warn]`/`[error]` entries. Market-data feed events also log each refresh cycle.
 

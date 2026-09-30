@@ -975,7 +975,7 @@ class InstrumentsService {
   }
 
   /**
-   * Get market data instance (primary admin > secondary admin ONLY)
+   * Instance to fetch instruments from: the one asked for, else the market-data pool, else any healthy one
    * @private
    */
   async _getMarketDataInstance(instanceId) {
@@ -1509,5 +1509,4 @@ class InstrumentsService {
 }
 
 export default new InstrumentsService();
-export { InstrumentsService, SUPPORTED_EXCHANGES, CRYPTO_EXCHANGES };
-export const ALL_EXCHANGES = [...SUPPORTED_EXCHANGES, ...CRYPTO_EXCHANGES];
+export { SUPPORTED_EXCHANGES };

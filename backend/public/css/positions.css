@@ -48,23 +48,6 @@
   opacity: 0.8;
 }
 
-.toggle-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.25rem;
-  height: 1.25rem;
-  border-radius: 9999px;
-  border: 1px solid var(--color-neutral-300);
-  color: var(--color-neutral-600);
-  font-size: var(--font-size-xs);
-  transition: transform 0.2s ease;
-}
-
-.toggle-icon.rotate-90 {
-  transform: rotate(90deg);
-}
-
 .instance-name {
   font-size: var(--font-size-base);
   font-weight: 600;

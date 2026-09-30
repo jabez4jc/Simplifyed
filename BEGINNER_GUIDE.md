@@ -393,15 +393,19 @@ sudo journalctl -u simplifyed -n 50
 ### 1. Add Your First OpenAlgo Instance
 
 1. Log in to your dashboard
-2. Click "Instances" or "Add Instance"
-3. Enter your OpenAlgo broker details
-4. Save
+2. Open **Instances** and click **Add Instance**
+3. Enter a name, your OpenAlgo host URL and API key
+4. Click **Test Connection** - it fills in the broker for you
+5. Click **Add Instance**
+
+New instances should stay in **Analyzer** (simulated) mode until you have tried a few orders.
 
 ### 2. Create Watchlists
 
-1. Go to "Watchlists"
-2. Click "Create New Watchlist"
-3. Add symbols you want to track
+1. Go to **Watchlists** and click **Add Watchlist**
+2. Click the watchlist's **Instances** button and tick the accounts that should receive its orders
+3. Click **Add Symbol**, search (e.g. `SBIN`, `NIFTY`, `BTCUSD`) and pick a result
+4. Expand a row to trade it; **Edit** sets targets and stop-losses in points or % of entry
 
 ### 3. Add Your Team
 
@@ -413,7 +417,7 @@ Other people can't sign themselves up - an admin creates each account:
 
 Roles decide what someone can do. Until you assign one, that person can log in but only sees an "access pending" screen - so creating the account and assigning the role are both needed.
 
-Ask them to change the starting password after their first login (**Settings**, or `POST /api/v1/auth/change-password`).
+Ask them to change the starting password after their first login (`POST /api/v1/auth/change-password`). If someone forgets theirs, an admin can reset it under **Settings → Access Control**.
 
 ### 4. Forgot Your Password?
 

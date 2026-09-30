@@ -13,6 +13,7 @@ import telegramService from './telegram.service.js';
 import limitPriceService from './limit-price.service.js';
 import pnlSnapshotService from './pnl-snapshot.service.js';
 import brokerCapabilitiesService from './broker-capabilities.service.js';
+import { isDerivativeExchange, isCryptoExchange } from '../utils/broker-type.util.js';
 import {
   NotFoundError,
   ValidationError,
@@ -26,7 +27,69 @@ import {
   parseIntSafe,
 } from '../utils/sanitizers.js';
 
+/** Nearest whole tick; 0 stays 0 (no price / no trigger). Two decimals when the tick is unknown. */
+function roundToNearestTick(value, tick) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return n;
+  if (!Number.isFinite(tick) || tick <= 0) return Number(n.toFixed(2));
+  const decimals = (String(tick).split('.')[1] || '').length;
+  return Number((Math.round(n / tick) * tick).toFixed(decimals));
+}
+
 class OrderService {
+  /**
+   * Move a resting order to a new price - the chart's drag of an order line. A LIMIT moves its
+   * limit; a stop moves its trigger and keeps its limit the same distance away (an SL-M, which
+   * Indian exchanges never receive, is re-converted to SL exactly as at placement).
+   */
+  async modifyOrder(orderId, { price } = {}) {
+    const order = await db.get('SELECT * FROM watchlist_orders WHERE id = ?', [orderId]);
+    if (!order) throw new NotFoundError('Order');
+    if (!['pending', 'open'].includes(order.status)) {
+      throw new ValidationError(`Cannot move an order that is ${order.status}`);
+    }
+    if (!order.order_id) throw new ValidationError('The broker never acknowledged this order');
+    const instance = await db.get('SELECT * FROM instances WHERE id = ?', [order.instance_id]);
+    if (!instance) throw new NotFoundError('Instance');
+
+    const tick = await limitPriceService.resolveTickSize(order.exchange, order.symbol);
+    const target = roundToNearestTick(parseFloatSafe(price, null), tick);
+    if (!(target > 0)) throw new ValidationError('A positive price is required');
+
+    const type = String(order.order_type || '').toUpperCase();
+    let payload = {
+      strategy: instance.strategy_tag || 'default',
+      exchange: order.exchange,
+      symbol: order.symbol,
+      action: order.side,
+      orderid: order.order_id,
+      product: order.product_type,
+      quantity: String(order.quantity),
+      disclosed_quantity: '0',
+    };
+    if (type === 'LIMIT') {
+      payload = { ...payload, pricetype: 'LIMIT', price: target, trigger_price: 0 };
+    } else if (type === 'SL') {
+      const gap = (Number(order.price) || 0) - (Number(order.trigger_price) || 0);
+      payload = { ...payload, pricetype: 'SL', trigger_price: target, price: roundToNearestTick(target + gap, tick) };
+    } else if (type === 'SL-M') {
+      payload = { ...payload, pricetype: 'SL-M', trigger_price: target, price: 0 };
+      if (!isCryptoExchange(order.exchange)) {
+        payload = await orderPlacementService._convertStopMarketToStopLimit(payload, { tickSize: tick });
+      }
+    } else {
+      throw new ValidationError('Only limit and stop orders can be moved');
+    }
+
+    await openalgoClient.modifyOrder(instance, payload);
+    await db.run(
+      'UPDATE watchlist_orders SET price = ?, trigger_price = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [Number(payload.price) || 0, Number(payload.trigger_price) || 0, orderId]
+    );
+    log.info('Order moved', { orderId, symbol: order.symbol, type, price: payload.price, trigger: payload.trigger_price });
+    return db.get('SELECT * FROM watchlist_orders WHERE id = ?', [orderId]);
+  }
+
   /**
    * Place order using placesmartorder (position-aware)
    * @param {Object} params - Order parameters
@@ -72,8 +135,14 @@ class OrderService {
 
       // Allow analyzer mode instances to place orders
 
+      // No target position given (the chart sends none): work it out from THIS instance's own
+      // position below. A target computed by the caller from positions summed across instances
+      // over-sized every instance that held less than the total.
+      const ownTarget = params.position_size === undefined || params.position_size === null
+        || params.position_size === '';
+
       // Validate required fields
-      const normalized = this._normalizeOrderData(params);
+      const normalized = this._normalizeOrderData(ownTarget ? { ...params, position_size: 0 } : params);
       const instanceMultiplier = Math.min(
         Math.max(parseIntSafe(instance.multiplier, 1), 1),
         999
@@ -81,6 +150,19 @@ class OrderService {
       if (instanceMultiplier !== 1) {
         normalized.quantity = normalized.quantity * instanceMultiplier;
         normalized.position_size = normalized.position_size * instanceMultiplier;
+      }
+      // A resting order (a price the operator chose) is a plain order, not a position target -
+      // see the dispatch below - so it needs no position read.
+      const resting = ['LIMIT', 'SL', 'SL-M'].includes(normalized.pricetype)
+        && (normalized.price > 0 || normalized.trigger_price > 0);
+      if (ownTarget && !resting) {
+        const held = await this._getLivePosition(instance, normalized);
+        if (held === null) {
+          throw new ValidationError(`Could not read ${instance.name}'s position for ${normalized.symbol} - order not sent`);
+        }
+        normalized.position_size = normalized.action === 'BUY'
+          ? held + normalized.quantity
+          : held - normalized.quantity;
       }
 
       let bufferPoints = parseFloatSafe(params.limit_buffer_points, null);
@@ -123,6 +205,11 @@ class OrderService {
         : await brokerCapabilitiesService.supportsMarketOrders(instance.broker, normalized.exchange);
 
       if (callerChosePrice) {
+        // The price is the operator's; only its tick is ours. A click on the chart lands
+        // between ticks (64,190.76), and the exchange rejects an off-tick price.
+        const tick = await limitPriceService.resolveTickSize(normalized.exchange, normalized.symbol, tickSize);
+        normalized.price = roundToNearestTick(normalized.price, tick);
+        normalized.trigger_price = roundToNearestTick(normalized.trigger_price, tick);
         log.info('Honouring caller-specified resting order', {
           symbol: normalized.symbol,
           pricetype: normalized.pricetype,
@@ -149,8 +236,12 @@ class OrderService {
       finalOrderType = normalized.pricetype;
       finalOrderPrice = normalized.price;
 
-      const currentPosition = await this._getLivePosition(instance, normalized);
-      const repeatUntilClosed = this._shouldRepeatToTarget(
+      const currentPosition = callerChosePrice ? null : await this._getLivePosition(instance, normalized);
+      // A resting order at a price the operator chose must REST. The retry service exists to
+      // chase fill-now LIMIT orders: it cancels an unfilled one and re-places it nearer the
+      // market, which turned a chart "Buy Limit @ X" below the market into a fill at market (or
+      // a cancellation) within seconds.
+      const repeatUntilClosed = !callerChosePrice && this._shouldRepeatToTarget(
         currentPosition,
         normalized.position_size
       );
@@ -177,7 +268,13 @@ class OrderService {
         quantity: normalized.quantity,
       });
 
-      const response = await orderPlacementService.placeSmartOrder(instance, orderData, {
+      // A price the operator chose goes out as a plain resting order (placeorder). As a smart
+      // order it was a position target: OpenAlgo's analyzer filled a buy limit placed at half the
+      // market on the spot, the placement queue could merge two limits on one symbol into one,
+      // and the retry service chased or cancelled it. placeorder rests where it was put.
+      const response = callerChosePrice
+        ? await orderPlacementService.placeRestingOrder(instance, orderData, { request_type: 'MANUAL_ORDER', correlation_id, tickSize })
+        : await orderPlacementService.placeSmartOrder(instance, orderData, {
         request_type: 'MANUAL_ORDER',
         base_symbol: normalized.symbol,
         trade_mode: 'DIRECT',
@@ -189,6 +286,7 @@ class OrderService {
         repeatUntilClosed,
         ignoreSlippage: repeatUntilClosed,
         skipRateLimit: true,
+        skipRetry: callerChosePrice,
       });
 
       // Extract order ID from response
@@ -360,30 +458,6 @@ class OrderService {
 
   _normalizeProduct(product) {
     return normalizeProduct(product);
-  }
-
-  /**
-   * Place multiple orders (basket order)
-   * @param {Array} orders - Array of order parameters
-   * @returns {Promise<Array>} - Array of order results
-   */
-  async placeMultipleOrders(orders) {
-    const results = [];
-
-    for (const orderParams of orders) {
-      try {
-        const order = await this.placeOrder(orderParams);
-        results.push({ success: true, order });
-      } catch (error) {
-        results.push({
-          success: false,
-          error: error.message,
-          params: orderParams,
-        });
-      }
-    }
-
-    return results;
   }
 
   /**
@@ -615,8 +689,11 @@ class OrderService {
       }
 
       if (filters.status) {
-        query += ' AND wo.status = ?';
-        params.push(filters.status);
+        // Comma-separated means any of them: the chart asks for "open,pending" - a stop waiting
+        // for its trigger, and any order not yet synced from the broker, is 'pending'.
+        const statuses = String(filters.status).split(',').map((v) => v.trim()).filter(Boolean);
+        query += ` AND wo.status IN (${statuses.map(() => '?').join(', ')})`;
+        params.push(...statuses);
       }
 
       if (filters.symbol) {
@@ -851,12 +928,15 @@ class OrderService {
       normalized.position_size = positionSize;
     }
 
-    // Product
+    // Product. F&O takes MIS or NRML; CNC is delivery, which F&O does not have, so it becomes
+    // NRML - the same rule quick-order applies (_resolveProductForOrder), so the chart and the
+    // watchlist send the same product for the same choice.
     const product = sanitizeString(data.product || 'MIS').toUpperCase();
     if (!['MIS', 'CNC', 'NRML'].includes(product)) {
       errors.push({ field: 'product', message: 'Invalid product type' });
     } else {
-      normalized.product = product;
+      const fno = isDerivativeExchange(normalized.exchange) || isCryptoExchange(normalized.exchange); // Delta: futures/options only
+      normalized.product = product === 'CNC' && fno ? 'NRML' : product;
     }
 
     // Price type
@@ -896,4 +976,3 @@ class OrderService {
 
 // Export singleton instance
 export default new OrderService();
-export { OrderService };

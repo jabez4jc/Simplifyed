@@ -49,9 +49,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     `;
 
     await this.loadTrades(false, { ensureView: false });
-    if (!this.isPaused) {
-      this.tradesPollingInterval = setInterval(() => this.loadTrades(true), 5000);
-    }
+    this.tradesPollingInterval = setInterval(() => this.loadTrades(true), 5000);
   }
 
   async loadTrades(isAuto = false, options = {}) {
@@ -72,7 +70,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         liveInstances: merged.liveInstances,
         analyzerInstances: merged.analyzerInstances,
       };
-      this.tradesPayload = normalized;
       this.tradesLastUpdatedAt = normalized.fetchedAt || Date.now();
       this.renderTradesPanel(normalized);
       this.updateTradesLastUpdatedDisplay(this.tradesLastUpdatedAt);
@@ -203,84 +200,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     }).join('');
   }
 
-  ensureTradesLayout(panel) {
-    if (panel.dataset.initialized === 'true') return;
-    panel.innerHTML = `
-      <div class="space-y-3">
-        <div id="trades-summary"></div>
-        <div class="card">
-          <div class="tabs">
-            <button class="tab-button active" data-trades-tab="live" onclick="app.switchTradesTab('live')">
-              Live
-            </button>
-            <button class="tab-button" data-trades-tab="analyzer" onclick="app.switchTradesTab('analyzer')">
-              Analyzer
-            </button>
-          </div>
-          <div class="tab-content">
-            <div id="trades-tab-live" class="tab-panel"></div>
-            <div id="trades-tab-analyzer" class="tab-panel hidden"></div>
-          </div>
-        </div>
-      </div>
-    `;
-    panel.dataset.initialized = 'true';
-  }
-
-  updateTradesSummary(stats = {}) {
-    const totalTrades = stats.total_trades || 0;
-    const buyTrades = stats.total_buy_trades || 0;
-    const sellTrades = stats.total_sell_trades || 0;
-    const notional = stats.total_value || 0;
-    const summary = document.getElementById('trades-summary');
-    if (!summary) return;
-    summary.innerHTML = `
-      <div class="card bg-base-100 border border-base-200">
-        <div class="p-3">
-          <div class="grid grid-cols-3 gap-2">
-            <div class="border border-base-200 rounded-lg p-2 text-center">
-              <div class="text-sm text-neutral-600 mb-1">Total Trades</div>
-              <div class="text-3xl font-semibold">${totalTrades}</div>
-            </div>
-            <div class="border border-base-200 rounded-lg p-2 text-center">
-              <div class="text-sm text-neutral-600 mb-1">Buy / Sell</div>
-              <div class="text-2xl font-semibold">${buyTrades} / ${sellTrades}</div>
-            </div>
-            <div class="border border-base-200 rounded-lg p-2 text-center">
-              <div class="text-sm text-neutral-600 mb-1">Notional Value</div>
-              <div class="text-2xl font-semibold">${Utils.formatCurrency(notional)}</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  updateTradesSection(type, instances = []) {
-    const container = document.getElementById(type === 'live' ? 'trades-tab-live' : 'trades-tab-analyzer');
-    if (!container) return;
-    const title = type === 'live' ? 'Live Instances' : 'Analyzer Mode Instances';
-    const sorted = [...instances].sort((a, b) => (a.instance_name || '').localeCompare(b.instance_name || ''));
-    const totalTrades = sorted.reduce((acc, inst) => acc + (inst.trades?.length || 0), 0);
-
-    const tabButton = document.querySelector(`[data-trades-tab="${type}"]`);
-    if (tabButton) {
-      tabButton.textContent = `${type === 'live' ? 'Live' : 'Analyzer'} (${totalTrades})`;
-    }
-
-    const body = sorted.map(inst => {
-      this.tradesInstanceStore.set(String(inst.instance_id), inst.trades || []);
-      const isOpen = this.tradesExpanded.has(String(inst.instance_id));
-      return this.buildTradesInstance(inst, isOpen);
-    }).join('');
-    container.innerHTML = `
-      <div class="divide-y divide-base-200">
-        ${body || `<div class="p-3 text-sm text-neutral-500">No trades in this category.</div>`}
-      </div>
-    `;
-
-    this.attachTradesToggles(container);
-  }
 
   buildTradesInstance(instanceEntry, preserveOpen = false) {
     const trades = instanceEntry.trades || [];
@@ -298,6 +217,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     return `
       <details class="instance-card" data-instance-id="${instanceEntry.instance_id}" ${shouldOpen ? 'open' : ''}>
         <summary class="instance-card-header">
+        ${Utils.chevron()}
           <div class="instance-info">
             <div class="instance-title">${Utils.escapeHTML(instanceEntry.instance_name)}</div>
             <div class="instance-meta">
@@ -317,34 +237,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     `;
   }
 
-  switchTradesTab(tab) {
-    const tabs = document.querySelectorAll('[data-trades-tab]');
-    tabs.forEach((btn) => {
-      const isActive = btn.dataset.tradesTab === tab;
-      btn.classList.toggle('active', isActive);
-    });
-    const livePanel = document.getElementById('trades-tab-live');
-    const analyzerPanel = document.getElementById('trades-tab-analyzer');
-    if (livePanel && analyzerPanel) {
-      livePanel.classList.toggle('hidden', tab !== 'live');
-      analyzerPanel.classList.toggle('hidden', tab !== 'analyzer');
-    }
-  }
-
-  attachTradesToggles(container) {
-    const detailsList = container.querySelectorAll('details.instance-section');
-    detailsList.forEach(details => {
-      details.addEventListener('toggle', () => {
-        const instanceId = details.dataset.instanceId;
-        if (!instanceId) return;
-        if (details.open) {
-          this.tradesExpanded.add(String(instanceId));
-        } else {
-          this.tradesExpanded.delete(String(instanceId));
-        }
-      });
-    });
-  }
 
   renderTradesRows(trades = []) {
     return trades.map(trade => {

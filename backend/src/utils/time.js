@@ -27,23 +27,3 @@ export function toISTISOString(date = new Date()) {
   // IST offset is always +05:30 (no DST)
   return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}+05:30`;
 }
-
-/**
- * Return a display-friendly date-time string in IST.
- */
-export function formatIST(date = new Date(), options = {}) {
-  const base = {
-    timeZone: IST_TIMEZONE,
-    hour12: false,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    ...options,
-  };
-  return new Date(date).toLocaleString('en-US', base);
-}
-
-export const IST = IST_TIMEZONE;

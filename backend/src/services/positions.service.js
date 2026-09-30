@@ -403,38 +403,6 @@ class PositionsService {
     }
   }
 
-  /**
-   * Get positions for a specific instance
-   * @param {number} instanceId - Instance ID
-   * @param {Object} options - Options for filtering
-   * @returns {Promise<Object>} - Positions data
-   */
-  async getInstancePositions(instanceId, options = {}) {
-    try {
-      const instance = await db.get('SELECT * FROM instances WHERE id = ?', [instanceId]);
-
-      if (!instance) {
-        throw new Error(`Instance ${instanceId} not found`);
-      }
-
-      if (!instance.is_active) {
-        throw new Error(`Instance ${instanceId} is not active`);
-      }
-
-      const data = await this._fetchInstancePositions(instance, options.onlyOpen);
-
-      return {
-        instance_id: instance.id,
-        instance_name: instance.name,
-        broker: instance.broker,
-        health_status: instance.health_status,
-        ...data,
-      };
-    } catch (error) {
-      log.error('Failed to get instance positions', error, { instanceId });
-      throw error;
-    }
-  }
 }
 
 export default new PositionsService();

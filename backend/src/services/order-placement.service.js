@@ -131,6 +131,33 @@ class OrderPlacementService {
     return this._enqueuePlacement(instance, payload, context);
   }
 
+  /**
+   * A plain resting order at the caller's own price (placeorder). No position target, no
+   * coalescing with other orders for the symbol, no retry chase - it must stay where it was put.
+   * SEBI still applies: an SL-M for an Indian exchange goes out as SL, and the client refuses any
+   * MARKET there.
+   */
+  async placeRestingOrder(instance, payload, context = {}) {
+    orderValidation.validateSymbol(payload.symbol);
+    orderValidation.validateExchange(payload.exchange);
+    orderValidation.validateAction(payload.action);
+    const quantity = orderValidation.validateQuantity(payload.quantity, payload.action);
+    let order = { ...payload, quantity };
+    delete order.position_size;
+    let type = String(order.pricetype || '').toUpperCase();
+    if (type === 'SL-M' && requiresLimitOrders(order.exchange)) {
+      order = await this._convertStopMarketToStopLimit(order, context);
+      type = 'SL';
+    }
+    orderValidation.validatePrice(order.price, type);
+    log.info('[OrderPlacement] Dispatching resting placeorder', {
+      instance_id: instance?.id, symbol: order.symbol, exchange: order.exchange,
+      action: order.action, quantity: order.quantity, pricetype: type, price: order.price,
+      trigger_price: order.trigger_price, ...context,
+    });
+    return openalgoClient.placeOrder(instance, order);
+  }
+
   _enqueuePlacement(instance, payload, context = {}) {
     if (!instance?.id) {
       return Promise.reject(new ValidationError('Instance is required for order placement'));

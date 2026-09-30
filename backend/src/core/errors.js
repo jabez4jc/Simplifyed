@@ -94,14 +94,6 @@ export class ValidationError extends AppError {
   }
 }
 
-/**
- * Internal Server Error (500)
- */
-export class InternalError extends AppError {
-  constructor(message = 'Internal Server Error') {
-    super(message, 500);
-  }
-}
 
 /**
  * Database Error

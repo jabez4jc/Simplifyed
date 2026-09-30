@@ -23,25 +23,6 @@ class OptionGreeksService {
     });
   }
 
-  async getMultiGreeks(instanceId, { symbols, interestRate, expiryTime }) {
-    if (!Array.isArray(symbols) || !symbols.length) {
-      throw new ValidationError('symbols array is required');
-    }
-    if (symbols.length > 50) {
-      throw new ValidationError('symbols array supports at most 50 entries');
-    }
-    const instance = await this._getInstance(instanceId);
-    return openalgoClient.getMultiOptionGreeks(instance, {
-      symbols: symbols.map((s) => ({
-        symbol: s.symbol,
-        exchange: s.exchange,
-        underlying_symbol: s.underlyingSymbol || undefined,
-        underlying_exchange: s.underlyingExchange || undefined,
-      })),
-      interest_rate: interestRate,
-      expiry_time: expiryTime,
-    });
-  }
 
   async _getInstance(instanceId) {
     const instance = await db.get('SELECT * FROM instances WHERE id = ?', [instanceId]);

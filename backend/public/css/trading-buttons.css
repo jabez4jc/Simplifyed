@@ -520,31 +520,18 @@ input[type=reset].btn:not(:disabled) {
     background: #fff;
   }
 }
-.text-buy,
-.text-long {
+.text-buy {
   color: #1A5A45 !important;
 }
 
-.text-sell,
-.text-reduce {
-  color: #8B5A00 !important;
-}
-
-.text-short {
-  color: #8B3A00 !important;
-}
-
-.text-exit,
-.text-danger {
+.text-exit {
   color: #8B0000 !important;
 }
 
-.text-neutral,
-.text-muted {
+.text-neutral {
   color: #2C3E50 !important;
 }
 
-.text-edit,
 .text-info {
   color: #4A4A8B !important;
 }
@@ -554,16 +541,6 @@ input[type=reset].btn:not(:disabled) {
   color: #1A5A45 !important;
 }
 
-.bg-sell-light {
-  background-color: rgb(255, 228.3962616822, 188.8) !important;
-  color: #8B5A00 !important;
-}
-
-.bg-short-light {
-  background-color: rgb(255, 209.5196850394, 179) !important;
-  color: #8B3A00 !important;
-}
-
 .bg-exit-light {
   background-color: #ffcccc !important;
   color: #8B0000 !important;
@@ -571,36 +548,6 @@ input[type=reset].btn:not(:disabled) {
 
 .bg-neutral-light {
   background-color: rgb(210.576146789, 221.2128440367, 231.223853211) !important;
-  color: #2C3E50 !important;
-}
-
-.bg-info-light {
-  background-color: rgb(232.6886792453, 232.6886792453, 249.8113207547) !important;
-  color: #4A4A8B !important;
-}
-
-.bg-buy {
-  background-color: #7ED6B2 !important;
-  color: #1A5A45 !important;
-}
-
-.bg-sell {
-  background-color: #FFD494 !important;
-  color: #8B5A00 !important;
-}
-
-.bg-short {
-  background-color: #FFB380 !important;
-  color: #8B3A00 !important;
-}
-
-.bg-exit {
-  background-color: #FF9999 !important;
-  color: #8B0000 !important;
-}
-
-.bg-neutral {
-  background-color: #B8C9D9 !important;
   color: #2C3E50 !important;
 }
 
@@ -690,20 +637,12 @@ input[type=reset].btn:not(:disabled) {
   padding: 12px 16px;
   font-size: var(--font-size-sm);
 }
-.alert.alert-lg {
-  padding: 20px 24px;
-  font-size: var(--font-size-base);
-}
 .alert .alert-icon {
   margin-right: 12px;
   flex-shrink: 0;
 }
 .alert .alert-content {
   flex: 1;
-}
-.alert .alert-title {
-  font-weight: 600;
-  margin-bottom: 4px;
 }
 .alert .alert-close {
   margin-left: 12px;
@@ -719,21 +658,18 @@ input[type=reset].btn:not(:disabled) {
   opacity: 1;
 }
 
-.alert-buy,
 .alert-success {
   background-color: rgb(164.7, 226.3, 201.1);
   color: #1A5A45;
   border-left-color: #7ED6B2;
 }
 
-.alert-sell,
 .alert-warning {
   background-color: rgb(255, 228.3962616822, 188.8);
   color: #8B5A00;
   border-left-color: #FFD494;
 }
 
-.alert-exit,
 .alert-danger {
   background-color: #ffcccc;
   color: #8B0000;
@@ -746,52 +682,6 @@ input[type=reset].btn:not(:disabled) {
   border-left-color: #D4D4F5;
 }
 
-.alert-neutral {
-  background-color: rgb(210.576146789, 221.2128440367, 231.223853211);
-  color: #2C3E50;
-  border-left-color: #B8C9D9;
-}
-
-.status-indicator {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--font-size-base);
-  font-weight: 500;
-}
-.status-indicator::before {
-  content: "";
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-.status-indicator.status-buy::before {
-  background-color: #7ED6B2;
-}
-.status-indicator.status-sell::before {
-  background-color: #FFD494;
-}
-.status-indicator.status-exit::before {
-  background-color: #FF9999;
-}
-.status-indicator.status-neutral::before {
-  background-color: #B8C9D9;
-}
-.status-indicator.status-pulse::before {
-  animation: status-pulse 2s ease-in-out infinite;
-}
-
-@keyframes status-pulse {
-  0%, 100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.5;
-    transform: scale(1.2);
-  }
-}
 .tag {
   display: inline-block;
   padding: 4px 10px;
@@ -800,230 +690,21 @@ input[type=reset].btn:not(:disabled) {
   border-radius: 4px;
   line-height: 1.4;
 }
-.tag.tag-buy {
-  background-color: rgb(164.7, 226.3, 201.1);
-  color: #1A5A45;
-}
-.tag.tag-sell {
-  background-color: rgb(255, 228.3962616822, 188.8);
-  color: #8B5A00;
-}
-.tag.tag-exit {
-  background-color: #ffcccc;
-  color: #8B0000;
-}
-.tag.tag-neutral {
-  background-color: rgb(210.576146789, 221.2128440367, 231.223853211);
-  color: #2C3E50;
-}
 
 .highlight {
   padding: 2px 6px;
   border-radius: 4px;
   font-weight: 500;
 }
-.highlight.highlight-buy {
-  background-color: rgb(164.7, 226.3, 201.1);
-  color: #1A5A45;
-}
-.highlight.highlight-sell {
-  background-color: rgb(255, 228.3962616822, 188.8);
-  color: #8B5A00;
-}
-.highlight.highlight-short {
-  background-color: rgb(255, 209.5196850394, 179);
-  color: #8B3A00;
-}
-.highlight.highlight-exit {
-  background-color: #ffcccc;
-  color: #8B0000;
-}
-.highlight.highlight-neutral {
-  background-color: rgb(210.576146789, 221.2128440367, 231.223853211);
-  color: #2C3E50;
-}
-.highlight.highlight-info {
-  background-color: rgb(232.6886792453, 232.6886792453, 249.8113207547);
-  color: #4A4A8B;
-}
-
-.price-change {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-weight: 600;
-  font-size: var(--font-size-base);
-}
-.price-change.price-up {
-  color: #1A5A45;
-}
-.price-change.price-up::before {
-  content: "▲";
-  font-size: var(--font-size-3xs);
-}
-.price-change.price-down {
-  color: #8B0000;
-}
-.price-change.price-down::before {
-  content: "▼";
-  font-size: var(--font-size-3xs);
-}
-.price-change.price-neutral {
-  color: #2C3E50;
-}
-.price-change.price-neutral::before {
-  content: "▬";
-  font-size: var(--font-size-3xs);
-}
-
-.position-card {
-  padding: 16px;
-  border-radius: 8px;
-  border: 2px solid transparent;
-  background-color: #fff;
-}
-.position-card.position-long {
-  border-color: #7ED6B2;
-  background-color: rgb(164.7, 226.3, 201.1);
-}
-.position-card.position-short {
-  border-color: #FFB380;
-  background-color: rgb(255, 209.5196850394, 179);
-}
 
 .pnl {
   font-weight: 700;
   font-size: var(--font-size-lg);
 }
-.pnl.pnl-profit {
-  color: #1A5A45;
-}
-.pnl.pnl-loss {
-  color: #8B0000;
-}
-.pnl.pnl-neutral {
-  color: #2C3E50;
-}
-
-.pnl-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 12px;
-  border-radius: 12px;
-  font-weight: 600;
-  font-size: var(--font-size-base);
-}
-.pnl-badge.pnl-profit {
-  background-color: #7ED6B2;
-  color: #1A5A45;
-}
-.pnl-badge.pnl-loss {
-  background-color: #FF9999;
-  color: #8B0000;
-}
-
-.tooltip-container {
-  position: relative;
-  display: inline-block;
-}
-.tooltip-container .tooltip-text {
-  visibility: hidden;
-  position: absolute;
-  z-index: 1000;
-  bottom: 125%;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 8px 12px;
-  background-color: #2C3E50;
-  color: white;
-  font-size: var(--font-size-xs);
-  border-radius: 6px;
-  white-space: nowrap;
-  opacity: 0;
-  transition: opacity 0.2s ease-in-out;
-}
-.tooltip-container .tooltip-text::after {
-  content: "";
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  margin-left: -5px;
-  border-width: 5px;
-  border-style: solid;
-  border-color: #2C3E50 transparent transparent transparent;
-}
-.tooltip-container:hover .tooltip-text {
-  visibility: visible;
-  opacity: 1;
-}
-
-.tooltip-buy .tooltip-text {
-  background-color: #1A5A45;
-}
-.tooltip-buy .tooltip-text::after {
-  border-color: #1A5A45 transparent transparent transparent;
-}
-
-.tooltip-sell .tooltip-text {
-  background-color: #8B5A00;
-}
-.tooltip-sell .tooltip-text::after {
-  border-color: #8B5A00 transparent transparent transparent;
-}
-
-.tooltip-exit .tooltip-text {
-  background-color: #8B0000;
-}
-.tooltip-exit .tooltip-text::after {
-  border-color: #8B0000 transparent transparent transparent;
-}
-
-.table-row-buy {
-  background-color: rgba(126, 214, 178, 0.15);
-}
-.table-row-buy:hover {
-  background-color: rgba(126, 214, 178, 0.25);
-}
-
-.table-row-sell {
-  background-color: rgba(255, 212, 148, 0.15);
-}
-.table-row-sell:hover {
-  background-color: rgba(255, 212, 148, 0.25);
-}
-
-.table-row-exit {
-  background-color: rgba(255, 153, 153, 0.15);
-}
-.table-row-exit:hover {
-  background-color: rgba(255, 153, 153, 0.25);
-}
-
-.table-cell-buy {
-  color: #1A5A45;
-  font-weight: 600;
-}
-
-.table-cell-sell {
-  color: #8B5A00;
-  font-weight: 600;
-}
-
-.table-cell-exit {
-  color: #8B0000;
-  font-weight: 600;
-}
 
 /* The colours above are for light backgrounds; on the dark theme #8B0000 red and #2C3E50
    grey all but vanish, so P&L figures were unreadable. */
-[data-theme="dark"] .text-buy,
-[data-theme="dark"] .text-long { color: #4ade80 !important; }
-[data-theme="dark"] .text-sell,
-[data-theme="dark"] .text-reduce { color: #fbbf24 !important; }
-[data-theme="dark"] .text-short { color: #fb923c !important; }
-[data-theme="dark"] .text-exit,
-[data-theme="dark"] .text-danger { color: #f87171 !important; }
-[data-theme="dark"] .text-neutral,
-[data-theme="dark"] .text-muted { color: #cbd5e1 !important; }
-[data-theme="dark"] .text-edit,
+[data-theme="dark"] .text-buy { color: #4ade80 !important; }
+[data-theme="dark"] .text-exit { color: #f87171 !important; }
+[data-theme="dark"] .text-neutral { color: #cbd5e1 !important; }
 [data-theme="dark"] .text-info { color: #a5b4fc !important; }

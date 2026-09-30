@@ -3,9 +3,8 @@
  * Tracks and toggles an instance's OpenAlgo "analyzer" (sandbox) vs. live mode, including
  * the safe-switch workflow (close positions/cancel orders before switching to analyzer)
  * and session-reset bookkeeping on switch-back-to-live.
- * Extracted from instance.service.js - owns analyzerStatusCache. Depends on the core
- * instance.service.js singleton for getInstanceById/_hasColumn (CRUD + schema feature
- * detection stay there), and on instance-session.util.js for the session/time helpers
+ * Extracted from instance.service.js. Depends on the instance.service.js singleton for
+ * getInstanceById, and on instance-session.util.js for the session/time helpers
  * needed to reset session-baseline fields when switching to live.
  */
 
@@ -15,6 +14,7 @@ import config from '../core/config.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import { ValidationError } from '../core/errors.js';
 import instanceService from './instance.service.js';
+import quickOrderService from './quick-order.service.js';
 import { staggeredInstanceRequest } from '../utils/instance-request-throttle.util.js';
 import {
   nowInIST,
@@ -30,22 +30,6 @@ import {
 const DEFAULT_ANALYZER_TTL_MS = 60 * 1000;
 
 class InstanceAnalyzerService {
-  constructor() {
-    this.analyzerStatusCache = new Map();
-  }
-
-  getCachedAnalyzerStatus(instanceId) {
-    const entry = this.analyzerStatusCache.get(instanceId);
-    if (!entry) return null;
-    const ttl = config.instanceHealth?.analyzerCheckIntervalMs ?? DEFAULT_ANALYZER_TTL_MS;
-    if (Date.now() - entry.checkedAt > ttl) return null;
-    return entry.mode;
-  }
-
-  setCachedAnalyzerStatus(instanceId, mode) {
-    this.analyzerStatusCache.set(instanceId, { mode: !!mode, checkedAt: Date.now() });
-  }
-
   /**
    * Refresh analyzer mode status on a fixed cadence
    * @param {number} id - Instance ID
@@ -54,18 +38,12 @@ class InstanceAnalyzerService {
    */
   async refreshAnalyzerStatus(id, { force = false } = {}) {
     const instance = await instanceService.getInstanceById(id);
-    const hasAnalyzerCheckColumn = await instanceService._hasColumn('last_analyzer_check_at');
 
     if (!force) {
-      if (hasAnalyzerCheckColumn && instance.last_analyzer_check_at) {
+      if (instance.last_analyzer_check_at) {
         const lastCheck = Date.parse(instance.last_analyzer_check_at);
         const ttl = config.instanceHealth?.analyzerCheckIntervalMs ?? DEFAULT_ANALYZER_TTL_MS;
         if (!Number.isNaN(lastCheck) && Date.now() - lastCheck < ttl) {
-          return instance;
-        }
-      } else if (!hasAnalyzerCheckColumn) {
-        const cachedAnalyzerMode = this.getCachedAnalyzerStatus(id);
-        if (cachedAnalyzerMode !== null) {
           return instance;
         }
       }
@@ -74,16 +52,11 @@ class InstanceAnalyzerService {
     try {
       const analyzerStatus = await staggeredInstanceRequest(id, () => openalgoClient.getAnalyzerStatus(instance));
       const analyzerMode = analyzerStatus.analyze_mode || false;
-      this.setCachedAnalyzerStatus(id, analyzerMode);
 
-      let sql = 'UPDATE instances SET is_analyzer_mode = ?';
-      const params = [analyzerMode ? 1 : 0];
-      if (hasAnalyzerCheckColumn) {
-        sql += ', last_analyzer_check_at = CURRENT_TIMESTAMP';
-      }
-      sql += ' WHERE id = ?';
-      params.push(id);
-      await db.run(sql, params);
+      await db.run(
+        'UPDATE instances SET is_analyzer_mode = ?, last_analyzer_check_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [analyzerMode ? 1 : 0, id]
+      );
     } catch (error) {
       log.warn('Failed to refresh analyzer status', { id, error: error.message });
     }
@@ -105,49 +78,20 @@ class InstanceAnalyzerService {
       if (mode === true) {
         log.info('Safe-Switch: Starting Live → Analyzer workflow', { id });
 
-        // Execute closure steps, but always verify afterward even if cancellation fails
-        let closureError = null;
+        // Cancel first, so nothing fills after the book is flattened. Then close every position
+        // with LIMIT orders (SEBI) - never OpenAlgo's closeposition, which squares off at MARKET.
         try {
-          // Step 1: Close all positions
-          if (instance.strategy_tag) {
-            await openalgoClient.closePosition(instance, instance.strategy_tag);
-          }
-
-          // Step 2: Cancel all orders
-          if (instance.strategy_tag) {
-            await openalgoClient.cancelAllOrders(instance, instance.strategy_tag);
-          }
+          await openalgoClient.cancelAllOrders(instance, instance.strategy_tag || 'default');
         } catch (error) {
-          // Capture error but continue to verification
-          closureError = error;
-          log.warn('Safe-Switch: Error during closure workflow', {
-            id,
-            error: error.message,
-          });
+          log.warn('Safe-Switch: cancelling orders failed', { id, error: error.message });
         }
-
-        // Step 3: Verify no open positions (always executes)
-        const positions = await openalgoClient.getPositionBook(instance);
-        const openPositions = positions.filter(
-          (pos) => parseFloat(pos.quantity || pos.netqty || 0) !== 0
-        );
-
-        if (openPositions.length > 0) {
-          log.error('Safe-Switch: Cannot switch - positions still open', {
-            id,
-            open_positions: openPositions.length,
-          });
+        const { stillOpen, errors } = await quickOrderService.closeAllPositions(instance, { strategy: 'SAFE_SWITCH' });
+        if (stillOpen.length > 0) {
+          log.error('Safe-Switch: Cannot switch - positions still open', { id, open_positions: stillOpen.length });
           throw new ValidationError(
-            `Cannot switch to analyzer mode: ${openPositions.length} positions still open`
+            `Cannot switch to analyzer mode: still open - ${stillOpen.join(', ')}`
+            + (errors.length ? ` (${errors.join('; ')})` : '')
           );
-        }
-
-        // If closure had an error but positions are somehow closed, log warning
-        if (closureError) {
-          log.warn('Safe-Switch: Verification passed despite closure error', {
-            id,
-            original_error: closureError.message,
-          });
         }
 
         log.info('Safe-Switch: All positions closed', { id });
@@ -155,10 +99,8 @@ class InstanceAnalyzerService {
 
       // Toggle analyzer mode
       await openalgoClient.toggleAnalyzer(instance, mode);
-      this.setCachedAnalyzerStatus(id, mode);
 
       // Update database
-      const hasAnalyzerCheckColumn = await instanceService._hasColumn('last_analyzer_check_at');
       let sql = 'UPDATE instances SET is_analyzer_mode = ?, last_updated = CURRENT_TIMESTAMP';
       const params = [mode ? 1 : 0];
 
@@ -182,9 +124,7 @@ class InstanceAnalyzerService {
         params.push(baseline, sessionKey, 0, sessionKey);
       }
 
-      if (hasAnalyzerCheckColumn) {
-        sql += ', last_analyzer_check_at = CURRENT_TIMESTAMP';
-      }
+      sql += ', last_analyzer_check_at = CURRENT_TIMESTAMP';
       sql += ' WHERE id = ?';
       params.push(id);
       await db.run(sql, params);
@@ -202,4 +142,4 @@ class InstanceAnalyzerService {
 
 const instanceAnalyzerService = new InstanceAnalyzerService();
 export default instanceAnalyzerService;
-export { InstanceAnalyzerService, DEFAULT_ANALYZER_TTL_MS };
+export { DEFAULT_ANALYZER_TTL_MS };

@@ -229,10 +229,8 @@ class StrategyBuilder {
     return `
       <div class="strategy-row-wrapper${expired ? ' strategy-row-expired' : ''}" data-strategy-id="${strategy.id}">
         <div class="strategy-row">
-          <button class="btn-icon-compact" onclick="strategyBuilder.toggleLegs(${strategy.id}, ${watchlistId})" title="${isExpanded ? 'Collapse' : 'Expand'} legs">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="${isExpanded ? 'transform: rotate(90deg);' : ''}">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-            </svg>
+          <button class="btn-icon-compact" onclick="strategyBuilder.toggleLegs(${strategy.id}, ${watchlistId})" title="${isExpanded ? 'Collapse' : 'Expand'} legs" aria-expanded="${isExpanded}">
+            ${Utils.chevron()}
           </button>
           <div class="strategy-row__info">
             <span class="strategy-row__name">${Utils.escapeHTML(strategy.name)}</span>
@@ -283,14 +281,17 @@ class StrategyBuilder {
 
     // Decide from what is on screen: adding a leg records the strategy as expanded before the
     // list is shown, and trusting the set here collapsed a list that was never visible.
+    const toggle = document.querySelector(`[data-strategy-id="${strategyId}"] .strategy-row > button[aria-expanded]`);
     if (container.style.display !== 'none') {
       this.expandedStrategies.delete(strategyId);
       container.style.display = 'none';
+      toggle?.setAttribute('aria-expanded', 'false');
       return;
     }
 
     this.expandedStrategies.add(strategyId);
     container.style.display = '';
+    toggle?.setAttribute('aria-expanded', 'true');
     container.innerHTML = '<p class="text-neutral-600 text-sm p-2">Loading legs...</p>';
     await this._loadAndRenderLegs(strategyId, watchlistId);
   }
@@ -873,7 +874,7 @@ class StrategyBuilder {
         <label class="form-label">Exit Mechanism</label>
         <select id="leg-exit-mechanism-input" class="form-input">
           <option value="POLLING" ${leg.exit_mechanism !== 'GTT' ? 'selected' : ''}>App-managed (polling)</option>
-          <option value="GTT" ${leg.exit_mechanism === 'GTT' ? 'selected' : ''}>Broker GTT (requires NRML/CNC, not MIS)</option>
+          <option value="GTT" ${leg.exit_mechanism === 'GTT' ? 'selected' : ''}>Broker GTT (crypto only; NRML/CNC, not MIS - Indian exchanges use app-managed LIMIT exits)</option>
         </select>
       </div>
       <div class="form-group">

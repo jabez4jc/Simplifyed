@@ -80,18 +80,6 @@ const Utils = {
   },
 
   /**
-   * Format percentage
-   */
-  formatPercentage(value, decimals = 2) {
-    if (value === null || value === undefined) return '0%';
-
-    const num = parseFloat(value);
-    if (isNaN(num)) return '0%';
-
-    return `${num.toFixed(decimals)}%`;
-  },
-
-  /**
    * Format date/time
    */
   formatDateTime(dateString, includeTime = true) {
@@ -213,6 +201,7 @@ const Utils = {
     const closeBtn = document.createElement('button');
     closeBtn.className = 'alert-close';
     closeBtn.textContent = '×';
+    closeBtn.setAttribute('aria-label', 'Dismiss');
     closeBtn.onclick = () => toast.remove();
 
     toast.appendChild(iconDiv);
@@ -314,41 +303,6 @@ const Utils = {
   },
 
   /**
-   * Validate instance form data
-   */
-  validateInstanceData(data) {
-    const errors = [];
-
-    if (!data.name || data.name.trim() === '') {
-      errors.push({ field: 'name', message: 'Name is required' });
-    }
-
-    if (!data.host_url || data.host_url.trim() === '') {
-      errors.push({ field: 'host_url', message: 'Host URL is required' });
-    } else if (!this.isValidURL(data.host_url)) {
-      errors.push({ field: 'host_url', message: 'Invalid URL format' });
-    }
-
-    if (!data.api_key || data.api_key.trim() === '') {
-      errors.push({ field: 'api_key', message: 'API Key is required' });
-    }
-
-    return errors;
-  },
-
-  /**
-   * Validate URL format
-   */
-  isValidURL(string) {
-    try {
-      new URL(string);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  },
-
-  /**
    * Copy text to clipboard
    */
   async copyToClipboard(text) {
@@ -363,67 +317,12 @@ const Utils = {
   },
 
   /**
-   * Download data as JSON file
+   * The one expand/collapse indicator used app-wide: a right chevron that CSS turns down
+   * when its parent is open (aria-expanded="true", .is-open, or an open <details>).
    */
-  downloadJSON(data, filename) {
-    const blob = new Blob([JSON.stringify(data, null, 2)], {
-      type: 'application/json',
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  },
-
-  /**
-   * Parse CSV string
-   */
-  parseCSV(csvString) {
-    const lines = csvString.trim().split('\n');
-    const headers = lines[0].split(',').map(h => h.trim());
-    const data = [];
-
-    for (let i = 1; i < lines.length; i++) {
-      const values = lines[i].split(',').map(v => v.trim());
-      const row = {};
-      headers.forEach((header, index) => {
-        row[header] = values[index];
-      });
-      data.push(row);
-    }
-
-    return data;
-  },
-
-  /**
-   * Generate CSV from array of objects
-   */
-  generateCSV(data, headers = null) {
-    if (!data || data.length === 0) return '';
-
-    const keys = headers || Object.keys(data[0]);
-    const csvRows = [];
-
-    // Header row
-    csvRows.push(keys.join(','));
-
-    // Data rows
-    for (const row of data) {
-      const values = keys.map(key => {
-        const value = row[key];
-        // Escape commas and quotes
-        return typeof value === 'string' && value.includes(',')
-          ? `"${value.replace(/"/g, '""')}"`
-          : value;
-      });
-      csvRows.push(values.join(','));
-    }
-
-    return csvRows.join('\n');
+  chevron() {
+    return '<svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">'
+      + '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>';
   },
 
   /**

@@ -72,10 +72,9 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
                       data-symbol-id="${sym.id}"
                       ${sym.is_expired ? 'disabled aria-disabled="true"' : `data-toggle-symbol="${sym.id}"`}
                       type="button"
+                      aria-expanded="false"
                       title="${sym.is_expired ? 'Expired - no trading' : 'Expand trading controls'}">
-                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                      </svg>
+                      ${Utils.chevron()}
                     </button>
                   </td>
                   <td class="col-symbol">${Utils.escapeHTML(sym.symbol)}</td>
@@ -241,7 +240,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     }
 
     table._expansionListener = (event) => {
-      const button = event.target.closest('.btn-toggle-expansion, .btn-expand-compact');
+      const button = event.target.closest('.btn-expand-compact');
       if (button) {
         const wlId = parseInt(button.dataset.watchlistId);
         const symId = parseInt(button.dataset.symbolId);
@@ -254,18 +253,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
   }
 
   handleSymbolToggle(watchlistId, symbolId) {
-    // Best-effort cache warmup for quotes/positions to reduce first-click latency
-    try {
-      const row = document.querySelector(`tr[data-symbol-id="${symbolId}"]`);
-      const symbol = row?.dataset?.symbol;
-      const exchange = row?.dataset?.exchange;
-      if (symbol && exchange && window.api && typeof api.getMarketData === 'function') {
-        api.getMarketData(exchange, symbol).catch(() => { });
-      }
-    } catch (_) {
-      // non-blocking
-    }
-
     const handler = window.quickOrder;
     if (!handler || typeof handler.toggleRowExpansion !== 'function') {
       console.error('[Watchlist] quickOrder handler not ready', { watchlistId, symbolId });
@@ -291,7 +278,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
   async startWatchlistPolling(watchlistId) {
     const watchlist = (this.watchlists || []).find((w) => w.id === watchlistId);
     if (this.isBroadcastWatchlist(watchlist) || this.isStrategyWatchlist(watchlist)) return;
-    if (this.isPaused) return;
     // Stop existing poller if any
     this.stopWatchlistPolling(watchlistId);
     if (this.isWsStreamingActive()) {
@@ -307,7 +293,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
 
     // Start 10-second polling
     const intervalId = setInterval(async () => {
-      if (this.isPaused) return;
       await this.updateWatchlistQuotes(watchlistId);
     }, 10000);
 
@@ -391,9 +376,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
   }
 
   requestWatchlistRefresh({ showLoader = false, force = false } = {}) {
-    if (this.isPaused && !force) {
-      return;
-    }
     if (force) {
       this.refreshWatchlistPositions({ showLoader, force: true });
       return;
@@ -403,7 +385,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
   }
 
   async updateWatchlistQuotes(watchlistId, { force = false } = {}) {
-    if (this.isPaused && !force) return;
     if (this.isWsStreamingActive() && !force) {
       return;
     }
@@ -651,13 +632,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     this.watchlistSymbolIndexByWatchlist.set(watchlistId, newEntries);
   }
 
-  chunkArray(arr = [], size = 5) {
-    const chunks = [];
-    for (let i = 0; i < arr.length; i += size) {
-      chunks.push(arr.slice(i, i + size));
-    }
-    return chunks;
-  }
 
   /**
    * Update quote display for a specific symbol

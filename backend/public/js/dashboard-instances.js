@@ -62,7 +62,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         instance.name,
         instance.broker,
         instance.host_url,
-        instance.market_data_role,
       ].join(' ').toLowerCase();
       return haystack.includes(searchValue);
     });

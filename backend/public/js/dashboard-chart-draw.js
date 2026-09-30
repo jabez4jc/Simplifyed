@@ -103,12 +103,10 @@ function toolGlyph(toolId) {
 Object.assign(DashboardApp.prototype, {
   drawState() {
     if (!this._draw) {
-      let prefs = {};
-      try { prefs = JSON.parse(localStorage.getItem('chart-draw-prefs') || '{}'); } catch (_) { /* corrupt */ }
       this._draw = {
         controller: null,
         tool: null,
-        colour: prefs.colour || '#3B82F6',
+        colour: '#3B82F6',
         hidden: false,
         locked: false,
         flyout: null,
@@ -117,10 +115,6 @@ Object.assign(DashboardApp.prototype, {
     return this._draw;
   },
 
-  saveDrawPrefs() {
-    const d = this.drawState();
-    try { localStorage.setItem('chart-draw-prefs', JSON.stringify({ colour: d.colour })); } catch (_) { /* private mode */ }
-  },
 
   /** Drawings are per instrument - a trend line on NIFTY means nothing on BTC. */
   drawStorageKey() {
@@ -266,14 +260,7 @@ Object.assign(DashboardApp.prototype, {
    * more than one there, so this removes the list. `selected()` (the first id picked) would
    * delete one of them and leave the rest looking selected but untouched.
    */
-  deleteSelectedDrawing() {
-    const controller = this.drawState().controller;
-    const ids = controller?.selection() || [];
-    if (!ids.length) return;
-    controller.removeMany(ids);
-    this.saveDrawings();
-  },
-
+ 
   async clearDrawings() {
     const controller = this.drawState().controller;
     if (!controller) return;

@@ -1,14 +1,13 @@
 import assert from 'assert';
-import test, { before, after, beforeEach } from 'node:test';
+import test, { before, after, beforeEach, afterEach } from 'node:test';
 import request from 'supertest';
 
 import { useTestDb, truncate } from '../helpers/db.js';
 import { buildApp } from '../helpers/app.js';
 import { asAdmin, asMonitor, withPermissions, withPermissionsExcept, bearer } from '../helpers/auth.js';
-import { makeInstance, setMarketOrderSupport } from '../helpers/fixtures.js';
-import { installFakeOpenAlgo } from '../helpers/fake-openalgo.js';
+import { makeInstance } from '../helpers/fixtures.js';
+import { watchBroker, realInstance, realCredentials, CRYPTO, KOTAK, nseOpen } from '../helpers/real-broker.js';
 import { STATUS } from '../helpers/http.js';
-import db from '../../src/core/database.js';
 import orderRoutes from '../../src/routes/v1/orders.js';
 
 let app;
@@ -17,23 +16,27 @@ let broker;
 before(async () => {
   await useTestDb('orders');
   app = buildApp(orderRoutes, '/api/v1/orders');
-  broker = installFakeOpenAlgo();
-
-  // Fixture instances are 'zerodha'. Declaring it market-order-capable keeps these tests on the
-  // order-routing path instead of the quote-synthesis path; the synthesis path has its own test
-  // below, using a broker deliberately left out of this map.
-  await setMarketOrderSupport({ zerodha: true });
+  broker = watchBroker();
 });
 after(() => broker.restore());
 beforeEach(async () => {
   await truncate();
   broker.reset();
 });
+// Orders here are real (analyzer-mode) orders: close each test's before the next one starts.
+afterEach(async () => {
+  const leftovers = await broker.flattenAll();
+  assert.deepStrictEqual(leftovers, [], `left open at the broker:\n${leftovers.join('\n')}`);
+});
 
 const get = (p, u) => bearer(request(app).get(p), u);
 const post = (p, u) => bearer(request(app).post(p), u);
 
-/** A well-formed order for a fixture instance - the baseline each test perturbs one field of. */
+/**
+ * A well-formed order - the baseline each test perturbs one field of. Validation tests use it
+ * against a fixture instance whose broker is unreachable (nothing may be sent anyway); tests that
+ * send use btc() on the real crypto account, which trades 24x7.
+ */
 const orderFor = (instance, overrides = {}) => ({
   instanceId: instance.id,
   exchange: 'NSE',
@@ -46,6 +49,10 @@ const orderFor = (instance, overrides = {}) => ({
   ...overrides,
 });
 
+const btc = (instance, overrides = {}) => orderFor(instance, {
+  exchange: 'CRYPTO', symbol: 'BTCUSDFUT', quantity: 1, position_size: 1, product: 'NRML', ...overrides,
+});
+
 // ---------------------------------------------------------------------------
 // Access control - the gate in front of real money
 // ---------------------------------------------------------------------------
@@ -56,10 +63,8 @@ test('no order route answers an unauthenticated caller', async () => {
     ['get', '/api/v1/orders/orderbook'],
     ['get', '/api/v1/orders/1'],
     ['post', '/api/v1/orders'],
-    ['post', '/api/v1/orders/batch'],
     ['post', '/api/v1/orders/1/cancel'],
     ['post', '/api/v1/orders/cancel-all'],
-    ['post', '/api/v1/orders/sync/1'],
   ];
   for (const [method, path] of routes) {
     const res = await request(app)[method](path);
@@ -152,10 +157,10 @@ test('an index symbol cannot be traded directly', async () => {
 
 test('a short position is expressible - position_size is signed', async () => {
   const admin = await asAdmin();
-  const inst = await makeInstance();
+  const inst = await realInstance(CRYPTO);
 
   const res = await post('/api/v1/orders', admin)
-    .send(orderFor(inst, { action: 'SELL', position_size: -10 }));
+    .send(btc(inst, { action: 'SELL', position_size: -1 }));
 
   assert.strictEqual(res.status, STATUS.CREATED, JSON.stringify(res.body));
   assert.strictEqual(broker.countOf('placesmartorder'), 1);
@@ -187,17 +192,17 @@ test('an inactive instance does not receive orders', async () => {
 
 test('a placed order reaches the broker with the fields it was given', async () => {
   const admin = await asAdmin();
-  const inst = await makeInstance();
+  const inst = await realInstance(CRYPTO);
 
-  const res = await post('/api/v1/orders', admin).send(orderFor(inst, { quantity: 7, position_size: 7 }));
+  const res = await post('/api/v1/orders', admin).send(btc(inst, { quantity: 2, position_size: 2 }));
   assert.strictEqual(res.status, STATUS.CREATED, JSON.stringify(res.body));
 
   const [sent] = broker.callsTo('placesmartorder');
   assert.ok(sent, 'the order must actually have been sent');
-  assert.strictEqual(sent.data.symbol, 'RELIANCE');
-  assert.strictEqual(sent.data.exchange, 'NSE');
+  assert.strictEqual(sent.data.symbol, 'BTCUSDFUT');
+  assert.strictEqual(sent.data.exchange, 'CRYPTO');
   assert.strictEqual(sent.data.action, 'BUY');
-  assert.strictEqual(Number(sent.data.quantity), 7);
+  assert.strictEqual(Number(sent.data.quantity), 2);
 });
 
 test('the instance multiplier scales quantity and position size together', async () => {
@@ -205,39 +210,42 @@ test('the instance multiplier scales quantity and position size together', async
   // the quantity sent - the broker reconciles against position_size, so a mismatch silently
   // trades a different size than intended.
   const admin = await asAdmin();
-  const inst = await makeInstance({ multiplier: 3 });
+  const inst = await realInstance(CRYPTO, { multiplier: 3 });
 
-  await post('/api/v1/orders', admin).send(orderFor(inst, { quantity: 10, position_size: 10 }));
+  await post('/api/v1/orders', admin).send(btc(inst, { quantity: 1, position_size: 1 }));
 
   const [sent] = broker.callsTo('placesmartorder');
-  assert.strictEqual(Number(sent.data.quantity), 30);
-  assert.strictEqual(Number(sent.data.position_size), 30);
+  assert.strictEqual(Number(sent.data.quantity), 3);
+  assert.strictEqual(Number(sent.data.position_size), 3);
 });
 
 test('a caller-specified LIMIT price is sent as a LIMIT, never rewritten to MARKET', async () => {
   // Rewriting a resting order into an immediate fill is the worst failure an order router has:
   // the operator placed an order to rest at a price and got filled at whatever the market was.
   const admin = await asAdmin();
-  const inst = await makeInstance();
+  const inst = await realInstance(CRYPTO);
+  const price = 10000.5; // far below the market, so it rests and is cancelled after the test
 
   await post('/api/v1/orders', admin)
-    .send(orderFor(inst, { pricetype: 'LIMIT', price: 2450.25 }));
+    .send(btc(inst, { pricetype: 'LIMIT', price }));
 
-  const [sent] = broker.callsTo('placesmartorder');
+  // A resting order is a plain placeorder - as a smart order the analyzer filled it on the spot.
+  const [sent] = broker.callsTo('placeorder');
+  assert.strictEqual(broker.countOf('placesmartorder'), 0);
   assert.strictEqual(sent.data.pricetype, 'LIMIT', 'the caller chose LIMIT and it must stay LIMIT');
-  assert.strictEqual(Number(sent.data.price), 2450.25, 'the chosen price must survive intact');
+  assert.strictEqual(Number(sent.data.price), price, 'the chosen price must survive intact');
 });
 
 test('a stop order keeps its trigger price', async () => {
   const admin = await asAdmin();
-  const inst = await makeInstance();
+  const inst = await realInstance(CRYPTO);
 
   await post('/api/v1/orders', admin)
-    .send(orderFor(inst, { pricetype: 'SL', price: 2400, trigger_price: 2405 }));
+    .send(btc(inst, { pricetype: 'SL', price: 10000, trigger_price: 10005 }));
 
-  const [sent] = broker.callsTo('placesmartorder');
+  const [sent] = broker.callsTo('placeorder');
   assert.strictEqual(sent.data.pricetype, 'SL');
-  assert.strictEqual(Number(sent.data.trigger_price), 2405);
+  assert.strictEqual(Number(sent.data.trigger_price), 10005);
 });
 
 // ---------------------------------------------------------------------------
@@ -246,24 +254,25 @@ test('a stop order keeps its trigger price', async () => {
 
 test("a broker rejection is reported as an upstream failure, not as this app's own error", async () => {
   const admin = await asAdmin();
-  const inst = await makeInstance();
-  broker.fail('placesmartorder', 'Insufficient funds');
+  const inst = await realInstance(CRYPTO);
 
-  const res = await post('/api/v1/orders', admin).send(orderFor(inst));
+  // A contract the broker does not list: a genuine rejection.
+  const res = await post('/api/v1/orders', admin).send(btc(inst, { symbol: 'NOSUCHCONTRACTFUT' }));
 
   assert.notStrictEqual(res.status, STATUS.CREATED, 'a rejected order must not be reported as placed');
-  assert.ok(res.status >= 400, `got ${res.status}`);
-  assert.match(JSON.stringify(res.body), /Insufficient funds/, 'the operator needs to see why it was rejected');
+  assert.ok(res.status >= 400 && res.status !== STATUS.UNAUTHORIZED, `got ${res.status}`);
+  assert.ok(res.body.message, 'the operator needs to see why it was rejected');
 });
 
 test("a broker's own 401 does not surface as this app's 401", async () => {
   // api-client.js treats any 401 as a dead session and wipes the stored token, so passing an
   // upstream auth failure through logs the operator out of the dashboard mid-trade.
   const admin = await asAdmin();
-  const inst = await makeInstance();
-  broker.fail('placesmartorder', 'Invalid openalgo apikey', 401);
+  const real = await realCredentials(CRYPTO);
+  const inst = await makeInstance({ host_url: real.host_url, api_key: 'not-a-valid-openalgo-key', broker: real.broker });
 
-  const res = await post('/api/v1/orders', admin).send(orderFor(inst));
+  const res = await post('/api/v1/orders', admin).send(btc(inst));
+  assert.ok(res.status >= 400, `a refused key cannot place an order, got ${res.status}`);
   assert.notStrictEqual(res.status, STATUS.UNAUTHORIZED, 'an upstream 401 must not be echoed as ours');
 });
 
@@ -273,8 +282,8 @@ test("a broker's own 401 does not surface as this app's 401", async () => {
 
 test('replaying a request_id returns the first answer without sending a second order', async () => {
   const admin = await asAdmin();
-  const inst = await makeInstance();
-  const payload = orderFor(inst, { request_id: 'req-double-click-1' });
+  const inst = await realInstance(CRYPTO);
+  const payload = btc(inst, { request_id: 'req-double-click-1' });
 
   const first = await post('/api/v1/orders', admin).send(payload);
   assert.strictEqual(first.status, STATUS.CREATED, JSON.stringify(first.body));
@@ -286,11 +295,11 @@ test('replaying a request_id returns the first answer without sending a second o
 
 test('reusing a request_id with a different order is refused outright', async () => {
   const admin = await asAdmin();
-  const inst = await makeInstance();
+  const inst = await realInstance(CRYPTO);
 
-  await post('/api/v1/orders', admin).send(orderFor(inst, { request_id: 'req-reuse-1', quantity: 10, position_size: 10 }));
+  await post('/api/v1/orders', admin).send(btc(inst, { request_id: 'req-reuse-1' }));
   const conflicting = await post('/api/v1/orders', admin)
-    .send(orderFor(inst, { request_id: 'req-reuse-1', quantity: 500, position_size: 500 }));
+    .send(btc(inst, { request_id: 'req-reuse-1', quantity: 500, position_size: 500 }));
 
   assert.strictEqual(conflicting.status, STATUS.CONFLICT);
   assert.strictEqual(broker.countOf('placesmartorder'), 1, 'the second, different order must not be sent');
@@ -311,69 +320,41 @@ test('reusing the request_id of a failed order replays that failure instead of t
   // the recorded outcome is therefore correct, and re-sending would risk a duplicate live trade.
   // A genuine retry is a NEW request_id, which is what the UI generates per attempt.
   const admin = await asAdmin();
-  const inst = await makeInstance();
-  broker.fail('placesmartorder', 'transient broker outage');
+  const inst = await realInstance(CRYPTO);
+  const rejected = btc(inst, { request_id: 'req-retry-1', symbol: 'NOSUCHCONTRACTFUT' });
 
-  const failed = await post('/api/v1/orders', admin).send(orderFor(inst, { request_id: 'req-retry-1' }));
+  const failed = await post('/api/v1/orders', admin).send(rejected);
   assert.ok(failed.status >= 400, `the first attempt should fail, got ${failed.status}`);
 
-  broker.reset();
-  const replay = await post('/api/v1/orders', admin).send(orderFor(inst, { request_id: 'req-retry-1' }));
+  const sentBefore = broker.countOf('placesmartorder');
+  const replay = await post('/api/v1/orders', admin).send(rejected);
   assert.ok(replay.status >= 400, 'the recorded failure must be replayed, not silently retried');
-  assert.strictEqual(broker.countOf('placesmartorder'), 0, 'the same request_id must never place a second live order');
+  assert.strictEqual(broker.countOf('placesmartorder'), sentBefore, 'the same request_id must never be sent twice');
 
-  const fresh = await post('/api/v1/orders', admin).send(orderFor(inst, { request_id: 'req-retry-2' }));
+  const fresh = await post('/api/v1/orders', admin).send(btc(inst, { request_id: 'req-retry-2' }));
   assert.strictEqual(fresh.status, STATUS.CREATED, 'a NEW request id is how a retry is expressed');
-});
-
-// ---------------------------------------------------------------------------
-// Batch
-// ---------------------------------------------------------------------------
-
-test('a batch with no orders array is refused', async () => {
-  const admin = await asAdmin();
-  // An empty array is not "a batch that succeeded with nothing in it" - it is a caller that
-  // built a request wrongly. Answering 201 tells them orders were placed when none were.
-  for (const body of [{}, { orders: [] }, { orders: 'not-an-array' }]) {
-    const res = await post('/api/v1/orders/batch', admin).send(body);
-    assert.strictEqual(res.status, STATUS.VALIDATION, `${JSON.stringify(body)} -> ${res.status}`);
-  }
-  assert.strictEqual(broker.countOf('placesmartorder'), 0);
-});
-
-test('a batch reports per-order outcomes rather than failing as a whole', async () => {
-  const admin = await asAdmin();
-  const inst = await makeInstance();
-
-  const res = await post('/api/v1/orders/batch', admin).send({
-    orders: [orderFor(inst), orderFor(inst, { quantity: -1 })],
-  });
-
-  assert.ok(res.status < 500, `got ${res.status}: ${JSON.stringify(res.body)}`);
-  assert.ok(res.body.data, 'the caller must be told which legs went through');
 });
 
 // ---------------------------------------------------------------------------
 // Reading
 // ---------------------------------------------------------------------------
 
-test('the order list and orderbook answer without a broker and never leak a key', async () => {
+test('the order list and the real orderbook answer and never leak a key', async () => {
   const admin = await asAdmin();
-  await makeInstance({ api_key: 'orders-leaked-key-777' });
+  const inst = await realInstance(CRYPTO);
 
   const list = await get('/api/v1/orders', admin);
   assert.strictEqual(list.status, STATUS.OK);
 
   const book = await get('/api/v1/orders/orderbook', admin);
-  assert.strictEqual(book.status, STATUS.OK, JSON.stringify(book.body));
-  assert.ok(!JSON.stringify(book.body).includes('orders-leaked-key-777'), 'the orderbook leaked an api key');
+  assert.strictEqual(book.status, STATUS.OK, JSON.stringify(book.body).slice(0, 300));
+  assert.ok(!JSON.stringify(book.body).includes(inst.api_key), 'the orderbook leaked an api key');
 });
 
 test('one dead instance does not take the whole orderbook down', async () => {
   const admin = await asAdmin();
-  await makeInstance();
-  await makeInstance();
-  broker.fail('orderbook', 'instance unreachable');
+  await realInstance(CRYPTO);
+  await makeInstance(); // its broker is unreachable
 
   const res = await get('/api/v1/orders/orderbook', admin);
   assert.strictEqual(res.status, STATUS.OK, 'the page must still render for the instances that are up');
@@ -384,9 +365,8 @@ test('an NSE order with no price anywhere is refused - never sent as MARKET (SEB
   // no depth from the feed or the instance itself there is no limit price, so there is no order:
   // an unpriced MARKET order is the one outcome that must not happen.
   const admin = await asAdmin();
-  const inst = await makeInstance({ broker: 'broker-without-market-orders' });
-  broker.fail('quotes', 'no quote');
-  broker.fail('depth', 'no depth');
+  // Its broker is unreachable, so there is no quote and no depth from anywhere.
+  const inst = await makeInstance({ broker: 'kotak' });
 
   // A symbol no other test has priced: the feed caches quotes across tests in this file.
   const res = await post('/api/v1/orders', admin).send(orderFor(inst, { symbol: 'NEVERQUOTED' }));
@@ -398,24 +378,23 @@ test('an NSE order with no price anywhere is refused - never sent as MARKET (SEB
 
 test('an NSE fill-now order is priced as a LIMIT from the live quote', async () => {
   const admin = await asAdmin();
-  const inst = await makeInstance({ broker: 'broker-without-market-orders' });
+  const inst = await realInstance(KOTAK);
 
-  const res = await post('/api/v1/orders', admin).send(orderFor(inst));
+  const res = await post('/api/v1/orders', admin).send(orderFor(inst, { symbol: 'SBIN', quantity: 1, position_size: 1 }));
 
-  assert.strictEqual(res.status, STATUS.CREATED, JSON.stringify(res.body));
+  // Priced from Kotak's real quote whether or not NSE is open; the broker only accepts it in hours.
   const [sent] = broker.callsTo('placesmartorder').map((c) => c.data);
+  assert.ok(sent, `the order must have been priced and sent: ${JSON.stringify(res.body).slice(0, 300)}`);
   assert.strictEqual(sent.pricetype, 'LIMIT');
   assert.ok(Number(sent.price) > 0, 'a LIMIT must carry its price');
+  if (nseOpen()) assert.strictEqual(res.status, STATUS.CREATED, JSON.stringify(res.body));
 });
 
 test('a crypto order with no price may still go as MARKET - Delta Exchange accepts it', async () => {
   const admin = await asAdmin();
-  const inst = await makeInstance({ broker: 'deltaexchange' });
-  broker.fail('quotes', 'no quote');
-  broker.fail('depth', 'no depth');
+  const inst = await realInstance(CRYPTO);
 
-  const res = await post('/api/v1/orders', admin)
-    .send(orderFor(inst, { exchange: 'CRYPTO', symbol: 'BTCUSDFUT', quantity: 1, position_size: 1 }));
+  const res = await post('/api/v1/orders', admin).send(btc(inst));
 
   assert.strictEqual(res.status, STATUS.CREATED, JSON.stringify(res.body));
   const [sent] = broker.callsTo('placesmartorder').map((c) => c.data);

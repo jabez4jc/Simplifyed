@@ -5,8 +5,8 @@ import request from 'supertest';
 import { useTestDb } from '../helpers/db.js';
 import { buildApp, listen } from '../helpers/app.js';
 import { asAdmin, asRoleless, bearer } from '../helpers/auth.js';
-import { makeInstance, makeWatchlist, makeWatchlistSymbol, setMarketOrderSupport } from '../helpers/fixtures.js';
-import { installFakeOpenAlgo, installFakeFetch } from '../helpers/fake-openalgo.js';
+import { makeWatchlist, makeWatchlistSymbol } from '../helpers/fixtures.js';
+import { watchBroker, realInstance, CRYPTO } from '../helpers/real-broker.js';
 import { listV1Endpoints, concrete } from '../helpers/routes.js';
 import { STATUS } from '../helpers/http.js';
 import apiV1Routes from '../../src/routes/v1/index.js';
@@ -25,6 +25,11 @@ import apiV1Routes from '../../src/routes/v1/index.js';
  * throwing on a shape it used to accept shows up here without anyone having written a test for
  * that specific handler. The endpoint list is read off the live router (see helpers/routes.js),
  * so a newly added route is covered the moment it is mounted.
+ *
+ * The :id routes point at the operator's real crypto account (analyzer mode). Every broker call
+ * the sweep triggers goes through the test interlock - nothing can switch the account to live,
+ * and nothing is ordered unless the broker confirms analyzer mode - and anything opened is closed
+ * at the end.
  */
 
 // Endpoints that are unauthenticated ON PURPOSE. Anything not on this list must refuse an
@@ -44,36 +49,39 @@ const PUBLIC = new Set([
 // Endpoints whose side effects are real and unwanted in a sweep - they are covered by their own
 // suites, where the broker and the payload are controlled.
 const SKIP_SMOKE = new Set([
-  'POST /orders/', 'POST /orders/batch', 'POST /orders/cancel-all', 'POST /orders/:id/cancel',
-  'POST /quickorders/', 'POST /quickorders/place', 'POST /quickorders/exit',
-  'POST /positions/close-all', 'POST /positions/close',
+  'POST /orders/', 'POST /orders/cancel-all', 'POST /orders/:id/cancel', 'POST /orders/:id/modify',
+  'POST /quickorders/',
+  // Closes EVERY position on the account under its strategy tag - never part of a sweep.
+  'POST /positions/:instanceId/close', 'POST /positions/:instanceId/close/position',
+  'POST /strategies/:id/execute', 'POST /strategies/:id/exit',
+  // Cancels, closes and switches EVERY instance - Test/integration/kill-switch.test.js covers it.
+  'POST /kill-switch',
   'POST /auth/login', 'POST /auth/register', 'POST /auth/change-password',
 ]);
 
 let app;
 let server;
 let broker;
-let http;
 let admin;
 let pending;
 let ids;
+let realKey;
 
 before(async () => {
   await useTestDb('contract');
-  await setMarketOrderSupport({ zerodha: true });
 
   app = buildApp(apiV1Routes, '/api/v1');
   // One long-lived server for the ~1000 requests below - see listen() for why.
   server = listen(app);
-  broker = installFakeOpenAlgo();
-  http = installFakeFetch();
+  broker = watchBroker();
 
   admin = await asAdmin();
   pending = await asRoleless();
 
   // One row of everything the :params can point at, so a sweep hits real records rather than
   // only ever exercising the not-found branch.
-  const instance = await makeInstance();
+  const instance = await realInstance(CRYPTO);
+  realKey = instance.api_key;
   const watchlist = await makeWatchlist();
   const symbol = await makeWatchlistSymbol(watchlist.id);
 
@@ -94,10 +102,13 @@ before(async () => {
   };
 });
 
-after(() => {
+after(async () => {
+  // DELETE /instances/:id is part of the sweep, so put the account back before closing anything.
+  await realInstance(CRYPTO);
+  const leftovers = await broker.flattenAll();
   broker.restore();
-  http.restore();
   server.close();
+  assert.deepStrictEqual(leftovers, [], `left open at the broker:\n${leftovers.join('\n')}`);
 });
 
 const endpoints = listV1Endpoints();
@@ -106,7 +117,7 @@ const label = (e) => `${e.method} ${e.path}`;
 test('the sweep is actually covering the whole surface', () => {
   // A guard against this file quietly testing nothing - if the router walk breaks, every loop
   // below becomes a no-op and the suite still goes green.
-  assert.ok(endpoints.length > 140, `expected the full v1 surface, found only ${endpoints.length}`);
+  assert.ok(endpoints.length > 100, `expected the full v1 surface, found only ${endpoints.length}`);
 });
 
 test('every endpoint that is not deliberately public refuses an anonymous caller', async () => {
@@ -218,9 +229,9 @@ test('no endpoint crashes on an unexpected body', async () => {
 
 test('no response anywhere carries a broker api key', async () => {
   // Masking is applied per-route, which means it can be forgotten on a new one. This checks the
-  // whole surface at once against a key planted in the fixture instance.
-  const marker = 'contract-sweep-secret-key-4242';
-  await makeInstance({ api_key: marker, name: 'Key Holder' });
+  // whole surface at once against the real account's own key.
+  const marker = realKey;
+  await realInstance(CRYPTO);
 
   const leaks = [];
   for (const endpoint of endpoints) {

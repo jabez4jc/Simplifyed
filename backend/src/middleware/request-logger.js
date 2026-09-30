@@ -52,9 +52,3 @@ export function bodyParserErrorHandler(err, req, res, next) {
 
   next(err);
 }
-
-export default {
-  correlationId,
-  requestLogger,
-  bodyParserErrorHandler,
-};

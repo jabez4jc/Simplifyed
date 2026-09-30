@@ -111,7 +111,7 @@ export function getFuturesUnderlying(symbol = {}) {
   return parsed.underlying || derivativeResolutionService.getDerivativeUnderlying(symbol);
 }
 
-export function getSymbolExpiryVariants(symbol = {}) {
+function getSymbolExpiryVariants(symbol = {}) {
   const variants = new Set();
   const direct = symbol.expiry;
   if (direct) {
@@ -133,24 +133,6 @@ export function expiryMatchesSymbol(expiry, symbol = {}) {
   }
   const symbolVariants = getSymbolExpiryVariants(symbol);
   return selected.some((value) => symbolVariants.has(value));
-}
-
-/**
- * Construct option symbol from components (OpenAlgo format)
- * Format: UNDERLYING + DDMMMYY + STRIKE + CE/PE
- * Example: NIFTY + 18NOV25 + 26000 + CE -> NIFTY18NOV2526000CE
- * @see https://docs.openalgo.in/symbol-format
- */
-export function constructOptionSymbol(underlying, expiry, optionType, strike) {
-  // Parse expiry YYYY-MM-DD
-  const date = new Date(expiry);
-  const day = String(date.getDate()).padStart(2, '0');
-  const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-  const month = months[date.getMonth()];
-  const year = String(date.getFullYear()).slice(-2);  // Use 2-digit year (OpenAlgo format)
-
-  // Construct symbol: NIFTY18NOV2526000CE (OpenAlgo format: SYMBOL + DATE + STRIKE + TYPE)
-  return `${underlying}${day}${month}${year}${strike}${optionType}`;
 }
 
 /**

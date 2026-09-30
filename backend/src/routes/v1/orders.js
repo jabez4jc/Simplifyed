@@ -135,7 +135,6 @@ router.get('/orderbook', requirePermission('pages.orders.view'), async (req, res
         instance_id: instance.id,
         instance_name: instance.name,
         broker: instance.broker,
-        market_data_role: instance.market_data_role,
         is_analyzer_mode: !!instance.is_analyzer_mode,
         orders: normalizedOrders,
         fetchedAt: snapshot?.fetchedAt,
@@ -256,105 +255,6 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
   }
 });
 
-/**
- * POST /api/v1/orders/batch
- * Place multiple orders
- */
-router.post('/batch', requirePermission('orders.place'), async (req, res, next) => {
-  try {
-    const { orders, request_id: requestId } = req.body;
-
-    if (requestId !== undefined && (!requestId || typeof requestId !== 'string')) {
-      throw new ValidationError('request_id must be a non-empty string');
-    }
-
-    if (!Array.isArray(orders) || orders.length === 0) {
-      // An empty array is a caller that built the request wrongly, not a batch that succeeded
-      // with nothing in it. Answering 201 told them orders had been placed when none were.
-      throw new ValidationError('orders must be a non-empty array');
-    }
-
-    if (requestId) {
-      const { hit, record, mismatch } = await idempotencyService.getOrCreate({
-        requestId,
-        source: 'manual_batch',
-        payload: req.body,
-      });
-      if (mismatch) {
-        return res.status(409).json({
-          status: 'error',
-          message: 'Request ID reuse with different payload',
-        });
-      }
-      if (hit && record?.response_json) {
-        const cached = JSON.parse(record.response_json);
-        res.set('X-Idempotency-Hit', 'true');
-        const statusCode = record.status_code || (record.status === 'success' ? 201 : 409);
-        return res.status(statusCode).json(cached);
-      }
-      if (hit) {
-        return res.status(409).json({
-          status: 'error',
-          message: 'Request is already in progress',
-        });
-      }
-    }
-
-    const enrichedOrders = orders.map((order, index) => ({
-      ...order,
-      user_id: req.user?.id || null,
-      source: 'manual_batch',
-      trigger_type: req.body?.trigger_type || 'Manual',
-      correlation_id: req.correlationId || null,
-      request_id: requestId ? `${requestId}:${index + 1}` : null,
-    }));
-
-    const results = await orderService.placeMultipleOrders(enrichedOrders);
-
-    const successful = results.filter(r => r.success).length;
-    const failed = results.filter(r => !r.success).length;
-
-    const responsePayload = {
-      status: 'success',
-      message: `Placed ${successful} orders, ${failed} failed`,
-      data: {
-        results,
-        summary: {
-          total: orders.length,
-          successful,
-          failed,
-        },
-      },
-    };
-
-    if (requestId) {
-      await idempotencyService.complete({
-        requestId,
-        source: 'manual_batch',
-        response: responsePayload,
-        status: 'success',
-        statusCode: 201,
-      });
-    }
-
-    res.status(201).json(responsePayload);
-  } catch (error) {
-    const requestId = req.body?.request_id;
-    if (requestId) {
-      await idempotencyService.complete({
-        requestId,
-        source: 'manual_batch',
-        response: {
-          status: 'error',
-          message: error.message,
-        },
-        status: 'failed',
-        statusCode: error.statusCode || 500,
-      });
-    }
-    next(error);
-  }
-});
 
 /**
  * POST /api/v1/orders/:id/cancel
@@ -371,6 +271,21 @@ router.post('/:id/cancel', requirePermission('orders.cancel'), async (req, res, 
       message: 'Order cancelled successfully',
       data: order,
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/v1/orders/:id/modify   Body: { price }
+ * Move a resting order to a new price (the chart's order-line drag).
+ */
+router.post('/:id/modify', requirePermission('orders.place'), async (req, res, next) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    const order = await orderService.modifyOrder(id, { price: req.body?.price });
+    logAudit(req, 'order.modify', { orderId: id, price: req.body?.price });
+    res.json({ status: 'success', message: 'Order moved', data: order });
   } catch (error) {
     next(error);
   }
@@ -407,37 +322,6 @@ router.post('/cancel-all', requirePermission('orders.cancel_all'), async (req, r
   }
 });
 
-/**
- * POST /api/v1/orders/sync/:instanceId
- * Sync order status from OpenAlgo
- */
-router.post('/sync/:instanceId', requirePermission('pages.orders.view'), async (req, res, next) => {
-  try {
-    const instanceId = parseInt(req.params.instanceId, 10);
-    const result = await orderService.syncOrderStatus(instanceId);
 
-    res.json({
-      status: 'success',
-      message: `Synced order status: ${result.updated} updated`,
-      data: result,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
- * GET /api/v1/orders/:instanceId/:orderId/status
- * On-demand single-order status lookup (lighter than /sync for checking just one order).
- */
-router.get('/:instanceId/:orderId/status', requirePermission('pages.orders.view'), async (req, res, next) => {
-  try {
-    const instanceId = parseInt(req.params.instanceId, 10);
-    const result = await orderService.getOrderStatus(instanceId, req.params.orderId);
-    res.json({ status: 'success', data: result });
-  } catch (error) {
-    next(error);
-  }
-});
 
 export default router;

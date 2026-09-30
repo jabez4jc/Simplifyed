@@ -357,19 +357,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     )).join('');
   }
 
-  switchOrdersTab(tab) {
-    const tabs = document.querySelectorAll('[data-orders-tab]');
-    tabs.forEach((btn) => {
-      const isActive = btn.dataset.ordersTab === tab;
-      btn.classList.toggle('active', isActive);
-    });
-    const livePanel = document.getElementById('orders-tab-live');
-    const analyzerPanel = document.getElementById('orders-tab-analyzer');
-    if (livePanel && analyzerPanel) {
-      livePanel.classList.toggle('hidden', tab !== 'live');
-      analyzerPanel.classList.toggle('hidden', tab !== 'analyzer');
-    }
-  }
 
   renderOrderInstanceCard(instanceEntry, isOpen = false) {
     const title = Utils.escapeHTML(instanceEntry.instance_name || `Instance ${instanceEntry.instance_id}`);
@@ -380,6 +367,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     return `
       <details class="instance-card" data-instance-id="${instanceEntry.instance_id}" ${isOpen || openOrders ? 'open' : ''}>
         <summary class="instance-card-header">
+        ${Utils.chevron()}
           <div class="instance-info">
             <div class="instance-title">${title}</div>
             <div class="instance-meta">

@@ -468,4 +468,3 @@ class QuickOrderHistoryService {
 
 const quickOrderHistoryService = new QuickOrderHistoryService();
 export default quickOrderHistoryService;
-export { QuickOrderHistoryService };

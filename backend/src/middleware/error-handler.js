@@ -195,8 +195,3 @@ export function notFoundHandler(req, res) {
     code: 'ROUTE_NOT_FOUND',
   });
 }
-
-export default {
-  errorHandler,
-  notFoundHandler,
-};

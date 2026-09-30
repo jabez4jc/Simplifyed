@@ -1,11 +1,10 @@
 /**
- * Chart view - read-only historical candles.
+ * Chart view - candles, indicators, drawings and chart-native order entry.
  *
- * Phase 1 of the chart-based trading interface: it displays data and places no orders. The
- * trade surface comes later and will post to the existing /api/v1/quickorders endpoint, which
- * fans out to a watchlist's instances - hence the symbol picker is sourced from
- * watchlist_symbols rather than free text. A symbol you can chart is a symbol you will be able
- * to trade with all the existing per-symbol guardrails (sizing, product, risk/auto-exit) intact.
+ * Orders post to the existing /api/v1/quickorders endpoint (see dashboard-chart-orders.js),
+ * which fans out to a watchlist's instances - hence the symbol picker is sourced from
+ * watchlist_symbols rather than free text. A symbol you can chart is a symbol you can trade with
+ * all the existing per-symbol guardrails (sizing, product, risk/auto-exit) intact.
  *
  * Rendering uses openalgo-charts (Apache-2.0, MIT-adjacent original code by marketcalls),
  * installed as a real npm dependency and synced into public/vendor by
@@ -47,6 +46,14 @@ const TIMEFRAME_GROUPS = [
   { label: 'Days', values: ['D'] },
 ];
 const TIMEFRAMES = TIMEFRAME_GROUPS.flatMap((g) => g.values);
+
+/** Days of history per timeframe: enough bars to be useful, few enough to stay responsive.
+ * Shared by the underlying and the CE/PE panes so they cover the same period. */
+const HISTORY_SPAN_DAYS = {
+  '5s': 0.5, '10s': 0.5, '15s': 1, '30s': 1, '45s': 1,
+  '1m': 3, '2m': 3, '3m': 5, '5m': 10, '10m': 15, '15m': 30, '20m': 30, '30m': 60,
+  '1h': 120, '2h': 120, '4h': 180, D: 900,
+};
 
 /** Gridline visibility presets for the context menu's "Grid" submenu - maps 1:1 to the engine's
  * own `chart.setGridOptions({ vertLines, horzLines })`. */
@@ -262,46 +269,9 @@ Object.assign(DashboardApp.prototype, {
     };
     this.saveChartPreference();
 
-    this.attachChartBarMenus();
-    this.renderIndicatorBar();
-    this.renderSyncBar();
-    if (typeof this.loadProfilePrefs === 'function') this.loadProfilePrefs();
-    if (typeof this.renderProfileBar === 'function') this.renderProfileBar();
-    if (typeof this.loadChartTypePref === 'function') this.loadChartTypePref();
-    this.initChart();
-    if (typeof this.renderChartTypeBar === 'function') this.renderChartTypeBar();
-    if (typeof this.attachOrderLines === 'function') this.attachOrderLines();
-    this.attachFullscreenToggle();
-    await this.loadChartData();
-    this.refreshOscillator();
-    await this.loadChartPosition();
-    await this.loadChartLevels();
-    this.attachLevelDragging();
-    await this.loadChartTradePanel();
-    // The trade panel restores the "Trade options" checkbox from state; the CE/PE panes have to
-    // follow it. Without this a re-render leaves the box ticked with no option charts under it.
-    if (this.chartOptionsOn) await this.refreshOptionPanes();
-    this.attachDrawingLayer();
-    if (typeof this.restoreDrawToolsVisibility === 'function') this.restoreDrawToolsVisibility();
-    this.startChartLiveUpdates();
-
-    document.getElementById('chart-symbol').addEventListener('change', (e) => {
-      const picked = symbols.find((s) => String(s.symbolId) === e.target.value);
-      if (!picked) return;
-      Object.assign(this.chartState, {
-        symbolId: picked.symbolId, exchange: picked.exchange, symbol: picked.symbol,
-      });
-      this.saveChartPreference();
-      // A WS tick fresh for the OLD symbol says nothing about the new one - without this reset
-      // the fallback poller could wrongly trust a stale timestamp and skip polling for the new
-      // symbol until CHART_STALE_MS naturally lapses.
-      this.lastChartTickAt = 0;
-      this.loadChartData();
-      this.loadChartPosition().then(() => this.loadChartLevels());
-      this.loadChartTradePanel();
-      this.refreshSupportedTimeframes();
-    });
-
+    // Product and size are wired BEFORE the first await: attached after loadChartData() they
+    // were dead until the history arrived - and for good if it failed - so a click on NRML did
+    // nothing and the order went with the saved product (usually MIS).
     contentArea.querySelectorAll('.chart-prod-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
         contentArea.querySelectorAll('.chart-prod-btn').forEach((b) => b.classList.remove('active'));
@@ -322,6 +292,49 @@ Object.assign(DashboardApp.prototype, {
       if (hint) hint.textContent = this.sizeHintText(this.chartState.qty);
     });
 
+
+    this.attachChartBarMenus();
+    this.renderIndicatorBar();
+    this.renderSyncBar();
+    if (typeof this.loadProfilePrefs === 'function') this.loadProfilePrefs();
+    if (typeof this.renderProfileBar === 'function') this.renderProfileBar();
+    if (typeof this.loadChartTypePref === 'function') this.loadChartTypePref();
+    this.initChart();
+    if (typeof this.renderChartTypeBar === 'function') this.renderChartTypeBar();
+    if (typeof this.attachOrderLines === 'function') this.attachOrderLines();
+    this.attachFullscreenToggle();
+    // Wired before the first await: attached after the loads below, a symbol picked while they
+    // ran changed the dropdown but not the chart or its order tickets.
+    document.getElementById('chart-symbol').addEventListener('change', (e) => {
+      const picked = symbols.find((s) => String(s.symbolId) === e.target.value);
+      if (!picked) return;
+      Object.assign(this.chartState, {
+        symbolId: picked.symbolId, exchange: picked.exchange, symbol: picked.symbol,
+      });
+      this.saveChartPreference();
+      // A WS tick fresh for the OLD symbol says nothing about the new one - without this reset
+      // the fallback poller could wrongly trust a stale timestamp and skip polling for the new
+      // symbol until CHART_STALE_MS naturally lapses.
+      this.lastChartTickAt = 0;
+      this.loadChartData();
+      this.loadChartPosition().then(() => this.loadChartLevels());
+      this.loadChartTradePanel();
+      this.refreshSupportedTimeframes();
+    });
+    await this.loadChartData();
+    this.refreshOscillator();
+    await this.loadChartPosition();
+    await this.loadChartLevels();
+    this.attachLevelDragging();
+    await this.loadChartTradePanel();
+    // The trade panel restores the "Trade options" checkbox from state; the CE/PE panes have to
+    // follow it. Without this a re-render leaves the box ticked with no option charts under it.
+    if (this.chartOptionsOn) await this.refreshOptionPanes();
+    this.attachDrawingLayer();
+    if (typeof this.restoreDrawToolsVisibility === 'function') this.restoreDrawToolsVisibility();
+    this.startChartLiveUpdates();
+
+
     this.attachChartContextMenu();
     document.querySelectorAll('.chart-ticket').forEach((btn) => {
       btn.addEventListener('click', () => this.confirmChartOrder({
@@ -339,6 +352,18 @@ Object.assign(DashboardApp.prototype, {
     } catch (_) {
       return {};
     }
+  },
+
+  /**
+   * The product an order actually goes with. Futures and options take MIS or NRML - CNC is
+   * delivery, which F&O does not have, so the server sends it as NRML (quick-order and /orders
+   * apply the same rule). The confirmation shows that, not the raw button.
+   */
+  effectiveProduct(state, contract = null, optionAction = false) {
+    const derivative = Boolean(contract) || optionAction
+      || ['FUTURES', 'OPTIONS'].includes(this.chartTradeMode)
+      || ['NFO', 'BFO', 'MCX', 'CDS', 'BCD', 'NCO'].includes(String(state.exchange || '').toUpperCase());
+    return derivative && state.product === 'CNC' ? 'NRML' : state.product;
   },
 
   saveChartPreference() {
@@ -569,7 +594,7 @@ Object.assign(DashboardApp.prototype, {
       ? css.getPropertyValue('--color-profit')
       : css.getPropertyValue('--color-loss')).trim();
 
-    const line = this.addPriceLine({
+    this.addPriceLine({
       price: data.avgEntryPrice,
       color: colour || '#888',
       lineWidth: 2,
@@ -577,7 +602,6 @@ Object.assign(DashboardApp.prototype, {
       // Says what the line is, not just where it sits - "avg" is the whole point under fan-out.
       leftLabel: `avg entry · net ${data.netQuantity > 0 ? '+' : ''}${data.netQuantity}`,
     }, scope);
-    if (scope) this.optionPanes[scope].positionLine = line; else this.positionLine = line;
   },
 
   /** Remove every registered line. Safe to call repeatedly and after the series is gone. */
@@ -590,11 +614,10 @@ Object.assign(DashboardApp.prototype, {
     }
     if (scope) {
       const p = this.optionPanes?.[scope];
-      if (p) { p.priceLines = []; p.positionLine = null; }
+      if (p) p.priceLines = [];
     } else {
       this._priceLines = [];
       this.levelLines = null;
-      this.positionLine = null;
     }
   },
 
@@ -721,9 +744,6 @@ Object.assign(DashboardApp.prototype, {
     this.chart = null;
     this.candleSeries = null;
     this.volumeSeries = null;
-    // The price line lived on the series that just went away; drop the stale handle so
-    // clearPositionLine() never calls removePriceLine on a disposed series.
-    this.positionLine = null;
     this.levelLines = null;
     this._priceLines = [];
     // The primitive was attached to the chart that just went away.
@@ -733,7 +753,6 @@ Object.assign(DashboardApp.prototype, {
     // Heights are read off the chart's own pane separators, so this has to happen before the
     // chart goes away.
     if (typeof this.rememberOscHeights === 'function') this.rememberOscHeights();
-    this.oscCharts = [];
   },
 
   /**
@@ -802,14 +821,10 @@ Object.assign(DashboardApp.prototype, {
     const statusEl = document.getElementById('chart-status');
     if (statusEl) statusEl.textContent = 'Loading…';
 
-    // Span scales with the timeframe: enough bars to be useful, few enough to stay responsive.
-    const spanDays = {
-      '5s': 0.5, '10s': 0.5, '15s': 1, '30s': 1, '45s': 1,
-      '1m': 3, '2m': 3, '3m': 5, '5m': 10, '10m': 15, '15m': 30, '20m': 30, '30m': 60,
-      '1h': 120, '2h': 120, '4h': 180, D: 900,
-    }[state.timeframe] || 10;
+    const spanDays = HISTORY_SPAN_DAYS[state.timeframe] || 10;
     const to = Math.floor(Date.now() / 1000);
     const from = to - spanDays * 86400;
+    const requested = `${state.exchange}:${state.symbol}:${state.timeframe}`;
 
     try {
       const res = await api.request(
@@ -817,6 +832,9 @@ Object.assign(DashboardApp.prototype, {
         + `&symbol=${encodeURIComponent(state.symbol)}`
         + `&timeframe=${encodeURIComponent(state.timeframe)}&from=${from}&to=${to}`
       );
+      // The operator may have switched symbol or timeframe while this was in flight - a late
+      // answer for the old one must not be drawn under the new one.
+      if (this.chartState !== state || `${state.exchange}:${state.symbol}:${state.timeframe}` !== requested) return;
       const { candles = [], stale, source } = res.data || {};
 
       if (!candles.length) {
@@ -982,10 +1000,7 @@ Object.assign(DashboardApp.prototype, {
 
   // Kept as a named alias: both features share one series, so clearing either means clearing
   // the registry and redrawing from state (see redrawChartLines).
-  clearPositionLine() {
-    this.clearPriceLines();
-  },
-
+ 
   /**
    * The pane equivalent of loadChartPosition() - fetches the same generic `/positions/symbol`
    * endpoint (already exchange/symbol-generic, no underlying-only assumption), scoped to the
@@ -1041,8 +1056,12 @@ Object.assign(DashboardApp.prototype, {
     if (!state || !host) return;
 
     let info;
+    const requestedSymbolId = state.symbolId;
     try {
       const res = await api.request(`/quickorders/targets?symbolId=${encodeURIComponent(state.symbolId)}`);
+      // Switched symbol while this was in flight: the newer load owns the panel. Orders read
+      // chartTradeInfo, so the old symbol's instances must never land under the new one.
+      if (this.chartState?.symbolId !== requestedSymbolId) return;
       info = res.data;
       // Instance sets differ per watchlist; carrying a selection across symbols would send an
       // order somewhere the operator never chose.
@@ -1183,7 +1202,7 @@ Object.assign(DashboardApp.prototype, {
               : optionAction
               ? `${Utils.escapeHTML(state.symbol)} <strong>${Utils.escapeHTML(legNote)}</strong> options`
               : Utils.escapeHTML(state.symbol)}
-            (${Utils.escapeHTML(state.product)}) — one per instance below.
+            (${Utils.escapeHTML(this.effectiveProduct(state, contract, optionAction))}) — one per instance below.
           </p>
           <p class="chart-confirm-lead chart-confirm-sizing">
             ${sizing.unknownLotSize
@@ -1336,6 +1355,9 @@ Object.assign(DashboardApp.prototype, {
           } : {}),
           // LOTS: quick-order.service does `baseLots = quantity` then multiplies by lot size.
           quantity: lots,
+          // The product chosen in the chart header. Omitted, the route defaulted to MIS, so every
+          // chart option order went as MIS whatever was selected. F&O turns CNC into NRML.
+          product: state.product,
           trigger_type: 'CHART',
         };
 
@@ -1367,11 +1389,9 @@ Object.assign(DashboardApp.prototype, {
       } else {
         // Limit and stop carry a price the operator chose, which quick-order cannot express -
         // it derives price type per instance and computes limit prices from live quote+buffer.
-        // So fan out explicitly, one manual order per target instance.
-        // placesmartorder reconciles to a SIGNED net target, so derive it from the position
-        // we already have on screen rather than sending a bare quantity.
-        const current = this.chartPositionData?.netQuantity || 0;
-        const positionSize = action === 'BUY' ? current + units : current - units;
+        // So fan out explicitly, one manual order per target instance. No position_size: the
+        // server derives each instance's target from that instance's own position. The one on
+        // screen is summed across instances and over-sized any instance holding less.
 
         const results = await Promise.allSettled(targets.map((inst) => api.request('/orders', {
           method: 'POST',
@@ -1388,7 +1408,6 @@ Object.assign(DashboardApp.prototype, {
             // multiplier - so the lot conversion has to happen here.
             quantity: units,
             product: state.product,
-            position_size: positionSize,
             pricetype: orderType,             // LIMIT | SL-M
             price: orderType === 'LIMIT' ? price : 0,
             trigger_price: orderType === 'SL-M' ? price : 0,
@@ -1522,9 +1541,6 @@ Object.assign(DashboardApp.prototype, {
     }
   },
 
-  clearLevelLines() {
-    this.clearPriceLines();
-  },
 
   renderLevelsPanel() {
     const host = document.getElementById('chart-levels');
@@ -1831,6 +1847,13 @@ Object.assign(DashboardApp.prototype, {
   },
 
   /** Order types that are valid at `price` given the last traded price. */
+  /** Open the chart menu at the pointer, kept inside the window. */
+  placeChartMenu(menu, e, rowCount) {
+    menu.style.left = `${Math.max(4, Math.min(e.clientX, window.innerWidth - 220))}px`;
+    menu.style.top = `${Math.max(4, Math.min(e.clientY, window.innerHeight - rowCount * 30 - 16))}px`;
+    menu.hidden = false;
+  },
+
   contextMenuItemsFor(price) {
     const ltp = this.chartLastPrice;
     const qty = this.chartState?.qty ?? 1;
@@ -1985,14 +2008,8 @@ Object.assign(DashboardApp.prototype, {
         </div>
       `;
 
-      // Keep the menu inside the chart rather than letting it overflow the viewport.
-      // `rect` is the container, which now starts after the tool rail, so no rail offset here.
       const rowCount = tradeItems.length + (tradeItems.length ? 1 : 0) + 3;
-      const x = Math.min(e.clientX - rect.left, rect.width - 210);
-      const y = Math.min(e.clientY - rect.top, rect.height - rowCount * 30 - 16);
-      menu.style.left = `${Math.max(0, x)}px`;
-      menu.style.top = `${Math.max(0, y)}px`;
-      menu.hidden = false;
+      this.placeChartMenu(menu, e, rowCount);
 
       menu.querySelectorAll('[data-trade-i]').forEach((btn) => {
         btn.addEventListener('click', (ev) => {

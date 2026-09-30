@@ -5,6 +5,8 @@ import {
   SETTINGS_FIELDS,
   isEditable,
   validateValue,
+  ESSENTIAL_SETTINGS,
+  settingDefault,
 } from '../../src/config/settings-registry.js';
 
 // The registry is the allowlist the API enforces. These keys can disable authentication,
@@ -17,6 +19,11 @@ const MUST_NOT_BE_EDITABLE = [
   'session.max_age_ms',
   'rate_limits.disabled',
   'rate_limits.circuit_breaker_disabled',
+  // Fixed tuning in core/config.js - a Settings row for these would be a second source.
+  'rate_limits.rps_per_instance',
+  'market_data_feed.quote_ttl_idle_ms',
+  'instance_health.ping_healthy_interval_ms',
+  'openalgo.critical.max_retries',
   'server.port',
   'server.node_env',
   'database.path',
@@ -35,27 +42,29 @@ test('settings that disable auth, safety limits, or come from env are not editab
   }
 });
 
-test('the trading knobs an operator actually needs are editable', () => {
-  for (const key of [
-    'market_data_feed.quote_ttl_idle_ms',
-    'market_data_feed.position_interval_active_ms',
+test('the settings an operator actually needs are editable, and each has one default', () => {
+  const editable = [
     'market_data_feed.max_order_spread_pct',
-    'rate_limits.rps_per_instance',
-    'openalgo.request_timeout_ms',
-    'instance_health.ping_healthy_interval_ms',
     'brokerage.default',
+    'brokerage.by_broker',
+    'brokerage.market_order_support',
     'trading_sessions',
-  ]) {
-    assert.ok(isEditable(key), `${key} should be editable`);
+    'openalgo.request_timeout_ms',
+    'rate_limits.smart_orders_per_second',
+  ];
+  assert.deepStrictEqual([...SETTINGS_FIELDS.keys()].sort(), [...editable].sort());
+  for (const key of editable) {
+    assert.ok(settingDefault(key) !== undefined, `${key} needs a default in ESSENTIAL_SETTINGS`);
   }
+  assert.deepStrictEqual(ESSENTIAL_SETTINGS.map((s) => s.key).sort(), [...editable].sort(),
+    'a default for something that is not a setting would be a second source');
 });
 
 test('numeric bounds reject values that would hammer a broker', () => {
-  // A 5ms position poll would issue ~200 broker calls a second and earn a rate-limit ban.
-  assert.ok(validateValue('market_data_feed.position_interval_idle_ms', 5));
-  assert.ok(validateValue('rate_limits.rps_per_instance', 0));
-  assert.ok(validateValue('rate_limits.rps_per_instance', 10000));
-  assert.strictEqual(validateValue('rate_limits.rps_per_instance', 5), null);
+  assert.ok(validateValue('rate_limits.smart_orders_per_second', 0));
+  assert.ok(validateValue('rate_limits.smart_orders_per_second', 11), 'above SEBI\'s 10/s algo threshold');
+  assert.strictEqual(validateValue('rate_limits.smart_orders_per_second', 2), null);
+  assert.ok(validateValue('openalgo.request_timeout_ms', 100));
 });
 
 test('every field is well-formed and uniquely keyed', () => {
@@ -69,6 +78,7 @@ test('every field is well-formed and uniquely keyed', () => {
         assert.ok(field.key, 'field needs a key');
         assert.ok(field.label, `${field.key} needs a label`);
         assert.ok(field.help, `${field.key} needs help text - it is what makes it usable`);
+        assert.ok(field.details?.length, `${field.key} needs details: when to raise or lower it`);
         if (field.min !== undefined && field.max !== undefined) {
           assert.ok(field.min < field.max, `${field.key} has an inverted range`);
         }

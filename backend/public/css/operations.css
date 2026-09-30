@@ -274,14 +274,6 @@
   box-shadow: var(--shadow-sm);
 }
 
-.instance-card summary {
-  list-style: none;
-}
-
-.instance-card summary::-webkit-details-marker {
-  display: none;
-}
-
 .instance-card-header {
   display: flex;
   align-items: center;
@@ -293,6 +285,7 @@
 }
 
 .instance-info {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
@@ -344,7 +337,6 @@
     grid-template-columns: 1fr;
   }
 }
-
 
 /* Instances table: four row actions in a 2x2 grid keep rows short and the table on screen. */
 .instance-row-actions {

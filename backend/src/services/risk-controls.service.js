@@ -273,13 +273,16 @@ class RiskControlsService {
    * ends in FUT. Substring matching anywhere in the name is not a safe test.
    */
   _determineMode(entry, symbol) {
+    // The traded contract decides first: an option position is matched to its underlying's
+    // watchlist row (a BTC future, a NIFTY index), and judging it by that row's type applied the
+    // futures target/stop to the option and then tried to close it as a future.
+    const normalizedSymbol = (symbol || '').toUpperCase();
+    if (/\d(CE|PE)$/.test(normalizedSymbol)) return 'options';
+    if (/\dFUT$/.test(normalizedSymbol)) return 'futures';
+
     const type = (entry?.symbol_type || '').toUpperCase();
     if (type === 'OPTIONS') return 'options';
     if (type === 'FUTURES' || type === 'INDEX') return 'futures';
-    if (type === 'EQUITY' || type === 'EQ') return 'direct';
-
-    const normalizedSymbol = (symbol || '').toUpperCase();
-    if (/\d(CE|PE)$/.test(normalizedSymbol)) return 'options';
     if (/FUT$/.test(normalizedSymbol)) return 'futures';
     return 'direct';
   }

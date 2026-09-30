@@ -4,7 +4,6 @@
  */
 
 import express from 'express';
-import pnlService from '../../services/pnl.service.js';
 import instanceService from '../../services/instance.service.js';
 import positionsService from '../../services/positions.service.js';
 import openalgoClient from '../../integrations/openalgo/client.js';
@@ -51,27 +50,6 @@ router.get('/all', requirePermission('pages.positions.view'), async (req, res, n
   }
 });
 
-/**
- * GET /api/v1/positions/aggregate/pnl
- * Get aggregated P&L across all active instances
- * NOTE: Must be before /:instanceId routes to avoid capturing "aggregate" as instanceId
- */
-router.get('/aggregate/pnl', requirePermission('pages.positions.view'), async (req, res, next) => {
-  try {
-    const instances = await instanceService.getAllInstances({
-      is_active: true,
-    });
-
-    const aggregatedPnL = await pnlService.getAggregatedPnL(instances);
-
-    res.json({
-      status: 'success',
-      data: aggregatedPnL,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
 
 /**
  * GET /api/v1/positions/symbol?exchange=NSE&symbol=SBIN
@@ -181,25 +159,6 @@ router.get('/:instanceId', requirePermission('pages.positions.view'), async (req
   }
 });
 
-/**
- * GET /api/v1/positions/:instanceId/pnl
- * Get P&L breakdown for an instance
- */
-router.get('/:instanceId/pnl', requirePermission('pages.positions.view'), async (req, res, next) => {
-  try {
-    const instanceId = parseInt(req.params.instanceId, 10);
-    const instance = await instanceService.getInstanceById(instanceId);
-
-    const pnl = await pnlService.getInstancePnL(instance);
-
-    res.json({
-      status: 'success',
-      data: pnl,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
 
 /**
  * POST /api/v1/positions/:instanceId/close
@@ -210,10 +169,8 @@ router.post('/:instanceId/close', requirePermission('positions.close_all'), asyn
     const instanceId = parseInt(req.params.instanceId, 10);
     const instance = await instanceService.getInstanceById(instanceId);
 
-    const strategy = instance.strategy_tag || 'default';
-
-    // Close positions via OpenAlgo
-    await openalgoClient.closePosition(instance, strategy);
+    // LIMIT orders on Indian exchanges (SEBI), one symbol at a time - see closeAllPositions.
+    const result = await quickOrderService.closeAllPositions(instance, { strategy: instance.strategy_tag || 'CLOSE_ALL' });
 
     if ((req.user?.role || '').toUpperCase() !== 'ADMIN') {
       logAudit(req, 'positions.close_all', { instanceId });
@@ -233,16 +190,26 @@ router.post('/:instanceId/close', requirePermission('positions.close_all'), asyn
       symbol: 'ALL',
       exchange: '-',
       product: instance.default_product || 'MIS',
-      order_type: 'MARKET',
+      order_type: 'LIMIT',
       quantity: null,
       instances: [instance.name].filter(Boolean),
-      success_count: 1,
-      failure_count: 0,
+      success_count: result.stillOpen.length ? 0 : 1,
+      failure_count: result.stillOpen.length ? 1 : 0,
     }).catch(err => log.warn('telegram_summary_notify_failed', { error: err.message }));
 
+    // A close that left something open is not a success - say what is still open and why.
+    if (result.stillOpen.length) {
+      return res.status(502).json({
+        status: 'error',
+        message: `Still open after Close All: ${result.stillOpen.join(', ')}`
+          + (result.errors.length ? ` (${result.errors.join('; ')})` : ''),
+        data: result,
+      });
+    }
     res.json({
       status: 'success',
-      message: 'Close position request sent',
+      message: `Closed ${result.closed} position(s)`,
+      data: result,
     });
   } catch (error) {
     next(error);

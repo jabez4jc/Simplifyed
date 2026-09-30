@@ -104,10 +104,7 @@ class MarketDataFeedService extends EventEmitter {
     // Consolidated TTL settings
     this.QUOTE_TTL_MS = DEFAULT_QUOTE_TTL_IDLE_MS;
     this.QUOTE_TTL_ORDER_MS = TTL_ORDER_CRITICAL;
-    this.POSITION_TTL_MS = DEFAULT_POSITION_INTERVAL_IDLE;
     this.FUNDS_TTL_MS = DEFAULT_FUNDS_INTERVAL;
-    this.ORDERBOOK_TTL_MS = DEFAULT_ORDERBOOK_INTERVAL;
-    this.TRADEBOOK_TTL_MS = DEFAULT_TRADEBOOK_INTERVAL_IDLE;
     this.quoteTtlIdleMs = DEFAULT_QUOTE_TTL_IDLE_MS;
     this.quoteTtlActiveMs = DEFAULT_QUOTE_TTL_ACTIVE_MS;
     this.positionIntervalIdleMs = DEFAULT_POSITION_INTERVAL_IDLE;
@@ -249,15 +246,15 @@ class MarketDataFeedService extends EventEmitter {
     const md = cfg.marketDataFeed || {};
 
     this.quoteIntervalMs = cfg.polling?.marketDataInterval || DEFAULT_QUOTE_INTERVAL;
-    this.fundsIntervalMs = md.fundsIntervalMs || md.fundsTtlMs || DEFAULT_FUNDS_INTERVAL;
+    this.fundsIntervalMs = md.fundsIntervalMs || DEFAULT_FUNDS_INTERVAL;
 
-    this.quoteTtlIdleMs = md.quoteTtlIdleMs || md.quoteTtlMs || DEFAULT_QUOTE_TTL_IDLE_MS;
+    this.quoteTtlIdleMs = md.quoteTtlIdleMs || DEFAULT_QUOTE_TTL_IDLE_MS;
     this.quoteTtlActiveMs = md.quoteTtlActiveMs || Math.min(this.quoteTtlIdleMs, DEFAULT_QUOTE_TTL_ACTIVE_MS);
-    this.positionIntervalIdleMs = md.positionIntervalIdleMs || md.positionTtlMs || DEFAULT_POSITION_INTERVAL_IDLE;
+    this.positionIntervalIdleMs = md.positionIntervalIdleMs || DEFAULT_POSITION_INTERVAL_IDLE;
     this.positionIntervalActiveMs = md.positionIntervalActiveMs || DEFAULT_POSITION_INTERVAL_ACTIVE;
-    this.tradebookIntervalIdleMs = md.tradebookIntervalIdleMs || md.tradebookTtlMs || DEFAULT_TRADEBOOK_INTERVAL_IDLE;
+    this.tradebookIntervalIdleMs = md.tradebookIntervalIdleMs || DEFAULT_TRADEBOOK_INTERVAL_IDLE;
     this.tradebookIntervalActiveMs = md.tradebookIntervalActiveMs || DEFAULT_TRADEBOOK_INTERVAL_ACTIVE;
-    this.orderbookIntervalMs = md.orderbookIntervalMs || md.orderbookTtlMs || DEFAULT_ORDERBOOK_INTERVAL;
+    this.orderbookIntervalMs = md.orderbookIntervalMs || DEFAULT_ORDERBOOK_INTERVAL;
 
     this.multiQuoteCooldownIdleMs = md.multiquoteCooldownIdleMs || MULTI_QUOTE_COOLDOWN_IDLE_MS;
     this.multiQuoteCooldownActiveMs = md.multiquoteCooldownActiveMs || MULTI_QUOTE_COOLDOWN_ACTIVE_MS;
@@ -267,10 +264,7 @@ class MarketDataFeedService extends EventEmitter {
 
     this.QUOTE_TTL_MS = Math.max(this.quoteTtlIdleMs, TTL_DISPLAY);
     this.QUOTE_TTL_ORDER_MS = TTL_ORDER_CRITICAL;
-    this.POSITION_TTL_MS = this.positionIntervalIdleMs;
     this.FUNDS_TTL_MS = this.fundsIntervalMs;
-    this.ORDERBOOK_TTL_MS = this.orderbookIntervalMs;
-    this.TRADEBOOK_TTL_MS = this.tradebookIntervalIdleMs;
 
     if (this.isRunning) {
       this._restartIntervals();
@@ -986,14 +980,6 @@ class MarketDataFeedService extends EventEmitter {
     }
   }
 
-  async invalidatePositions(instanceId, { refresh = false } = {}) {
-    this.positionCache.delete(instanceId);
-    this.openPositionInstances.delete(instanceId);
-    this.hasOpenPositions = this.openPositionInstances.size > 0;
-    if (refresh) {
-      await this.refreshPositionsForInstance(instanceId, { force: true });
-    }
-  }
 
   // Fallback entry price helpers
   setFallbackEntryPrice(instanceId, exchange, symbol, price, source = 'unknown', meta = {}) {
@@ -1269,12 +1255,6 @@ class MarketDataFeedService extends EventEmitter {
     }
   }
 
-  async invalidateFunds(instanceId, { refresh = false } = {}) {
-    this.fundsCache.delete(instanceId);
-    if (refresh) {
-      await this.refreshFundsForInstance(instanceId);
-    }
-  }
 
   /**
    * Helpers
@@ -1402,10 +1382,6 @@ class MarketDataFeedService extends EventEmitter {
     this._updateOpenOrderState(instanceId, list);
   }
 
-  invalidateOrderbook(instanceId) {
-    this.orderbookCache.delete(instanceId);
-    this._updateOpenOrderState(instanceId, []);
-  }
 
   async getTradebookSnapshot(instanceId, { force = false } = {}) {
     const now = Date.now();
@@ -1442,9 +1418,6 @@ class MarketDataFeedService extends EventEmitter {
     }
   }
 
-  invalidateTradebook(instanceId) {
-    this.tradebookCache.delete(instanceId);
-  }
 
   getTradebookSnapshotCached(instanceId) {
     return this.tradebookCache.get(instanceId) || null;
@@ -1639,58 +1612,6 @@ class MarketDataFeedService extends EventEmitter {
     return { quotes: collected, pendingSymbols, sourceInstanceId };
   }
 
-  async _fetchQuotesForInstance(instance, symbols = []) {
-    if (!Array.isArray(symbols) || symbols.length === 0) {
-      return [];
-    }
-
-    const normalizedSymbols = symbols
-      .map((s) => ({
-        exchange: `${s.exchange || ''}`,
-        symbol: `${s.symbol || ''}`,
-      }))
-      .filter((s) => s.exchange && s.symbol && this._tradesExchange(instance, s.exchange));
-
-    if (normalizedSymbols.length === 0) {
-      return [];
-    }
-
-    const supportsMulti = Boolean(instance.supports_multiquotes);
-    const now = Date.now();
-
-    if (normalizedSymbols.length > 1) {
-      if (!supportsMulti) {
-        log.warn('Skipping multi-symbol quote fetch on instance without multiquotes support', { instance_id: instance.id });
-        return [];
-      }
-      const cooldown = this.hasOpenPositions ? this.multiQuoteCooldownActiveMs : this.multiQuoteCooldownIdleMs;
-      const lastMultiAt = this.multiQuoteTimestamps.get(instance.id) || 0;
-      if (now - lastMultiAt < cooldown) {
-        log.debug('Skipping MultiQuotes fetch due to cooldown', {
-          instance_id: instance.id,
-          elapsedMs: now - lastMultiAt,
-          cooldownMs: cooldown,
-        });
-        return [];
-      }
-      const multiQuotes = await openalgoClient.getMultiQuotes(instance, normalizedSymbols);
-      this.multiQuoteTimestamps.set(instance.id, now);
-      return multiQuotes;
-    }
-
-    // Single-symbol fetch; allowed path for order placement usage
-    if (supportsMulti) {
-      try {
-        const mq = await openalgoClient.getMultiQuotes(instance, normalizedSymbols);
-        this.multiQuoteTimestamps.set(instance.id, now);
-        return mq;
-      } catch (error) {
-        log.warn('Single-symbol multiquote failed, falling back to quote', { instance_id: instance.id, error: error.message });
-      }
-    }
-
-    return openalgoClient.getQuotes(instance, normalizedSymbols);
-  }
 
   _symbolKey(exchange = '', symbol = '') {
     return `${(exchange || '').toUpperCase()}|${(symbol || '').toUpperCase()}`;
@@ -1821,18 +1742,6 @@ class MarketDataFeedService extends EventEmitter {
     }
 
     this.emit('cache:invalidated', { instanceId, feeds });
-  }
-
-  /**
-   * Invalidate symbol-level quote cache for specific symbols
-   * Useful when quote data needs to be refreshed for specific symbols
-   * @param {Array} symbols - Array of {exchange, symbol}
-   */
-  invalidateSymbolQuotes(symbols = []) {
-    for (const s of symbols) {
-      const key = this._symbolKey(s.exchange, s.symbol);
-      this.symbolQuoteCache.delete(key);
-    }
   }
 
   /**

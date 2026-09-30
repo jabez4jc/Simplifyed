@@ -1,4 +1,6 @@
+import crypto from 'node:crypto';
 import config from '../core/config.js';
+import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { UnauthorizedError, ValidationError } from '../core/errors.js';
 import { maskApiKey, parseIntSafe, timingSafeEqualStr } from '../utils/sanitizers.js';
@@ -125,6 +127,24 @@ class TradingviewBroadcastService {
     if (!timingSafeEqualStr(token, expected)) {
       throw new UnauthorizedError('Invalid webhook token');
     }
+  }
+
+  /**
+   * Replace the webhook token with a new random one. It is stored as a sensitive setting, which
+   * config.load() reads ahead of WEBHOOK_TOKEN in .env, and takes effect at once - every alert
+   * still carrying the old token is refused from this moment.
+   */
+  async rotateToken() {
+    const token = crypto.randomBytes(24).toString('base64url');
+    await db.run(
+      `INSERT INTO application_settings (key, value, description, category, data_type, is_sensitive)
+       VALUES ('webhooks.tradingview.token', ?, 'TradingView webhook token (rotated from Settings)', 'webhooks', 'string', 1)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, is_sensitive = 1, updated_at = CURRENT_TIMESTAMP`,
+      [token]
+    );
+    config.webhooks.tradingviewBroadcast.token = token;
+    log.warn('TradingView webhook token rotated - alerts using the old token are now refused');
+    return token;
   }
 
   parseRequestBody(req) {

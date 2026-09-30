@@ -110,11 +110,7 @@ sudo nano /opt/simplifyed/backend/.env
    - Settings → Access Control → Create User, then assign a role.
    - Users change their own password via `POST /api/v1/auth/change-password`; an admin can reset one from the server with `npm run set-password -- <email> <new-password>`.
 
-3. **Import Instruments** (for options trading)
-   ```bash
-   cd /opt/simplifyed
-   sudo -u simplifyed ./import-instruments.sh --exchange NFO --instance-id 1
-   ```
+3. **Instruments** load automatically once an instance is healthy. To refresh by hand, use Settings → Data Management.
 
 4. **Set Up Backups**
    ```bash

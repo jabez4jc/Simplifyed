@@ -39,31 +39,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     `;
   }
 
-  renderStreamingPreferenceCard() {
-    const enabled = typeof window !== 'undefined' && window.app ? window.app.getStreamPreference() : false;
-    const serverEnabled = typeof window !== 'undefined' && window.app ? window.app.wsGatewayEnabled : false;
-    return `
-      <div class="card">
-        <div class="card-header">
-          <h3 class="card-title">Live Streaming (beta)</h3>
-          <p class="text-sm text-neutral-600 mt-1">
-            Use WebSocket streaming for quotes/positions/funds when available. Falls back to polling automatically.
-          </p>
-        </div>
-        <div class="p-6 flex items-center justify-between gap-4">
-          <div>
-            <p class="font-semibold">${enabled && serverEnabled ? 'Enabled' : 'Disabled'}</p>
-            <p class="text-sm text-neutral-600">
-              ${serverEnabled ? 'Session-authenticated stream; respects per-instance websocket capability.' : 'Server streaming disabled. Polling only.'}
-            </p>
-          </div>
-          <button class="btn ${enabled ? 'btn-neutral' : 'btn-primary'}" onclick="app.toggleStreamPreference()">
-            ${enabled ? 'Disable Streaming' : 'Enable Streaming'}
-          </button>
-        </div>
-      </div>
-    `;
-  }
+
   /**
    * Render application settings section
    */
@@ -110,68 +86,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     `;
   }
 
-  renderInstanceHealthTests() {
-    if (!this.isAdmin()) {
-      return `
-        <div class="settings-empty">
-          <p class="text-neutral-500">Admin access required to edit instance health tests.</p>
-        </div>
-      `;
-    }
-    const cfg = this.instanceHealthTests || {};
-    const quotes = cfg.quotes || [];
-    const multiquotes = cfg.multiquotes || [];
-    const optionchain = cfg.optionchain || [];
-
-    const toTextarea = (arr) => JSON.stringify(arr, null, 2);
-
-    return `
-      <div class="grid gap-4 md:grid-cols-2">
-        <div>
-          <h4 class="font-semibold mb-2">Quotes Tests</h4>
-          <p class="text-xs text-neutral-500 mb-2">Array of { symbol, exchange }</p>
-          <textarea id="health-quotes" class="textarea textarea-bordered w-full h-32 font-mono text-xs">${toTextarea(quotes)}</textarea>
-        </div>
-        <div>
-          <h4 class="font-semibold mb-2">MultiQuotes Tests</h4>
-          <p class="text-xs text-neutral-500 mb-2">Array of { symbol, exchange }</p>
-          <textarea id="health-multiquotes" class="textarea textarea-bordered w-full h-32 font-mono text-xs">${toTextarea(multiquotes)}</textarea>
-        </div>
-      </div>
-      <div class="mt-4">
-        <h4 class="font-semibold mb-2">Option Chain Tests</h4>
-        <p class="text-xs text-neutral-500 mb-2">Array of { underlying, exchange, expiry_date, strike_count }</p>
-        <textarea id="health-optionchain" class="textarea textarea-bordered w-full h-32 font-mono text-xs">${toTextarea(optionchain)}</textarea>
-      </div>
-      <div class="mt-4 flex gap-3">
-        <button class="btn btn-buy" onclick="settings.saveInstanceHealthTests()">Save Tests</button>
-        <button class="btn" onclick="settings.renderSettingsView()">Cancel</button>
-      </div>
-    `;
-  }
-
-  async saveInstanceHealthTests() {
-    try {
-      if (!this.canEditApplicationSettings()) {
-        Utils.showToast('You do not have permission to edit settings.', 'error');
-        return;
-      }
-      const quotesVal = document.getElementById('health-quotes').value;
-      const multiVal = document.getElementById('health-multiquotes').value;
-      const ocVal = document.getElementById('health-optionchain').value;
-      const payload = {
-        quotes: JSON.parse(quotesVal || '[]'),
-        multiquotes: JSON.parse(multiVal || '[]'),
-        optionchain: JSON.parse(ocVal || '[]'),
-      };
-      await api.updateInstanceHealthTests(payload);
-      Utils.showToast('Instance health tests updated', 'success');
-      await this.renderSettingsView();
-    } catch (err) {
-      console.error(err);
-      Utils.showToast(`Failed to save tests: ${err.message}`, 'error');
-    }
-  }
 
   /**
    * Handle search input
@@ -263,68 +177,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     `;
   }
 
-  renderInputField(id, key, dataType, value, isSensitive) {
-    const baseProps = `id="${id}" name="${key}" data-key="${key}" data-type="${dataType}" ${isSensitive ? 'data-sensitive="true"' : ''}`;
-
-    if (key === 'trading_sessions') {
-      return this.renderTradingSessionsField(key, value);
-    }
-    if (key === 'brokerage.by_broker') {
-      return this.renderBrokerageTable(key, value);
-    }
-    if (key === 'brokerage.market_order_support') {
-      return this.renderMarketOrderSupportTable(key, value);
-    }
-
-    switch (dataType) {
-      case 'boolean':
-        const isChecked = value === 'true' || value === true;
-        return `
-          <label class="settings-toggle">
-            <input type="checkbox" ${baseProps} class="settings-toggle-input" ${isChecked ? 'checked' : ''} />
-            <span class="settings-toggle-track">
-              <span class="settings-toggle-thumb"></span>
-            </span>
-            <span class="settings-toggle-label">${isChecked ? 'Enabled' : 'Disabled'}</span>
-          </label>
-        `;
-
-      case 'number':
-        return `
-          <div class="settings-input-wrapper">
-            <input type="number" ${baseProps} class="form-input settings-number-input" value="${value}" />
-            ${this.getUnitSuffix(key) ? `<span class="settings-input-suffix">${this.getUnitSuffix(key)}</span>` : ''}
-          </div>
-        `;
-
-      default:
-        const inputType = isSensitive ? 'password' : 'text';
-        return `
-          <div class="settings-input-wrapper">
-            <input type="${inputType}" ${baseProps} class="form-input" value="${Utils.escapeHTML(String(value))}" ${isSensitive ? 'autocomplete="off"' : ''} />
-            ${isSensitive ? `
-              <button type="button" class="settings-toggle-visibility" onclick="settings.togglePasswordVisibility('${id}')">
-                <svg class="eye-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
-                  <path d="M10 12.5a2.5 2.5 0 100-5 2.5 2.5 0 000 5z" />
-                  <path fill-rule="evenodd" d="M.664 10.59a1.651 1.651 0 010-1.186A10.004 10.004 0 0110 3c4.257 0 7.893 2.66 9.336 6.41.147.381.146.804 0 1.186A10.004 10.004 0 0110 17c-4.257 0-7.893-2.66-9.336-6.41zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd" />
-                </svg>
-              </button>
-            ` : ''}
-          </div>
-        `;
-    }
-  }
-
-  /**
-   * Get unit suffix for number fields
-   */
-  getUnitSuffix(key) {
-    if (key.includes('_ms') || key.endsWith('_ms')) return 'ms';
-    if (key.includes('port')) return '';
-    if (key.includes('retries') || key.includes('max_')) return '';
-    if (key.includes('_ttl')) return 'ms';
-    return '';
-  }
 
   /**
    * Toggle password visibility
@@ -569,8 +421,10 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     if (input.type === 'checkbox') {
       value = input.checked ? 'true' : 'false';
     } else if (input.dataset.scale) {
-      // Seconds on screen, milliseconds in storage.
-      value = input.value === '' ? '' : String(Math.round(Number(input.value) * Number(input.dataset.scale)));
+      // Seconds on screen -> ms in storage (whole numbers); percent on screen -> a fraction.
+      const scale = Number(input.dataset.scale);
+      const stored = Number(input.value) * scale;
+      value = input.value === '' ? '' : String(scale >= 1 ? Math.round(stored) : parseFloat(stored.toPrecision(12)));
     } else {
       value = input.value;
     }
@@ -845,38 +699,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
   }
 
   /**
-   * Reset settings to defaults
-   */
-  async resetSettings() {
-    if (!this.canEditApplicationSettings()) {
-      Utils.showToast('You do not have permission to edit settings.', 'error');
-      return;
-    }
-
-    if (!confirm('Put every advanced setting (refresh timings, request limits, timeouts and retries) back to its default?')) {
-      return;
-    }
-
-    try {
-      const resetKeys = (this.schema?.groups || [])
-        .filter((g) => g.advanced)
-        .flatMap((g) => g.sections.flatMap((sec) => sec.fields))
-        .filter((f) => f.default !== undefined && f.default !== '')
-        .map((f) => f.key);
-
-      for (const key of resetKeys) {
-        await this.authFetch(`/api/v1/settings/${encodeURIComponent(key)}/reset`, { method: 'POST' });
-      }
-
-      Utils.showToast('Settings reset to defaults', 'success');
-      await this.refreshSettings();
-    } catch (error) {
-      console.error('[Settings] Error resetting settings:', error);
-      Utils.showToast(`Failed to reset settings: ${error.message}`, 'error');
-    }
-  }
-
-  /**
    * Update save button state
    */
   updateSaveButton() {
@@ -895,7 +717,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       return;
     }
 
-    this.categories = await this.fetchCategories();
     this.settings = await this.fetchAllSettings();
     await this.fetchSchema();
 
@@ -925,18 +746,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
   /**
    * Fetch categories
    */
-  async fetchCategories() {
-    try {
-      const response = await this.authFetch('/api/v1/settings/categories');
-      if (!response.ok) throw new Error('Failed to fetch categories');
-      const data = await response.json();
-      return data.data;
-    } catch (error) {
-      console.error('[Settings] Error fetching categories:', error);
-      return [];
-    }
-  }
-
+ 
   async fetchCurrentUser() {
     const res = await this.authFetch('/api/user');
     if (!res.ok) return null;

@@ -21,5 +21,3 @@ export function noStore(req, res, next) {
   res.set('Expires', '0');
   next();
 }
-
-export default { noStore };

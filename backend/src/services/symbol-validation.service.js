@@ -5,6 +5,7 @@
 
 import openalgoClient from '../integrations/openalgo/client.js';
 import instanceService from './instance.service.js';
+import marketDataInstanceService from './market-data-instance.service.js';
 import instrumentsService from './instruments.service.js';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
@@ -13,7 +14,7 @@ import { ValidationError } from '../core/errors.js';
 /**
  * Symbol classification types
  */
-export const SymbolType = {
+const SymbolType = {
   INDEX: 'INDEX',
   EQUITY: 'EQUITY',
   FUTURES: 'FUTURES',
@@ -284,7 +285,8 @@ class SymbolValidationService {
   }
 
   /**
-   * Get market data instance (primary > secondary > any healthy)
+   * The instance to validate against: the one asked for, else the market-data pool, else any
+   * healthy active instance.
    * @private
    */
   async _getMarketDataInstance(instanceId) {
@@ -292,11 +294,8 @@ class SymbolValidationService {
       return await instanceService.getInstanceById(instanceId);
     }
 
-    // Prefer market data instances
-    const marketDataInstances = await instanceService.getMarketDataInstances();
-    if (marketDataInstances.length > 0) {
-      return marketDataInstances[0];
-    }
+    const pooled = await marketDataInstanceService.getRoundRobinInstance();
+    if (pooled) return pooled;
 
     // Fallback to any healthy active instance
     const instances = await instanceService.getAllInstances({
@@ -416,26 +415,6 @@ class SymbolValidationService {
     return (Date.now() - cacheTime) < CACHE_TTL_MS;
   }
 
-  /**
-   * Clear expired cache entries (older than 7 days)
-   */
-  async clearExpiredCache() {
-    try {
-      const result = await db.run(
-        `DELETE FROM symbol_cache
-         WHERE datetime(cached_at) < datetime('now', '-7 days')`
-      );
-
-      log.info('Cleared expired symbol cache', {
-        deleted: result.changes
-      });
-
-      return result.changes;
-    } catch (error) {
-      log.error('Failed to clear expired cache', error);
-      return 0;
-    }
-  }
 }
 
 export default new SymbolValidationService();

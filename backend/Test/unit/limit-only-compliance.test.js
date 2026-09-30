@@ -65,3 +65,13 @@ test('REDUCE only trims longs and INCREASE only trims shorts - neither squares o
   assert.strictEqual(target(-65, 'INCREASE_PE'), 0);
   assert.strictEqual(target(65, 'INCREASE_CE'), 65, 'a long is left alone by INCREASE');
 });
+
+test('closeposition is refused outright - it squares off at MARKET with no price', () => {
+  assert.throws(() => assertLimitOnlyCompliance('closeposition', { strategy: 'x' }), /SEBI requires LIMIT/);
+});
+
+test('a GTT whose legs would fire as MARKET is refused on Indian exchanges, allowed on crypto', () => {
+  const gtt = (exchange) => ({ exchange, symbol: 'X', pricetype: 'MARKET', trigger_type: 'OCO' });
+  assert.throws(() => assertLimitOnlyCompliance('placegttorder', gtt('NFO')), /SEBI requires LIMIT/);
+  assert.doesNotThrow(() => assertLimitOnlyCompliance('placegttorder', gtt('CRYPTO')));
+});

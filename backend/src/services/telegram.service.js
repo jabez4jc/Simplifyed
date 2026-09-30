@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { config } from '../core/config.js';
@@ -31,28 +30,7 @@ async function ensureSchema() {
 }
 
 class TelegramService {
-  async createLinkingCode(userId) {
-    ensureConfigured();
-    await ensureSchema();
-    const code = `LINK-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-    try {
-      await db.run(
-        `INSERT INTO telegram_subscribers (user_id, chat_id, username, linking_code, is_active, updated_at)
-         VALUES (?, NULL, NULL, ?, 0, CURRENT_TIMESTAMP)
-         ON CONFLICT(user_id) DO UPDATE SET linking_code = excluded.linking_code, updated_at = CURRENT_TIMESTAMP`,
-        [userId, code]
-      );
-    } catch (err) {
-      log.error('telegram_link_code_failed', { user_id: userId, error: err.message });
-      throw new Error('Failed to generate linking code');
-    }
-    return {
-      linking_code: code,
-      bot_username: BOT_USERNAME,
-      link_url: `https://t.me/${BOT_USERNAME}?start=${code}`,
-    };
-  }
-
+ 
   async handleWebhook(update) {
     if (!update || !update.message) return;
     const msg = update.message;
@@ -82,16 +60,6 @@ class TelegramService {
     await this.sendMessage(chatId, '✅ Telegram linked. You will now receive trade notifications.');
   }
 
-  async getUserStatus(userId) {
-    await ensureSchema();
-    const row = await db.get('SELECT chat_id, username, linked_at, is_active FROM telegram_subscribers WHERE user_id = ?', [userId]);
-    return {
-      is_linked: !!row?.chat_id,
-      linked_at: row?.linked_at,
-      username: row?.username,
-      is_active: row?.is_active === 1,
-    };
-  }
 
   async sendMessage(chatId, text) {
     ensureConfigured();

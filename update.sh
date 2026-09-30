@@ -130,9 +130,6 @@ if [[ "$REINSTALL" == true ]]; then
   if [[ -d "$INSTALL_DIR/backend/logs" ]]; then
     rsync -a "$INSTALL_DIR/backend/logs" "$BACKUP_DIR/logs"
   fi
-  if [[ -d "$INSTALL_DIR/backend/data" ]]; then
-    rsync -a "$INSTALL_DIR/backend/data" "$BACKUP_DIR/data"
-  fi
 
   echo "➜ Syncing clean code from source (in-place reinstall)..."
   rsync -av --delete \
@@ -141,7 +138,6 @@ if [[ "$REINSTALL" == true ]]; then
     --exclude='backend/node_modules' \
     --exclude='backend/database' \
     --exclude='backend/logs' \
-    --exclude='backend/data' \
     --exclude='backend/.env' \
     --exclude='*.log' \
     "$SOURCE_DIR/" "$INSTALL_DIR/"
@@ -155,9 +151,6 @@ if [[ "$REINSTALL" == true ]]; then
   fi
   if [[ -d "$BACKUP_DIR/logs" ]]; then
     rsync -a "$BACKUP_DIR/logs/" "$INSTALL_DIR/backend/logs/"
-  fi
-  if [[ -d "$BACKUP_DIR/data" ]]; then
-    rsync -a "$BACKUP_DIR/data/" "$INSTALL_DIR/backend/data/"
   fi
 
   echo "➜ Cleaning install artifacts..."
@@ -184,7 +177,6 @@ fi
 chown -R "$APP_USER":"$APP_USER" \
   "$INSTALL_DIR/backend/database" \
   "$INSTALL_DIR/backend/logs" \
-  "$INSTALL_DIR/backend/data" \
   "$INSTALL_DIR/backend/public"
 
 # Ensure package-lock and workspace files are writable by app user

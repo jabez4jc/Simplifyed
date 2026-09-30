@@ -5,7 +5,7 @@
 
 import { toISTISOString } from './time.js';
 
-export function parseTradeTimestamp(raw) {
+function parseTradeTimestamp(raw) {
   if (!raw) return null;
   const value = String(raw).trim();
 

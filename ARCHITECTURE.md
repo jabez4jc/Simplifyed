@@ -36,15 +36,14 @@ Top-level (key paths):
 - `backend/src/integrations/openalgo/*`: OpenAlgo API client and validators.
 - `backend/public/*`: Static UI assets (HTML, CSS, JS).
 - `backend/migrations/*`: Database schema migrations.
-- `backend/scripts/*`: Instrument import helpers.
-- `data/*`: SQLite session DB for Express sessions.
+- `backend/scripts/*`: test-database builder, password reset CLI, chart vendoring.
 
 ## 3) Runtime Architecture
 
 ### 3.1 Server Bootstrap
 - **Entry**: `backend/server.js` creates an Express app, applies middleware, and mounts routes.
 - **Environment**: Forces timezone to IST for consistent timestamps.
-- **Sessions**: Uses `express-session` + `connect-sqlite3` to persist sessions in `data/sessions.db`.
+- **Sessions**: none server-side - authentication is a stateless JWT (see §4.1).
 - **Config**: Loads environment + DB settings via `core/config.js`.
 
 ### 3.2 Middleware Pipeline
@@ -54,12 +53,11 @@ Order of major middleware:
 3. Compression.
 4. JSON/body parsing (with size limits).
 5. Correlation ID and request logging.
-6. Session handling.
-7. Optional auth (local Bearer JWT / test-mode).
-8. Instruments refresh background check.
-9. Audit logger for API write operations.
-10. API routes.
-11. Error handling and 404 fallback.
+6. Optional auth (local Bearer JWT / test-mode).
+7. Instruments refresh background check.
+8. Audit logger for API write operations.
+9. API routes.
+10. Error handling and 404 fallback.
 
 ### 3.3 Background Services Lifecycle
 The server starts background services after a successful login/signup or during `optionalAuth` if an authenticated session exists:
@@ -72,11 +70,11 @@ The server starts background services after a successful login/signup or during 
 ## 4) Authentication & Authorization
 
 ### 4.1 Auth Methods
-All methods issue/verify a Bearer JWT checked in `middleware/auth.js`'s `optionalAuth`; there is no server-side login session for users (see note below on `express-session`).
+All methods issue/verify a Bearer JWT checked in `middleware/auth.js`'s `optionalAuth`; there is no server-side session.
 - **Local email/password** (the only user-facing method): `POST /api/v1/auth/register` (bootstrap-only - closes once any user exists), `/login`, `/change-password`. Tokens are HS256, signed with `config.auth.jwtSecret` (env `JWT_SECRET`), 7-day expiry. Passwords are bcrypt hashes (cost 10); `attachRoleAndPermissions` deliberately never selects `password_hash`, since its return value becomes `req.user` and is serialized into API responses.
 - **Test mode**: `ENABLE_TEST_MODE=true` bypasses auth entirely with a hardcoded admin user - never enable in production.
 - Accounts after the first are created by an admin (Settings → Access Control, `rbac.service.js`), not by self-service signup. `scripts/set-user-password.js` is the CLI escape hatch for a lost password; it has no HTTP route.
-- `express-session` + `connect-sqlite3` (`data/sessions.db`) is configured but **not used for user login** - it exists solely to back cookie auth for the WebSocket gateway (`validateWsSessionFromRequest` in `server.js`).
+- The WebSocket gateway authenticates with the same JWT, sent as a `token` query parameter (a browser cannot set headers on a WebSocket upgrade).
 
 ### 4.2 RBAC
 - Roles, permissions, and user-role assignments are stored in DB.
@@ -84,7 +82,9 @@ All methods issue/verify a Bearer JWT checked in `middleware/auth.js`'s `optiona
 - `requirePermission` checks are used on most routes.
 
 ### 4.3 Audit Logging
-- Writes to `audit_logs` for mutating requests, including quick orders and instance changes.
+- Writes to `audit_logs` for mutating requests, including quick orders, instance changes and every TradingView webhook call (the one order path with no logged-in user).
+- There is no Audit Logs page or `/api/v1/audit` route any more (removed 2026-09-29 as noise for operators); the table is for after-the-fact investigation straight from the database.
+- Rows older than 7 days are deleted at startup and every 6 hours (`server.js`).
 
 ## 5) Data Model (SQLite)
 
@@ -105,19 +105,15 @@ Major tables (selected fields):
 
 ### Trading State
 - **watchlist_orders**: normalized order history from quick orders or manual placements.
-- **watchlist_positions**: watchlist-level position tracking (derived from OpenAlgo data).
 - **watchlist_options_state**: aggregate options positions by watchlist/symbol/expiry/strike.
 - **quick_orders**: storage for quick-order requests and responses.
-- **order_monitor_log**: historical monitor events and exit actions.
-- **analyzer_trades**: analyzer-only trade records and simulated P&L.
 
 ### Market Data & Instruments
-- **market_data**: LTP cache and OHLC snapshot for watchlist display.
 - **quote_snapshots**: per-instance quote snapshots with dedupe hashes.
 - **instruments**: cached instrument master.
 - **instruments_refresh_log**: import history.
-- **symbol_cache / symbol_search_cache**: symbol lookup optimization.
-- **options_cache / expiry_calendar**: option chain and expiry utilities.
+- **symbol_cache**: symbol lookup optimization.
+- **expiry_calendar**: expiry utilities.
 
 ### Strategies & GTT
 - **strategies**: named multi-leg strategy scoped to a watchlist, optional `webhook_slug` for TradingView-style triggering, `entry_trigger` (MANUAL/webhook).
@@ -129,21 +125,21 @@ Major tables (selected fields):
 - **trailing_state**: trailing stop-loss state across instances and symbols.
 - **risk_events**: audit trail of risk-control actions (target/stop/trailing hits) with previous/new values.
 - **daily_instance_pnl_snapshots**: daily P&L snapshots.
-- **order_monitor_log**: order monitor history (for monitoring/analysis).
 - **notifications**: system and health notifications.
 - **telegram_subscribers**: Telegram link state per user.
-- **telegram_message_log**: outgoing message history (where enabled).
 
 ### Settings & Access
 - **application_settings**: settings by category, data type, description, sensitive flag.
 - **roles / permissions / role_permissions / user_roles**: RBAC model.
-- **audit_logs**: request audit trail.
+- **audit_logs**: request audit trail (write-only; for investigation from the database).
+
+Migration 065 dropped the tables nothing used: `analyzer_trades`, `market_data`, `market_holidays`, `options_cache`, `order_monitor_log`, `symbol_search_cache`, `system_alerts`, `telegram_message_log`, `user_telegram_config`, `watchlist_positions`, `websocket_sessions`.
 - **idempotency_keys**: request replay protection for orders.
 
 ## 6) Core Services (Responsibilities)
 
 ### 6.1 Config & Settings
-- `core/config.js`: loads env and DB settings with caching.
+- `core/config.js`: environment values, the fixed timing/rate tuning, and the few Settings rows it holds (broker timeout, rotated webhook token).
 - `services/settings.service.js`: CRUD over `application_settings`, type validation, defaults, change events.
 - **`config/settings-registry.js`: the single source of truth for what may be changed at runtime.**
 
@@ -151,17 +147,26 @@ Major tables (selected fields):
 
 This is enforced server-side on purpose. The allowlist used to live only in `settings-core.js`, so it filtered *display* while the API still accepted a `PUT` to any key in the table. That included `test_mode.enabled`, which switches `optionalAuth` to a hardcoded admin identity for the whole process — an authentication kill switch one request away from anyone holding `settings.manage`.
 
-Three classes of key are deliberately excluded, and migration 059 deleted their rows:
+**Every value has exactly one source** (since migration 067, 2026-09-30):
+
+| Source | What | Where |
+| ------ | ---- | ----- |
+| Environment | Deployment facts and secrets | `PORT`, `JWT_SECRET`, `WEBHOOK_TOKEN`, Telegram, proxy |
+| Fixed value | Internal timing and rate tuning: feed and poll intervals, cache lifetimes, health-check cadence, retry counts, request ceilings | the constants in `core/config.js` and the OpenAlgo client constructor |
+| Setting | What an operator decides: spread guard, brokerage, market-order support, trading sessions, orders per second, broker response timeout | `application_settings`, with its one default in `ESSENTIAL_SETTINGS` (`settings-registry.js`), which also seeds fresh installs (`000_initial_schema`) |
+
+Before 067 the tuning values were all three at once - an env default, a Settings > Advanced row and a hardcoded fallback - and the screen showed values the app was not using (retries: 5 shown, 3 used; the client copied the timeout from `.env` before the DB was read). Migration 067 deleted those rows and the two hidden debug rows that turned off rate limiting and the circuit breaker; each tuning constant keeps the value that was in effect.
+
+Two classes of key are deliberately not settings:
 
 | Class | Why | Examples |
 | ----- | --- | -------- |
 | Boot-only | Read once at module load or startup; editing does nothing until a restart | `server.port`, `cors.*`, `logging.*`, `database.path` |
-| Secrets | Must come from the environment, where `getEnv(..., required)` can enforce them | `session.secret` |
-| Debug kill-switches | Disable protection against flooding a live broker; still settable directly in the DB | `rate_limits.disabled`, `rate_limits.circuit_breaker_disabled` |
+| Secrets | Must come from the environment, where `getEnv(..., required)` can enforce them (the webhook token is the one exception: it is rotated from Access Control and stored as a sensitive row, never through this API) | `session.secret` |
 
-`session.secret` deserves specific mention: the shipped row held the literal `CHANGE_THIS_IN_PRODUCTION` and was loaded *over* the required `SESSION_SECRET` env var — but only after `configureSession()` had already signed cookies with the env value at module load. `validateWsSessionFromRequest` then verified against the database value, so **every WebSocket connection was rejected and the terminal silently ran on REST polling**. `config.js` no longer reads any secret from the database.
+Sensitive rows come back masked from `getSetting`/`getAllSettings`; server code reads a raw value with `settingsService.getRawValue(key)`. Migration 065 retired the IST blackout-window rows and three permissions nothing checked (`pages.audit.view`, `pages.api_playground.view`, `monitor.view`).
 
-Settings are grouped by task (Market Data, Trading Hours, Broker Connection, Orders & Costs) rather than by the `category` column, because a category such as `market_data_feed` mixes quote freshness, position cadence and order-pricing guardrails — three unrelated decisions. Every field carries a label, one sentence of help, and where relevant a unit, bounds enforced server-side, and a `pairLabel` so idle/active pairs are self-describing.
+Settings are grouped by task (Orders & Costs, Trading Hours, Broker Connection). Every field carries a label, `help` (what it does) and `details` (when to raise or lower it, with an example) - the registry test fails a field without both - and where relevant a unit and bounds enforced server-side. The spread limit is stored as a fraction and edited as a percentage; timeouts are stored in ms and edited in seconds.
 
 ### 6.2 Market Data
 - `services/market-data-feed.service.js`:
@@ -213,6 +218,8 @@ Settings are grouped by task (Market Data, Trading Hours, Broker Connection, Ord
   - Uses `LimitPriceService` and WS-first LTP (via market data feed) for order-critical pricing.
 
 ### 6.5 Risk & Automation
+- `services/kill-switch.service.js` - the **global kill switch** (top bar, `POST /api/v1/kill-switch` with body `{ "confirm": "KILL" }`, permission `killswitch.execute`, held by every built-in role). For every active instance, in parallel: cancel all orders, close each open position with `quickOrderService.closeAllPositions` (LIMIT orders on Indian exchanges, chased until filled), read the book back, then switch to analyzer mode and set `session_cutoff_reason = 'KILL_SWITCH'` so the new-session auto-revert (which only undoes `SESSION_MAX_LOSS`) cannot put it back to live. A live instance whose positions are still open is left live and reported - in analyzer mode nothing would manage them. Returns 207 when any instance needs attention. There is no Pause: a trading app must never stop watching its positions.
+- **Closing everything is LIMIT-only.** Close All (`POST /positions/:id/close`), the switch to analyzer mode and the kill switch all go through `quickOrderService.closeAllPositions`, one symbol at a time through the exit path. OpenAlgo's `closeposition` squares off at MARKET with no price, so the client method was deleted and `assertLimitOnlyCompliance` refuses the endpoint outright. Close All answers 502 with what is still open if anything could not be closed.
 - `services/auto-exit.service.js`:
   - Continuous monitoring of positions.
   - Evaluates targets, stop-loss, trailing stop for equity/futures/options.
@@ -222,7 +229,7 @@ Settings are grouped by task (Market Data, Trading Hours, Broker Connection, Ord
 
 ### 6.6 External Integrations
 - `integrations/openalgo/client.js`: HTTP2 client, backoff, per-instance health, circuit breaker.
-  - **Market blackout windows are enforced here and only here.** The windows (`market_hours.*` settings, quote vs. general) pause broker calls during Indian off-hours. This is the correct and only layer for the check because it is the one that knows the target instance's broker, and therefore the only one that can exempt 24/7 crypto brokers via `utils/broker-type.util.js`'s `isCryptoBroker`. Do not reintroduce an app-level blackout middleware: it cannot see the broker, so it would black out crypto trading overnight.
+  - **There are no time-of-day blackout windows.** The fixed IST windows were removed on 2026-09-29. An unreachable instance is paused by the failure-driven circuit breaker (`instance-health-tracker.service.js`, enforced in `request()`), with a doubling cooldown capped at 10 minutes; order calls and `ignoreCircuit` callers bypass it. Polling, by contrast, is gated per instance on `marketCalendarService.isInstanceMarketOpen()` - crypto brokers always count as open, Indian brokers while any of NSE/BSE/CDS/MCX is. Do not reintroduce a clock-based gate: it blocked working servers and cannot see that crypto trades 24x7.
 - `services/tradingview-broadcast.service.js`: TradingView webhook payload normalization and broadcast.
 - `services/telegram.service.js`: linking and notifications.
 
@@ -262,7 +269,8 @@ Watchlist trading is the heart of the system. It is implemented through a combin
   - Price constraints: `limit_buffer_points`, `limit_buffer_pct`, `tick_size`.
 
 ### 7.2 Watchlist UI Workflow (Frontend)
-- **Dashboard view** renders watchlists and symbols in a table.
+- **Watchlists view** renders watchlists and symbols in a table. A watchlist created from the UI is active straight away (it used to default to inactive and was never quoted).
+- **Add Symbol** searches the local instruments cache (FTS5 prefix match, `"query" *`): the stock ranks before its futures, futures before options, expired contracts are never listed, and the exchange filter narrows it.
 - Each symbol row can be expanded by `QuickOrderHandler` to show:
   - Trade mode selection (equity/futures/options).
   - Options leg (ITM/ATM/OTM), expiry selection.
@@ -307,7 +315,7 @@ The `QuickOrderService` does the heavy lifting:
 
 7. **Persistence & Notifications**
   - Writes order entries to `watchlist_orders` and `quick_orders`.
-  - Updates `watchlist_positions` or options state as needed.
+  - Updates options state (`watchlist_options_state`) as needed.
   - Sends Telegram notifications and broadcast summaries.
 
 ### 7.9 Order Placement & Retry (Expanded + Visual)
@@ -497,10 +505,10 @@ Key options features implemented in `QuickOrderService`:
 
 A **strategy** is a named group of legs (e.g. sell ATM CE + sell ATM PE) scoped to a watchlist, manageable via `/api/v1/strategies` and executable via webhook (`findByWebhookSlug`) or the UI.
 
-- **Execution** (`executeStrategy`) resolves each leg's symbol/strike (once per broadcast for consistency, or per-instance for FLOAT_OFS reduce) and reuses `quickOrderService.placeQuickOrder` for the actual order - no separate order-placement path.
-- **Exit tracking**: rather than a bespoke exit engine, each leg's resolved trading symbol gets a `watchlist_symbols` row carrying that leg's own target/stoploss/trailing config, so exits ride the existing `AutoExitService`/`RiskControlsService` polling loop used for regular watchlist symbols. `_placeLegExitGtt` additionally records the exit as a `gtt_orders` row for visibility/cancellation via `/api/v1/gtt`.
+- **Execution** (`executeStrategy`) resolves each leg's symbol/strike (once per broadcast for consistency, or per-instance for FLOAT_OFS reduce), then sends every leg for an instance in one `placeBasketOrder` call. Indian legs are marketable LIMIT orders priced from depth/quotes (SEBI); crypto legs go MARKET when the broker allows it (Settings > Market orders), since a LIMIT off the last quote rested unfilled - and was cancelled - whenever the price moved past it.
+- **Exit tracking**: rather than a bespoke exit engine, each leg's resolved trading symbol gets a `watchlist_symbols` row carrying that leg's own target/stoploss/trailing config, so exits ride the existing `AutoExitService`/`RiskControlsService` polling loop used for regular watchlist symbols.
 - **Status**: `GET /:id/status` (`getExecutionStatus`) aggregates `strategy_leg_executions` across instances for a strategy.
-- **Risk events**: target/stop/trailing hits during strategy or watchlist-symbol monitoring are recorded to `risk_events`, readable via `/api/v1/risk-events` (audit-only, no write endpoint).
+- **Risk events**: target/stop/trailing hits during strategy or watchlist-symbol monitoring are recorded to `risk_events`.
 
 ## 8) Instance Management Architecture (Deep Detail)
 
@@ -542,19 +550,16 @@ A **strategy** is a named group of legs (e.g. sell ATM CE + sell ATM PE) scoped 
 ### 9.1 Storage Model
 - All settings live in `application_settings` with:
   - `key`, `value`, `category`, `data_type`, `description`, `is_sensitive`.
-- `SettingsService` ensures essential keys exist at runtime.
+- `SettingsService.ensureEssentialSettings()` inserts any missing row from `ESSENTIAL_SETTINGS`.
 
 ### 9.2 Config Loading
-- `core/config.js` caches settings for a short duration to limit DB reads.
-- If DB is unavailable, falls back to environment variables.
+- `config.loadFromDatabase()` reads the broker timeout and the rotated webhook token at startup, and again when an `openalgo` setting changes. The OpenAlgo client reads the timeout through a getter, so a change applies to the next call; it reloads the orders-per-second limit on a `rate_limits` change.
+- The spread guard, brokerage and sessions are read from their rows at the point of use.
 
 ### 9.3 Settings API
 - `GET /api/v1/settings/schema`: **what the Settings UI renders from** — the registry (groups → sections → fields, with labels, help, units and bounds) hydrated with current values. Only runtime-editable settings appear.
 - `GET /api/v1/settings`: all settings grouped by category (raw; includes non-editable rows).
-- `PUT /api/v1/settings`: batch updates. Runs inside `db.transaction()`; a rejected key is collected into `errors` rather than rolling back the valid keys in the same save.
-- `PUT /api/v1/settings/:key`: single update. Rejects any key absent from the registry, and any value outside its declared bounds, with 400.
-- `POST /api/v1/settings/:key/reset`: reset to defaults.
-- `GET/PUT /api/v1/settings/instance-health-tests/config`: JSON config for health checks.
+- `PUT /api/v1/settings`: the only write - the Settings screen saves through it. Runs inside `db.transaction()`; a key absent from the registry, or a value outside its bounds (including a trading session that is not HH:MM), is collected into `errors` rather than rolling back the valid keys in the same save.
 
 Writes are validated twice over: the registry checks the key is editable and the value is in range, then `settings.service` coerces it to the column's `data_type`. A client cannot widen this by talking to the API directly — which was the whole problem with the previous frontend-only allowlist.
 
@@ -584,14 +589,10 @@ It then appears in the UI, is accepted by the API, and is covered by `Test/unit/
 
 ### 9.6 Settings UI (Frontend)
 - `SettingsHandler` shows a curated subset of settings for admin control.
-- Categories include polling, market data feed, instance health, market hours, trading sessions, and brokerage.
+- **General** renders every group from the schema, stacked: Orders & Costs, Trading Hours, Broker Connection. There is no Advanced panel (removed 2026-09-30). Each field shows its default; millisecond settings are edited in seconds and stored in ms.
+- **Access Control** (admin only): users, roles, permissions, and the **TradingView webhook token** - "Rotate token" issues a new random token (`POST /api/v1/webhook-config/rotate`, `settings.manage`), stores it as the sensitive setting `webhooks.tradingview.token` (which `config.load()` reads ahead of `WEBHOOK_TOKEN` in `.env`), and refuses the old one immediately.
+- **Data Management**: instruments refresh/upload and CSV import/export. **System Status**: health and feed state.
 - Sensitive settings are masked and have visibility toggles.
-
-### 9.7 Redundant Settings Cleanup
-The settings UI intentionally hides internal-only or redundant configuration to reduce confusion:
-- **Removed from UI**:
-  - `settings.cache_duration_ms` (internal config cache).
-  - `polling.market_data_interval_ms` (internal quote refresh tick; actual refresh is governed by market data feed TTLs).
 
 ## 10) Market Data Pipeline (Deep Detail)
 
@@ -619,21 +620,19 @@ The settings UI intentionally hides internal-only or redundant configuration to 
 
 ## 10.5) Charting (Historical Candles)
 
-Read-only in this phase: the chart displays data and places no orders.
-
 **Why the topology differs from the rest of the app.** Orders fan out to every associated instance; candles come from exactly **one**. OHLC for a symbol is the same market fact whichever broker reports it, so fanning out would multiply rate-limit cost for identical data. `candle.service.js` picks a single instance from the existing market-data pool, filtered by broker class — a `CRYPTO` symbol asked of an Indian broker is a guaranteed failure, so there is deliberately no fallback to a mismatched broker.
 
 **Symbols come from `watchlist_symbols`, not free text.** A charted symbol must also be a *tradeable* symbol: the watchlist row carries the quantity defaults, product, tick buffers and risk/auto-exit config that every order path depends on. Sourcing the picker anywhere else would produce a chart whose trade buttons could not later be wired up without bypassing those guardrails.
 
 **The `candles` cache (migration 060) is not an optimisation, it is load-bearing.**
 - `history` shares the per-instance rate limiter with the live trading feed. Uncached, a user scrubbing timeframes competes with position and quote polling for the same budget.
-- `history` is **not** a quote endpoint (`client.js` matches only quotes/optionchain/depth), so it falls under the *general* blackout window. Without a cache the chart simply fails overnight; with one it serves last-known candles and sets `stale: true`, which the UI states in words.
+- When the instance is unreachable (its circuit breaker is open), an uncached chart simply fails; with the cache it serves last-known candles and sets `stale: true`, which the UI states in words.
 - A `MIN_FETCH_INTERVAL_MS` cooldown means repeated requests for the same symbol/timeframe cannot translate into broker traffic.
 - Rows are upserted, not ignored on conflict: the newest candle of a live session is still forming, and `ON CONFLICT DO NOTHING` would freeze the current bar at its first value.
 
-**Time axis.** Stored `ts` is a true UTC epoch in seconds exactly as the broker returns it (verified: BSE's first candle of the day is 03:45Z = 09:15 IST). Lightweight Charts renders its axis in UTC and has no timezone option, so `dashboard-chart.js` adds the IST offset **to the value handed to the chart only**. Never store or compare the shifted value.
+**Time axis.** Stored `ts` is a true UTC epoch in seconds exactly as the broker returns it (verified: BSE's first candle of the day is 03:45Z = 09:15 IST). The engine takes raw UTC seconds and labels the axis in an IANA zone (`CHART_TIMEZONE = 'Asia/Kolkata'`), so no value is shifted before it is charted. `IST_OFFSET_SECONDS` survives only for bucket arithmetic in `dashboard-chart-live.js` (which bar a tick belongs to).
 
-**Library.** TradingView Lightweight Charts, Apache-2.0, vendored at `public/vendor/` and loaded via a plain script tag — no bundler, no framework, same idiom as every other view. The licence requires the visible attribution link rendered under the chart; do not remove it.
+**Library.** [openalgo-charts](https://www.npmjs.com/package/openalgo-charts) (Apache-2.0, the OpenAlgo project's own clean-room engine), installed from npm and copied into `public/vendor/openalgo-charts` by `scripts/sync-vendor-charts.js` on every install. It ships as native ES modules; `public/js/openalgo-charts-bridge.js` loads the tiers this app uses (core, indicators, drawing, profile, trade, transforms, WebGL) and exposes them as `window.OAC` for the classic `dashboard-chart*.js` scripts. User studies are compiled by the vendored OpenScript engine (`public/vendor/openalgo-script`). Keep the attribution line under the chart.
 
 **Not adopted:** the reference implementation (`marketcalls/openalgo`) drives a `TradingTerminal` from `{ apiKey, wsUrl }` pointing at a single OpenAlgo server, and is React + Vite. Both assumptions are wrong here — this app is a multi-instance control plane, and has no build step.
 
@@ -671,7 +670,7 @@ Sending the same figure to both differs by a factor of `lot_size`. On NATGASMINI
 
 ### Background refresh policy
 
-The dashboard shell runs a 15-second tick. It used to call `loadView(currentView)` — a **full re-render of whatever view was open**, which is why the app looked like it was reloading every few seconds. That behaviour predates every view growing its own updating mechanism, so by the time it was removed it was redundant everywhere and destructive in places: the chart tore down its candles, option panes and indicator sub-charts mid-interaction (leaving "Trade options" ticked with nothing beneath it), the API playground lost typed input, and settings lost unsaved edits.
+The dashboard shell runs a 15-second tick. It used to call `loadView(currentView)` — a **full re-render of whatever view was open**, which is why the app looked like it was reloading every few seconds. That behaviour predates every view growing its own updating mechanism, so by the time it was removed it was redundant everywhere and destructive in places: the chart tore down its candles, option panes and indicator sub-charts mid-interaction (leaving "Trade options" ticked with nothing beneath it), and settings lost unsaved edits.
 
 The tick now consults `AUTO_REFRESH_VIEWS` in `dashboard-core.js` and touches only:
 
@@ -681,11 +680,11 @@ The tick now consults `AUTO_REFRESH_VIEWS` in `dashboard-core.js` and touches on
 | notifications | re-render |
 | orders | `loadOrders(..., { ensureView: false })` — data only, keeps the filter, scroll and expanded rows |
 
-Every other view keeps itself current by other means: watchlists has an adaptive poller, positions is driven by WebSocket pushes plus a 60s snapshot resync, dashboard and trades have their own intervals, the chart refreshes its own candles, and strategies/audit/daily-P&L are static until acted on. Settings and the API playground are deliberately never auto-refreshed — they hold unsaved input.
+Every other view keeps itself current by other means: watchlists has an adaptive poller, positions is driven by WebSocket pushes plus a 60s snapshot resync, dashboard and trades have their own intervals, the chart refreshes its own candles, and strategies/daily-P&L are static until acted on. Settings is deliberately never auto-refreshed — it holds unsaved input.
 
 **Anything added to that map must update data in place.** A full re-render on a timer is a page refresh in everything but name.
 
-**Resuming** (unpausing, or returning to the tab after the visibility handler paused things) goes through `resumeBackgroundData()`, not `refreshCurrentView(true)`. The old path rebuilt whatever was open, so stepping away from the chart and back destroyed the candles, the option panes and every indicator sub-chart while leaving "Trade options" ticked with nothing beneath it. Resume now refreshes in place where it can (`RESUME_IN_PLACE`, which adds `chart: loadChartData` to the map above) and only falls back to a re-render for `watchlists`, `positions`, `trades` and `dashboard` — the views whose pollers are started by their own render, where skipping the rebuild would leave them silently frozen.
+**Resuming** (returning to the tab after the visibility handler paused things) goes through `resumeBackgroundData()`, not `refreshCurrentView(true)`. The old path rebuilt whatever was open, so stepping away from the chart and back destroyed the candles, the option panes and every indicator sub-chart while leaving "Trade options" ticked with nothing beneath it. Resume now refreshes in place where it can (`RESUME_IN_PLACE`, which adds `chart: loadChartData` to the map above) and only falls back to a re-render for `watchlists`, `positions`, `trades` and `dashboard` — the views whose pollers are started by their own render, where skipping the rebuild would leave them silently frozen.
 
 The tick itself is also now started at init. It previously only began after a tab switch, which is why the symptom appeared partway through a session rather than immediately.
 
@@ -693,7 +692,7 @@ The tick itself is also now started at init. It previously only began after a ta
 
 While "Trade options on this underlying" is on, the chart splits into three panes: the underlying, plus the resolved CE and PE. `GET /api/v1/history/option-legs` resolves those contracts from the instruments master against the live price. That is a **display** resolution — the strike each instance finally trades is resolved independently at execution and may differ if the underlying moves, which the confirmation states.
 
-Indicators are computed in `public/js/chart-indicators.js` (pure functions, unit-tested) because Lightweight Charts ships none. Overlays (2× SMA, 3× EMA, VWAP) share the price scale; RSI and MACD cannot — their range is unrelated to price — so each renders in its own stacked sub-chart. Every period is editable (Settings on the indicator bar) and persisted to `localStorage` under `chart-indicator-config`, merged over the defaults so a release that adds an indicator does not invalidate a saved workspace. Bounds are enforced: an out-of-range period yields an empty series, which reads as "the indicator never switched on" rather than as a rejected value. MACD additionally refuses `fast >= slow`, which would otherwise draw a plausible line that means nothing.
+Indicators come from the engine's registry (`registerBuiltinIndicators()` in the bridge) plus any **OpenScript** study written in the indicator picker, which is compiled by the vendored OpenScript engine and registered like a built-in (a script that does not compile shows its diagnostics and registers nothing). Overlays share the price scale; oscillators (RSI, MACD, ...) are panes of the same chart. Each indicator's inputs are editable and persisted to `localStorage` under `chart-indicator-config` (`-ce` / `-pe` for the option panes), merged over the engine's defaults so a release that adds an indicator does not invalidate a saved workspace.
 
 **Zoom survives a reload.** `loadChartData` used to end in `fitContent()`, so every refetch threw away whatever the user had zoomed into — returning to the browser tab, coming back to the chart view, even toggling an indicator. The view is now captured before the data is replaced and restored after, as **bar spacing plus scroll position** rather than a visible range: those are independent of bar index, so appending live bars or refetching a slightly different window does not shift the view, and scroll position measured from the right edge keeps a live chart following the latest bar at the chosen zoom.
 
@@ -709,7 +708,7 @@ Three rules that are silent when wrong, and so are pinned by tests:
 
 The stream is preferred; a 3-second REST poll of `/snapshots/quotes` is the fallback, checked per tick rather than at start-up because the socket can drop at any time and a chart that silently stops moving is the worst failure here. Only the underlying updates live — the stream carries the symbols the watchlists subscribe to, and the resolved CE/PE contracts are not among them, so the option panes hold their fetched history rather than showing an invented tick.
 
-**Indicators advance with the price.** `refreshLiveIndicators()` recomputes each enabled indicator in full on every tick and pushes only the **last point**, via `series.update()`. The arithmetic is a few thousand operations and does not register; what makes a chart stutter is `setData` across a dozen series — and only the final bar can have changed anyway. The oscillator sub-charts expose a `recompute` hook for the same reason, and the shading primitives read their line data from a shared holder rather than closing over the arrays, so the fills reshade instead of freezing at load time.
+**Indicators advance with the price.** Indicators are engine instances attached to the chart (`chart.addIndicator()`), which recompute when the series data changes, so a live tick moves them without a refetch.
 
 **Index segments (`NSE_INDEX`, `BSE_INDEX`) were never subscribed on any WebSocket, ever.** Two compounding bugs in `market-calendar.service.js` and `openalgo-ws.service.js`, both found while chasing the NIFTY symptom above:
 
@@ -725,18 +724,9 @@ The generous six-hour window is intentional: an illiquid contract's last trade c
 
 **Volume is a delta, not the counter.** Broker quotes report volume cumulatively for the session. Assigning it straight to the bar would give the live candle the whole day's volume and drag VWAP toward it, so the bar's volume is the increase since it opened. A counter that goes backwards (session rollover, feed reset) rebaselines rather than emitting a negative volume. Without a volume field the bar stays at zero and VWAP simply holds — correct for a volume-weighted average with nothing to weight by.
 
-**Volume** follows the "Simple Volume" Pine indicator, as its own pane. Each bar is classified once and coloured: **blue** pocket pivot, **orange** dry, **green/red** above-average up/down, grey otherwise, with the average plotted as a yellow line. The pocket pivot is the point of the study - an up-volume bar that exceeds the **largest down-bar volume** in the lookback window, not merely the average, so above-average alone does not qualify. Lookback, average length and the dry divisor are all editable.
+**Volume** is a histogram series pinned to the bottom fifth of the price pane, so it reads as context rather than as a second chart.
 
-Two parts of the Pine original are deliberately not replicated: `request.footprint` order-flow delta needs a paid TradingView data feed with no equivalent here, and approximating it from close-vs-open would look identical while meaning something else; the rupee-turnover stats table depends on that same feed's turnover series.
-
-**Shaded regions** (`public/js/chart-fills.js`). Lightweight Charts has no band or between-series fill, so both are series primitives (`attachPrimitive`, v5) drawn at `bottom` z-order so the lines stay legible over their own shading:
-
-- `ZoneFill` — the RSI's overbought and oversold regions. Levels are configurable (default 70/30) and read at draw time, so editing one reshades without rebuilding the pane. The shading runs to the pane edges rather than stopping at the highest plotted value: the point is to mark the whole region.
-- `BandFill` — the signed area between two lines, green where the first is above the second and red where it is below. Used for RSI vs its MA and MACD vs its signal. Points are paired **by timestamp**, not by index: the two lines have different warm-up lengths, so index-aligning them shears the fill sideways by however many bars they differ. Runs are flushed as one polygon per crossover rather than a quad per bar.
-
-`os < ob` is enforced for the same reason `fast < slow` is on MACD — inverted bands shade the wrong regions and read as a permanently overbought instrument.
-
-**Candlestick patterns** (`public/js/chart-patterns.js`). 44 classical patterns as pure functions over candles, rendered as markers via `createSeriesMarkers`. Each is independently toggleable with its own marker colour and placement (`chart-patterns` in localStorage), defaulting to green-below for bullish and red-above for bearish.
+**Candlestick patterns** (`public/js/chart-patterns.js`). 44 classical patterns as pure functions over candles, drawn as markers on the candle series by `applyPatternsTo` (`dashboard-chart-panes.js`). Each is independently toggleable with its own marker colour and placement (`chart-patterns` in localStorage), defaulting to green-below for bullish and red-above for bearish.
 
 **Markers carry a short code, not the name.** "Bearish Engulfing" is wider than a dozen candles, so at any real bar density the labels overrun each other and the chart becomes unreadable. Every pattern has a 3-4 character code (`HMR`, `SHS`, `MBW`, `ENG+`/`ENG-`), with the trailing `+`/`-` used only where a bullish and bearish twin would otherwise collide - colour alone is not enough to tell them apart on a dense chart. The codes are asserted unique and short by test, and the pattern picker shows each code beside its full name so the list doubles as the key.
 
@@ -803,65 +793,31 @@ The sizing hint shows the **outcome** inline (`→ 1,250 units`) with the full a
 
 ### Drawing tools
 
-Lightweight Charts ships none — the toolbar people recognise belongs to TradingView's **Advanced Charts**, a separate licensed product that cannot be imported here. The engine is [`lightweight-charts-drawing`](https://github.com/deepentropy/lightweight-charts-drawing) (MIT, vendored as a self-contained UMD build, peers on lightweight-charts ^5): **67 tools** across lines, shapes, Fibonacci, channels, pitchforks, Gann, forecasting, measurement and annotation. It owns rendering, hit testing, anchor dragging and serialisation.
+`public/js/dashboard-chart-draw.js` is a thin adapter over openalgo-charts' own `DrawingController` (the `draw` tier). The engine is headless and owns placement (live preview, click-click and press-drag-release), selection, whole-shape and per-anchor dragging, magnet snap to O/H/L/C, undo/redo and JSON serialisation. The adapter adds:
 
-**The palette is restricted to 18 tools**, not the engine's 67 (`DRAW_ALLOWED` in the adapter): trend line, ray, horizontal/vertical/cross line, parallel channel, Fib retracement and extension, long and short position, price range, rectangle, date range, date-and-price range, text annotation, callout, note and comment. A wall of pitchforks and Gann squares buries the handful that matter, and every tool on the rail is one that has been verified end to end — armed through the rail and flyout, drawn with real pointer input, then checked for valid geometry, finite anchors, a pane view, a clean return to Select, and survival of a full chart rebuild. Categories with nothing left in them drop off the rail entirely.
+- **A vertical icon rail** grouping every tool the engine registers into this app's categories (`TOOL_CATEGORY`). A tool not named there lands under "More", so a library upgrade that ships new tools exposes them immediately.
+- **Per-instrument persistence** in `localStorage` (`chart-draw:{exchange}:{symbol}`), saved on every change.
+- **A horizontal line doubles as an order ticket.** It is the only shape naming a single price, so right-clicking one opens the chart's ordinary limit/stop menu at that price through `contextMenuItemsFor` + `confirmChartOrder` - the same validity rules, sizing and blast-radius confirmation as any other chart order. Nothing in the adapter places an order on its own.
 
-A drawing saved earlier under a tool that is no longer listed still **restores**; it simply cannot be created again. Silently deleting someone's marked-up chart because the palette shrank would be worse than showing a shape they can no longer draw.
+**Trading in options mode.** The CE/PE tickets fan out at market with a strike resolved per instance. The underlying stays tradeable by right-clicking the main chart (blocked only when it genuinely cannot be traded, e.g. an index), and a specific leg is tradeable by right-clicking its own pane - LIMIT and SL-M only, on that exact contract, sent to `/orders` with the symbol named outright. Sizing takes a `forOptions` flag throughout (`sizingUnit`, `lotSize`, `typedLots`, `typedUnits`, `sizingBreakdown`) so a futures order placed while options mode is on is never sized with the option's lot size.
 
-The UI is a **vertical icon rail** to the left of the canvas, as on every charting terminal: one button per category (plus Select at the top and Lock / Hide / Clear below a divider), each opening a flyout listing that category's tools with their anchor counts. Icons are inline SVG on a 24x24 grid using `currentColor` — the app serves no external assets, and an active state then needs no second asset. The rail is a flex sibling of the chart rather than an overlay, so it never covers a candle; the floating BUY/SELL tickets are offset past it.
+### Chart fits the viewport, panes and sync
 
-`public/js/dashboard-chart-draw.js` is the adapter, and it carries one thing the engine does not: **creation**. At 0.1.1 `DrawingManager.handleClick` only ever *selects* — with a tool active it does nothing, and the README constructs drawings by hand. So anchor capture is implemented here, supporting both gestures people expect: press-drag-release for a quick two-point shape, and click-click-click for tools needing three or more anchors where dragging is impossible. A half-placed shape tracks the pointer via `updateAnchor`, so it reads as a shape rather than a dot.
+`chartBudgetHeight()` caps the chart container to the height the viewport actually has (`window.innerHeight` minus the container's top), and a debounced resize listener reapplies it, so enabling oscillators never pushes them below the fold.
 
-Drawings are stored per instrument (`chart-draw:{exchange}:{symbol}` in localStorage) via the engine's own `exportDrawings`/`importDrawings`, saved on every change event rather than at guessed moments. A shape whose tool is unknown to the current build is skipped on restore rather than aborting the whole set — losing one shape beats losing the lot.
+**Oscillators are panes of the price chart** (`panes()` on one chart instance), so they share one time scale and cannot drift out of line with the candles.
 
-**Trading in options mode.** The CE/PE tickets fan out at market with a strike resolved per instance. Everything else on screen remains tradeable alongside them:
-
-- **The underlying**, by right-clicking the main chart. Options mode used to block this outright, which was wrong: a futures contract used as an option underlying is exactly the thing people hedge on. It is blocked only when the underlying genuinely cannot be traded (an index), which `chartTradeBlocked` already covers.
-- **A specific leg**, by right-clicking its own CE/PE pane - LIMIT and SL-M only, on that exact contract, on every selected instance. Market on options belongs to the tickets, which resolve a strike per instance; picking a price on a leg's chart means the opposite, so it goes to `/orders` with the symbol named outright. `symbolId` is omitted (the contract is not a watchlist row) and `watchlistId` comes from the underlying, since `watchlist_orders.watchlist_id` is NOT NULL.
-
-Sizing takes a `forOptions` flag throughout (`sizingUnit`, `lotSize`, `typedLots`, `typedUnits`, `sizingBreakdown`) plus an explicit lot-size override for a named contract. Without it, a futures order placed while options mode was on would have been sized with the **option's** lot size.
-
-**A horizontal line doubles as an order ticket.** It is the only shape naming a single unambiguous price, so right-clicking one opens the chart's ordinary limit/stop menu at that price, routed through `contextMenuItemsFor` + `confirmChartOrder`. That is deliberate reuse rather than a parallel path: a line-placed order gets the same validity rules (a buy limit must sit below the last price), the same lot sizing and the same blast-radius confirmation as any other order on this screen. Right-clicking anywhere else falls through to the chart's own menu. Nothing in the drawing layer places an order by itself, and while "Trade options on this underlying" is on the menu refuses outright, since options fan out at market there and a resting price would be meaningless.
-
-The engine is young (0.1.1), so it is treated strictly as presentation: `attach` and `restore` are guarded, and a failure logs and leaves the chart and the order path untouched.
-
-### Chart fits the viewport
-
-The container height used to be the literal **sum** of every pane's preferred height (price pane + each oscillator + separators), which overflowed the screen the moment two or three indicators were on — RSI and MACD ended up below the fold, reachable only by scrolling the whole page.
-
-Since panes are allocated by **stretch factor** (a ratio, not a pixel count — see below), the container's actual pixel height can be anything; the proportions between panes, and a user's own dragged sizes, are preserved regardless. `chartBudgetHeight()` measures `window.innerHeight - container.getBoundingClientRect().top`, so the container is capped to whatever the viewport actually has room for. A 48px bottom margin accounts for the Apache-2.0 attribution line required below the chart plus the flex gap in front of it — found by measuring the actual overflow (`scrollHeight - innerHeight`) rather than guessed, and closed to zero exactly.
-
-A debounced `window resize` listener (bound once, survives every chart rebuild) reapplies the budget so a resized or restored browser window keeps the fit.
-
-**Oscillators are panes of the price chart** (Lightweight Charts **v5.2.0**), not separate charts beneath it.
-
-They were separate charts kept in step by copying bar spacing and scroll position. That never held. Every price-scale relayout made a pane re-fit to its own data and discard the copied geometry, so RSI and MACD drifted out of line with the candles on every zoom — measured at 235–334px at trading zoom. Worse, the equaliser meant to fix it (resetting and re-applying `minimumWidth` each sync) was itself the trigger: with it, bar spacing was 26.12 on the price chart against 32.05 on both oscillators; with it applied once, 26.12 everywhere.
-
-Panes share **one time scale**, so alignment is structural — there is nothing left to drift. Pane 0 is price; enabled oscillators take 1..n via `chart.addSeries(type, options, paneIndex)`.
-
-**Pane heights use stretch factors, not pixels.** `setHeight` redistributes whatever is left between the other panes, so with more than one oscillator no ordering of calls lands them all on the requested number — the pane assigned last wins and the rest are squeezed (an RSI pane at 35px next to a 363px price pane, in one measured run). `IPaneApi.setStretchFactor` is the API meant for this and gives an exact, stable split: requesting 520/150/150 yields exactly `[520, 150, 150]`. It was added after v5.0.0, which is why the library was upgraded; a `try/catch` falls back to pixel heights on an older build.
-
-Pane separators are draggable natively, so the hand-rolled resize grips were removed. Heights are read back off the separators on teardown only — capturing them mid-rebuild saved transient squeezed values and fed them back as the next saved heights, which made the panes shrink run over run.
-
-**Sync in layout** (`public/js/dashboard-chart-sync.js`). Lightweight Charts has no linked-layout concept — each `createChart()` is an island — so every pane is wired by hand and re-wired whenever the live chart set changes. Handles are tracked and detached on rebuild; subscriptions left attached to a removed chart throw inside the library's own event loop and surface as a chart that silently stops updating. Four independent toggles:
+**Underlying, CE and PE are separate chart instances** - three instruments, three `createChart()` calls - joined by the engine's own link group (`createLinkGroup`, rebuilt by `syncCharts()` in `public/js/dashboard-chart-sync.js` whenever the set of charts changes). The group moves everything across charts as a **time**, never a bar index: bar N is a different instant on each chart, because an option's history starts later and skips minutes with no trades.
 
 | toggle | effect |
 | --- | --- |
-| Interval | panes share the toolbar timeframe. Off, each option pane gets its own selector — useful for reading the underlying on 15m while scalping the option on 1m. |
-| Crosshair | hovering one pane marks the same bar on the others, each at **its own** price for that bar. A bar a pane does not have clears rather than snapping to a neighbour. |
-| Time | shared *logical* range — scroll and zoom by bar index. |
-| Date range | shared *time* range — align by timestamp. This is the one that matters across contracts: an illiquid strike has far fewer bars than its underlying, so bar-index alignment puts them at different dates. Wins when both are on. |
+| Crosshair | hovering one chart draws a vertical line on the others at the bar open at that instant; nothing outside a chart's own data. |
+| Align time | panning or zooming one shows the same wall-clock window on the others, right-hand margin included, so the latest bars line up. The group follows gestures only, so `alignFollowers()` re-maps the panes after a load, a restored view and each new live bar. |
+| Interval | panes share the toolbar timeframe. Off, each option pane gets its own selector. |
 
-**Only the chart under the pointer drives the layout.** A synchronous re-entrancy flag does not work here: applying a range to a pane makes that pane emit its own (clamped) range a frame *later*, after the flag has cleared, which is then pushed back onto the chart being dragged — the view snaps back and zooming is impossible. Ownership is claimed on `pointerenter`/`pointerdown` instead, and echoes from panes the user is not touching are dropped.
+Until 2026-09-30 this was hand-rolled: the crosshair drew a horizontal price line on the other charts (no vertical line), and zoom shared bar spacing only, so each chart kept its own scroll and the right edges drifted apart. The CE/PE panes also never updated after they opened; they now poll their contracts through `POST /symbols/quotes` every 3 s (`pollOptionPaneQuotes`), and live bars are bucketed by `timeframeSeconds()`, which parses every picker timeframe (a six-entry table bucketed 3m and 10s charts into 5m bars). Both charts share `HISTORY_SPAN_DAYS`.
 
-Only the CE/PE option panes remain separate charts, so they are all the sync layer still has to manage - and they share **zoom only, never position**. They sit on the same clock but not the same bars, and their history routinely ends earlier than the underlying's. Forcing a shared position (by visible range, or by matching right edges in time) scrolled the legs hundreds of bars past their own data and dragged the underlying's padding to -1 whenever a leg was the one being zoomed. Copying bar spacing alone keeps every pane at the same zoom while each keeps its own latest bar and its own right-hand gap.
-
-Sync targets are resolved **inside** each handler rather than captured when it was wired: the option panes are rebuilt whenever the leg or expiry changes, and a captured array goes stale, so every call lands on a disposed chart and is swallowed - the symptom being a zoom that silently stops propagating.
-
-Charts keep `rightOffset: 8` bars of space after the live bar; `fitContent()` ignores `rightOffset`, so the gap is scrolled in explicitly after every data load. Oscillator panels are drag-resizable (80–600px, persisted per indicator under `chart-osc-heights`); the charts are `autoSize`, so setting the container height is the whole implementation.
-
-Two details worth keeping: VWAP **resets each IST day** (a multi-day cumulative VWAP is not a level anyone trades against), and RSI returns **50, not 100**, on a perfectly flat series — a bare `loss === 0` guard paints an unmoving illiquid strike as maximally overbought.
+**Trading from the chart itself.** Right-click on the underlying or a pane opens the order menu at the pointer (it is `position: fixed`; positioned against the underlying's box it opened far from a pane click). A price picked there is a resting order: `order.service` rounds it to the contract's tick and sends it as a plain `placeorder` (`orderPlacementService.placeRestingOrder`) - no position target, no queue coalescing, no retry chase. As a `placesmartorder` it was filled on the spot by OpenAlgo's analyzer even at half the market, and the retry service cancelled or chased it. Working-order lines (`dashboard-chart-orders.js`) load `status=open,pending` (a stop waiting for its trigger is `pending`), are keyed by the app's order row id, and act on the engine's gestures: `order:<id>` drag ends in `POST /orders/:id/modify` (limit moves its price; a stop its trigger, SL-M re-converted to SL), and the line's x (`order:<id>::close`) cancels. Nothing listened to those before, so the handles did nothing. Covered by `Test/integration/chart-orders.test.js` on the real crypto analyzer account and `e2e/options-orders.spec.js`.
 
 ### Cross-segment underlying resolution (`utils/underlying.util.js`)
 
@@ -882,6 +838,8 @@ Option lot size comes from the instruments master, never the watchlist row: an i
 ### Chart-native order entry
 
 The chart carries a full order surface: an OHLC/LTP legend, a product toggle (MIS/CNC/NRML), an inline quantity, floating BUY/SELL tickets over the canvas, and a right-click context menu.
+
+**Product rule - the same on every path** (chart, watchlist, `/quickorders`, `/orders`): equity takes MIS, NRML or CNC; futures and options (NFO, BFO, MCX, CDS, BCD, NCO and crypto) take MIS or NRML, and CNC becomes NRML because F&O has no delivery product (`quick-order._resolveProductForOrder`, `order.service._normalizeOrderData`, `isDerivativeExchange`). The watchlist offers MIS/NRML for F&O; the chart's CNC button is shown as NRML in the confirmation. Reduce/increase/close act on the position that exists, in that position's own product. Until 2026-09-30 the chart sent no product on its option (quick-order) path, so every chart option order went as MIS. Its product buttons and symbol picker were also wired only after the price history loaded: a click before then did nothing, and a symbol picked early changed the dropdown but not the chart or its order tickets. Both are now wired before the first await, and `loadChartData` / `loadChartTradePanel` drop a response that arrives after the symbol or timeframe changed. `/orders` works out each instance's `position_size` from that instance's own position when the caller sends none; the chart no longer sends one summed across instances. Covered by `Test/integration/options-orders.test.js` (CE and PE on the real crypto analyzer account) and `e2e/options-orders.spec.js`.
 
 **The context menu is price-aware.** Right-clicking at a price offers only the order types that are valid *at* that price, because that is what the types mean:
 
@@ -960,12 +918,12 @@ DaisyUI note: `tailwind.config.js` declares a custom `simplifyed` theme, but the
 
 ### 11.2 Frontend JS Modules
 No bundler - plain `<script defer>` tags loading small, feature-scoped files (naming convention: `<area>-<concern>.js`). All 33 carry `defer`, so they download in parallel and execute in document order; the code already assumes that ordering. The one inline script in `<head>` is deliberately *not* deferred — it applies the stored theme before the stylesheets parse, which is what keeps a light-mode user from seeing a dark repaint on every load.
-- `dashboard-core.js` + `dashboard-init.js`: app state, view switching, bootstrap. Also owns the navbar **feed-status pill** (`resolveFeedState`), which reports the market-data feed as Live / Polling / Stale Ns / Paused / Disconnected / Connecting. Freshness comes from `markDataReceived()`, called from the quote-meta choke point in `dashboard-watchlists-quotes.js` so every feed path — WS push and REST poll alike — advances the same clock.
-- `dashboard-instances.js`, `dashboard-orders.js`, `dashboard-positions.js`, `dashboard-trades.js`, `dashboard-pnl.js`, `dashboard-overview.js`, `dashboard-notifications.js`, `dashboard-playground.js`: one file per dashboard section.
+- `dashboard-core.js` + `dashboard-init.js`: app state, view switching, bootstrap. Also owns the navbar **feed-status pill** (`resolveFeedState`), which reports the market-data feed as Live / Polling / Stale Ns / Disconnected / Connecting. Freshness comes from `markDataReceived()`, called from the quote-meta choke point in `dashboard-watchlists-quotes.js` so every feed path — WS push and REST poll alike — advances the same clock.
+- `dashboard-instances.js`, `dashboard-orders.js`, `dashboard-positions.js`, `dashboard-trades.js`, `dashboard-pnl.js`, `dashboard-overview.js`, `dashboard-notifications.js`: one file per dashboard section. The Orders page has two panels: the live broker **order book** per instance, and one **Order history** that merges watchlist, strategy, webhook and manual orders (filter by instance name and status; "From" says where each order came from).
 - `dashboard-watchlists-core.js`, `-crud.js`, `-modals.js`, `-positions.js`, `-quotes.js`: watchlist view, split by concern.
 - `quick-order-core.js` + `quick-order-init.js`, `-controls.js`, `-expansion.js`, `-instruments.js`, `-option-chain.js`, `-place.js`, `-preview.js`, `-selectors.js`: watchlist row expansion and trade controls (see §7.2-7.4).
 - `settings-core.js` + `-init.js`, `-data.js`, `-general.js`, `-rbac.js`, `-status.js`: settings UI, RBAC admin, import/export.
-- `settings-schema.js`: renders the General tab from `GET /api/v1/settings/schema` (groups, sections, paired fields, live unit hints). Replaced the hardcoded category lists that used to decide what the screen showed.
+- `settings-schema.js`: renders the General tab from `GET /api/v1/settings/schema` (groups, sections, paired fields, live unit hints, defaults) as Simple + Advanced (see §9.6). Replaced the hardcoded category lists that used to decide what the screen showed.
 - `strategy-builder.js`: multi-leg strategy CRUD/execution UI (see §7.10).
 - `dashboard-chart.js`: chart view (see §10.5). Disposes its chart instance on navigation away — `createChart` attaches a ResizeObserver and canvas that outlive the `innerHTML` swap otherwise.
 - `api-client.js`: API wrapper for all endpoints, attaches the Bearer token from `localStorage` and clears it on a 401.
@@ -984,7 +942,8 @@ No bundler - plain `<script defer>` tags loading small, feature-scoped files (na
 
 ### 12.2 TradingView Webhook
 - `/webhook/tradingview/*` endpoints accept TradingView payloads.
-- Payloads are normalized and broadcast to watchlist instances.
+- Payloads are normalized and broadcast to watchlist instances; a strategy's own slug executes or exits its legs instead.
+- The token is the only credential. Rotate it from Settings → Access Control; the new token takes effect at once and survives restarts.
 
 ### 12.3 Telegram
 - Bot integration for order alerts and summaries.
@@ -994,25 +953,22 @@ No bundler - plain `<script defer>` tags loading small, feature-scoped files (na
 
 Route groups under `/api/v1` (by module):
 - **auth**: `register` (bootstrap-only), `login`, `change-password` - local email/password auth (see §4.1).
-- **instances**: instance CRUD, health, P&L commits, CSV import/export.
+- **instances**: instance CRUD, analyzer toggle, connection/API-key tests, refresh, CSV import/export.
 - **watchlists**: watchlist CRUD, symbol management, instance assignments, CSV import/export.
 - **strategies**: multi-leg strategy CRUD, leg management, execute/exit, status (see §7.10).
-- **gtt**: list/cancel GTT-tracked exit triggers (see §7.10).
-- **risk-events**: read-only risk-control event log.
 - **quickorders**: watchlist trading actions (equity/futures/options) with idempotency support.
 - **orders**: manual order placement and order history.
-- **positions**: per-instance positions and aggregated P&L.
-- **symbols**: symbol lookup and consolidated quote subscriptions.
-- **instruments**: instrument cache and refresh controls.
-- **polling**: start/stop polling and status.
+- **positions**: per-instance positions, per-symbol legs for the chart, close one / close all.
+- **symbols**: symbol search, quotes, expiries, option-chain utilities.
+- **instruments**: instrument cache stats, upload, fetch-from-instance.
 - **dashboard**: dashboard metrics aggregation.
-- **monitor**: order monitor status and logs.
-- **settings**: application settings CRUD and instance health tests.
-- **option-chain**: option chain and expiry helpers.
+- **monitor**: `status` (System Status tab).
+- **settings**: list, schema, save, reset (see §9.3).
+- **webhook-config**: `GET` the TradingView token for building alert URLs, `POST /rotate` to replace it - both behind `settings.manage`.
+- **option-chain**: option chain for an underlying/expiry.
 - **trades**: tradebook access and reconciliations.
 - **rbac**: roles, permissions, and user role management.
 - **notifications**: health and system notifications.
-- **audit**: audit log access.
 - **health-check / ready / health**: runtime and readiness probes.
 - **telemetry**: rate-limit and cache visibility.
 - **snapshots / pnl-snapshots**: cache snapshots and daily P&L export.
@@ -1021,11 +977,31 @@ Route groups under `/api/v1` (by module):
 Webhook routes (public token auth):
 - **/webhook/tradingview**: TradingView broadcast endpoints.
 
+## 13.5) Testing
+
+There is no fake broker anywhere in the suite. Pure logic is tested offline; anything that talks to a broker talks to the operator's real OpenAlgo instances, in analyzer mode.
+
+| Layer | Where | Broker | Command |
+| --- | --- | --- | --- |
+| Logic | `Test/unit`, `Test/services` | none (single client methods stubbed for pricing/retry maths) | `npm run test:logic` |
+| Routes & flows | `Test/integration` | real: Jz Kotak, Jz Fyers, Jabez Crypto | `npm run test:integration` |
+| Browser e2e | `e2e/*.spec.js` (Playwright, port 3111) | real: the same three | `npm run test:e2e` |
+| Live orders | `Test/live` | real: all five, including Maha and Ana | `npm run test:live` |
+
+Rules the real-broker layers share (`Test/helpers/real-broker.js`, `e2e/broker.js`):
+- Instances are **copied** out of `database/simplifyed.db` (URL + key) into a throwaway database; the production database is only ever read.
+- **Interlock:** no test can switch an account to live, and nothing that places, changes or cancels an order is sent until the broker itself confirms analyzer mode (the local `is_analyzer_mode` column is not trusted).
+- **Nothing left open:** every test that orders closes what it opened and fails if the broker still shows a position or working order.
+- "Broker down" is a real unreachable address (`127.0.0.1:9`), and a rejection is a real one (an unlisted contract, a key the broker refuses) - never a scripted response.
+- Crypto (BTC, 24x7) carries the always-on steps; NSE and MCX steps run only while that exchange is open and are skipped otherwise.
+- Integration files run one at a time (`--test-concurrency=1`): they share the real accounts.
+- The webhook token is never printed. E2E reads a token rotated from Settings out of its database copy, else `WEBHOOK_TOKEN`.
+
 ## 14) Operational Notes
 
 - **Migrations** are applied via `backend/migrations/migrate.js`.
-- **Instrument imports** are handled by scripts in `backend/scripts/` and top-level `import-instruments*.sh` scripts.
-- **Session DB** is separate from the main app DB and stored under `data/sessions.db`.
+- **Instruments** refresh themselves (stale-cache check, 17:31 IST crypto refresh); Settings → Data Management refreshes by hand.
+- **Test runs** get an empty `TELEGRAM_BOT_TOKEN`, so test orders never message the operator.
 
 ## 15) Key Architectural Guarantees
 

@@ -205,5 +205,3 @@ export async function resolveOptionLotSize(key) {
   );
   return rows.length === 1 ? Number(rows[0].lotsize) : null;
 }
-
-export default { parseExpiry, upcomingExpiries, contractExpiry, isContractExpired, resolveOptionsUnderlyingKey, resolveOptionLotSize };

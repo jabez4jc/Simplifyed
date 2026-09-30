@@ -9,172 +9,10 @@ import EventEmitter from 'events';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { ValidationError } from '../core/errors.js';
-import { isEditable, validateValue, SETTINGS_GROUPS, SETTINGS_FIELDS } from '../config/settings-registry.js';
+import {
+  isEditable, validateValue, SETTINGS_GROUPS, SETTINGS_FIELDS, ESSENTIAL_SETTINGS, settingDefault,
+} from '../config/settings-registry.js';
 
-const ESSENTIAL_SETTINGS = [
-  {
-    key: 'instance_health.ping_healthy_interval_ms',
-    value: '300000',
-    description: 'How often healthy instances are pinged (ms).',
-    category: 'instance_health',
-    dataType: 'number',
-  },
-  {
-    key: 'instance_health.ping_unhealthy_interval_ms',
-    value: '180000',
-    description: 'First retry delay for an unhealthy instance; doubles per failure, max 10 min (ms).',
-    category: 'instance_health',
-    dataType: 'number',
-  },
-  {
-    key: 'instance_health.analyzer_check_interval_ms',
-    value: '15000',
-    description: 'How often analyzer status is refreshed (ms).',
-    category: 'instance_health',
-    dataType: 'number',
-  },
-  {
-    key: 'market_data_feed.quote_ttl_idle_ms',
-    value: '12000',
-    description: 'Quote cache TTL when no open positions (ms).',
-    category: 'market_data_feed',
-    dataType: 'number',
-  },
-  {
-    key: 'market_data_feed.quote_ttl_active_ms',
-    value: '7000',
-    description: 'Quote cache TTL when open positions exist (ms).',
-    category: 'market_data_feed',
-    dataType: 'number',
-  },
-  {
-    key: 'market_data_feed.position_interval_idle_ms',
-    value: '20000',
-    description: 'Positionbook refresh cadence when idle (ms).',
-    category: 'market_data_feed',
-    dataType: 'number',
-  },
-  {
-    key: 'market_data_feed.position_interval_active_ms',
-    value: '8000',
-    description: 'Positionbook refresh cadence when positions exist (ms).',
-    category: 'market_data_feed',
-    dataType: 'number',
-  },
-  {
-    key: 'market_data_feed.tradebook_interval_idle_ms',
-    value: '20000',
-    description: 'Tradebook refresh cadence when idle (ms).',
-    category: 'market_data_feed',
-    dataType: 'number',
-  },
-  {
-    key: 'market_data_feed.tradebook_interval_active_ms',
-    value: '8000',
-    description: 'Tradebook refresh cadence when positions exist (ms).',
-    category: 'market_data_feed',
-    dataType: 'number',
-  },
-  {
-    key: 'market_data_feed.orderbook_interval_ms',
-    value: '20000',
-    description: 'Orderbook refresh cadence (ms).',
-    category: 'market_data_feed',
-    dataType: 'number',
-  },
-  {
-    key: 'market_data_feed.multiquote_cooldown_idle_ms',
-    value: '15000',
-    description: 'Minimum delay between MultiQuotes calls when idle (ms).',
-    category: 'market_data_feed',
-    dataType: 'number',
-  },
-  {
-    key: 'market_data_feed.multiquote_cooldown_active_ms',
-    value: '9000',
-    description: 'Minimum delay between MultiQuotes calls when positions exist (ms).',
-    category: 'market_data_feed',
-    dataType: 'number',
-  },
-  {
-    key: 'market_data_feed.funds_interval_ms',
-    value: '180000',
-    description: 'Funds refresh cadence (ms).',
-    category: 'market_data_feed',
-    dataType: 'number',
-  },
-  {
-    key: 'market_data_feed.max_order_spread_pct',
-    value: '0.1',
-    description: 'Maximum bid/ask spread (as a decimal) allowed for limit pricing.',
-    category: 'market_data_feed',
-    dataType: 'number',
-  },
-  {
-    key: 'settings.cache_duration_ms',
-    value: '5000',
-    description: 'Settings cache duration for config lookups (ms).',
-    category: 'system',
-    dataType: 'number',
-  },
-  {
-    key: 'brokerage.default',
-    value: '20',
-    description: 'Default brokerage per trade when broker-specific rate is not set.',
-    category: 'brokerage',
-    dataType: 'number',
-  },
-  {
-    key: 'brokerage.by_broker',
-    value: JSON.stringify({
-      fivepaisa: 20,
-      fivepaisax: 20,
-      aliceblue: 20,
-      angel: 20,
-      compositedge: 25,
-      dhan: 20,
-      dhan_sandbox: 20,
-      firstock: 20,
-      flattrade: 0,
-      fyers: 20,
-      groww: 20,
-      ibulls: 11,
-      iifl: 20,
-      indmoney: 20,
-      kotak: 10,
-      paytm: 20,
-      pocketful: 20,
-      shoonya: 5,
-      tradejini: 20,
-      upstox: 20,
-      wisdom: 20,
-      zebu: 20,
-      zerodha: 20,
-    }),
-    description: 'Brokerage per trade mapped by broker key (lowercase).',
-    category: 'brokerage',
-    dataType: 'json',
-  },
-  {
-    key: 'brokerage.market_order_support',
-    value: JSON.stringify({}),
-    description: 'Market order support mapped by broker key (lowercase).',
-    category: 'brokerage',
-    dataType: 'json',
-  },
-  {
-    key: 'trading_sessions',
-    value: JSON.stringify([
-      { label: 'Session 1', start: '09:00', end: '11:30' },
-      { label: 'Session 2', start: '12:30', end: '15:10' },
-      { label: 'Session 3', start: '15:45', end: '19:00' },
-      { label: 'Session 4', start: '20:30', end: '22:45' },
-    ]),
-    description: 'Session windows in IST used for session P&L baselines and auto cutoffs.',
-    category: 'trading',
-    dataType: 'json',
-  },
-];
 
 class SettingsService extends EventEmitter {
   constructor() {
@@ -214,14 +52,12 @@ class SettingsService extends EventEmitter {
     if (missing.length === 0) return;
 
     for (const setting of missing) {
-      const defaultValue = this.getDefaultValue(setting.key);
-      const value = defaultValue !== '' ? defaultValue : setting.value;
       await db.run(
         `
           INSERT INTO application_settings (key, value, description, category, data_type)
           VALUES (?, ?, ?, ?, ?)
         `,
-        [setting.key, value, setting.description, setting.category, setting.dataType]
+        [setting.key, setting.value, setting.description, setting.category, setting.dataType]
       );
     }
   }
@@ -287,62 +123,10 @@ class SettingsService extends EventEmitter {
     }
   }
 
-  /**
-   * Get settings by category
-   * @param {string} category - Category name
-   * @returns {Promise<Object>} - Settings in the category
-   */
-  async getSettingsByCategory(category) {
-    try {
-      await this.ensureEssentialSettings();
-      const rows = await db.all(`
-        SELECT key, value, description, category, data_type, is_sensitive
-        FROM application_settings
-        WHERE category = ?
-        ORDER BY key
-      `, [category]);
-
-      const settings = {};
-      rows.forEach(row => {
-        let parsedValue = row.value;
-        switch (row.data_type) {
-          case 'number':
-            parsedValue = parseFloat(row.value);
-            break;
-          case 'boolean':
-            parsedValue = row.value === 'true';
-            break;
-          case 'json':
-            try {
-              parsedValue = JSON.parse(row.value);
-            } catch (e) {
-              log.warn('Failed to parse JSON setting', { key: row.key, value: row.value });
-            }
-            break;
-        }
-
-        settings[row.key] = {
-          // rawValue must follow the same rule as value. Masking one while shipping the other
-          // unmasked in the very same object defeats the mask entirely: these objects are
-          // returned straight to the browser by GET /api/v1/settings and friends. Nothing is
-          // flagged is_sensitive today, so this is latent rather than live - but the masking
-          // code and the schema column both exist to be used, and the first secret stored here
-          // would have been published. Internal readers of rawValue (config.js,
-          // limit-price.service, broker-capabilities.service) only ever read non-sensitive
-          // settings, which are unaffected.
-          value: row.is_sensitive ? this.maskValue(row.value) : parsedValue,
-          rawValue: row.is_sensitive ? this.maskValue(row.value) : row.value,
-          description: row.description,
-          dataType: row.data_type,
-          isSensitive: !!row.is_sensitive,
-        };
-      });
-
-      return settings;
-    } catch (error) {
-      log.error('Failed to get settings by category', error, { category });
-      throw error;
-    }
+  /** A row's stored value, unmasked and unparsed. Server-side only - never send it to a client. */
+  async getRawValue(key) {
+    const row = await db.get('SELECT value FROM application_settings WHERE key = ?', [key]);
+    return row?.value || null;
   }
 
   /**
@@ -533,52 +317,6 @@ class SettingsService extends EventEmitter {
   }
 
   /**
-   * Get all categories
-   * @returns {Promise<Array>} - List of categories with counts
-   */
-  async getCategories() {
-    try {
-      await this.ensureEssentialSettings();
-      const rows = await db.all(`
-        SELECT category, COUNT(*) as count
-        FROM application_settings
-        GROUP BY category
-        ORDER BY category
-      `);
-
-      return rows;
-    } catch (error) {
-      log.error('Failed to get categories', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Reset setting to default value
-   * @param {string} key - Setting key
-   * @returns {Promise<Object>} - Reset setting
-   */
-  async resetSetting(key) {
-    try {
-      // Get default value from .env.example or current implementation
-      const defaultValue = this.getDefaultValue(key);
-
-      await db.run(`
-        UPDATE application_settings
-        SET value = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE key = ?
-      `, [defaultValue, key]);
-
-      log.info('Setting reset to default', { key, value: defaultValue });
-
-      return await this.getSetting(key);
-    } catch (error) {
-      log.error('Failed to reset setting', error, { key });
-      throw error;
-    }
-  }
-
-  /**
    * Mask sensitive values (show only first 4 and last 4 characters)
    * @param {string} value - Value to mask
    * @returns {string} - Masked value
@@ -590,75 +328,9 @@ class SettingsService extends EventEmitter {
     return `${value.substring(0, 4)}${'*'.repeat(value.length - 8)}${value.substring(value.length - 4)}`;
   }
 
-  /**
-   * Get default value for a setting key
-   * This references the original .env defaults
-   * @param {string} key - Setting key
-   * @returns {string} - Default value
-   */
+  /** Default for a setting key, from ESSENTIAL_SETTINGS ('' when it is not a setting). */
   getDefaultValue(key) {
-    const defaults = {
-      'server.port': '3000',
-      'server.node_env': 'development',
-      'polling.instance_interval_ms': '12000',
-      'polling.market_data_interval_ms': '10000',
-      'polling.health_check_interval_ms': '60000',
-      'instance_health.ping_healthy_interval_ms': '300000',
-      'instance_health.ping_unhealthy_interval_ms': '180000',
-      'instance_health.analyzer_check_interval_ms': '15000',
-      'openalgo.request_timeout_ms': '15000',
-      'openalgo.critical.max_retries': '5',
-      'openalgo.critical.retry_delay_ms': '1000',
-      'openalgo.non_critical.max_retries': '3',
-      'openalgo.non_critical.retry_delay_ms': '1000',
-      'market_data_feed.quote_ttl_idle_ms': '12000',
-      'market_data_feed.quote_ttl_active_ms': '7000',
-      'market_data_feed.position_interval_idle_ms': '20000',
-      'market_data_feed.position_interval_active_ms': '8000',
-      'market_data_feed.tradebook_interval_idle_ms': '20000',
-      'market_data_feed.tradebook_interval_active_ms': '8000',
-      'market_data_feed.orderbook_interval_ms': '20000',
-      'market_data_feed.multiquote_cooldown_idle_ms': '15000',
-      'market_data_feed.multiquote_cooldown_active_ms': '9000',
-      'market_data_feed.funds_interval_ms': '180000',
-      'market_data_feed.max_order_spread_pct': '0.1',
-      'settings.cache_duration_ms': '5000',
-      'brokerage.default': '20',
-      'rate_limits.rps_per_instance': '5',
-      'rate_limits.rpm_per_instance': '300',
-      'rate_limits.orders_per_second': '10',
-      'rate_limits.smart_orders_per_second': '2',
-      'rate_limits.max_concurrent_tasks': '10',
-      'brokerage.market_order_support': JSON.stringify({}),
-      'trading_sessions': JSON.stringify([
-        { label: 'Session 1', start: '09:00', end: '11:30' },
-        { label: 'Session 2', start: '12:30', end: '15:10' },
-        { label: 'Session 3', start: '15:45', end: '19:00' },
-        { label: 'Session 4', start: '20:30', end: '22:45' },
-      ]),
-      'database.path': './database/simplifyed.db',
-      'cors.origin': 'http://localhost:3000',
-      'cors.credentials': 'true',
-      'logging.level': 'info',
-      'logging.file': './logs/app.log',
-      'rate_limit.window_ms': '60000',
-      'rate_limit.max_requests': '100',
-      'oauth.google.client_id': '',
-      'oauth.google.client_secret': '',
-      'oauth.google.callback_url': 'http://localhost:3000/auth/google/callback',
-      'test_mode.enabled': 'false',
-      'test_mode.user_email': 'test@simplifyed.in',
-      'proxy.url': '',
-      'proxy.tls_reject_unauthorized': 'true',
-      // Options trading defaults (Buyer/Writer mode)
-      'options.default_operating_mode': 'BUYER',
-      'options.default_strike_policy': 'FLOAT_OFS',
-      'options.default_step_lots': '1',
-      'options.writer_guard_enabled': 'true',
-      'options.allow_multi_strike': 'true',
-    };
-
-    return defaults[key] || '';
+    return settingDefault(key) ?? '';
   }
 
   /**

@@ -129,7 +129,7 @@ Object.assign(DashboardApp.prototype, {
     try {
       const to = Math.floor(Date.now() / 1000);
       const paneTf = this.paneTimeframe(key);
-      const spanDays = { '1m': 3, '5m': 10, '15m': 30, '30m': 60, '1h': 120, D: 900 }[paneTf] || 10;
+      const spanDays = HISTORY_SPAN_DAYS[paneTf] || 10;
       const res = await api.request(
         `/history?exchange=${encodeURIComponent(contract.exchange)}`
         + `&symbol=${encodeURIComponent(contract.symbol)}`
@@ -987,10 +987,7 @@ Object.assign(DashboardApp.prototype, {
    * `chart.addIndicator` instances the engine tears down with the chart itself in one
    * `chart.destroy()` - there is no separate pane bookkeeping left to do here.
    */
-  destroyOscillatorPanes() {
-    this.oscCharts = [];
-  },
-
+ 
   rememberOscHeights() {},
 
   /**
@@ -1004,7 +1001,6 @@ Object.assign(DashboardApp.prototype, {
    */
   attachOptionPaneOrders(key, bodyEl, chart, contract, candles) {
     if (!bodyEl || !chart || !contract) return;
-    const last = candles?.length ? candles[candles.length - 1].close : null;
 
     bodyEl.addEventListener('contextmenu', (e) => {
       e.preventDefault();
@@ -1019,6 +1015,9 @@ Object.assign(DashboardApp.prototype, {
 
       const rect = bodyEl.getBoundingClientRect();
       const price = chart.coordinateToPrice(e.clientY - rect.top, 0);
+      // The pane updates live, so judge limit/stop validity against its latest price.
+      const paneCandles = this.optionPanes?.[key]?.candles || candles;
+      const last = paneCandles?.length ? paneCandles[paneCandles.length - 1].close : null;
       if (!Number.isFinite(price)) return;
       const at = Number(price.toFixed(2));
 
@@ -1057,13 +1056,7 @@ Object.assign(DashboardApp.prototype, {
             Close position (${pane.positionData.netQuantity > 0 ? '+' : ''}${pane.positionData.netQuantity})
           </button>` : '');
 
-      // The menu lives in the main chart's wrapper, so it is positioned against that.
-      const host = document.getElementById('chart-container')?.getBoundingClientRect();
-      if (host) {
-        menu.style.left = `${Math.max(0, Math.min(e.clientX - host.left, host.width - 210))}px`;
-        menu.style.top = `${Math.max(0, Math.min(e.clientY - host.top, host.height - 40))}px`;
-      }
-      menu.hidden = false;
+      this.placeChartMenu(menu, e, items.length + (hasPosition ? 3 : 1));
 
       menu.querySelectorAll('.chart-ctx-item[data-i]').forEach((btn) => {
         btn.addEventListener('click', (ev) => {

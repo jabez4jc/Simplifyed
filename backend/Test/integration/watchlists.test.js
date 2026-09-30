@@ -5,8 +5,8 @@ import request from 'supertest';
 import { useTestDb, truncate } from '../helpers/db.js';
 import { buildApp } from '../helpers/app.js';
 import { asAdmin, asTrader, asMonitor, withPermissions, withPermissionsExcept, bearer } from '../helpers/auth.js';
-import { makeWatchlist, makeWatchlistSymbol, makeInstance, linkInstanceToWatchlist } from '../helpers/fixtures.js';
-import { installFakeOpenAlgo } from '../helpers/fake-openalgo.js';
+import { makeWatchlist, makeWatchlistSymbol, linkInstanceToWatchlist } from '../helpers/fixtures.js';
+import { watchBroker, realInstance, CRYPTO } from '../helpers/real-broker.js';
 import { STATUS } from '../helpers/http.js';
 import db from '../../src/core/database.js';
 import watchlistRoutes from '../../src/routes/v1/watchlists.js';
@@ -17,7 +17,7 @@ let broker;
 before(async () => {
   await useTestDb('watchlists');
   app = buildApp(watchlistRoutes, '/api/v1/watchlists');
-  broker = installFakeOpenAlgo();
+  broker = watchBroker();
 });
 after(() => broker.restore());
 beforeEach(async () => {
@@ -44,7 +44,6 @@ test('no watchlist route answers an unauthenticated caller', async () => {
     ['get', `/api/v1/watchlists/${wl.id}/symbols`],
     ['get', '/api/v1/watchlists/export/csv'],
     ['post', '/api/v1/watchlists'],
-    ['post', `/api/v1/watchlists/${wl.id}/clone`],
     ['post', `/api/v1/watchlists/${wl.id}/symbols`],
     ['post', `/api/v1/watchlists/${wl.id}/instances`],
     ['post', '/api/v1/watchlists/import/csv'],
@@ -99,7 +98,7 @@ test('symbol management is gated on watchlists.symbols.manage', async () => {
 
 test('instance assignment is gated on watchlists.instances.manage', async () => {
   const wl = await makeWatchlist();
-  const inst = await makeInstance();
+  const inst = await realInstance(CRYPTO);
   const almost = await withPermissionsExcept(['watchlists.instances.manage']);
 
   assert.strictEqual((await post(`/api/v1/watchlists/${wl.id}/instances`, almost).send({ instanceId: inst.id })).status, STATUS.FORBIDDEN);
@@ -159,31 +158,7 @@ test('deleting a watchlist takes its symbols with it', async () => {
   assert.strictEqual(orphans.length, 0, 'symbols must not outlive their watchlist');
 });
 
-test('cloning copies the symbols and leaves the original alone', async () => {
-  const admin = await asAdmin();
-  const wl = await makeWatchlist({ name: 'Original' });
-  await makeWatchlistSymbol(wl.id, { symbol: 'TCS' });
-  await makeWatchlistSymbol(wl.id, { symbol: 'INFY' });
 
-  const res = await post(`/api/v1/watchlists/${wl.id}/clone`, admin).send({ name: 'Copy' });
-  assert.strictEqual(res.status, STATUS.CREATED, JSON.stringify(res.body));
-
-  const clone = await db.get('SELECT * FROM watchlists WHERE name = ?', ['Copy']);
-  assert.ok(clone, 'the clone must exist');
-  assert.notStrictEqual(clone.id, wl.id);
-
-  const cloned = await db.all('SELECT symbol FROM watchlist_symbols WHERE watchlist_id = ? ORDER BY symbol', [clone.id]);
-  assert.deepStrictEqual(cloned.map((s) => s.symbol), ['INFY', 'TCS']);
-
-  const original = await db.all('SELECT symbol FROM watchlist_symbols WHERE watchlist_id = ?', [wl.id]);
-  assert.strictEqual(original.length, 2, 'cloning must not move the source symbols');
-});
-
-test('cloning without a name is refused', async () => {
-  const admin = await asAdmin();
-  const wl = await makeWatchlist();
-  assert.strictEqual((await post(`/api/v1/watchlists/${wl.id}/clone`, admin).send({})).status, STATUS.VALIDATION);
-});
 
 // ---------------------------------------------------------------------------
 // Symbols
@@ -258,7 +233,7 @@ test('listing symbols of an unknown watchlist does not 500', async () => {
 test('assigning and unassigning an instance updates the join table', async () => {
   const admin = await asAdmin();
   const wl = await makeWatchlist();
-  const inst = await makeInstance();
+  const inst = await realInstance(CRYPTO);
 
   const assigned = await post(`/api/v1/watchlists/${wl.id}/instances`, admin).send({ instanceId: inst.id });
   assert.strictEqual(assigned.status, STATUS.CREATED, JSON.stringify(assigned.body));
@@ -277,7 +252,7 @@ test('assigning with no instanceId is refused', async () => {
 test('assigning the same instance twice does not create a duplicate or a 500', async () => {
   const admin = await asAdmin();
   const wl = await makeWatchlist();
-  const inst = await makeInstance();
+  const inst = await realInstance(CRYPTO);
 
   await post(`/api/v1/watchlists/${wl.id}/instances`, admin).send({ instanceId: inst.id });
   const again = await post(`/api/v1/watchlists/${wl.id}/instances`, admin).send({ instanceId: inst.id });
@@ -302,7 +277,7 @@ test('the list reports what exists and a single fetch carries its symbols', asyn
   const admin = await asAdmin();
   const wl = await makeWatchlist({ name: 'Listed' });
   await makeWatchlistSymbol(wl.id, { symbol: 'TCS' });
-  const inst = await makeInstance();
+  const inst = await realInstance(CRYPTO);
   await linkInstanceToWatchlist(wl.id, inst.id);
 
   const list = await get('/api/v1/watchlists', admin);
@@ -317,12 +292,12 @@ test('the list reports what exists and a single fetch carries its symbols', asyn
 test('a watchlist read never leaks an instance api key', async () => {
   const admin = await asAdmin();
   const wl = await makeWatchlist();
-  const inst = await makeInstance({ api_key: 'watchlist-leaked-key-999' });
+  const inst = await realInstance(CRYPTO);
   await linkInstanceToWatchlist(wl.id, inst.id);
 
   for (const path of ['/api/v1/watchlists', `/api/v1/watchlists/${wl.id}`, `/api/v1/watchlists/${wl.id}/symbols`]) {
     const res = await get(path, admin);
-    assert.ok(!JSON.stringify(res.body).includes('watchlist-leaked-key-999'), `${path} leaked an api key`);
+    assert.ok(!JSON.stringify(res.body).includes(inst.api_key), `${path} leaked an api key`);
   }
 });
 

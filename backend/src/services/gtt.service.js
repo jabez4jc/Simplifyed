@@ -89,11 +89,6 @@ class GttService {
     return { triggerId: response.trigger_id, stoplossPrice, targetPrice };
   }
 
-  async listActiveGtts(instanceId) {
-    const instance = await this._getInstance(instanceId);
-    const brokerGtts = await openalgoClient.getGttOrderBook(instance);
-    return Array.isArray(brokerGtts) ? brokerGtts : [];
-  }
 
   async cancelGtt(instanceId, triggerId) {
     const instance = await this._getInstance(instanceId);

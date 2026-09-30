@@ -6,7 +6,6 @@
 import express from 'express';
 import { log } from '../../core/logger.js';
 import telegramService from '../../services/telegram.service.js';
-import { requireAuth } from '../../middleware/auth.js';
 import { config } from '../../core/config.js';
 import { timingSafeEqualStr } from '../../utils/sanitizers.js';
 
@@ -37,25 +36,5 @@ router.post('/webhook', async (req, res) => {
   }
 });
 
-// Admin test hook: send a test message to default/subscribers
-router.post('/test', requireAuth, async (req, res, next) => {
-  try {
-    if (!req.user?.is_admin && !(req.user?.permissions || []).includes('settings.manage')) {
-      return res.status(403).json({ status: 'error', message: 'Forbidden' });
-    }
-    await telegramService.sendOrderNotification({
-      symbol: 'TEST',
-      exchange: 'NSE',
-      side: 'BUY',
-      quantity: 1,
-    }, {
-      type: 'TEST',
-      instance_name: 'Test',
-    });
-    res.json({ status: 'success', message: 'Test notification sent (if chat id configured)' });
-  } catch (error) {
-    next(error);
-  }
-});
 
 export default router;

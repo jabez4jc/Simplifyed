@@ -16,13 +16,14 @@ export async function makeInstance(overrides = {}) {
   const n = uniq();
   const row = {
     name: `Instance ${n}`,
-    host_url: `http://broker-${n}.test`,
+    // A real address nothing listens on: a fixture that reaches for a broker gets a genuine
+    // refused connection. Tests that need a broker to answer use realInstance() instead.
+    host_url: `http://127.0.0.1:9/broker-${n}`,
     api_key: `apikey-${n}-abcdef`,
     broker: 'zerodha',
     strategy_tag: 'TEST',
     is_active: 1,
     is_analyzer_mode: 0,
-    market_data_role: 'none',
     market_data_enabled: 0,
     supports_multiquotes: 0,
     supports_option_chain: 0,
@@ -85,57 +86,6 @@ export async function linkInstanceToWatchlist(watchlistId, instanceId, overrides
   );
 }
 
-export async function makeStrategy(overrides = {}) {
-  const n = uniq();
-  const cols = await db.all("PRAGMA table_info('strategies')");
-  const names = new Set(cols.map((c) => c.name));
-  const row = { name: `Strategy ${n}`, ...overrides };
-  if (names.has('webhook_slug') && row.webhook_slug === undefined) row.webhook_slug = `slug-${n}`;
-  if (names.has('is_active') && row.is_active === undefined) row.is_active = 1;
-  const keys = Object.keys(row).filter((k) => names.has(k));
-  const { lastID } = await db.run(
-    `INSERT INTO strategies (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`,
-    keys.map((k) => row[k])
-  );
-  return db.get('SELECT * FROM strategies WHERE id = ?', [lastID]);
-}
 
-/** Seed the instruments cache so symbol/option-chain routes have something to resolve against. */
-export async function makeInstrument(overrides = {}) {
-  const cols = await db.all("PRAGMA table_info('instruments')");
-  const names = new Set(cols.map((c) => c.name));
-  const row = {
-    symbol: 'RELIANCE',
-    exchange: 'NSE',
-    brexchange: 'NSE',
-    name: 'RELIANCE INDUSTRIES',
-    token: String(Math.floor(Math.random() * 1e6)),
-    lotsize: 1,
-    instrumenttype: 'EQ',
-    tick_size: 0.05,
-    ...overrides,
-  };
-  const keys = Object.keys(row).filter((k) => names.has(k));
-  const { lastID } = await db.run(
-    `INSERT INTO instruments (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`,
-    keys.map((k) => row[k])
-  );
-  return db.get('SELECT * FROM instruments WHERE id = ?', [lastID]);
-}
 
-/**
- * Declare which brokers accept MARKET orders.
- *
- * The `brokerage.market_order_support` setting ships as `{}`, meaning NO broker supports market
- * orders, so order.service synthesises a marketable LIMIT from a live quote instead. That is
- * correct behaviour and is worth testing on its own - but a test about order ROUTING should not
- * have to stand up the whole quote-feed stack to place one order.
- */
-export async function setMarketOrderSupport(map) {
-  await db.run(
-    `INSERT INTO application_settings (key, value, description, category, data_type)
-     VALUES ('brokerage.market_order_support', ?, 'test override', 'brokerage', 'json')
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-    [JSON.stringify(map)]
-  );
-}
+

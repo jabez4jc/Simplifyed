@@ -1,16 +1,17 @@
 import assert from 'assert';
-import test, { before, after, beforeEach } from 'node:test';
+import test, { before, after, beforeEach, afterEach } from 'node:test';
 import express from 'express';
 import request from 'supertest';
 
 import { useTestDb, truncate } from '../helpers/db.js';
-import { makeWatchlist, makeInstance, linkInstanceToWatchlist, setMarketOrderSupport } from '../helpers/fixtures.js';
-import { installFakeOpenAlgo, installFakeFetch } from '../helpers/fake-openalgo.js';
+import { makeWatchlist, linkInstanceToWatchlist } from '../helpers/fixtures.js';
+import { watchBroker, realInstance, CRYPTO } from '../helpers/real-broker.js';
 import { STATUS } from '../helpers/http.js';
 import { errorHandler, notFoundHandler } from '../../src/middleware/error-handler.js';
 import { auditLogger } from '../../src/middleware/audit-logger.js';
 import webhookRoutes from '../../src/routes/tradingview-webhook.js';
 import { config } from '../../src/core/config.js';
+import tradingviewBroadcastService from '../../src/services/tradingview-broadcast.service.js';
 import db from '../../src/core/database.js';
 
 /**
@@ -18,6 +19,10 @@ import db from '../../src/core/database.js';
  * Its entire access control is one shared token, so every one of these tests is about the two
  * questions that matter: can an unauthorised caller trade, and can an authorised caller trade
  * twice by accident.
+ *
+ * Alerts go to the operator's real crypto account (analyzer mode, 24x7) through the same fetch
+ * path production uses; every position an alert opens is closed after its test. The token here
+ * is this file's own, set in-process - never the operator's.
  */
 
 const TOKEN = 'webhook-token-for-tests-0123456789';
@@ -28,7 +33,6 @@ let http;
 
 before(async () => {
   await useTestDb('webhook');
-  await setMarketOrderSupport({ zerodha: true });
 
   config.webhooks = { ...(config.webhooks || {}), tradingviewBroadcast: { token: TOKEN } };
   process.env.WEBHOOK_TOKEN = TOKEN;
@@ -42,34 +46,35 @@ before(async () => {
   app.use(notFoundHandler);
   app.use(errorHandler);
 
-  broker = installFakeOpenAlgo();
-  http = installFakeFetch();
+  broker = watchBroker();
+  // Orders over either path (client or the broadcast's own fetch), counted by endpoint.
+  http = { countOf: (e) => broker.orders().filter((o) => o.endpoint === e).length };
 });
-after(() => {
-  broker.restore();
-  http.restore();
-});
+after(() => broker.restore());
 beforeEach(async () => {
   await truncate();
   broker.reset();
-  http.reset();
+});
+afterEach(async () => {
+  const leftovers = await broker.flattenAll();
+  assert.deepStrictEqual(leftovers, [], `left open at the broker:\n${leftovers.join('\n')}`);
 });
 
 /** The shape TradingView actually posts - normalizePayload requires strategy and position_size. */
 const alert = (overrides = {}) => ({
   strategy: 'tv-strategy',
-  symbol: 'RELIANCE',
-  exchange: 'NSE',
+  symbol: 'BTCUSDFUT',
+  exchange: 'CRYPTO',
   action: 'BUY',
   quantity: 1,
   position_size: 1,
   ...overrides,
 });
 
-/** A broadcast-enabled watchlist with one live instance behind it. */
+/** A broadcast-enabled watchlist with the real crypto account behind it. */
 async function broadcastTarget() {
   const wl = await makeWatchlist({ type: 'broadcast', is_broadcast: 1, webhook_slug: `slug-${Date.now()}` });
-  const inst = await makeInstance();
+  const inst = await realInstance(CRYPTO);
   await linkInstanceToWatchlist(wl.id, inst.id);
   return { wl, inst };
 }
@@ -181,7 +186,7 @@ test('an alert for an unknown watchlist slug does not place an order anywhere', 
 
 test('a non-broadcast watchlist cannot be driven through the broadcast webhook', async () => {
   const wl = await makeWatchlist({ type: 'standard', is_broadcast: 0, webhook_slug: `std-${Date.now()}` });
-  const inst = await makeInstance();
+  const inst = await realInstance(CRYPTO);
   await linkInstanceToWatchlist(wl.id, inst.id);
 
   const res = await request(app)
@@ -300,24 +305,54 @@ test('an authorised alert actually reaches the instance behind the watchlist', a
   const res = await request(app)
     .post(`/webhook/tradingview/broadcast/${wl.webhook_slug}`)
     .set('X-Webhook-Token', TOKEN)
-    .send(alert({ symbol: 'INFY', action: 'SELL', quantity: 3, position_size: -3 }));
+    .send(alert({ action: 'SELL', quantity: 1, position_size: -1 }));
 
   assert.strictEqual(res.status, STATUS.OK, JSON.stringify(res.body));
 
-  const [sent] = http.callsTo('placesmartorder');
+  const [sent] = broker.orders().filter((o) => o.endpoint === 'placesmartorder');
   assert.ok(sent, 'the alert must have been forwarded to the broker');
-  assert.strictEqual(sent.body.symbol, 'INFY');
-  assert.strictEqual(sent.body.action, 'SELL');
+  assert.strictEqual(sent.data.symbol, 'BTCUSDFUT');
+  assert.strictEqual(sent.data.action, 'SELL');
 });
 
 test('a broker that rejects the alert is reported as a failure, not a silent success', async () => {
   const { wl } = await broadcastTarget();
-  http.respondWith({ status: 400, body: { status: 'error', message: 'Insufficient margin' } });
 
+  // A contract the broker does not list: a genuine rejection.
   const res = await request(app)
     .post(`/webhook/tradingview/broadcast/${wl.webhook_slug}`)
     .set('X-Webhook-Token', TOKEN)
-    .send(alert());
+    .send(alert({ symbol: 'NOSUCHCONTRACTFUT' }));
 
   assert.notStrictEqual(res.status, STATUS.OK, 'a rejected alert must not be answered 200');
+});
+
+// ---------------------------------------------------------------------------
+// Rotation - revoking a leaked token
+// ---------------------------------------------------------------------------
+
+test('rotating the token locks out the old one at once and stores the new one as a secret', async () => {
+  const { wl } = await broadcastTarget();
+  const url = `/webhook/tradingview/broadcast/${wl.webhook_slug}`;
+  // An unparseable body: past the token check it is a 422, and nothing can be ordered either way.
+  const probe = (token) => request(app).post(url).set('X-Webhook-Token', token)
+    .set('Content-Type', 'text/plain').send('{ not json');
+
+  try {
+    const fresh = await tradingviewBroadcastService.rotateToken();
+    assert.ok(fresh.length >= 32 && fresh !== TOKEN, 'a new, long, random token');
+    assert.strictEqual((await probe(TOKEN)).status, STATUS.UNAUTHORIZED, 'the old token is refused straight away');
+    assert.strictEqual((await probe(fresh)).status, STATUS.VALIDATION, 'the new token is accepted');
+
+    const row = await db.get("SELECT value, is_sensitive FROM application_settings WHERE key = 'webhooks.tradingview.token'");
+    assert.strictEqual(Number(row.is_sensitive), 1, 'and is masked wherever settings are listed');
+
+    // A restart: config.loadFromDatabase() must load the real token, not the masked one.
+    config.webhooks.tradingviewBroadcast.token = TOKEN;
+    await config.loadFromDatabase();
+    assert.strictEqual((await probe(fresh)).status, STATUS.VALIDATION, 'the new token still works after a restart');
+  } finally {
+    config.webhooks.tradingviewBroadcast.token = TOKEN;
+  }
+  assert.strictEqual(http.countOf('placesmartorder'), 0);
 });

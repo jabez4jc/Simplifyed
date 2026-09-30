@@ -23,7 +23,7 @@ export function formatDateIST(date) {
   return `${year}-${month}-${day}`;
 }
 
-export function parseHmToMinutes(hm = '') {
+function parseHmToMinutes(hm = '') {
   const [h, m] = hm.split(':').map((v) => parseInt(v, 10));
   if (Number.isNaN(h) || Number.isNaN(m)) return null;
   return h * 60 + m;

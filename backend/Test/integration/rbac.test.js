@@ -111,7 +111,11 @@ test('the seeded roles and permissions are all there', async () => {
   }
 
   const perms = await get('/api/v1/rbac/permissions', admin);
-  assert.ok(perms.body.data.length >= 31, 'the seeded permission set must be intact');
+  const keys = perms.body.data.map((p) => p.key);
+  assert.strictEqual(keys.length, 28, 'the seeded permission set must be intact');
+  for (const retired of ['pages.audit.view', 'pages.api_playground.view', 'monitor.view']) {
+    assert.ok(!keys.includes(retired), `${retired} guards nothing and must not be offered`);
+  }
 });
 
 test('the user list never carries password hashes', async () => {

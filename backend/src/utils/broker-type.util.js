@@ -23,8 +23,14 @@ export function requiresLimitOrders(exchange) {
 }
 
 /** Can this broker take a MARKET order on this exchange? Broker support alone is not enough. */
+/** Indian futures & options segments - they take MIS or NRML, never CNC (delivery). */
+const DERIVATIVE_EXCHANGES = new Set(['NFO', 'BFO', 'MCX', 'CDS', 'BCD', 'NCO']);
+
+export function isDerivativeExchange(exchange) {
+  return DERIVATIVE_EXCHANGES.has(String(exchange || '').toUpperCase());
+}
+
 export function marketOrderAllowed(brokerSupportsMarket, exchange) {
   return Boolean(brokerSupportsMarket) && !requiresLimitOrders(exchange);
 }
 
-export { CRYPTO_BROKERS };

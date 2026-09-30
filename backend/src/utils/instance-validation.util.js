@@ -109,19 +109,7 @@ export function normalizeInstanceData(data, isUpdate = false) {
     normalized.broker = sanitizeString(data.broker);
   }
 
-  // Market data role. The column has a CHECK constraint, so an unrecognised value could never
-  // have been stored anyway - silently ignoring it just moved the failure out of sight.
-  if (data.market_data_role !== undefined) {
-    const validRoles = ['none', 'primary', 'secondary'];
-    const role = String(data.market_data_role).toLowerCase();
-    if (validRoles.includes(role)) {
-      normalized.market_data_role = role;
-    } else {
-      errors.push({ field: 'market_data_role', message: `market_data_role must be one of: ${validRoles.join(', ')}` });
-    }
-  }
-
-  // Market data enabled (new flag)
+  // "Use this instance for market data"
   if (data.market_data_enabled !== undefined) {
     normalized.market_data_enabled = parseBooleanSafe(data.market_data_enabled, false) ? 1 : 0;
   }
@@ -141,15 +129,6 @@ export function normalizeInstanceData(data, isUpdate = false) {
   // Option chain API support flag
   if (data.supports_option_chain !== undefined) {
     normalized.supports_option_chain = parseBooleanSafe(data.supports_option_chain, false) ? 1 : 0;
-  }
-
-  // Admin flags
-  if (data.is_primary_admin !== undefined) {
-    normalized.is_primary_admin = parseBooleanSafe(data.is_primary_admin, false);
-  }
-
-  if (data.is_secondary_admin !== undefined) {
-    normalized.is_secondary_admin = parseBooleanSafe(data.is_secondary_admin, false);
   }
 
   // Status flags

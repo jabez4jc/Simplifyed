@@ -248,19 +248,23 @@ test('pattern defaults follow each pattern\'s direction and persist', () => {
   assert.strictEqual(reopened.app.patternConfig().doji.colour, '#123456');
 });
 
-test('sync defaults to all four on, and each toggles independently', () => {
+test('sync defaults to all three on, each toggles independently, and old saved blobs still load', () => {
   const { app } = freshApp();
   app.renderSyncBar = () => {};
   app.syncCharts = () => {};
-  assert.deepStrictEqual(app.chartSyncConfig(),
-    { interval: true, crosshair: true, time: true, range: true, pan: false });
+  assert.deepStrictEqual(app.chartSyncConfig(), { interval: true, crosshair: true, viewport: true });
 
   app.toggleChartSync('crosshair');
   assert.strictEqual(app.chartSyncConfig().crosshair, false);
-  assert.strictEqual(app.chartSyncConfig().time, true, 'toggles must not affect each other');
+  assert.strictEqual(app.chartSyncConfig().viewport, true, 'toggles must not affect each other');
 
   app.toggleChartSync('bogus');
   assert.strictEqual(app.chartSyncConfig().bogus, undefined);
+
+  // A preference saved before the link group (time/range/pan) keeps its crosshair choice.
+  const { app: old, store } = freshApp();
+  store['chart-sync'] = JSON.stringify({ interval: true, crosshair: false, time: true, range: true, pan: false });
+  assert.deepStrictEqual(old.chartSyncConfig(), { interval: true, crosshair: false, viewport: true });
 });
 
 test('paneTimeframe follows the toolbar only while Interval sync is on', () => {

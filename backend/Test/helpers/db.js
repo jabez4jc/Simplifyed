@@ -3,7 +3,7 @@
  *
  * node:test runs each test FILE in its own process, so each file gets its own SQLite copy and
  * can mutate freely without racing any other file. Building the schema from migrations costs
- * ~1s; doing that per file would dominate the suite, so `npm run pretest` migrates one template
+ * ~1s; doing that per file would dominate the suite, so `scripts/prepare-test-db.js` (run by every test script) migrates one template
  * (database/test-template.db) and each file copies it. Copy is ~2ms.
  *
  * db.connect() reads process.env.DATABASE_PATH at CALL time (not import time), so setting it
@@ -40,7 +40,7 @@ let activePath = null;
 export async function useTestDb(label = 'suite') {
   if (!existsSync(TEMPLATE)) {
     throw new Error(
-      `Missing ${TEMPLATE}. Run \`npm run pretest\` (or \`npm test\`, which runs it) first.`
+      `Missing ${TEMPLATE}. Run node scripts/prepare-test-db.js (every npm test script does) first.`
     );
   }
 

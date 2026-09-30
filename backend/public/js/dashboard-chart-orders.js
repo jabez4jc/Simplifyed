@@ -40,10 +40,56 @@ Object.assign(DashboardApp.prototype, {
       removePrimitive: (p) => { try { this.chart.removePrimitive(p); } catch (_) { /* disposed */ } },
     };
     s.controller = new window.OAC.TradeController(host);
+    this.bindOrderLineGestures(this.chart, () => this.refreshOrderLines());
     this.refreshOrderLines();
     if (!s.refreshTimer) {
       s.refreshTimer = setInterval(() => this.refreshOrderLines(), ORDER_LINES_FALLBACK_MS);
     }
+  },
+
+  /**
+   * The order line draws a drag handle and a close button; the engine reports them as
+   * `order:<id>` (drag) and `order:<id>::close` (click), and acting on them is ours. Nothing
+   * listened before, so dragging a line or pressing its x did nothing. Bound once per chart.
+   */
+  bindOrderLineGestures(chart, refresh) {
+    if (!chart || chart._orderGesturesBound) return;
+    chart._orderGesturesBound = true;
+    chart.on('click', (e) => {
+      const m = /^order:(\d+)::close$/.exec(e?.id || '');
+      if (m) this.cancelChartOrder(Number(m[1]), refresh);
+    });
+    chart.on('drag:end', (e) => {
+      const m = /^order:(\d+)$/.exec(e?.id || '');
+      if (m && Number.isFinite(e.price)) this.moveChartOrder(Number(m[1]), e.price, refresh);
+    });
+  },
+
+  async cancelChartOrder(id, refresh) {
+    if (!(await Utils.confirm('Cancel this order at the broker?', 'Cancel order'))) return;
+    try {
+      await api.request(`/orders/${id}/cancel`, { method: 'POST' });
+      Utils.showToast('Order cancelled', 'success');
+    } catch (error) {
+      Utils.showToast(`Cancel failed: ${error.message}`, 'error');
+    }
+    refresh();
+  },
+
+  async moveChartOrder(id, price, refresh) {
+    // Refresh either way: on "no" or a failure the line snaps back to the broker's price.
+    if (!(await Utils.confirm(`Move this order to ${Utils.formatNumber(price)}?`, 'Move order'))) {
+      refresh();
+      return;
+    }
+    try {
+      const res = await api.request(`/orders/${id}/modify`, { method: 'POST', body: { price } });
+      const at = Number(res.data?.order_type === 'LIMIT' ? res.data.price : res.data?.trigger_price) || price;
+      Utils.showToast(`Order moved to ${Utils.formatNumber(at)}`, 'success');
+    } catch (error) {
+      Utils.showToast(`Move failed: ${error.message}`, 'error');
+    }
+    refresh();
   },
 
   /** Called from destroyChart() - the primitives belong to the chart instance going away. */
@@ -68,7 +114,7 @@ Object.assign(DashboardApp.prototype, {
 
     let rows;
     try {
-      const res = await api.request(`/orders?symbol=${encodeURIComponent(state.symbol)}&status=open`);
+      const res = await api.request(`/orders?symbol=${encodeURIComponent(state.symbol)}&status=open,pending`);
       rows = res.data || [];
     } catch (_) {
       // No orders.view permission, most likely - a read-only chart is still fully usable.
@@ -83,7 +129,8 @@ Object.assign(DashboardApp.prototype, {
     const orders = rows
       .filter((o) => (o.exchange || '').toUpperCase() === (state.exchange || '').toUpperCase())
       .map((o) => ({
-        id: String(o.order_id ?? o.id),
+        // The app's own row id: cancel and modify address orders by it, not the broker's id.
+        id: String(o.id),
         symbol: o.symbol,
         side: (o.side || '').toUpperCase() === 'SELL' ? 'SELL' : 'BUY',
         type: /SL-M/i.test(o.order_type) ? 'SL-M' : /SL/i.test(o.order_type) ? 'SL' : /LIMIT/i.test(o.order_type) ? 'LIMIT' : 'MARKET',
@@ -121,6 +168,7 @@ Object.assign(DashboardApp.prototype, {
       removePrimitive: (p) => { try { pane.chart.removePrimitive(p); } catch (_) { /* disposed */ } },
     };
     pane.orderLines = { controller: new window.OAC.TradeController(host), refreshTimer: null };
+    this.bindOrderLineGestures(pane.chart, () => this.refreshPaneOrderLines(key));
     this.refreshPaneOrderLines(key);
     pane.orderLines.refreshTimer = setInterval(() => this.refreshPaneOrderLines(key), ORDER_LINES_FALLBACK_MS);
   },
@@ -140,7 +188,7 @@ Object.assign(DashboardApp.prototype, {
 
     let rows;
     try {
-      const res = await api.request(`/orders?symbol=${encodeURIComponent(pane.contract.symbol)}&status=open`);
+      const res = await api.request(`/orders?symbol=${encodeURIComponent(pane.contract.symbol)}&status=open,pending`);
       rows = res.data || [];
     } catch (_) {
       return; // no orders.view permission, most likely - the pane is still fully usable
@@ -153,7 +201,8 @@ Object.assign(DashboardApp.prototype, {
       .filter((o) => (o.exchange || '').toUpperCase() === (pane.contract.exchange || '').toUpperCase()
         && (o.symbol || '').toUpperCase() === pane.contract.symbol.toUpperCase())
       .map((o) => ({
-        id: String(o.order_id ?? o.id),
+        // The app's own row id: cancel and modify address orders by it, not the broker's id.
+        id: String(o.id),
         symbol: o.symbol,
         side: (o.side || '').toUpperCase() === 'SELL' ? 'SELL' : 'BUY',
         type: /SL-M/i.test(o.order_type) ? 'SL-M' : /SL/i.test(o.order_type) ? 'SL' : /LIMIT/i.test(o.order_type) ? 'LIMIT' : 'MARKET',

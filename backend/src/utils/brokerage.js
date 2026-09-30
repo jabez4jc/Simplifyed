@@ -6,7 +6,7 @@
 import { parseFloatSafe } from './sanitizers.js';
 import { isCryptoBroker } from './broker-type.util.js';
 
-export function normalizeBrokerKey(broker) {
+function normalizeBrokerKey(broker) {
   return String(broker || '')
     .trim()
     .toLowerCase()

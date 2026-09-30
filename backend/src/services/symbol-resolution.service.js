@@ -4,7 +4,6 @@
  */
 
 import instrumentsService from './instruments.service.js';
-import derivativeResolutionService from './derivative-resolution.service.js';
 
 class SymbolResolutionService {
   normalizeSymbol(symbol) {
@@ -15,15 +14,6 @@ class SymbolResolutionService {
   normalizeExchange(exchange) {
     if (!exchange) return '';
     return String(exchange).trim().toUpperCase();
-  }
-
-  /**
-   * Resolve underlying + derivative exchange for a watchlist symbol.
-   */
-  resolveUnderlyingAndExchange(symbolRow = {}) {
-    const underlying = derivativeResolutionService.getDerivativeUnderlying(symbolRow);
-    const derivativeExchange = derivativeResolutionService.getDerivativeExchange(symbolRow.exchange);
-    return { underlying, derivativeExchange };
   }
 
   /**

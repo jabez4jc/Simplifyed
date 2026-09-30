@@ -158,4 +158,3 @@ class ResolutionCacheService {
 
 const resolutionCacheService = new ResolutionCacheService();
 export default resolutionCacheService;
-export { ResolutionCacheService };

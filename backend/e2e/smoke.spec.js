@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { login, gotoDashboard, collectPageErrors, assertNoPageErrors, ADMIN } from './helpers.js';
+import { login, collectPageErrors, assertNoPageErrors, ADMIN } from './helpers.js';
 
 /**
  * Does the application actually come up and let a real operator in.
@@ -27,10 +27,12 @@ test('a correct password gets an operator to the dashboard', async ({ page }) =>
 
 test('the dashboard renders without javascript errors', async ({ page }) => {
   const errors = collectPageErrors(page);
+  // login() lands on the dashboard. Navigating to it again would abort the first page's
+  // requests mid-flight, and the aborted fetch logs as an error that has nothing to do with the app.
   await login(page);
-  await gotoDashboard(page);
-
-  await expect(page.locator('body')).toBeVisible();
+  await expect(page.locator('main')).toBeVisible();
+  await expect(page.locator('#content-area')).not.toBeEmpty({ timeout: 15000 });
+  await page.waitForTimeout(2000); // let the view's first round of requests settle
   assertNoPageErrors(errors);
 });
 

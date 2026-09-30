@@ -447,25 +447,7 @@ class OpenAlgoWsService extends EventEmitter {
   /**
    * Introspection: current subscriptions per instance
    */
-  getSubscriptions() {
-    const subs = [];
-    for (const [instanceId, conn] of this.connections.entries()) {
-      const items = Array.from(conn.desired).map((k) => {
-        const [exchange, symbol] = k.split('|');
-        return { exchange, symbol };
-      });
-      subs.push({
-        instanceId,
-        instanceName: conn.instance?.name || null,
-        websocketUrl: buildWsUrl(conn.instance),
-        connected: conn.connected === true,
-        subscriptionCount: items.length,
-        symbols: items,
-      });
-    }
-    return subs;
-  }
-
+ 
   getActiveConnectionCount() {
     let count = 0;
     for (const [, conn] of this.connections.entries()) {

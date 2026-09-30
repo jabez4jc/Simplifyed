@@ -85,6 +85,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     const telemetryCards = `
       <details class="card mb-6" id="telemetry-health-details">
         <summary class="card-header cursor-pointer select-none flex items-center gap-2">
+          ${Utils.chevron()}
           <span class="w-2 h-2 rounded-full ${telemetryHealthy ? 'bg-success' : 'bg-warning'}" id="telemetry-health-dot"></span>
           <h3 class="card-title">System Health</h3>
           <span class="text-xs text-neutral-500 ml-auto" id="telemetry-health-summary">

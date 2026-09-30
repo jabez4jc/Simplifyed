@@ -9,18 +9,14 @@
 
 class SettingsHandler {
   constructor() {
-    this.categories = [];
     this.settings = {};
-    this.activeCategory = null; // schema decides; see settings-schema.js
     this.activeMainTab = 'general'; // New: Track main tab (general, access, data, status)
     this.isSaving = false;
     this.searchQuery = '';
-    this.allowedCategories = null; // show all categories by default
     this.currentUser = null;
     this.roles = [];
     this.users = [];
     this.permissions = [];
-    this.instanceHealthTests = null;
     this.activeRoleTab = null;
     this.permissionFilter = '';
     this.userFilter = '';
@@ -31,89 +27,6 @@ class SettingsHandler {
     // accepted writes to every other key. Both concerns now live in
     // src/config/settings-registry.js, served via GET /api/v1/settings/schema.
     this.schema = null;
-    this.activeGroup = null;
-    this.displaySettings = {};
-    this.displayCategories = [];
-
-    // Category metadata with icons and descriptions
-    this.categoryMeta = {
-      'server': {
-        icon: '🖥️',
-        description: 'Server configuration and environment settings'
-      },
-      'polling': {
-        icon: '🔄',
-        description: 'Polling intervals for data refresh'
-      },
-      'streaming': {
-        icon: '📡',
-        description: 'WebSocket streaming for live data updates'
-      },
-      'openalgo': {
-        icon: '📡',
-        description: 'OpenAlgo API connection and retry settings'
-      },
-      'database': {
-        icon: '💾',
-        description: 'Database storage configuration'
-      },
-      'session': {
-        icon: '🔐',
-        description: 'User session and authentication settings'
-      },
-      'cors': {
-        icon: '🌐',
-        description: 'Cross-origin resource sharing policies'
-      },
-      'logging': {
-        icon: '📝',
-        description: 'Application logging configuration'
-      },
-      'rate_limit': {
-        icon: '⚡',
-        description: 'API rate limiting and throttling'
-      },
-      'rate_limits': {
-        icon: '⚡',
-        description: 'API rate limiting, throttling, and circuit breaker settings'
-      },
-      'oauth': {
-        icon: '🔑',
-        description: 'OAuth authentication providers'
-      },
-      'test': {
-        icon: '🧪',
-        description: 'Test mode and debugging options'
-      },
-      'proxy': {
-        icon: '🔀',
-        description: 'Proxy server configuration'
-      },
-      'options': {
-        icon: '📊',
-        description: 'Options trading default settings'
-      },
-      'market_data_feed': {
-        icon: '📈',
-        description: 'Market data caching and TTL settings'
-      },
-      'instance_health': {
-        icon: '🫀',
-        description: 'Instance health checks, pings, and analyzer cadence'
-      },
-      'instance_health_tests': {
-        icon: '🧪',
-        description: 'Symbols used for endpoint capability tests'
-      },
-      'trading': {
-        icon: '🗓️',
-        description: 'Session windows used for intraday risk resets'
-      },
-      'brokerage': {
-        icon: '💸',
-        description: 'Brokerage per trade for P&L calculations'
-      }
-    };
   }
 }
 
@@ -171,29 +84,12 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       this.currentUser = await this.fetchCurrentUser();
       const canViewAppSettings = this.canViewApplicationSettings();
 
-      // Fetch the rest, but only pull settings/categories if allowed
-      const [categories, allSettings] = await Promise.all([
-        canViewAppSettings ? this.fetchCategories() : Promise.resolve([]),
-        canViewAppSettings ? this.fetchAllSettings() : Promise.resolve({})
-      ]);
-
-      this.categories = categories;
-      this.settings = allSettings;
+      this.settings = canViewAppSettings ? await this.fetchAllSettings() : {};
 
       // The schema is what the UI renders from; fetch it after this.settings so its values win
       // (it reads the same rows, but only the editable subset, already grouped and labelled).
       if (canViewAppSettings) {
         await this.fetchSchema();
-      }
-
-      // Load instance health test config
-      if (this.isAdmin()) {
-        try {
-          const cfgRes = await api.getInstanceHealthTests();
-          this.instanceHealthTests = cfgRes.data || null;
-        } catch (err) {
-          console.warn('Failed to load instance health tests config', err);
-        }
       }
 
       if (this.isAdmin()) {
@@ -230,27 +126,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     }
   }
 
-  getStreamingSetting() {
-    const existing = this.settings?.streaming?.['streaming.enabled'];
-    const preference = this.getStreamPreference();
-    const value = typeof preference === 'boolean' ? preference : false;
-
-    if (existing) {
-      if (existing.pendingValue === undefined) {
-        existing.value = value;
-        existing.rawValue = value ? 'true' : 'false';
-      }
-      return existing;
-    }
-
-    return {
-      value,
-      rawValue: value ? 'true' : 'false',
-      description: 'Use WebSocket streaming for quotes/positions/funds when available.',
-      dataType: 'boolean',
-      isSensitive: false,
-    };
-  }
 
   getStreamPreference() {
     if (typeof window === 'undefined') return false;
@@ -363,87 +238,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     return key.split('.')[0];
   }
 
-  /**
-   * Format category name for display
-   */
-  formatCategoryName(category) {
-    const names = {
-      'server': 'Server',
-      'polling': 'Polling',
-      'openalgo': 'OpenAlgo',
-      'database': 'Database',
-      'session': 'Session',
-      'cors': 'CORS',
-      'logging': 'Logging',
-      'rate_limit': 'Rate Limiting',
-      'rate_limits': 'Rate Limits',
-      'oauth': 'OAuth',
-      'test': 'Test Mode',
-      'proxy': 'Proxy',
-      'options': 'Options Trading',
-      'market_data_feed': 'Market Data Feed',
-      'instance_health': 'Instance Health',
-      'instance_health_tests': 'Instance Health Tests',
-      'trading': 'Trading Sessions',
-      'streaming': 'Streaming',
-      'system': 'System'
-    };
-    return names[category] || category.charAt(0).toUpperCase() + category.slice(1);
-  }
-
-  /**
-   * Format setting name for display
-   */
-  formatSettingName(key) {
-    const overrides = {
-      'server.port': 'Server Port',
-      'polling.instance_interval_ms': 'Instance Polling Interval (ms)',
-      'openalgo.request_timeout_ms': 'OpenAlgo Request Timeout (ms)',
-      'openalgo.critical.max_retries': 'OpenAlgo Critical Retry Count',
-      'openalgo.critical.retry_delay_ms': 'OpenAlgo Critical Retry Delay (ms)',
-      'openalgo.noncritical.max_retries': 'OpenAlgo Non-Critical Retry Count',
-      'openalgo.noncritical.retry_delay_ms': 'OpenAlgo Non-Critical Retry Delay (ms)',
-      'session.max_age_ms': 'Session Max Age (ms)',
-      'rate_limit.window_ms': 'Rate Limit Window (ms)',
-      'rate_limit.max_requests': 'Rate Limit Max Requests',
-      'logging.level': 'Logging Level',
-      'test_mode.enabled': 'Test Mode Enabled',
-      'streaming.enabled': 'Live Streaming (WebSocket)',
-      'brokerage.market_order_support': 'Market Order Support (by broker)',
-    };
-
-    if (overrides[key]) {
-      return overrides[key];
-    }
-
-    return key.split('.').pop().replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-  }
-
-  getSettingHelpText(key) {
-    const help = {
-      'polling.instance_interval_ms': 'Controls how often instance P&L is refreshed. Lower values increase load.',
-      'streaming.enabled': 'Streams quotes/positions/funds via WebSocket when supported; stored per browser.',
-      'polling.health_check_interval_ms': 'Interval for OpenAlgo endpoint capability/health checks.',
-      'instance_health.ping_healthy_interval_ms': 'Ping cadence while instances are healthy.',
-      'instance_health.ping_unhealthy_interval_ms': 'Ping cadence while unhealthy; stops after the max attempts.',
-      'instance_health.analyzer_check_interval_ms': 'How often analyzer mode health is verified.',
-      'market_data_feed.quote_ttl_idle_ms': 'Fallback quote cache TTL when no open positions.',
-      'market_data_feed.quote_ttl_active_ms': 'Fallback quote cache TTL when open positions exist.',
-      'market_data_feed.position_interval_idle_ms': 'Positionbook refresh cadence when idle.',
-      'market_data_feed.position_interval_active_ms': 'Positionbook refresh cadence when positions exist.',
-      'market_data_feed.tradebook_interval_idle_ms': 'Tradebook refresh cadence when idle.',
-      'market_data_feed.tradebook_interval_active_ms': 'Tradebook refresh cadence when positions exist.',
-      'market_data_feed.orderbook_interval_ms': 'Orderbook refresh cadence.',
-      'market_data_feed.multiquote_cooldown_idle_ms': 'Minimum delay between MultiQuotes calls when idle.',
-      'market_data_feed.multiquote_cooldown_active_ms': 'Minimum delay between MultiQuotes calls when positions exist.',
-      'market_data_feed.funds_interval_ms': 'Funds refresh cadence.',
-      'market_data_feed.max_order_spread_pct': 'Maximum bid/ask spread (decimal) allowed for limit pricing.',
-      'trading_sessions': 'Defines session windows in IST used for session P&L baselines and auto cutoffs.',
-      'brokerage.market_order_support': 'When enabled for a broker, all orders will be sent as MARKET orders.',
-    };
-
-    return help[key] || '';
-  }
 }.prototype));
 
 window.SettingsHandler = SettingsHandler;

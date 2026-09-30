@@ -12,92 +12,7 @@ import { requireAuth } from '../../middleware/auth.js';
 const router = express.Router();
 router.use(requireAuth);
 
-/**
- * GET /api/v1/option-chain/underlyings
- * Get all underlyings that have options
- */
-router.get('/underlyings', async (req, res) => {
-  try {
-    const { type } = req.query;
 
-    if (type && !['index', 'stock'].includes(type)) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Invalid type parameter. Must be "index" or "stock"'
-      });
-    }
-
-    const result = await optionChainService.getUnderlyings(type);
-
-    log.info('Option chain underlyings retrieved', {
-      type: type || 'all',
-      indices_count: result.indices.length,
-      stocks_count: result.stocks.length
-    });
-
-    res.json({
-      status: 'success',
-      data: result
-    });
-  } catch (error) {
-    log.error('Failed to get option chain underlyings', error);
-    res.status(500).json({
-      status: 'error',
-      message: error.message || 'Internal server error'
-    });
-  }
-});
-
-/**
- * GET /api/v1/option-chain/expiries
- * Get available expiries for an underlying
- */
-router.get('/expiries', async (req, res) => {
-  try {
-    const { underlying, type } = req.query;
-
-    if (!underlying) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'underlying parameter is required'
-      });
-    }
-
-    if (type && !['index', 'stock'].includes(type)) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Invalid type parameter. Must be "index" or "stock"'
-      });
-    }
-
-    const result = await optionChainService.getExpiries(underlying, type);
-
-    log.info('Option chain expiries retrieved', {
-      underlying,
-      type: type || 'auto-detect',
-      expiries_count: result.expiries.length
-    });
-
-    res.json({
-      status: 'success',
-      data: result
-    });
-  } catch (error) {
-    log.error('Failed to get option chain expiries', error, { underlying: req.query.underlying });
-
-    if (error instanceof ValidationError) {
-      return res.status(400).json({
-        status: 'error',
-        message: error.message
-      });
-    }
-
-    res.status(500).json({
-      status: 'error',
-      message: error.message || 'Internal server error'
-    });
-  }
-});
 
 /**
  * GET /api/v1/option-chain
@@ -179,41 +94,5 @@ router.get('/', async (req, res) => {
   }
 });
 
-/**
- * GET /api/v1/option-chain/sample/:underlying
- * Get a sample option chain with demo data
- */
-router.get('/sample/:underlying', async (req, res) => {
-  try {
-    const { underlying } = req.params;
-
-    const result = await optionChainService.getSampleChain(underlying);
-
-    log.info('Sample option chain retrieved', {
-      underlying,
-      rows_count: result.rows.length,
-      has_quotes: true
-    });
-
-    res.json({
-      status: 'success',
-      data: result
-    });
-  } catch (error) {
-    log.error('Failed to get sample option chain', error, { underlying: req.params.underlying });
-
-    if (error instanceof ValidationError) {
-      return res.status(400).json({
-        status: 'error',
-        message: error.message
-      });
-    }
-
-    res.status(500).json({
-      status: 'error',
-      message: error.message || 'Internal server error'
-    });
-  }
-});
 
 export default router;

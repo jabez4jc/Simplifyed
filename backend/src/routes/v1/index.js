@@ -8,12 +8,10 @@ import authRoutes from './auth.js';
 import instanceRoutes from './instances.js';
 import watchlistRoutes from './watchlists.js';
 import strategyRoutes from './strategies.js';
-import gttRoutes from './gtt.js';
 import orderRoutes from './orders.js';
 import positionRoutes from './positions.js';
 import symbolRoutes from './symbols.js';
 import instrumentsRoutes from './instruments.js';
-import pollingRoutes from './polling.js';
 import quickOrderRoutes from './quickorders.js';
 import dashboardRoutes from './dashboard.js';
 import monitorRoutes from './monitor.js';
@@ -22,7 +20,6 @@ import optionChainRoutes from './option-chain.js';
 import tradeRoutes from './trades.js';
 import rbacRoutes from './rbac.js';
 import notificationRoutes from './notifications.js';
-import riskEventsRoutes from './risk-events.js';
 import healthCheckRoutes from './health-check.js';
 import telegramRoutes from './telegram.js';
 import telemetryRoutes from './telemetry.js';
@@ -33,6 +30,10 @@ import { getAppReadyStatus } from '../../middleware/instruments-refresh.middlewa
 import { toISTISOString } from '../../utils/time.js';
 import { config } from '../../core/config.js';
 import { requirePermission } from '../../middleware/auth.js';
+import tradingviewBroadcastService from '../../services/tradingview-broadcast.service.js';
+import killSwitchService from '../../services/kill-switch.service.js';
+import { ValidationError } from '../../core/errors.js';
+import db from '../../core/database.js';
 
 const router = express.Router();
 
@@ -41,12 +42,10 @@ router.use('/auth', authRoutes);
 router.use('/instances', instanceRoutes);
 router.use('/watchlists', watchlistRoutes);
 router.use('/strategies', strategyRoutes);
-router.use('/gtt', gttRoutes);
 router.use('/orders', orderRoutes);
 router.use('/positions', positionRoutes);
 router.use('/symbols', symbolRoutes);
 router.use('/instruments', instrumentsRoutes);
-router.use('/polling', pollingRoutes);
 router.use('/quickorders', quickOrderRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/telegram', telegramRoutes);
@@ -56,7 +55,6 @@ router.use('/option-chain', optionChainRoutes);
 router.use('/trades', tradeRoutes);
 router.use('/rbac', rbacRoutes);
 router.use('/notifications', notificationRoutes);
-router.use('/risk-events', riskEventsRoutes);
 router.use('/health-check', healthCheckRoutes);
 router.use('/telemetry', telemetryRoutes);
 router.use('/snapshots', snapshotRoutes);
@@ -92,6 +90,36 @@ router.get('/webhook-config', requirePermission('settings.manage'), (req, res) =
       webhookToken: config.webhooks?.tradingviewBroadcast?.token || null,
     },
   });
+});
+
+// Rotating is the only way to revoke a leaked token without editing .env and restarting.
+router.post('/webhook-config/rotate', requirePermission('settings.manage'), async (req, res, next) => {
+  try {
+    const webhookToken = await tradingviewBroadcastService.rotateToken();
+    res.json({ status: 'success', data: { webhookToken } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Global kill switch - cancels orders, closes every position and switches every active instance
+// to analyzer mode (see kill-switch.service.js). The body must say so explicitly, so a stray or
+// replayed request cannot fire it.
+router.post('/kill-switch', requirePermission('killswitch.execute'), async (req, res, next) => {
+  try {
+    if (req.body?.confirm !== 'KILL') {
+      throw new ValidationError('Send { "confirm": "KILL" } to run the kill switch');
+    }
+    const result = await killSwitchService.run();
+    if (req.user) {
+      req.auditLogged = true;
+      db.run('INSERT INTO audit_logs (user_id, action, metadata) VALUES (?, ?, ?)',
+        [req.user.id, 'killswitch.execute', JSON.stringify(result)]).catch(() => {});
+    }
+    res.status(result.success ? 200 : 207).json({ status: result.success ? 'success' : 'partial', data: result });
+  } catch (error) {
+    next(error);
+  }
 });
 
 // Health check endpoint

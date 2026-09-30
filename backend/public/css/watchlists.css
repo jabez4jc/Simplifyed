@@ -250,16 +250,6 @@
   flex-shrink: 0;
 }
 
-.watchlist-card-compact__toggle svg {
-  width: 16px;
-  height: 16px;
-  transition: transform 0.2s ease;
-}
-
-.watchlist-card-compact__toggle.is-open svg {
-  transform: rotate(90deg);
-}
-
 .watchlist-card-compact__toggle:hover {
   background-color: var(--color-neutral-100);
   border-color: var(--color-neutral-300);
@@ -520,7 +510,6 @@
   width: 14px;
   height: 14px;
   stroke: var(--color-neutral-600);
-  stroke-width: 2.5;
 }
 
 .btn-expand-compact:hover {

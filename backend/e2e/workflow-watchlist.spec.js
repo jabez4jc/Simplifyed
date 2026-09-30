@@ -127,12 +127,20 @@ test('create a watchlist, map an instance to it and add a symbol found by search
 
 test('a target and stop-loss can be set in percent or in points, and they stick', async () => {
   const row = card(CRYPTO_WL).locator(`tr[data-symbol="${btc}"]`);
-  // Saving re-renders the list collapsed, so expand before each visit to the row.
-  const edit = async (fields) => {
-    await expand(CRYPTO_WL);
-    await row.getByRole('button', { name: 'Edit' }).click();
-    const form = page.locator('#symbol-config-form');
+  const form = page.locator('#symbol-config-form');
+  // Saving re-renders the list collapsed - and asynchronously, so an Edit click can land on the
+  // row that is about to be replaced. Expand, wait for the row, and retry until the form opens.
+  const openEdit = async () => {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await expand(CRYPTO_WL);
+      await expect(row).toBeVisible({ timeout: 15000 });
+      await row.getByRole('button', { name: 'Edit' }).click();
+      if (await form.waitFor({ state: 'visible', timeout: 5000 }).then(() => true, () => false)) return;
+    }
     await expect(form).toBeVisible();
+  };
+  const edit = async (fields) => {
+    await openEdit();
     for (const [name, value] of Object.entries(fields)) {
       const el = form.locator(`[name="${name}"]`);
       if ((await el.evaluate((e) => e.tagName)) === 'SELECT') await el.selectOption(value);
@@ -142,9 +150,7 @@ test('a target and stop-loss can be set in percent or in points, and they stick'
     await expect(page.locator('#symbol-config-form')).toHaveCount(0, { timeout: 10000 });
   };
   const read = async (names) => {
-    await expand(CRYPTO_WL);
-    await row.getByRole('button', { name: 'Edit' }).click();
-    const form = page.locator('#symbol-config-form');
+    await openEdit();
     const values = {};
     for (const n of names) values[n] = await form.locator(`[name="${n}"]`).inputValue();
     await page.locator('.modal-overlay .modal-footer').getByRole('button', { name: 'Cancel' }).click();
@@ -209,7 +215,8 @@ test('a TradingView alert to a broadcast watchlist trades its instances; a wrong
 
   ordered.push({ name: CRYPTO, symbol: 'BTCUSDFUT', exchange: 'CRYPTO' });
   const before = await netPosition(CRYPTO, 'BTCUSDFUT');
-  const alert = (body, token = webhookToken()) => request.post(`/webhook/tradingview/broadcast/${slug}`, {
+  const realToken = await webhookToken();
+  const alert = (body, token = realToken) => request.post(`/webhook/tradingview/broadcast/${slug}`, {
     headers: { 'Content-Type': 'text/plain', 'X-Webhook-Token': token },
     data: JSON.stringify(body),
   });

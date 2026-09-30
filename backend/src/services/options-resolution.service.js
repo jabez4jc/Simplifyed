@@ -5,7 +5,6 @@
  */
 
 import { log } from '../core/logger.js';
-import db from '../core/database.js';
 import instrumentsService from './instruments.service.js';
 import { NotFoundError, ValidationError } from '../core/errors.js';
 import { parseFloatSafe } from '../utils/sanitizers.js';
@@ -427,59 +426,6 @@ class OptionsResolutionService {
   }
 
   /**
-   * Process option chain data to extract strikes and determine strike step
-   * @private
-   */
-  _processOptionChain(chainData) {
-    const options = this._extractOptionsFromChainData(chainData);
-
-    if (options.length === 0) {
-      throw new NotFoundError('Option chain is empty');
-    }
-
-    // Extract unique strikes and sort them
-    const strikes = [...new Set(options.map(opt => parseFloatSafe(opt.strike, 0)))]
-      .filter(s => s > 0)
-      .sort((a, b) => a - b);
-
-    // Calculate strike step (difference between consecutive strikes)
-    let strikeStep = 50; // Default
-    if (strikes.length >= 2) {
-      const differences = [];
-      for (let i = 1; i < strikes.length; i++) {
-        differences.push(strikes[i] - strikes[i - 1]);
-      }
-      // Use the most common difference
-      strikeStep = this._mostCommon(differences);
-    }
-
-    // Group options by strike for easy lookup
-    const optionsByStrike = {};
-    for (const option of options) {
-      const strike = parseFloatSafe(option.strike, 0);
-      if (!optionsByStrike[strike]) {
-        optionsByStrike[strike] = { CE: null, PE: null };
-      }
-
-      const optType = option.option_type || (option.symbol.includes('CE') ? 'CE' : 'PE');
-      optionsByStrike[strike][optType] = {
-        symbol: option.symbol,
-        trading_symbol: option.trading_symbol || option.tradingsymbol || option.symbol,
-        lot_size: option.lot_size || option.lotsize || 1,  // Handle both lot_size and lotsize
-        tick_size: option.tick_size || 0.05,
-        instrument_type: option.instrument_type || option.instrumenttype,
-        token: option.token,
-      };
-    }
-
-    return {
-      strikes,
-      strikeStep,
-      optionsByStrike,
-    };
-  }
-
-  /**
    * Provide the resolved option chain (strikes + step) for reuse by callers
    * @param {Object} params
    * @param {string} params.underlying
@@ -683,76 +629,7 @@ class OptionsResolutionService {
     return this._mostCommon(diffs);
   }
 
-  /**
-   * Batch resolve multiple option symbols
-   * @param {Array<Object>} requests - Array of resolution requests
-   * @returns {Promise<Array<Object>>} Resolved symbols
-   */
-  async batchResolveOptions(requests) {
-    const results = await Promise.allSettled(
-      requests.map(req => this.resolveOptionSymbol(req))
-    );
-
-    return results.map((result, index) => {
-      if (result.status === 'fulfilled') {
-        return {
-          success: true,
-          data: result.value,
-          request: requests[index],
-        };
-      } else {
-        return {
-          success: false,
-          error: result.reason.message,
-          request: requests[index],
-        };
-      }
-    });
-  }
-
-  /**
-   * Clear option cache for specific underlying and expiry
-   * @param {string} underlying - Underlying symbol
-   * @param {string} exchange - Exchange
-   * @param {string} expiry - Expiry date
-   */
-  async clearCache(underlying, exchange, expiry) {
-    try {
-      await db.run(
-        'DELETE FROM options_cache WHERE underlying = ? AND exchange = ? AND expiry = ?',
-        [underlying, exchange, expiry]
-      );
-
-      log.info('Cleared option cache', { underlying, exchange, expiry });
-    } catch (error) {
-      log.error('Failed to clear option cache', error);
-    }
-  }
-
-  /**
-   * Get all cached strikes for an underlying and expiry
-   * @param {string} underlying - Underlying symbol
-   * @param {string} exchange - Exchange
-   * @param {string} expiry - Expiry date
-   * @returns {Promise<Array<number>>} Array of strikes
-   */
-  async getCachedStrikes(underlying, exchange, expiry) {
-    try {
-      const results = await db.all(
-        `SELECT DISTINCT strike FROM options_cache
-         WHERE underlying = ? AND exchange = ? AND expiry = ?
-         ORDER BY strike ASC`,
-        [underlying, exchange, expiry]
-      );
-
-      return results.map(r => r.strike);
-    } catch (error) {
-      log.error('Failed to get cached strikes', error);
-      return [];
-    }
-  }
 }
 
 // Export singleton instance
 export default new OptionsResolutionService();
-export { OptionsResolutionService };

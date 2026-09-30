@@ -162,48 +162,6 @@ class OptionChainService {
     this.cache.set(key, { data, ts: Date.now() });
   }
   /**
-   * Get all underlyings that have options
-   * @param {string} type - Optional filter: 'index' or 'stock'
-   * @returns {Promise<Object>} - List of indices and stocks
-   */
-  async getUnderlyings(type = null) {
-    try {
-      if (type && !['index', 'stock'].includes(type)) {
-        throw new ValidationError('type must be either index or stock');
-      }
-      // Get index underlyings from NSE_INDEX exchange
-      const indices = await db.all(`
-        SELECT DISTINCT symbol as name, symbol, 'index' as type
-        FROM instruments
-        WHERE exchange = 'NSE_INDEX'
-        AND instrumenttype = 'INDEX'
-        ORDER BY symbol
-      `);
-
-      // Get stock underlyings from both BFO and NFO exchanges using underlying_key
-      const stocks = await db.all(`
-        SELECT DISTINCT underlying_key as name, underlying_key as symbol, 'stock' as type
-        FROM instruments
-        WHERE exchange IN ('BFO', 'NFO')
-        AND instrumenttype IN ('CE', 'PE')
-        AND underlying_key IS NOT NULL
-        AND underlying_key NOT IN (
-          SELECT symbol FROM instruments WHERE exchange = 'NSE_INDEX' AND instrumenttype = 'INDEX'
-        )
-        ORDER BY underlying_key
-      `);
-
-      return {
-        indices: type === 'stock' ? [] : indices,
-        stocks: type === 'index' ? [] : stocks,
-      };
-    } catch (error) {
-      log.error('Failed to get underlyings', error);
-      throw error;
-    }
-  }
-
-  /**
    * Get available expiries for an underlying
    * @param {string} underlying - Underlying symbol
    * @param {string} type - Optional type: 'index' or 'stock'
@@ -474,68 +432,6 @@ class OptionChainService {
   }
 
   /**
-   * Build a sample option chain for testing
-   * @param {string} underlying - Underlying symbol
-   * @returns {Promise<Object>} - Sample chain with sample data
-   */
-  async getSampleChain(underlying) {
-    try {
-      // First get available expiries
-      const expiriesResult = await this.getExpiries(underlying);
-      const firstExpiry = expiriesResult.expiries[0];
-
-      if (!firstExpiry) {
-        throw new ValidationError(`No expiries found for ${underlying}`);
-      }
-
-      const chain = await this.getOptionChain(underlying, firstExpiry, null, false, null);
-
-      // Add sample quotes for demonstration
-      chain.rows = chain.rows.map(row => {
-        const sampleRow = { ...row };
-
-        if (row.call_symbol) {
-          sampleRow.call_quote = {
-            ltp: Math.random() * 100,
-            bid_price: Math.random() * 100,
-            bid_qty: Math.floor(Math.random() * 500),
-            ask_price: Math.random() * 100,
-            ask_qty: Math.floor(Math.random() * 500),
-            oi: Math.floor(Math.random() * 200000),
-            volume: Math.floor(Math.random() * 5000),
-            iv: 10 + Math.random() * 10
-          };
-        }
-
-        if (row.put_symbol) {
-          sampleRow.put_quote = {
-            ltp: Math.random() * 100,
-            bid_price: Math.random() * 100,
-            bid_qty: Math.floor(Math.random() * 500),
-            ask_price: Math.random() * 100,
-            ask_qty: Math.floor(Math.random() * 500),
-            oi: Math.floor(Math.random() * 200000),
-            volume: Math.floor(Math.random() * 5000),
-            iv: 10 + Math.random() * 10
-          };
-        }
-
-        return sampleRow;
-      });
-
-      chain.has_quotes = true;
-      chain.spot = 24000 + Math.random() * 1000;
-      chain.atm_strike = chain.rows[Math.floor(chain.rows.length / 2)]?.strike || 0;
-      chain.strike_window = 5;
-
-      return chain;
-    } catch (error) {
-      log.error('Failed to get sample chain', error, { underlying });
-      throw error;
-    }
-  }
-
-  /**
    * Expand expiry formats to support DB (DD-MMM-YY) and ISO (YYYY-MM-DD) and broker (DDMMMYY)
    * @param {string} expiry
    * @returns {string[]} unique variants
@@ -727,4 +623,3 @@ class OptionChainService {
 }
 
 export default new OptionChainService();
-export { OptionChainService };

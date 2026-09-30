@@ -1,7 +1,7 @@
 /**
  * Market Data Instance Service
- * Manages market data instances with round-robin load balancing
- * Uses instances with "use_for_market_data" flag enabled
+ * The market-data pool: active, healthy instances with "Use this instance for market data"
+ * (market_data_enabled) ticked, used round-robin.
  */
 
 import db from '../core/database.js';
@@ -13,15 +13,8 @@ import { NotFoundError } from '../core/errors.js';
 class MarketDataInstanceService {
   constructor() {
     this.poolIndex = 0;
-    this.hasOptionChainColumn = null;
   }
-  async _hasOptionChainColumn() {
-    if (this.hasOptionChainColumn === null) {
-      const rows = await db.all("PRAGMA table_info('instances')");
-      this.hasOptionChainColumn = rows.some((r) => r.name === 'supports_option_chain');
-    }
-    return this.hasOptionChainColumn;
-  }
+
   /**
    * Get the instance to use for market data API calls with round-robin selection
    * @returns {Promise<Object>} Instance object with id, name, host_url, api_key, etc.
@@ -38,51 +31,10 @@ class MarketDataInstanceService {
       return rr;
     }
 
-    // Fallback: Try legacy primary role
-    const primary = await this._getInstanceByRole('primary');
-    if (primary && this._isHealthy(primary)) {
-      log.debug('Using primary market data instance (legacy fallback)', {
-        instanceId: primary.id,
-        instanceName: primary.name,
-      });
-      return primary;
-    }
-
-    // Fallback: Try legacy secondary role
-    const secondary = await this._getInstanceByRole('secondary');
-    if (secondary && this._isHealthy(secondary)) {
-      log.debug('Using secondary market data instance (legacy fallback)', {
-        instanceId: secondary.id,
-        instanceName: secondary.name,
-      });
-      return secondary;
-    }
-
     // No healthy instance available
     throw new NotFoundError(
       'No healthy market data instance available. Please enable "Use this instance for market data" on at least one active instance.'
     );
-  }
-
-  /**
-   * Get instance by market_data_role
-   * @private
-   * @param {string} role - 'primary' or 'secondary'
-   * @returns {Promise<Object|null>} Instance object or null if not found
-   */
-  async _getInstanceByRole(role) {
-    try {
-      const instance = await db.get(
-        `SELECT * FROM instances
-         WHERE market_data_role = ? AND is_active = 1
-         LIMIT 1`,
-        [role]
-      );
-      return instance || null;
-    } catch (error) {
-      log.error(`Error fetching ${role} market data instance`, { error: error.message });
-      return null;
-    }
   }
 
   /**
@@ -97,19 +49,17 @@ class MarketDataInstanceService {
 
   /**
    * Get all market data instances for status display
-   * Includes instances with market_data_enabled flag or legacy primary/secondary roles
+   * Active instances with market_data_enabled ticked
    * @returns {Promise<Array>} Array of instances eligible for market data
    */
   async getMarketDataInstances() {
     try {
-      const hasOptionChain = await this._hasOptionChainColumn();
       const columns = [
         'id',
         'name',
         'host_url',
         'api_key',
         'broker',
-        'market_data_role',
         'market_data_enabled',
         'supports_multiquotes',
         'quotes_ok',
@@ -122,16 +72,16 @@ class MarketDataInstanceService {
         'disable_quotes',
         'disable_multiquotes',
         'disable_optionchain',
+        'supports_option_chain',
+        'health_status',
+        'is_active',
+        'last_health_check',
       ];
-      if (hasOptionChain) {
-        columns.push('supports_option_chain');
-      }
-      columns.push('health_status', 'is_active', 'last_health_check');
 
       const instances = await db.all(
         `SELECT ${columns.join(', ')}
          FROM instances
-         WHERE is_active = 1 AND (market_data_enabled = 1 OR market_data_role IN ('primary','secondary'))
+         WHERE is_active = 1 AND market_data_enabled = 1
          ORDER BY created_at DESC`
       );
       return instances;

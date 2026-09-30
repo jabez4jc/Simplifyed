@@ -121,6 +121,14 @@ class APIClient {
     return this.request('/webhook-config');
   }
 
+  async runKillSwitch() {
+    return this.request('/kill-switch', { method: 'POST', body: { confirm: 'KILL' } });
+  }
+
+  async rotateWebhookToken() {
+    return this.request('/webhook-config/rotate', { method: 'POST' });
+  }
+
   // Instance APIs
   async getInstances(filters = {}) {
     const params = new URLSearchParams(filters);
@@ -152,16 +160,6 @@ class APIClient {
     return this.request(`/notifications/${id}/read`, { method: 'POST' });
   }
 
-  async getInstanceHealthTests() {
-    return this.request('/settings/instance-health-tests/config');
-  }
-
-  async updateInstanceHealthTests(body) {
-    return this.request('/settings/instance-health-tests/config', {
-      method: 'PUT',
-      body,
-    });
-  }
 
   async deleteInstance(id) {
     return this.request(`/instances/${id}`, {
@@ -175,17 +173,6 @@ class APIClient {
     });
   }
 
-  async updateHealth(id) {
-    return this.request(`/instances/${id}/health`, {
-      method: 'POST',
-    });
-  }
-
-  async updatePnL(id) {
-    return this.request(`/instances/${id}/pnl`, {
-      method: 'POST',
-    });
-  }
 
   async toggleAnalyzer(id, mode) {
     return this.request(`/instances/${id}/analyzer/toggle`, {
@@ -216,10 +203,7 @@ class APIClient {
   }
 
   // Market Data Instance APIs
-  async getMarketDataInstance() {
-    return this.request('/instances/market-data/instance');
-  }
-
+ 
   async getAllMarketDataInstances() {
     return this.request('/instances/market-data/all');
   }
@@ -253,15 +237,6 @@ class APIClient {
     return this.request(`/snapshots/positions/${instanceId}?${search.toString()}`);
   }
 
-  async getOrderSnapshot(instanceId, params = {}) {
-    const search = new URLSearchParams(params);
-    return this.request(`/snapshots/orders/${instanceId}?${search.toString()}`);
-  }
-
-  async getTradeSnapshot(instanceId, params = {}) {
-    const search = new URLSearchParams(params);
-    return this.request(`/snapshots/trades/${instanceId}?${search.toString()}`);
-  }
 
   // Watchlist APIs
   async getWatchlists(filters = {}) {
@@ -293,12 +268,6 @@ class APIClient {
     });
   }
 
-  async cloneWatchlist(id, name) {
-    return this.request(`/watchlists/${id}/clone`, {
-      method: 'POST',
-      body: { name },
-    });
-  }
 
   async getWatchlistSymbols(id) {
     return this.request(`/watchlists/${id}/symbols`);
@@ -432,9 +401,6 @@ class APIClient {
     return this.request(`/orders?${params}`);
   }
 
-  async getOrderById(id) {
-    return this.request(`/orders/${id}`);
-  }
 
   async placeOrder(data) {
     return this.request('/orders', {
@@ -443,12 +409,6 @@ class APIClient {
     });
   }
 
-  async placeMultipleOrders(orders) {
-    return this.request('/orders/batch', {
-      method: 'POST',
-      body: { orders },
-    });
-  }
 
   async cancelOrder(id) {
     return this.request(`/orders/${id}/cancel`, {
@@ -463,11 +423,6 @@ class APIClient {
     });
   }
 
-  async syncOrderStatus(instanceId) {
-    return this.request(`/orders/sync/${instanceId}`, {
-      method: 'POST',
-    });
-  }
 
   async getOrderbook(status = '', options = {}) {
     const params = new URLSearchParams();
@@ -492,17 +447,6 @@ class APIClient {
     return this.request(`/positions/all?${params}`);
   }
 
-  async getPositions(instanceId) {
-    return this.request(`/positions/${instanceId}`);
-  }
-
-  async getPositionPnL(instanceId) {
-    return this.request(`/positions/${instanceId}/pnl`);
-  }
-
-  async getAggregatedPnL() {
-    return this.request('/positions/aggregate/pnl');
-  }
 
   async getDailyPnlSnapshots(filters = {}) {
     const params = new URLSearchParams(filters);
@@ -529,12 +473,6 @@ class APIClient {
     return this.request(`/symbols/search?${params}`);
   }
 
-  async validateSymbol(symbol, exchange, instanceId = null) {
-    return this.request('/symbols/validate', {
-      method: 'POST',
-      body: { symbol, exchange, instanceId },
-    });
-  }
 
   /**
    * Get quotes for multiple symbols
@@ -549,9 +487,6 @@ class APIClient {
     });
   }
 
-  async getMarketData(exchange, symbol) {
-    return this.request(`/symbols/market-data/${exchange}/${symbol}`);
-  }
 
   /**
    * Symbol utility operations - consolidates frontend/backend logic
@@ -563,18 +498,6 @@ class APIClient {
     return this.request('/symbols/utils', {
       method: 'POST',
       body: { operation, params },
-    });
-  }
-
-  /**
-   * Batch symbol utility operations
-   * @param {Array<{operation: string, params: Object}>} operations - Array of operations
-   * @returns {Promise<Object>} - Array of results
-   */
-  async symbolUtilsBatch(operations) {
-    return this.request('/symbols/utils', {
-      method: 'POST',
-      body: { operation: 'batch', operations },
     });
   }
 
@@ -676,18 +599,7 @@ class APIClient {
    * @param {boolean} orderCritical - Use aggressive TTL for order-critical operations
    * @returns {Promise<Object>} - Quotes with source tags
    */
-  async subscribeQuotes(sources = {}, orderCritical = false) {
-    return this.request('/symbols/quotes/subscribe', {
-      method: 'POST',
-      body: {
-        watchlistSymbols: sources.watchlistSymbols || [],
-        positionSymbols: sources.positionSymbols || [],
-        additionalSymbols: sources.additionalSymbols || [],
-        orderCritical,
-      },
-    });
-  }
-
+ 
   async getExpiry(symbol, options = {}) {
     const {
       exchange = 'NFO',
@@ -711,62 +623,10 @@ class APIClient {
     return this.request(`/symbols/expiry?${params}`);
   }
 
-  async getOptionChain(symbol, expiry, options = {}) {
-    const {
-      exchange = 'NFO',
-      type = null,
-      includeQuotes = false,
-      strikeWindow = null,
-    } = options;
-
-    const params = new URLSearchParams({
-      symbol,
-      expiry,
-      exchange,
-    });
-
-    if (type) {
-      params.append('type', type);
-    }
-    if (includeQuotes) {
-      params.append('include_quotes', 'true');
-    }
-    if (strikeWindow != null) {
-      params.append('strike_window', String(strikeWindow));
-    }
-
-    return this.request(`/symbols/option-chain?${params}`);
-  }
 
   // Polling APIs
-  async getPollingStatus() {
-    return this.request('/polling/status');
-  }
+ 
 
-  async startPolling() {
-    return this.request('/polling/start', {
-      method: 'POST',
-    });
-  }
-
-  async stopPolling() {
-    return this.request('/polling/stop', {
-      method: 'POST',
-    });
-  }
-
-  async startMarketDataPolling(watchlistId) {
-    return this.request('/polling/market-data/start', {
-      method: 'POST',
-      body: { watchlistId },
-    });
-  }
-
-  async stopMarketDataPolling() {
-    return this.request('/polling/market-data/stop', {
-      method: 'POST',
-    });
-  }
 
   // Quick Order APIs
   async placeQuickOrder(data) {
@@ -804,19 +664,6 @@ class APIClient {
     return this.request(`/quickorders?${params}`);
   }
 
-  async getQuickOrderById(id) {
-    return this.request(`/quickorders/${id}`);
-  }
-
-  async getQuickOrdersBySymbol(symbol, filters = {}) {
-    const params = new URLSearchParams(filters);
-    return this.request(`/quickorders/symbol/${symbol}?${params}`);
-  }
-
-  async getQuickOrderStats(filters = {}) {
-    const params = new URLSearchParams(filters);
-    return this.request(`/quickorders/stats/summary?${params}`);
-  }
 
   async syncQuickOrders(instanceId, days = 7) {
     const params = new URLSearchParams({ days: String(days) });

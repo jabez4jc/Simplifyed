@@ -5,7 +5,6 @@
 
 import express from 'express';
 import settingsService from '../../services/settings.service.js';
-import instanceHealthService from '../../services/instance-health.service.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';
 
 const router = express.Router();
@@ -42,123 +41,6 @@ router.get('/schema', requirePermission('pages.settings.view'), async (req, res,
 });
 
 /**
- * GET /api/v1/settings/categories
- * Get all setting categories
- */
-router.get('/categories', requirePermission('pages.settings.view'), async (req, res, next) => {
-  try {
-    const categories = await settingsService.getCategories();
-    res.json({
-      status: 'success',
-      data: categories
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
- * GET /api/v1/settings/:category
- * Get settings by category
- */
-router.get('/:category', requirePermission('pages.settings.view'), async (req, res, next) => {
-  try {
-    const { category } = req.params;
-    const settings = await settingsService.getSettingsByCategory(category);
-    res.json({
-      status: 'success',
-      data: settings
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
- * GET /api/v1/settings/key/:key
- * Get a single setting by key
- */
-router.get('/key/:key', requirePermission('pages.settings.view'), async (req, res, next) => {
-  try {
-    const { key } = req.params;
-    const setting = await settingsService.getSetting(key);
-    res.json({
-      status: 'success',
-      data: setting
-    });
-  } catch (error) {
-    if (error.message.includes('not found')) {
-      return res.status(404).json({
-        status: 'error',
-        message: error.message
-      });
-    }
-    next(error);
-  }
-});
-
-/**
- * PUT /api/v1/settings/:key
- * Update a single setting
- */
-router.put('/:key', requirePermission('settings.manage'), async (req, res, next) => {
-  try {
-    const { key } = req.params;
-    const { value } = req.body;
-
-    if (value === undefined) {
-      return res.status(400).json({
-        status: 'error',
-        message: 'Value is required'
-      });
-    }
-
-    const updated = await settingsService.updateSetting(key, value);
-    res.json({
-      status: 'success',
-      message: `Setting '${key}' updated successfully`,
-      data: updated
-    });
-  } catch (error) {
-    if (error.message.includes('not found')) {
-      return res.status(404).json({
-        status: 'error',
-        message: error.message
-      });
-    }
-    if (error.message.includes('expects')) {
-      return res.status(400).json({
-        status: 'error',
-        message: error.message
-      });
-    }
-    next(error);
-  }
-});
-
-// Instance health test config
-router.get('/instance-health-tests/config', requirePermission('pages.settings.view'), async (req, res, next) => {
-  try {
-    const config = await instanceHealthService.getTestConfig();
-    res.json({
-      status: 'success',
-      data: config,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.put('/instance-health-tests/config', requirePermission('settings.manage'), async (req, res, next) => {
-  try {
-    await instanceHealthService.updateTestConfig(req.body);
-    res.json({ status: 'success', message: 'Instance health test config updated' });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
  * PUT /api/v1/settings
  * Update multiple settings
  */
@@ -189,31 +71,6 @@ router.put('/', requirePermission('settings.manage'), async (req, res, next) => 
       }
     });
   } catch (error) {
-    next(error);
-  }
-});
-
-/**
- * POST /api/v1/settings/:key/reset
- * Reset a setting to its default value
- */
-router.post('/:key/reset', requirePermission('settings.manage'), async (req, res, next) => {
-  try {
-    const { key } = req.params;
-    const setting = await settingsService.resetSetting(key);
-
-    res.json({
-      status: 'success',
-      message: `Setting '${key}' reset to default`,
-      data: setting
-    });
-  } catch (error) {
-    if (error.message.includes('not found')) {
-      return res.status(404).json({
-        status: 'error',
-        message: error.message
-      });
-    }
     next(error);
   }
 });

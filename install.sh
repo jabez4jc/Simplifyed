@@ -318,10 +318,9 @@ install_application() {
     # Create necessary directories
     mkdir -p "$INSTALL_DIR/backend/database"
     mkdir -p "$INSTALL_DIR/backend/logs"
-    mkdir -p "$INSTALL_DIR/backend/data"
 
-    # Set ownership (ensure SQLite, logs, and session dirs are writable)
-    chown -R $APP_USER:$APP_USER "$INSTALL_DIR/backend/database" "$INSTALL_DIR/backend/logs" "$INSTALL_DIR/backend/data"
+    # Set ownership (ensure SQLite and logs dirs are writable)
+    chown -R $APP_USER:$APP_USER "$INSTALL_DIR/backend/database" "$INSTALL_DIR/backend/logs"
     chown -R $APP_USER:$APP_USER "$INSTALL_DIR"
 
     print_success "Application files copied"
@@ -334,8 +333,7 @@ install_application() {
 configure_environment() {
     print_header "Configuring Environment Variables"
 
-    # Local-auth JWT signing secret. There is no SESSION_SECRET: express-session was removed,
-    # authentication is a stateless JWT and nothing else signs anything.
+    # Local-auth JWT signing secret - the only secret the server requires.
     JWT_SECRET=$(generate_random_string)
 
     # Webhook token for the TradingView broadcast endpoint. This is the sole auth check on
@@ -368,10 +366,6 @@ JWT_SECRET=$JWT_SECRET
 # Send it as the X-Webhook-Token header (or ?token= query param) from your alerts.
 WEBHOOK_TOKEN=$WEBHOOK_TOKEN
 
-# Test Mode (disabled in production)
-TEST_MODE=false
-TEST_USER_EMAIL=admin@${DOMAIN}
-
 # Polling Configuration
 INSTANCE_POLL_INTERVAL_MS=15000
 MARKET_DATA_POLL_INTERVAL_MS=5000
@@ -385,11 +379,6 @@ OPENALGO_NONCRITICAL_RETRY_DELAY_MS=2000
 
 # Logging
 LOG_LEVEL=info
-LOG_FILE=./logs/app.log
-
-# Rate Limiting
-RATE_LIMIT_WINDOW_MS=60000
-RATE_LIMIT_MAX_REQUESTS=100
 
 # Telegram Bot Configuration
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
@@ -554,7 +543,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=$INSTALL_DIR/backend/database $INSTALL_DIR/backend/logs $INSTALL_DIR/backend/data
+ReadWritePaths=$INSTALL_DIR/backend/database $INSTALL_DIR/backend/logs
 
 [Install]
 WantedBy=multi-user.target

@@ -19,17 +19,17 @@
   <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
   <link rel="stylesheet" href="/css/tailwind.css?v=20251204-0800">
   <link rel="stylesheet" href="/css/type-scale.css?v=20260725-1200">
-  <link rel="stylesheet" href="/css/tokens-base.css?v=20260724-1100">
-  <link rel="stylesheet" href="/css/components.css?v=20260727-2230">
-  <link rel="stylesheet" href="/css/quick-order.css?v=20260723-0900">
-  <link rel="stylesheet" href="/css/settings.css?v=20260929-1900">
-  <link rel="stylesheet" href="/css/watchlists.css?v=20260929-1300">
+  <link rel="stylesheet" href="/css/tokens-base.css?v=20260930-0200">
+  <link rel="stylesheet" href="/css/components.css?v=20260930-0400">
+  <link rel="stylesheet" href="/css/quick-order.css?v=20260930-0400">
+  <link rel="stylesheet" href="/css/settings.css?v=20260930-0600">
+  <link rel="stylesheet" href="/css/watchlists.css?v=20260930-0400">
   <link rel="stylesheet" href="/css/trading-controls.css?v=20260714-0200">
-  <link rel="stylesheet" href="/css/positions.css?v=20260723-0900">
-  <link rel="stylesheet" href="/css/operations.css?v=20260929-1900">
+  <link rel="stylesheet" href="/css/positions.css?v=20260930-0400">
+  <link rel="stylesheet" href="/css/operations.css?v=20260930-0400">
   <link rel="stylesheet" href="/css/overrides.css?v=20260714-0200">
-  <link rel="stylesheet" href="/css/trading-buttons.css?v=20260929-1900">
-  <link rel="stylesheet" href="/css/chart.css?v=20260929-0100">
+  <link rel="stylesheet" href="/css/trading-buttons.css?v=20260930-0200">
+  <link rel="stylesheet" href="/css/chart.css?v=20260930-0900">
   <link rel="stylesheet" href="/css/fonts.css?v=20260725-1200">
   <style>
     .logo {
@@ -90,6 +90,14 @@
             <span class="feed-status-dot" aria-hidden="true"></span>
             <span id="feed-status-label" class="feed-status-label">Connecting</span>
           </div>
+          <button type="button" id="kill-switch-btn" class="kill-switch-btn" data-permission="killswitch.execute"
+            onclick="app.runKillSwitch()"
+            title="Cancel all orders, close every position and switch every instance to analyzer mode">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v9M6.3 6.3a8 8 0 1011.4 0" />
+            </svg>
+            <span>Kill switch</span>
+          </button>
           <button type="button" id="theme-toggle-btn" class="icon-button" onclick="app.toggleTheme()" title="Switch light/dark mode"
             aria-label="Toggle theme">
             <svg id="theme-toggle-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
@@ -98,21 +106,6 @@
                 d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M6.343 6.343l-.707-.707M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
               <path class="moon-icon hidden" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                 d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-            </svg>
-          </button>
-          <button type="button" id="pause-toggle-btn" class="icon-button" onclick="app.togglePause()"
-            title="Pause/Resume data fetching" aria-label="Pause/Resume">
-            <svg id="pause-play-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
-              stroke="currentColor">
-              <path id="pause-play-path" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                d="M6 4h4v16H6zM14 4l8 8-8 8z" />
-            </svg>
-          </button>
-          <button type="button" class="icon-button" onclick="app.refreshCurrentView()" title="Refresh dashboard"
-            aria-label="Refresh dashboard">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                d="M4 4v5h4M20 20v-5h-4M5 9a7 7 0 0112-4M19 15a7 7 0 01-12 4" />
             </svg>
           </button>
         </div>
@@ -340,54 +333,53 @@
       }
     })();
   </script>
-  <script defer src="/js/api-client.js?v=20260929-1900"></script>
-  <script defer src="/js/utils.js?v=20260724-1200"></script>
+  <script defer src="/js/api-client.js?v=20260930-0600"></script>
+  <script defer src="/js/utils.js?v=20260930-0400"></script>
   <script defer src="/js/quick-order-core.js?v=20260714-0200"></script>
-  <script defer src="/js/quick-order-expansion.js?v=20260929-2100"></script>
-  <script defer src="/js/quick-order-controls.js?v=20260714-0200"></script>
-  <script defer src="/js/quick-order-selectors.js?v=20260714-0200"></script>
+  <script defer src="/js/quick-order-expansion.js?v=20260930-0400"></script>
+  <script defer src="/js/quick-order-controls.js?v=20260930-0800"></script>
+  <script defer src="/js/quick-order-selectors.js?v=20260930-0800"></script>
   <script defer src="/js/quick-order-option-chain.js?v=20260724-1100"></script>
   <script defer src="/js/quick-order-preview.js?v=20260714-0200"></script>
   <script defer src="/js/quick-order-instruments.js?v=20260714-0200"></script>
   <script defer src="/js/quick-order-place.js?v=20260929-1900"></script>
   <script defer src="/js/quick-order-init.js?v=20260714-0200"></script>
-  <script defer src="/js/strategy-builder.js?v=20260929-2100"></script>
-  <script defer src="/js/settings-core.js?v=20260929-0100"></script>
-  <script defer src="/js/settings-schema.js?v=20260929-1900"></script>
-  <script defer src="/js/settings-general.js?v=20260929-2100"></script>
-  <script defer src="/js/settings-rbac.js?v=20260929-1900"></script>
+  <script defer src="/js/strategy-builder.js?v=20260930-0600"></script>
+  <script defer src="/js/settings-core.js?v=20260930-0400"></script>
+  <script defer src="/js/settings-schema.js?v=20260930-0600"></script>
+  <script defer src="/js/settings-general.js?v=20260930-0600"></script>
+  <script defer src="/js/settings-rbac.js?v=20260930-0400"></script>
   <script defer src="/js/settings-data.js?v=20260929-1900"></script>
   <script defer src="/js/settings-status.js?v=20260929-1900"></script>
   <script defer src="/js/settings-init.js?v=20260714-0200"></script>
-  <script defer src="/js/dashboard-core.js?v=20260929-2100"></script>
-  <script defer src="/js/dashboard-overview.js?v=20260929-1900"></script>
-  <script defer src="/js/dashboard-instances.js?v=20260929-2100"></script>
-  <script defer src="/js/dashboard-watchlists-core.js?v=20260929-1900"></script>
-  <script defer src="/js/dashboard-watchlists-quotes.js?v=20260929-2100"></script>
+  <script defer src="/js/dashboard-core.js?v=20260930-0400"></script>
+  <script defer src="/js/dashboard-overview.js?v=20260930-0400"></script>
+  <script defer src="/js/dashboard-instances.js?v=20260930-0300"></script>
+  <script defer src="/js/dashboard-watchlists-core.js?v=20260930-0400"></script>
+  <script defer src="/js/dashboard-watchlists-quotes.js?v=20260930-0400"></script>
   <script defer src="/js/dashboard-watchlists-crud.js?v=20260929-2100"></script>
-  <script defer src="/js/dashboard-watchlists-positions.js?v=20260724-1200"></script>
-  <script defer src="/js/dashboard-watchlists-modals.js?v=20260724-1100"></script>
-  <script defer src="/js/dashboard-orders.js?v=20260929-2100"></script>
-  <script defer src="/js/dashboard-trades.js?v=20260929-1900"></script>
-  <script defer src="/js/dashboard-positions.js?v=20260929-1900"></script>
+  <script defer src="/js/dashboard-watchlists-positions.js?v=20260930-0400"></script>
+  <script defer src="/js/dashboard-watchlists-modals.js?v=20260930-0400"></script>
+  <script defer src="/js/dashboard-orders.js?v=20260930-0400"></script>
+  <script defer src="/js/dashboard-trades.js?v=20260930-0400"></script>
+  <script defer src="/js/dashboard-positions.js?v=20260930-0600"></script>
   <script defer src="/js/dashboard-notifications.js?v=20260929-1900"></script>
   <script defer src="/js/dashboard-pnl.js?v=20260714-0100"></script>
   <!--
     The chart runs on openalgo-charts (see js/openalgo-charts-bridge.js), vendored under
-    public/vendor by scripts/sync-vendor-charts.js. The retired lightweight-charts build is still
-    vendored alongside it from the migration, just never loaded.
+    public/vendor by scripts/sync-vendor-charts.js.
   -->
-  <script type="module" src="/js/openalgo-charts-bridge.js?v=2.5.9-1"></script>
+  <script type="module" src="/js/openalgo-charts-bridge.js?v=2.5.9-2"></script>
   <script defer src="/js/chart-patterns.js?v=20260728-1600"></script>
-  <script defer src="/js/dashboard-chart-panes.js?v=20260929-0200"></script>
+  <script defer src="/js/dashboard-chart-panes.js?v=20260930-0900"></script>
   <script defer src="/js/dashboard-chart-profile.js?v=20260728-1100"></script>
-  <script defer src="/js/dashboard-chart-orders.js?v=20260929-0100"></script>
+  <script defer src="/js/dashboard-chart-orders.js?v=20260930-0900"></script>
   <script defer src="/js/dashboard-chart-types.js?v=20260919-0100"></script>
-  <script defer src="/js/dashboard-chart-sync.js?v=20260728-1700"></script>
-  <script defer src="/js/dashboard-chart-live.js?v=20260728-1300"></script>
-  <script defer src="/js/dashboard-chart-draw.js?v=20260919-0100"></script>
-  <script defer src="/js/dashboard-chart.js?v=20260919-0100"></script>
-  <script defer src="/js/dashboard-init.js?v=20260723-0900"></script>
+  <script defer src="/js/dashboard-chart-sync.js?v=20260930-0900"></script>
+  <script defer src="/js/dashboard-chart-live.js?v=20260930-0900"></script>
+  <script defer src="/js/dashboard-chart-draw.js?v=20260930-0200"></script>
+  <script defer src="/js/dashboard-chart.js?v=20260930-0900"></script>
+  <script defer src="/js/dashboard-init.js?v=20260930-0400"></script>
   <script defer src="/js/a11y.js?v=20260904-0100"></script>
   <script src="/js/pwa-register.js"></script>
 </body>

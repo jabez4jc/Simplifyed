@@ -84,8 +84,8 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
     }
 
     this.selectedTradeModes.set(symbolId, mode);
-    // Force NRML for derivatives
-    if (mode === 'FUTURES' || mode === 'OPTIONS') {
+    // F&O takes MIS or NRML - keep the choice, except CNC (delivery), which F&O does not have.
+    if ((mode === 'FUTURES' || mode === 'OPTIONS') && this.selectedProducts.get(symbolId) === 'CNC') {
       this.selectedProducts.set(symbolId, 'NRML');
     }
     this.selectedExpiries.delete(symbolId);
@@ -183,23 +183,9 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
   }
 
   selectProduct(symbolId, product) {
-    // debug: removed noisy log
     const tradeMode = this.selectedTradeModes.get(symbolId) || 'EQUITY';
-    if ((tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') && product !== 'NRML') {
-      this.selectedProducts.set(symbolId, 'NRML');
-      return;
-    }
-    this.selectedProducts.set(symbolId, product);
-  }
-
-  /**
-   * Update step lots
-   */
-  updateStepLots(symbolId, value) {
-    const validatedValue = Math.max(1, parseInt(value) || 1);
-    // debug: removed noisy log
-    this.stepLots.set(symbolId, validatedValue);
-    this.reloadExpansionContent(symbolId);
+    const fno = tradeMode === 'FUTURES' || tradeMode === 'OPTIONS';
+    this.selectedProducts.set(symbolId, fno && product === 'CNC' ? 'NRML' : product);
   }
 
   /**

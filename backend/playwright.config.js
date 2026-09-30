@@ -51,6 +51,8 @@ const config = {
       NODE_ENV: 'test',
       // Explicitly OFF: the auth bypass would make every permission assertion meaningless.
       ENABLE_TEST_MODE: 'false',
+      // Test orders must not message the operator's Telegram (dotenv never overrides a set var).
+      TELEGRAM_BOT_TOKEN: '',
     },
   },
 };

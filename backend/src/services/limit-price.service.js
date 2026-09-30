@@ -8,12 +8,12 @@ import { extractLtp } from '../utils/price-extraction.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import config from '../core/config.js';
 import settingsService from './settings.service.js';
+import { settingDefault } from '../config/settings-registry.js';
 import { log } from '../core/logger.js';
 import db from '../core/database.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import { requiresLimitOrders } from '../utils/broker-type.util.js';
 
-const DEFAULT_MAX_SPREAD_PCT = 0.005;
 
 // Second-chance staleness window for a fill-now caller. The strict pass wants a ~2s quote; the
 // quote cache itself holds entries for 7-12s, so the usual reason a fill-now order degrades to
@@ -77,9 +77,8 @@ class LimitPriceService {
       quoteStaleMs ??
       config.marketDataFeed?.orderQuoteStaleMs ??
       2000;
-    let maxSpreadPct =
-      config.marketDataFeed?.maxOrderSpreadPct ??
-      DEFAULT_MAX_SPREAD_PCT;
+    // Settings > Orders & Costs. The registry default applies only if the row is missing.
+    let maxSpreadPct = Number(settingDefault('market_data_feed.max_order_spread_pct'));
     try {
       const setting = await settingsService.getSetting('market_data_feed.max_order_spread_pct');
       const parsed = parseFloat(setting?.rawValue ?? setting?.value);
@@ -87,7 +86,7 @@ class LimitPriceService {
         maxSpreadPct = parsed;
       }
     } catch {
-      // Fall back to config/env defaults if setting is missing.
+      // Row missing - keep the default.
     }
 
     let depthBid = null;

@@ -346,7 +346,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             aria-expanded="${isExpanded}"
             aria-controls="positions-body-${inst.instance_id}"
           >
-            <span class="toggle-icon ${isExpanded ? 'rotate-90' : ''}">▸</span>
+            ${Utils.chevron()}
             <span class="instance-name">${Utils.escapeHTML(inst.instance_name)}</span>
             <span class="instance-meta">Broker: <span class="font-medium">${Utils.escapeHTML(inst.broker || 'N/A')}</span></span>
             <span class="instance-meta">Open: <span class="font-medium">${openCount}</span></span>

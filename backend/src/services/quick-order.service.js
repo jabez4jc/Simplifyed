@@ -26,15 +26,14 @@ import { contractExpiry, isContractExpired } from '../utils/underlying.util.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
 import instrumentsService from './instruments.service.js';
 import { toISTDate, toISTISOString } from '../utils/time.js';
+import { isDerivativeExchange } from '../utils/broker-type.util.js';
 import {
   getUnderlyingQuoteExchange,
   getUnderlyingQuoteSymbol,
   getUnderlyingForClosing,
   parseFuturesSymbol,
   getFuturesUnderlying,
-  getSymbolExpiryVariants,
   expiryMatchesSymbol,
-  constructOptionSymbol,
   parseOptionSymbol,
   normalizeSymbolKey,
   normalizeExchange,
@@ -501,7 +500,7 @@ class QuickOrderService {
   async _executeOrderStrategy(strategy, symbol, instances, orderParams) {
     const { action } = orderParams;
 
-    // For OPTIONS strategy, resolve option symbol ONCE using primary market data instance
+    // For OPTIONS strategy, resolve option symbol ONCE using a market data instance
     let preResolvedOptionSymbol = null;
     if (strategy === 'OPTIONS_WITH_RECONCILIATION') {
       const marketDataInstance = await this._getMarketDataInstance(instances);
@@ -1262,7 +1261,7 @@ class QuickOrderService {
 
     // Determine the correct derivatives exchange
     const derivativeExchange = derivativeResolutionService.getDerivativeExchange(symbol.exchange);
-    const finalProduct = this._resolveProductForOrder(
+    let finalProduct = this._resolveProductForOrder(
       product,
       'OPTIONS',
       { symbol_type: 'OPTIONS', exchange: derivativeExchange }
@@ -1364,8 +1363,10 @@ class QuickOrderService {
         throw new ValidationError('No position change needed - all positions already at target');
       }
 
-      // Fast path: if all orders are for the same strike (duplicate rows), collapse into one
-      const uniqueSymbols = new Set(ordersToPlace.map(o => o.symbol));
+      // Fast path: duplicate rows for the same strike AND product collapse into one order. An
+      // MIS row and an NRML row of the same strike are separate positions at the broker, so each
+      // keeps its own order in its own product.
+      const uniqueSymbols = new Set(ordersToPlace.map(o => `${o.symbol}|${o.product || ''}`));
       if (uniqueSymbols.size === 1 && ordersToPlace.length > 1) {
         const primary = ordersToPlace[0];
         const mergedQty = ordersToPlace.reduce((sum, o) => sum + o.quantity, 0);
@@ -1597,9 +1598,22 @@ class QuickOrderService {
           product
         );
       }
+      // Reducing or closing acts on the position that EXISTS. If it is held in the other
+      // product (an NRML position with MIS selected), trade it in its own product - otherwise
+      // the lookup finds nothing and the close reports "no change needed" while it stays open.
+      if (isReduceOrClose && currentPosition === 0) {
+        const held = (await this._getPositionBook(instance)).filter((p) =>
+          this._normalizeSymbolKey(p.symbol || p.tradingsymbol) === this._normalizeSymbolKey(optionSymbol.symbol)
+          && (parseIntSafe(p.quantity) || parseIntSafe(p.netqty) || 0) !== 0);
+        if (held.length === 1) {
+          finalProduct = this._normalizeProduct(held[0].product || held[0].producttype) || finalProduct;
+          currentPosition = parseIntSafe(held[0].quantity) || parseIntSafe(held[0].netqty) || 0;
+        }
+      }
       log.info('Using LEG-scoped position', {
         symbol: optionSymbol.symbol,
         currentPosition,
+        product: finalProduct,
       });
     }
 
@@ -2144,89 +2158,6 @@ class QuickOrderService {
   }
 
   /**
-   * Reconcile options positions (close opposite positions)
-   * @private
-   */
-  async _reconcileOptionsPositions(instance, positions, side, optionType, product, strategy, correlationId = null) {
-    const positionsToClose = [];
-    const bufferPoints = 0;
-    const orderType = await this._resolveOrderTypeForInstance(instance);
-
-    if (side === 'BUY') {
-      // Closing all short positions (negative quantity)
-      positionsToClose.push(...positions.filter(p => p.quantity < 0));
-    } else if (side === 'SELL') {
-      // Closing all long positions (positive quantity)
-      positionsToClose.push(...positions.filter(p => p.quantity > 0));
-    }
-
-    const closeResults = [];
-
-    for (const position of positionsToClose) {
-      try {
-        const closeAction = position.quantity > 0 ? 'SELL' : 'BUY';
-        const closeQuantity = Math.abs(position.quantity);
-
-        const { pricetype: effectiveOrderType, price: orderPrice } = orderType === 'LIMIT'
-          ? await limitPriceService.resolveMarketablePricing({
-            instanceId: instance?.id,
-            exchange: position.exchange,
-            symbol: position.symbol,
-            side: closeAction,
-            bufferPoints,
-            tickSize: null,
-            bypassSpreadCheck: true,
-            forceLtp: true,
-          })
-          : { pricetype: orderType, price: 0 };
-
-        const orderPayload = orderPayloadFactory.buildExitOrder({
-          strategy: strategy || 'default',
-          exchange: position.exchange,
-          symbol: position.symbol,
-          action: closeAction,
-          quantity: closeQuantity,
-          product,
-          pricetype: effectiveOrderType,
-          price: orderPrice,
-        });
-        await orderPlacementService.placeSmartOrder(instance, orderPayload, {
-          request_type: 'OPTIONS_RECONCILE',
-          trade_mode: 'OPTIONS',
-          base_symbol: position.symbol,
-          option_type: optionType,
-          position_side: side,
-          correlation_id: correlationId,
-          limitBufferPoints: bufferPoints,
-          tickSize: null,
-          strategy: orderPayload.strategy,
-          skipRateLimit: true,
-        });
-
-        closeResults.push({
-          success: true,
-          symbol: position.symbol,
-          closed_quantity: closeQuantity,
-        });
-
-        log.info('Closed opposite position for reconciliation', {
-          symbol: position.symbol,
-          quantity: closeQuantity,
-        });
-      } catch (error) {
-        log.error('Failed to close position during reconciliation', error);
-        closeResults.push({
-          success: false,
-          symbol: position.symbol,
-          error: error.message,
-        });
-      }
-    }
-
-    return closeResults;
-  }
-
-  /**
    * Get cached position book for an instance (fallback to OpenAlgo if cache missing)
    * @private
    */
@@ -2338,6 +2269,39 @@ class QuickOrderService {
   }
 
   /**
+   * Close every open position on an instance, one symbol at a time through the exit path
+   * above: LIMIT orders on Indian exchanges (SEBI), priced from depth and chased until filled.
+   * OpenAlgo's own closeposition squares off at MARKET, so this app never calls it.
+   * Used by Close All, the switch to analyzer mode and the kill switch.
+   * @returns {Promise<{closed: number, errors: string[], stillOpen: string[]}>}
+   */
+  async closeAllPositions(instance, { strategy = 'CLOSE_ALL' } = {}) {
+    const quantityOf = (p) => Number(p.quantity ?? p.netqty ?? p.net_quantity ?? p.netQty ?? 0) || 0;
+    const openPositions = async () => (await openalgoClient.getPositionBook(instance) || [])
+      .filter((p) => quantityOf(p) !== 0);
+
+    const result = { closed: 0, errors: [], stillOpen: [] };
+    const seen = new Set();
+    for (const position of await openPositions()) {
+      const symbol = position.symbol || position.tradingsymbol || position.trading_symbol;
+      const exchange = position.exchange || position.exch;
+      const key = `${exchange}:${symbol}`;
+      if (seen.has(key)) continue; // one exit closes every product row of the symbol
+      seen.add(key);
+      try {
+        // tradeMode EQUITY = close this exact symbol, with no underlying/expiry resolution.
+        const closed = await this.closePosition(instance, { symbol, exchange }, { tradeMode: 'EQUITY', strategy });
+        result.closed += closed?.closed_count || 0;
+      } catch (error) {
+        result.errors.push(`${symbol}: ${error.message}`);
+      }
+    }
+    result.stillOpen = (await openPositions())
+      .map((p) => `${p.symbol || p.tradingsymbol} ${quantityOf(p)}`);
+    return result;
+  }
+
+  /**
    * Get open options positions for underlying and expiry
    * @private
    * @param {Object} options - Options
@@ -2414,8 +2378,9 @@ class QuickOrderService {
 
       return positions;
     } catch (error) {
+      // Never "nothing open": an exit that cannot read the book must fail, not report success.
       log.error('Failed to get options positions', error);
-      return [];
+      throw error;
     }
   }
 
@@ -2465,8 +2430,9 @@ class QuickOrderService {
         product: p.product || p.producttype || product,
       }));
     } catch (error) {
+      // Never "nothing open": an exit that cannot read the book must fail, not report success.
       log.error('Failed to get positions for symbol', error);
-      return [];
+      throw error;
     }
   }
 
@@ -2492,13 +2458,6 @@ class QuickOrderService {
     return quickOrderHistoryService.recordQuickOrder(orderData);
   }
 
-  _buildFailurePayloadSummary(orderParams = {}, symbol = {}) {
-    return quickOrderHistoryService.buildFailurePayloadSummary(orderParams, symbol);
-  }
-
-  _extractErrorCode(error) {
-    return quickOrderHistoryService.extractErrorCode(error);
-  }
 
   async _recordFailedQuickOrder(params) {
     return quickOrderHistoryService.recordFailedQuickOrder(params);
@@ -2552,9 +2511,6 @@ class QuickOrderService {
     return getFuturesUnderlying(symbol);
   }
 
-  _getSymbolExpiryVariants(symbol = {}) {
-    return getSymbolExpiryVariants(symbol);
-  }
 
   _expiryMatchesSymbol(expiry, symbol = {}) {
     return expiryMatchesSymbol(expiry, symbol);
@@ -3058,8 +3014,9 @@ class QuickOrderService {
     const normalizedExpiry = expiry ? this._normalizeExpiryInput(expiry) : null;
     // A watchlist symbol that's already itself the tradable contract (a dated future
     // added directly, or a non-expiring instrument like a crypto perpetual) has no
-    // separate expiry-dated series to resolve - trade the anchor symbol as-is.
-    const isDirectContract = symbol.symbol_type === 'FUTURES' && !symbol.expiry;
+    // separate expiry-dated series to resolve - trade the anchor symbol as-is unless the
+    // user picked a different expiry.
+    const isDirectContract = symbol.symbol_type === 'FUTURES' && (!symbol.expiry || !normalizedExpiry);
     if (!normalizedExpiry && !isDirectContract) {
       throw new ValidationError('Select an expiry to preview futures quotes.');
     }
@@ -3244,10 +3201,7 @@ class QuickOrderService {
    * @returns {Promise<Array>} - Array of positions with symbol, strike, and quantity
    * @private
    */
-  _constructOptionSymbol(underlying, expiry, optionType, strike) {
-    return constructOptionSymbol(underlying, expiry, optionType, strike);
-  }
-
+ 
   async _getAllOpenPositions(instance, underlying, expiry, optionType, product) {
     try {
       log.info('Querying position book from OpenAlgo', {
@@ -3324,8 +3278,9 @@ class QuickOrderService {
 
       return positions;
     } catch (error) {
-      log.warn('Failed to get open positions from positionbook, returning empty array', error);
-      return [];
+      // Never "nothing open": a reduce/close that cannot read the book must fail, not no-op.
+      log.warn('Failed to get open positions from positionbook', error);
+      throw error;
     }
   }
 
@@ -3422,25 +3377,6 @@ class QuickOrderService {
 
       return null;
     }
-  }
-
-  /**
-   * Clear anchored strikes (when expiry or offset changes)
-   * @param {number} symbolId - Watchlist symbol ID
-   * @param {string} optionType - CE, PE, or null for both
-   * @private
-   */
-  async _clearAnchoredStrikes(symbolId, optionType = null) {
-    if (optionType === 'CE') {
-      await db.run('UPDATE watchlist_symbols SET anchored_ce_strike = NULL WHERE id = ?', [symbolId]);
-    } else if (optionType === 'PE') {
-      await db.run('UPDATE watchlist_symbols SET anchored_pe_strike = NULL WHERE id = ?', [symbolId]);
-    } else {
-      // Clear both
-      await db.run('UPDATE watchlist_symbols SET anchored_ce_strike = NULL, anchored_pe_strike = NULL, anchored_expiry = NULL WHERE id = ?', [symbolId]);
-    }
-
-    log.info('Cleared anchored strikes', { symbolId, optionType: optionType || 'both' });
   }
 
   /**
@@ -3570,9 +3506,6 @@ class QuickOrderService {
     return quickOrderQuotesService.getOptionChainQuotesMap(params);
   }
 
-  _extractQuotesFromOptionChain(chainData, exchange) {
-    return quickOrderQuotesService.extractQuotesFromOptionChain(chainData, exchange);
-  }
 
   _quotesArrayToMap(quotes = [], fetchedAt = Date.now()) {
     return quickOrderQuotesService.quotesArrayToMap(quotes, fetchedAt);
@@ -3637,12 +3570,11 @@ class QuickOrderService {
 
     const isDerivativeTrade = trade === 'FUTURES' || trade === 'OPTIONS';
     const isDerivativeSymbol = symbolType === 'FUTURES' || symbolType === 'OPTIONS';
-    const isDerivativeExchange = ['NFO', 'BFO', 'MCX'].includes(exch);
 
     // F&O takes MIS (intraday) or NRML (carry-forward) - the operator's choice is kept. Only CNC,
     // which is delivery and does not exist for derivatives, becomes NRML. Every F&O order used to
     // be forced to NRML, overriding an MIS choice (and its intraday margin and auto square-off).
-    if (isDerivativeTrade || isDerivativeSymbol || isDerivativeExchange) {
+    if (isDerivativeTrade || isDerivativeSymbol || isDerivativeExchange(exch)) {
       return normalizedProduct === 'MIS' ? 'MIS' : 'NRML';
     }
 
@@ -3660,4 +3592,3 @@ class QuickOrderService {
 
 // Export singleton instance
 export default new QuickOrderService();
-export { QuickOrderService };

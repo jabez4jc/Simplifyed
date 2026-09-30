@@ -5,7 +5,7 @@
 
 import sqlite3 from 'sqlite3';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { dirname, resolve } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { log } from './logger.js';
 import { DatabaseError } from './errors.js';
@@ -32,7 +32,7 @@ class Database {
     }
 
     // Get database path from environment or use default
-    const dbPath = join(__dirname, '../../', process.env.DATABASE_PATH || './database/simplifyed.db');
+    const dbPath = resolve(__dirname, '../../', process.env.DATABASE_PATH || './database/simplifyed.db');
     const dbDir = dirname(dbPath);
     if (!existsSync(dbDir)) {
       mkdirSync(dbDir, { recursive: true });
@@ -214,4 +214,3 @@ class Database {
 const db = new Database();
 
 export default db;
-export { Database };

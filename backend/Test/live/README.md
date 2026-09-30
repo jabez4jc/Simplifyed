@@ -9,9 +9,11 @@ npm run test:live
 
 ## Why they are opt-in
 
-Everything else in `Test/` runs against a fake broker and a throwaway database. These do not.
-They exist to answer the one question a fake cannot: does this application actually work against
-the broker it will be used with — its symbol formats, its rejection messages, its analyzer mode.
+`Test/unit` and `Test/services` are offline logic tests. `Test/integration` and `e2e/` also use
+the real brokers, but only Jz Kotak, Jz Fyers and Jabez Crypto, copied into a throwaway database.
+These live tests are the only ones that also use Maha and Ana, and they trade every order type the
+app supports - against the broker it will be used with: its symbol formats, its rejection
+messages, its analyzer mode.
 
 ## The safety rule
 

@@ -220,7 +220,6 @@ class WatchlistService {
         await db.run('DELETE FROM watchlist_symbols WHERE watchlist_id = ?', [id]);
         await db.run('DELETE FROM watchlist_instances WHERE watchlist_id = ?', [id]);
         await db.run('DELETE FROM watchlist_orders WHERE watchlist_id = ?', [id]);
-        await db.run('DELETE FROM watchlist_positions WHERE watchlist_id = ?', [id]);
         await db.run('DELETE FROM watchlists WHERE id = ?', [id]);
       });
 
@@ -443,34 +442,21 @@ class WatchlistService {
   }
 
   /**
-   * Get watchlist symbols with latest quotes
+   * A watchlist's symbols, each flagged is_expired.
    * @param {number} watchlistId - Watchlist ID
-   * @returns {Promise<Array>} - Symbols with market data
+   * @returns {Promise<Array>}
    */
-  async getSymbolsWithQuotes(watchlistId) {
+  async getSymbols(watchlistId) {
     try {
+      // Quotes are not stored: the dashboard streams them (market-data feed / WS gateway).
       const symbols = await db.all(
-        `SELECT
-          ws.*,
-          md.ltp,
-          md.open,
-          md.high,
-          md.low,
-          md.close,
-          md.volume,
-          md.change_percent,
-          md.updated_at as quote_updated_at
-         FROM watchlist_symbols ws
-         LEFT JOIN market_data md ON
-           ws.exchange = md.exchange AND ws.symbol = md.symbol
-         WHERE ws.watchlist_id = ?
-         ORDER BY ws.created_at`,
+        'SELECT * FROM watchlist_symbols WHERE watchlist_id = ? ORDER BY created_at',
         [watchlistId]
       );
 
       return symbols.map((row) => ({ ...row, is_expired: isContractExpired(row) }));
     } catch (error) {
-      log.error('Failed to get symbols with quotes', error, { watchlistId });
+      log.error('Failed to get watchlist symbols', error, { watchlistId });
       throw error;
     }
   }
@@ -809,4 +795,3 @@ class WatchlistService {
 
 // Export singleton instance
 export default new WatchlistService();
-export { WatchlistService };

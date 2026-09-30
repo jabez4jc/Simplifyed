@@ -16,7 +16,7 @@ import config from '../core/config.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import { backoffMs } from '../integrations/openalgo/instance-health-tracker.service.js';
 import instanceService from './instance.service.js';
-import instanceAnalyzerService, { DEFAULT_ANALYZER_TTL_MS } from './instance-analyzer.service.js';
+import { DEFAULT_ANALYZER_TTL_MS } from './instance-analyzer.service.js';
 import { staggeredInstanceRequest } from '../utils/instance-request-throttle.util.js';
 
 const DEFAULT_PING_HEALTHY_MS = 5 * 60 * 1000;
@@ -51,7 +51,6 @@ class InstanceHealthCheckService {
       let healthStatus = 'unknown';
       let analyzerMode = instance.is_analyzer_mode;
       let analyzerCheckPerformed = false;
-      const hasAnalyzerCheckColumn = await instanceService._hasColumn('last_analyzer_check_at');
 
       try {
         // Test connection
@@ -66,17 +65,11 @@ class InstanceHealthCheckService {
 
         // Get analyzer status at most once per TTL (do not block health on failure)
         let shouldCheckAnalyzer = true;
-        if (hasAnalyzerCheckColumn && instance.last_analyzer_check_at) {
+        if (instance.last_analyzer_check_at) {
           const lastCheck = Date.parse(instance.last_analyzer_check_at);
           const ttl = config.instanceHealth?.analyzerCheckIntervalMs ?? DEFAULT_ANALYZER_TTL_MS;
           if (!Number.isNaN(lastCheck)) {
             shouldCheckAnalyzer = Date.now() - lastCheck >= ttl;
-          }
-        } else if (!hasAnalyzerCheckColumn) {
-          const cachedAnalyzerMode = instanceAnalyzerService.getCachedAnalyzerStatus(id);
-          if (cachedAnalyzerMode !== null) {
-            analyzerMode = cachedAnalyzerMode;
-            shouldCheckAnalyzer = false;
           }
         }
 
@@ -85,7 +78,6 @@ class InstanceHealthCheckService {
             const analyzerStatus = await staggeredInstanceRequest(id, () => openalgoClient.getAnalyzerStatus(instance));
             analyzerMode = analyzerStatus.analyze_mode || false;
             analyzerCheckPerformed = true;
-            instanceAnalyzerService.setCachedAnalyzerStatus(id, analyzerMode);
           } catch (error) {
             log.warn('Failed to get analyzer status', { id, error: error.message });
             analyzerCheckPerformed = true;
@@ -102,7 +94,7 @@ class InstanceHealthCheckService {
           is_analyzer_mode = ?,
           last_health_check = CURRENT_TIMESTAMP`;
       const updateParams = [healthStatus, analyzerMode ? 1 : 0];
-      if (hasAnalyzerCheckColumn && analyzerCheckPerformed) {
+      if (analyzerCheckPerformed) {
         updateSql += ', last_analyzer_check_at = CURRENT_TIMESTAMP';
       }
       updateSql += ' WHERE id = ?';
@@ -143,4 +135,3 @@ class InstanceHealthCheckService {
 
 const instanceHealthCheckService = new InstanceHealthCheckService();
 export default instanceHealthCheckService;
-export { InstanceHealthCheckService };

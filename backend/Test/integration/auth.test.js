@@ -5,7 +5,7 @@ import jwt from 'jsonwebtoken';
 
 import { useTestDb, truncate } from '../helpers/db.js';
 import { buildApp } from '../helpers/app.js';
-import { createUser, asAdmin, ROLE, bearer } from '../helpers/auth.js';
+import { createUser, ROLE, bearer } from '../helpers/auth.js';
 import { STATUS } from '../helpers/http.js';
 import db from '../../src/core/database.js';
 import authRoutes from '../../src/routes/v1/auth.js';

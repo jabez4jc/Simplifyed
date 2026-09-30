@@ -51,7 +51,6 @@ class DashboardApp {
     this.symbolConfigContext = null;
     this.tradesPollingInterval = null;
     this.tradesLastUpdatedAt = null;
-    this.tradesPayload = null;
     this.tradesInstanceStore = new Map();
     this.tradesExpanded = new Set();
     this.ordersExpanded = new Set();
@@ -59,7 +58,6 @@ class DashboardApp {
     // Track expanded instances in positions view; default is collapsed
     this.positionsExpanded = new Set();
     this.expandedWatchlists = new Set();
-    this.isPaused = false; // default running; user can pause manually
     // Feed status pill (navbar) - see updateFeedStatus()
     this.lastDataAt = 0;          // epoch ms of the most recent successful quote refresh
     this.feedStatusInterval = null;
@@ -69,7 +67,6 @@ class DashboardApp {
     this.lastTelemetry = { circuits: 0, stale: 0 };
     // Snapshot auto-resync
     this.snapshotResyncInterval = null;
-    this.lastSnapshotResyncAt = 0;
     this.isSnapshotResyncing = false;
     // Symbol lookup for streaming updates
     this.watchlistSymbolIndex = new Map(); // exchange|symbol -> [{ watchlistId, symbolId }]
@@ -165,7 +162,6 @@ class DashboardApp {
         instance_name: inst.name || existing.instance_name,
         broker: inst.broker || existing.broker,
         is_analyzer_mode: !!inst.is_analyzer_mode,
-        market_data_role: inst.market_data_role || existing.market_data_role,
         [itemKey]: Array.isArray(existing[itemKey]) ? existing[itemKey] : [],
         fetchedAt: existing.fetchedAt || null,
       };
@@ -233,7 +229,6 @@ class DashboardApp {
       // Load initial view based on stored state or hash
       const initialView = this.determineInitialView();
       this.switchView(initialView, { updateHash: false, forceReload: true });
-      this.updatePauseButtonUI();
       this.startFeedStatus();
 
       // Note: Auto-refresh disabled to prevent page flicker
@@ -324,27 +319,38 @@ class DashboardApp {
     localStorage.setItem('sidebarCollapsed', this.isSidebarCollapsed ? 'true' : 'false');
   }
 
-  togglePause() {
-    this.isPaused = !this.isPaused;
-    this.updatePauseButtonUI();
-    this.updateFeedStatus(); // reflect immediately rather than on the next 1s tick
-    if (this.isPaused) {
-      Utils.showToast('Paused all background data fetching', 'info');
-      this.stopAllWatchlistPolling();
-      this.stopTradesPolling();
-      this.stopPositionsPolling();
-      if (this.pollingInterval) {
-        clearInterval(this.pollingInterval);
-        this.pollingInterval = null;
+  /**
+   * Global kill switch: cancel every order, close every position and switch every active
+   * instance to analyzer mode (server: kill-switch.service.js). Nothing is automatic about
+   * going back to live - the operator does that per instance.
+   */
+  async runKillSwitch() {
+    const confirmed = await Utils.confirm(
+      'This cancels every pending order, closes every open position on every instance (live and '
+      + 'analyzer), and switches every instance to analyzer mode. Live trading stays off until you '
+      + 'switch each instance back yourself.',
+      'Kill switch'
+    );
+    if (!confirmed) return;
+
+    const btn = document.getElementById('kill-switch-btn');
+    if (btn) btn.disabled = true;
+    Utils.showToast('Kill switch running - closing positions…', 'info');
+    try {
+      const response = await api.runKillSwitch();
+      const rows = response?.data?.instances || [];
+      const failed = rows.filter((r) => !r.success);
+      if (failed.length === 0) {
+        Utils.showToast(`Kill switch done: ${rows.length} instance(s) flat and in analyzer mode`, 'success', 8000);
+      } else {
+        const detail = failed.map((r) => `${r.name || `#${r.id}`}: ${r.errors.join('; ')}`).join(' | ');
+        Utils.showToast(`Kill switch: ${failed.length} of ${rows.length} instance(s) need attention - ${detail}`, 'error', 20000);
       }
-      // Stop backend polling
-      api.stopPolling().catch(() => { });
-      api.stopMarketDataPolling().catch(() => { });
-    } else {
-      Utils.showToast('Resumed data fetching', 'success');
-      // Resume backend polling
-      api.startPolling().catch(() => { });
-      this.resumeBackgroundData();
+      await this.refreshCurrentView();
+    } catch (error) {
+      Utils.showToast(`Kill switch failed: ${error.message}`, 'error', 20000);
+    } finally {
+      if (btn) btn.disabled = false;
     }
   }
 
@@ -366,22 +372,12 @@ class DashboardApp {
     this.feedStatusInterval = setInterval(() => this.updateFeedStatus(), 1000);
   }
 
-  stopFeedStatus() {
-    if (!this.feedStatusInterval) return;
-    clearInterval(this.feedStatusInterval);
-    this.feedStatusInterval = null;
-  }
 
   /**
-   * Resolve the feed into one of six mutually exclusive states. Ordering matters: an explicit
-   * user pause outranks connection state, and "no data ever" is reported as Connecting rather
-   * than as a huge stale age.
+   * Resolve the feed into one of five mutually exclusive states. "No data ever" is reported as
+   * Connecting rather than as a huge stale age.
    */
   resolveFeedState() {
-    if (this.isPaused) {
-      return { state: 'paused', label: 'Paused', title: 'Background data fetching is paused. Press play to resume.' };
-    }
-
     const age = this.lastDataAt ? Date.now() - this.lastDataAt : null;
 
     if (this.wsGatewayEnabled && this.useWsGateway && !this.wsConnected) {
@@ -417,23 +413,6 @@ class DashboardApp {
     if (el.className !== cls) el.className = cls;
     if (labelEl.textContent !== label) labelEl.textContent = label;
     if (el.title !== title) el.title = title;
-  }
-
-  updatePauseButtonUI() {
-    const btn = document.getElementById('pause-toggle-btn');
-    const path = document.getElementById('pause-play-path');
-    if (!btn || !path) return;
-    if (this.isPaused) {
-      // show play icon
-      path.setAttribute('d', 'M8 5v14l11-7z');
-      btn.setAttribute('title', 'Resume data fetching');
-      btn.setAttribute('aria-label', 'Resume data fetching');
-    } else {
-      // show pause icon
-      path.setAttribute('d', 'M6 4h4v16H6zM14 4h4v16h-4z');
-      btn.setAttribute('title', 'Pause data fetching');
-      btn.setAttribute('aria-label', 'Pause data fetching');
-    }
   }
 
   /**
@@ -781,16 +760,6 @@ class DashboardApp {
     });
   }
 
-  toggleStreamPreference() {
-    this.useWsGateway = true;
-    this.saveWsPreference(true);
-    if (this.wsGatewayEnabled) {
-      this.startWsStream();
-      Utils.showToast('Live streaming locked on', 'success');
-    } else {
-      Utils.showToast('Server streaming is disabled. Polling is not available.', 'warning');
-    }
-  }
 
   getStreamPreference() {
     return this.useWsGateway;
@@ -943,7 +912,6 @@ class DashboardApp {
    * Load view
    */
   async loadView(viewName, { force = false } = {}) {
-    if (this.isPaused && !force) return;
     // Clean up watchlist pollers when leaving watchlists view
     if (this.currentView === 'watchlists' && viewName !== 'watchlists') {
       this.stopAllWatchlistPolling();
@@ -1051,16 +1019,15 @@ class DashboardApp {
     }
   }
   /**
-   * Re-render the current view from scratch. This is a user-initiated action (a Refresh button,
-   * an explicit force) - it is NOT what the background tick does. See startAutoRefresh.
+   * Re-render the current view from scratch after an action changed its data. It is NOT what
+   * the background tick does. See startAutoRefresh.
    */
   async refreshCurrentView(force = false) {
-    if (this.isPaused && !force) return;
     await this.loadView(this.currentView, { force });
   }
 
   /**
-   * Bring background data back after a pause or a tab switch.
+   * Bring background data back after the tab was hidden.
    *
    * Deliberately NOT a full re-render. Returning to the tab used to call
    * refreshCurrentView(true), which rebuilt the whole view - so stepping away from the chart and
@@ -1085,11 +1052,10 @@ class DashboardApp {
 
   startAutoRefresh() {
     if (this.pollingInterval) clearInterval(this.pollingInterval);
-    if (this.isPaused) return;
 
     this.pollingInterval = setInterval(() => {
       const refresh = AUTO_REFRESH_VIEWS[this.currentView];
-      if (!refresh || this.isPaused) return;
+      if (!refresh) return;
       Promise.resolve(refresh(this)).catch((error) =>
         console.error(`Auto-refresh failed for ${this.currentView}:`, error));
     }, 15000);

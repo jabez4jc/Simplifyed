@@ -133,26 +133,6 @@ export function sanitizeString(str) {
   return str.trim();
 }
 
-/**
- * Sanitize and validate email
- * @param {string} email - Raw email input
- * @returns {string|null} - Lowercase email or null if invalid
- */
-export function sanitizeEmail(email) {
-  if (typeof email !== 'string' || !email.trim()) {
-    return null;
-  }
-
-  const trimmed = email.trim().toLowerCase();
-
-  // Basic email validation
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(trimmed)) {
-    return null;
-  }
-
-  return trimmed;
-}
 
 /**
  * Parse and validate integer

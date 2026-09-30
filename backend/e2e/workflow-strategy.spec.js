@@ -129,8 +129,9 @@ test('a webhook strategy enters on a TradingView alert and exits on an EXIT aler
 
   ordered.push({ name: CRYPTO, symbol: 'BTCUSDFUT', exchange: 'CRYPTO' });
   const before = await netPosition(CRYPTO, 'BTCUSDFUT');
+  const token = await webhookToken();
   const alert = (body) => request.post(`/webhook/tradingview/broadcast/${slug}`, {
-    headers: { 'Content-Type': 'text/plain', 'X-Webhook-Token': webhookToken() },
+    headers: { 'Content-Type': 'text/plain', 'X-Webhook-Token': token },
     data: JSON.stringify(body),
   });
 

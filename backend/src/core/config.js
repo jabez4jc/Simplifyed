@@ -1,12 +1,20 @@
 /**
  * Configuration Management
- * Loads settings from database with fallback to environment variables
+ *
+ * Each value has exactly one source:
+ *   - the environment, for deployment facts and secrets (port, JWT secret, tokens);
+ *   - a fixed value below, for internal timing and rate tuning;
+ *   - a Settings row (settings.service ESSENTIAL_SETTINGS), for the few values an operator
+ *     edits - read by loadFromDatabase().
+ * The timing values were once all three at once (env default, Settings > Advanced row, and a
+ * hardcoded fallback), and the screen showed values the app was not using.
  */
 
 import { config as loadEnv } from 'dotenv';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import settingsService from '../services/settings.service.js';
+import { settingDefault } from '../config/settings-registry.js';
 import { log } from './logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -14,11 +22,6 @@ const __dirname = dirname(__filename);
 
 // Load environment variables
 loadEnv({ path: join(__dirname, '../../.env') });
-
-// Cache for database settings
-let settingsCache = null;
-let cacheTimestamp = 0;
-let settingsCacheDurationMs = getEnvInt('SETTINGS_CACHE_DURATION_MS', 5000); // 5 seconds cache
 
 function parseStrategyBufferConfig(rawValue) {
   if (!rawValue) return {};
@@ -39,104 +42,14 @@ function parseStrategyBufferConfig(rawValue) {
 }
 
 /**
- * Get setting from database or environment variable
- * Priority: Database settings > Environment variables > Default value
- */
-async function getSetting(key, defaultValue = undefined, required = false) {
-  try {
-    // Check cache
-    const now = Date.now();
-    if (!settingsCache || (now - cacheTimestamp) > settingsCacheDurationMs) {
-      settingsCache = await settingsService.getAllSettings();
-      cacheTimestamp = now;
-    }
-
-    // Try to get from database settings
-    for (const category in settingsCache) {
-      if (settingsCache[category][key]) {
-        const setting = settingsCache[category][key];
-        return setting.rawValue || setting.value;
-      }
-    }
-
-    // Fallback to environment variable
-    const envValue = process.env[key.toUpperCase().replace(/\./g, '_')] || process.env[key];
-    if (envValue) {
-      return envValue;
-    }
-
-    // Use default value
-    if (defaultValue !== undefined) {
-      return defaultValue;
-    }
-
-    // Required but not found
-    if (required) {
-      throw new Error(`Missing required setting: ${key}`);
-    }
-
-    return null;
-  } catch (error) {
-    // If database is not available, fallback to env vars
-    const envValue = process.env[key.toUpperCase().replace(/\./g, '_')] || process.env[key];
-    if (envValue) {
-      return envValue;
-    }
-    if (required) {
-      throw error;
-    }
-    return defaultValue;
-  }
-}
-
-/**
- * Get integer setting
- */
-async function getSettingInt(key, defaultValue) {
-  const value = await getSetting(key, defaultValue);
-  if (value === null || value === undefined) return defaultValue;
-
-  const parsed = parseInt(value, 10);
-  if (isNaN(parsed)) {
-    throw new Error(`Setting ${key} must be a valid integer`);
-  }
-
-  return parsed;
-}
-
-/**
- * Get float setting
- */
-async function getSettingFloat(key, defaultValue) {
-  const value = await getSetting(key, defaultValue);
-  if (value === null || value === undefined) return defaultValue;
-
-  const parsed = parseFloat(value);
-  if (!Number.isFinite(parsed)) {
-    throw new Error(`Setting ${key} must be a valid number`);
-  }
-
-  return parsed;
-}
-
-/**
- * Reload settings from database (for runtime updates)
- */
-export async function reloadConfig() {
-  settingsCache = null;
-  cacheTimestamp = 0;
-  return getSetting('server.port'); // Trigger cache reload
-}
-
-/**
  * Get environment variable with validation (legacy support)
  */
 function getEnv(key, defaultValue = undefined, required = false) {
   const raw = process.env[key];
 
   // Check the raw env var, not raw||defaultValue - a defaultValue would otherwise make
-  // `required` a no-op (e.g. JWT_SECRET/SESSION_SECRET silently falling back to their
-  // hardcoded, publicly-known dev defaults instead of failing startup).
+  // `required` a no-op (e.g. JWT_SECRET silently falling back to a
+  // hardcoded, publicly-known dev default instead of failing startup).
   if (required && !raw) {
     throw new Error(`Missing required environment variable: ${key}`);
   }
@@ -211,13 +124,7 @@ class Config {
     this.port = getEnvInt('PORT', 3000);
     this.baseUrl = getEnv('BASE_URL', 'http://localhost:3000');
 
-    this.database = {
-      path: getEnv('DATABASE_PATH', './database/simplifyed.db'),
-    };
-
-    // No `session` block: express-session was removed along with connect-sqlite3 (see
-    // middleware/auth.js). Authentication is a stateless JWT, so SESSION_SECRET signed nothing
-    // and is no longer read - an existing .env may keep the line, it is simply ignored.
+    // DATABASE_PATH is read by core/database.js and core/logger.js at connect time, not here.
 
     this.auth = {
       // The single switch that disables authentication. There were previously two independent
@@ -230,13 +137,13 @@ class Config {
 
     this.cors = {
       origin: getEnv('CORS_ORIGIN', 'http://localhost:3000'),
-      credentials: true,
     };
 
+    // Fixed tuning (ms). Set to the values the app was actually running with on 2026-09-30.
     this.polling = {
-      instanceInterval: getEnvInt('INSTANCE_POLL_INTERVAL_MS', 15000),
-      marketDataInterval: getEnvInt('MARKET_DATA_POLL_INTERVAL_MS', 5000),
-      healthCheckInterval: getEnvInt('HEALTH_CHECK_INTERVAL_MS', 60000),
+      instanceInterval: 15000,
+      marketDataInterval: 10000,
+      healthCheckInterval: 60000,
     };
 
     this.wsGateway = {
@@ -251,53 +158,35 @@ class Config {
       confirmationWindowMs: getEnvInt('AUTO_EXIT_CONFIRMATION_WINDOW_MS', 0),
     };
 
+    // "Idle" applies when no position is open, "active" while one is.
     this.marketDataFeed = {
-      quoteTtlMs: getEnvInt('MARKET_DATA_QUOTE_TTL_MS', 15000),
-      quoteTtlIdleMs: getEnvInt('MARKET_DATA_QUOTE_TTL_IDLE_MS', 15000),
-      quoteTtlActiveMs: getEnvInt('MARKET_DATA_QUOTE_TTL_ACTIVE_MS', 10000),
-      positionTtlMs: getEnvInt('MARKET_DATA_POSITION_TTL_MS', 30000),
-      positionIntervalIdleMs: getEnvInt('MARKET_DATA_POSITION_INTERVAL_IDLE_MS', 30000),
-      positionIntervalActiveMs: getEnvInt('MARKET_DATA_POSITION_INTERVAL_ACTIVE_MS', 8000),
-      fundsTtlMs: getEnvInt('MARKET_DATA_FUNDS_TTL_MS', 180000),
-      fundsIntervalMs: getEnvInt('MARKET_DATA_FUNDS_INTERVAL_MS', 180000),
-      orderbookTtlMs: getEnvInt('MARKET_DATA_ORDERBOOK_TTL_MS', 30000),
-      orderbookIntervalMs: getEnvInt('MARKET_DATA_ORDERBOOK_INTERVAL_MS', 30000),
-      tradebookTtlMs: getEnvInt('MARKET_DATA_TRADEBOOK_TTL_MS', 30000),
-      tradebookIntervalIdleMs: getEnvInt('MARKET_DATA_TRADEBOOK_INTERVAL_IDLE_MS', 30000),
-      tradebookIntervalActiveMs: getEnvInt('MARKET_DATA_TRADEBOOK_INTERVAL_ACTIVE_MS', 8000),
-      multiquoteCooldownIdleMs: getEnvInt('MARKET_DATA_MULTIQ_COOLDOWN_IDLE_MS', 15000),
-      multiquoteCooldownActiveMs: getEnvInt('MARKET_DATA_MULTIQ_COOLDOWN_ACTIVE_MS', 10000),
-      orderQuoteStaleMs: getEnvInt('MARKET_DATA_ORDER_QUOTE_STALE_MS', 2000),
-      maxOrderSpreadPct: getEnvFloat('MARKET_DATA_MAX_ORDER_SPREAD_PCT', 0.005),
+      quoteTtlIdleMs: 12000,
+      quoteTtlActiveMs: 7000,
+      positionIntervalIdleMs: 20000,
+      positionIntervalActiveMs: 8000,
+      fundsIntervalMs: 180000,
+      orderbookIntervalMs: 20000,
+      tradebookIntervalIdleMs: 20000,
+      tradebookIntervalActiveMs: 8000,
+      multiquoteCooldownIdleMs: 15000,
+      multiquoteCooldownActiveMs: 9000,
+      orderQuoteStaleMs: 2000,
     };
 
     this.instanceHealth = {
-      pingHealthyIntervalMs: getEnvInt('INSTANCE_HEALTH_PING_HEALTHY_MS', 300000),
-      pingUnhealthyIntervalMs: getEnvInt('INSTANCE_HEALTH_PING_UNHEALTHY_MS', 180000),
-      analyzerCheckIntervalMs: getEnvInt('INSTANCE_HEALTH_ANALYZER_CHECK_MS', 15000),
+      pingHealthyIntervalMs: 300000,
+      pingUnhealthyIntervalMs: 180000, // first retry; doubles per failure up to 10 minutes
+      analyzerCheckIntervalMs: 15000,
     };
 
     this.openalgo = {
-      requestTimeout: getEnvInt('OPENALGO_REQUEST_TIMEOUT_MS', 5000),
-      critical: {
-        maxRetries: getEnvInt('OPENALGO_CRITICAL_MAX_RETRIES', 2),
-        retryDelay: getEnvInt('OPENALGO_CRITICAL_RETRY_DELAY_MS', 500),
-      },
-      nonCritical: {
-        maxRetries: getEnvInt('OPENALGO_NONCRITICAL_MAX_RETRIES', 1),
-        retryDelay: getEnvInt('OPENALGO_NONCRITICAL_RETRY_DELAY_MS', 2000),
-      },
+      // Settings > Broker connection. Seeded with the default until loadFromDatabase() runs.
+      requestTimeout: Number(settingDefault('openalgo.request_timeout_ms')),
+      critical: { maxRetries: 3, retryDelay: 500 },    // orders and exits
+      nonCritical: { maxRetries: 1, retryDelay: 2000 }, // quotes, books, everything else
     };
 
-    this.logging = {
-      level: getEnv('LOG_LEVEL', 'info'),
-      file: getEnv('LOG_FILE', './logs/app.log'),
-    };
-
-    this.rateLimit = {
-      windowMs: getEnvInt('RATE_LIMIT_WINDOW_MS', 60000),
-      maxRequests: getEnvInt('RATE_LIMIT_MAX_REQUESTS', 100),
-    };
+    // LOG_LEVEL / ENABLE_DEBUG_LOGS are read by core/logger.js at import.
 
     this.telegram = {
       botToken: getEnv('TELEGRAM_BOT_TOKEN', ''),
@@ -319,111 +208,29 @@ class Config {
         retryDelayMs: getEnvInt('TRADINGVIEW_BROADCAST_RETRY_DELAY_MS', 250),
         defaultRps: getEnvInt('TRADINGVIEW_BROADCAST_DEFAULT_RPS', 2),
         bufferPctDefault: getEnvFloat('TRADINGVIEW_BUFFER_PCT_DEFAULT', 0.5),
-        bufferPctByStrategyRaw: getEnv('TRADINGVIEW_BUFFER_BY_STRATEGY', '{}'),
+        bufferPctByStrategy: parseStrategyBufferConfig(getEnv('TRADINGVIEW_BUFFER_BY_STRATEGY', '{}')),
       },
     };
-    this.webhooks.tradingviewBroadcast.bufferPctByStrategy = parseStrategyBufferConfig(
-      this.webhooks.tradingviewBroadcast.bufferPctByStrategyRaw
-    );
   }
 
   /**
-   * Load configuration from database (async)
-   * Call this after database connection is established
+   * Read the Settings rows config holds. Called at startup and again whenever one changes.
+   * (The spread guard, brokerage and sessions are read from their rows at the point of use.)
    */
   async loadFromDatabase() {
     try {
-      // Apply database settings with fallback to current values
+      const timeout = Number(await settingsService.getRawValue('openalgo.request_timeout_ms'));
+      if (Number.isFinite(timeout) && timeout > 0) this.openalgo.requestTimeout = timeout;
 
-      // port/node_env are startup values and are no longer read from the database (migration
-      // 059 removed those rows) - a change there could not take effect without a restart.
-      this.baseUrl = await getSetting('server.base_url', this.baseUrl);
-
-      // Deliberately NOT loaded from the database:
-      //
-      //   secrets         - JWT_SECRET comes from the environment only, where getEnv(..., required)
-      //                     can enforce it. A database row cannot be required at startup, and the
-      //                     shipped session.secret row used to hold the literal
-      //                     'CHANGE_THIS_IN_PRODUCTION'. (session.* rows are gone entirely now -
-      //                     express-session was removed, see middleware/auth.js.)
-      //   test_mode.*     - flips optionalAuth to a hardcoded admin identity for the whole
-      //                     process. Env-only (ENABLE_TEST_MODE), never a stored row.
-      //   database.path   - the connection is already open by the time this runs.
-      //   cors.*          - cors() is configured at module load; a later change does nothing.
-      //   oauth.google.*  - no Google sign-in route exists; local email/password is the only
-      //                     auth method (see routes/v1/auth.js).
-      //
-      // See src/config/settings-registry.js for the full editable/not-editable split.
-      settingsCacheDurationMs = await getSettingInt(
-        'settings.cache_duration_ms',
-        settingsCacheDurationMs
-      );
-
-      this.polling.instanceInterval = await getSettingInt('polling.instance_interval_ms', this.polling.instanceInterval);
-      this.polling.marketDataInterval = await getSettingInt('polling.market_data_interval_ms', this.polling.marketDataInterval);
-      this.polling.healthCheckInterval = await getSettingInt('polling.health_check_interval_ms', this.polling.healthCheckInterval);
-      this.marketDataFeed.quoteTtlMs = await getSettingInt('market_data_feed.quote_ttl_ms', this.marketDataFeed.quoteTtlMs);
-      this.marketDataFeed.quoteTtlIdleMs = await getSettingInt('market_data_feed.quote_ttl_idle_ms', this.marketDataFeed.quoteTtlIdleMs);
-      this.marketDataFeed.quoteTtlActiveMs = await getSettingInt('market_data_feed.quote_ttl_active_ms', this.marketDataFeed.quoteTtlActiveMs);
-      this.marketDataFeed.positionTtlMs = await getSettingInt('market_data_feed.position_ttl_ms', this.marketDataFeed.positionTtlMs);
-      this.marketDataFeed.positionIntervalIdleMs = await getSettingInt('market_data_feed.position_interval_idle_ms', this.marketDataFeed.positionIntervalIdleMs);
-      this.marketDataFeed.positionIntervalActiveMs = await getSettingInt('market_data_feed.position_interval_active_ms', this.marketDataFeed.positionIntervalActiveMs);
-      this.marketDataFeed.fundsTtlMs = await getSettingInt('market_data_feed.funds_ttl_ms', this.marketDataFeed.fundsTtlMs);
-      this.marketDataFeed.fundsIntervalMs = await getSettingInt('market_data_feed.funds_interval_ms', this.marketDataFeed.fundsIntervalMs);
-      this.marketDataFeed.orderbookTtlMs = await getSettingInt('market_data_feed.orderbook_ttl_ms', this.marketDataFeed.orderbookTtlMs);
-      this.marketDataFeed.orderbookIntervalMs = await getSettingInt('market_data_feed.orderbook_interval_ms', this.marketDataFeed.orderbookIntervalMs);
-      this.marketDataFeed.tradebookTtlMs = await getSettingInt('market_data_feed.tradebook_ttl_ms', this.marketDataFeed.tradebookTtlMs);
-      this.marketDataFeed.tradebookIntervalIdleMs = await getSettingInt('market_data_feed.tradebook_interval_idle_ms', this.marketDataFeed.tradebookIntervalIdleMs);
-      this.marketDataFeed.tradebookIntervalActiveMs = await getSettingInt('market_data_feed.tradebook_interval_active_ms', this.marketDataFeed.tradebookIntervalActiveMs);
-      this.marketDataFeed.multiquoteCooldownIdleMs = await getSettingInt('market_data_feed.multiquote_cooldown_idle_ms', this.marketDataFeed.multiquoteCooldownIdleMs);
-      this.marketDataFeed.multiquoteCooldownActiveMs = await getSettingInt('market_data_feed.multiquote_cooldown_active_ms', this.marketDataFeed.multiquoteCooldownActiveMs);
-      this.marketDataFeed.orderQuoteStaleMs = await getSettingInt('market_data_feed.order_quote_stale_ms', this.marketDataFeed.orderQuoteStaleMs);
-      this.marketDataFeed.maxOrderSpreadPct = await getSettingFloat('market_data_feed.max_order_spread_pct', this.marketDataFeed.maxOrderSpreadPct);
-
-      this.instanceHealth.pingHealthyIntervalMs = await getSettingInt('instance_health.ping_healthy_interval_ms', this.instanceHealth.pingHealthyIntervalMs);
-      this.instanceHealth.pingUnhealthyIntervalMs = await getSettingInt('instance_health.ping_unhealthy_interval_ms', this.instanceHealth.pingUnhealthyIntervalMs);
-      this.instanceHealth.analyzerCheckIntervalMs = await getSettingInt('instance_health.analyzer_check_interval_ms', this.instanceHealth.analyzerCheckIntervalMs);
-
-      this.autoExit.monitorIntervalMs = await getSettingInt('auto_exit.monitor_interval_ms', this.autoExit.monitorIntervalMs);
-      this.autoExit.pendingExitCooldownMs = await getSettingInt('auto_exit.pending_cooldown_ms', this.autoExit.pendingExitCooldownMs);
-      this.autoExit.provisionalEntryGraceMs = await getSettingInt('auto_exit.provisional_entry_grace_ms', this.autoExit.provisionalEntryGraceMs);
-      this.autoExit.confirmationWindowMs = await getSettingInt('auto_exit.confirmation_window_ms', this.autoExit.confirmationWindowMs);
-
-      this.openalgo.requestTimeout = await getSettingInt('openalgo.request_timeout_ms', this.openalgo.requestTimeout);
-      this.openalgo.critical.maxRetries = await getSettingInt('openalgo.critical.max_retries', this.openalgo.critical.maxRetries);
-      this.openalgo.critical.retryDelay = await getSettingInt('openalgo.critical.retry_delay_ms', this.openalgo.critical.retryDelay);
-      this.openalgo.nonCritical.maxRetries = await getSettingInt('openalgo.non_critical.max_retries', this.openalgo.nonCritical.maxRetries);
-      this.openalgo.nonCritical.retryDelay = await getSettingInt('openalgo.non_critical.retry_delay_ms', this.openalgo.nonCritical.retryDelay);
-
-      this.logging.level = await getSetting('logging.level', this.logging.level);
-      this.logging.file = await getSetting('logging.file', this.logging.file);
-
-      this.rateLimit.windowMs = await getSettingInt('rate_limit.window_ms', this.rateLimit.windowMs);
-      this.rateLimit.maxRequests = await getSettingInt('rate_limit.max_requests', this.rateLimit.maxRequests);
-
-      // Must be awaited - getSetting is async, and an unawaited Promise here is truthy, which
-      // made assertAuthorized() skip its "not configured" check and its WEBHOOK_TOKEN env
-      // fallback, then fail `token !== expected` for every request. Result: every TradingView
-      // alert 401'd as soon as config loaded from the database.
-      this.webhooks.tradingviewBroadcast.token = await getSetting(
-        'webhooks.tradingview.token',
-        this.webhooks.tradingviewBroadcast.token
-      );
-      const bufferDefault = await getSettingFloat(
-        'webhooks.tradingview.buffer_pct_default',
-        this.webhooks.tradingviewBroadcast.bufferPctDefault
-      );
-      this.webhooks.tradingviewBroadcast.bufferPctDefault = bufferDefault;
-      const bufferByStrategyRaw = await getSetting(
-        'webhooks.tradingview.buffer_pct_by_strategy',
-        this.webhooks.tradingviewBroadcast.bufferPctByStrategyRaw
-      );
-      this.webhooks.tradingviewBroadcast.bufferPctByStrategyRaw = bufferByStrategyRaw;
-      this.webhooks.tradingviewBroadcast.bufferPctByStrategy = parseStrategyBufferConfig(bufferByStrategyRaw);
+      // A rotated token is stored as a sensitive setting, which getSetting() returns masked -
+      // loading that made every TradingView alert 401 after a restart. Read it unmasked.
+      this.webhooks.tradingviewBroadcast.token =
+        (await settingsService.getRawValue('webhooks.tradingview.token'))
+        || this.webhooks.tradingviewBroadcast.token;
 
       log.info('Configuration loaded from database');
     } catch (error) {
-      log.warn('Failed to load configuration from database, using environment variables', error.message);
+      log.warn('Failed to load configuration from database', error.message);
     }
   }
 }

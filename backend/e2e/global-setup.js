@@ -71,6 +71,12 @@ export default async function globalSetup() {
     `INSERT INTO instruments_refresh_log (exchange, instrument_count, refresh_started_at, refresh_completed_at, status)
      SELECT NULL, COUNT(*), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'completed' FROM instruments`
   );
+  // A token rotated from Settings lives here, ahead of WEBHOOK_TOKEN in .env - carry it over.
+  await db.run(
+    `INSERT OR REPLACE INTO application_settings (key, value, description, category, data_type, is_sensitive)
+     SELECT key, value, description, category, data_type, is_sensitive FROM real.application_settings
+     WHERE key = 'webhooks.tradingview.token'`
+  );
   await db.run('DETACH DATABASE real');
   await db.close();
 

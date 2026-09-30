@@ -9,7 +9,7 @@
  * file imports and the public API is unchanged.
  *
  * The three extracted services that read instances/schema state import this file's
- * singleton back (for getInstanceById/_hasColumn), so the wrapper methods below use
+ * singleton back (for getInstanceById), so the wrapper methods below use
  * dynamic import() rather than a static import to avoid a circular static-import cycle -
  * same technique already used for market-data-feed.service.js in updatePnLData/below.
  */
@@ -24,22 +24,11 @@ import {
 } from '../core/errors.js';
 import instanceConnectionTestService from './instance-connection-test.service.js';
 import { normalizeInstanceData } from '../utils/instance-validation.util.js';
-import { nowInIST, computeSessionState } from '../utils/instance-session.util.js';
+import { computeSessionState } from '../utils/instance-session.util.js';
 import { parseIntSafe, isMaskedApiKey } from '../utils/sanitizers.js';
 
 class InstanceService {
-  constructor() {
-    this.instanceColumns = null;
-  }
-
-  async _hasColumn(columnName) {
-    if (!this.instanceColumns) {
-      const rows = await db.all("PRAGMA table_info('instances')");
-      this.instanceColumns = new Set(rows.map((r) => r.name));
-    }
-    return this.instanceColumns.has(columnName);
-  }
-
+ 
   /**
    * Get all instances
    * @param {Object} filters - Optional filters (is_active, is_analyzer_mode)
@@ -105,10 +94,6 @@ class InstanceService {
     try {
       // Validate and sanitize input
       const normalized = normalizeInstanceData(data);
-      const hasOptionChain = await this._hasColumn('supports_option_chain');
-      const hasUseWsQuotes = await this._hasColumn('use_ws_quotes');
-      const hasMultiplier = await this._hasColumn('multiplier');
-
       // Check for duplicate host_url
       const existing = await db.get(
         'SELECT id FROM instances WHERE host_url = ?',
@@ -139,11 +124,11 @@ class InstanceService {
         'api_key',
         'broker',
         'strategy_tag',
-        'is_primary_admin',
-        'is_secondary_admin',
-        'market_data_role',
         'supports_multiquotes',
         'market_data_enabled',
+        'supports_option_chain',
+        'use_ws_quotes',
+        'multiplier',
       ];
       const values = [
         normalized.name,
@@ -151,25 +136,12 @@ class InstanceService {
         normalized.api_key,
         normalized.broker,
         normalized.strategy_tag,
-        normalized.is_primary_admin ? 1 : 0,
-        normalized.is_secondary_admin ? 1 : 0,
-        normalized.market_data_role || 'none',
         normalized.supports_multiquotes ?? 0,
         normalized.market_data_enabled ?? 0,
+        normalized.supports_option_chain ?? 0,
+        normalized.use_ws_quotes ?? 0,
+        normalized.multiplier ?? 1,
       ];
-
-      if (hasOptionChain) {
-        columns.push('supports_option_chain');
-        values.push(normalized.supports_option_chain ?? 0);
-      }
-      if (hasUseWsQuotes) {
-        columns.push('use_ws_quotes');
-        values.push(normalized.use_ws_quotes ?? 0);
-      }
-      if (hasMultiplier) {
-        columns.push('multiplier');
-        values.push(normalized.multiplier ?? 1);
-      }
       if (normalized.session_target_profit !== undefined) {
         columns.push('session_target_profit');
         values.push(normalized.session_target_profit);
@@ -188,8 +160,17 @@ class InstanceService {
       const instance = await this.getInstanceById(result.lastID);
 
       log.info('Instance created', { id: instance.id, name: instance.name, broker: instance.broker });
+      // Creation just pinged the broker successfully, so mark it healthy now. A new row starts
+      // 'unknown', and only 'healthy' instances serve market data - it sat out of the pool (no
+      // quotes, no chart history) until the next scheduled check, minutes away.
+      let created = instance;
+      try {
+        created = (await this.updateHealthStatus(instance.id, { force: true })) || instance;
+      } catch (error) {
+        log.warn('Initial health check after create failed', { id: instance.id, error: error.message });
+      }
 
-      return instance;
+      return created;
     } catch (error) {
       if (error instanceof ConflictError || error instanceof ValidationError) {
         throw error;
@@ -209,9 +190,6 @@ class InstanceService {
     try {
       // Load existing instance (throws if not found)
       const existing = await this.getInstanceById(id);
-      const hasOptionChain = await this._hasColumn('supports_option_chain');
-      const hasMultiplier = await this._hasColumn('multiplier');
-
       // The edit form is shown the masked api_key (see maskInstanceForResponse) and round-trips
       // it back unchanged when the user edits an unrelated field - drop it so we don't overwrite
       // the real stored key with asterisks. A genuine new key never starts with '*'.
@@ -260,15 +238,6 @@ class InstanceService {
       const values = [];
 
       for (const [key, value] of Object.entries(normalized)) {
-        if (key === 'supports_option_chain' && !hasOptionChain) {
-          continue;
-        }
-        if (key === 'use_ws_quotes' && !(await this._hasColumn('use_ws_quotes'))) {
-          continue;
-        }
-        if (key === 'multiplier' && !hasMultiplier) {
-          continue;
-        }
         fields.push(`${key} = ?`);
         values.push(value);
       }
@@ -320,22 +289,13 @@ class InstanceService {
         await db.run('DELETE FROM watchlist_orders WHERE instance_id = ?', [id]);
         log.info('Deleted orders for instance', { instance_id: id });
 
-        // 3. Delete any positions for this instance (watchlist_positions)
-        await db.run('DELETE FROM watchlist_positions WHERE instance_id = ?', [id]);
-        log.info('Deleted positions for instance', { instance_id: id });
+        // 3. Delete options state tracking
+        await db.run('DELETE FROM watchlist_options_state WHERE instance_id = ?', [id]);
 
-        // 4. Delete options state tracking
-        await this._safeDeleteByInstanceId('watchlist_options_state', id);
+        // 4. Delete quick order history
+        await db.run('DELETE FROM quick_orders WHERE instance_id = ?', [id]);
 
-        // 5. Delete quick order history
-        await this._safeDeleteByInstanceId('quick_orders', id);
-
-        // 6. Delete any order monitoring records (legacy + analyzer logs)
-        await this._safeDeleteByInstanceId('order_monitoring', id);
-        await this._safeDeleteByInstanceId('order_monitor_log', id);
-        await this._safeDeleteByInstanceId('analyzer_trades', id);
-
-        // 8. Finally, delete the instance itself
+        // 5. Finally, delete the instance itself
         await db.run('DELETE FROM instances WHERE id = ?', [id]);
 
         await db.run('COMMIT');
@@ -378,9 +338,6 @@ class InstanceService {
       }
 
       if (updates.multiplier !== undefined) {
-        if (!(await this._hasColumn('multiplier'))) {
-          throw new ValidationError('Multiplier is not supported in this database');
-        }
         const multiplier = parseIntSafe(updates.multiplier, null);
         if (multiplier === null || multiplier < 1 || multiplier > 999) {
           throw new ValidationError('Multiplier must be an integer between 1 and 999');
@@ -482,55 +439,6 @@ class InstanceService {
     return instanceConnectionTestService.testApiKey(credentials);
   }
 
-  /**
-   * Get admin instances
-   * @returns {Promise<Object>} - { primary, secondary }
-   */
-  async getAdminInstances() {
-    try {
-      const primary = await db.get(
-        'SELECT * FROM instances WHERE is_primary_admin = 1 AND is_active = 1 LIMIT 1'
-      );
-
-      const secondary = await db.get(
-        'SELECT * FROM instances WHERE is_secondary_admin = 1 AND is_active = 1 LIMIT 1'
-      );
-
-      return { primary, secondary };
-    } catch (error) {
-      log.error('Failed to get admin instances', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Get instances designated for market data (primary or secondary role)
-   * @returns {Promise<Array>} - List of instances with market data role
-   */
-  async getMarketDataInstances() {
-    try {
-      const instances = await db.all(
-        `SELECT * FROM instances
-         WHERE market_data_role IN ('primary', 'secondary')
-         AND is_active = 1
-         ORDER BY
-           CASE market_data_role
-             WHEN 'primary' THEN 1
-             WHEN 'secondary' THEN 2
-           END`
-      );
-
-      return instances;
-    } catch (error) {
-      log.error('Failed to get market data instances', error);
-      throw error;
-    }
-  }
-
-  _nowInIST() {
-    return nowInIST();
-  }
-
   async _computeSessionState(instance, totalPnl, now, opts = {}) {
     return computeSessionState(instance, totalPnl, now, opts);
   }
@@ -574,20 +482,8 @@ class InstanceService {
     }
   }
 
-  async _safeDeleteByInstanceId(tableName, instanceId) {
-    try {
-      await db.run(`DELETE FROM ${tableName} WHERE instance_id = ?`, [instanceId]);
-      log.info(`Deleted ${tableName} rows for instance`, { instance_id: instanceId });
-    } catch (error) {
-      if (error.message && error.message.includes('no such table')) {
-        log.warn(`Skipping cleanup for missing table ${tableName}`, { instance_id: instanceId });
-        return;
-      }
-      throw error;
-    }
-  }
+
 }
 
 // Export singleton instance
 export default new InstanceService();
-export { InstanceService };

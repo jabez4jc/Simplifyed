@@ -8,18 +8,10 @@ import { log } from '../core/logger.js';
 import db from '../core/database.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import instrumentsService from './instruments.service.js';
-// Used by autoRefreshExpiries below. It was referenced without ever being imported, so that whole
-// path threw ReferenceError the moment anything called it (the scheduler that would have is not
-// wired up yet, which is the only reason this never surfaced).
-import marketDataInstanceService from './market-data-instance.service.js';
 import { NotFoundError } from '../core/errors.js';
 import { toISTDate } from '../utils/time.js';
 
 class ExpiryManagementService {
-  constructor() {
-    this.refreshSchedule = null;
-  }
-
   /**
    * Get nearest expiry date for an underlying
    * @param {string} underlying - Underlying symbol (e.g., NIFTY, RELIANCE)
@@ -244,180 +236,6 @@ class ExpiryManagementService {
   }
 
   /**
-   * Check if expiry refresh is needed
-   * @param {string} underlying - Underlying symbol
-   * @param {string} exchange - Exchange
-   * @param {Date} lastRefreshDate - Last refresh date
-   * @returns {boolean} True if refresh is needed
-   */
-  shouldRefreshExpiry(underlying, exchange, lastRefreshDate) {
-    if (!lastRefreshDate) {
-      return true; // Never refreshed
-    }
-
-    const now = new Date();
-    const lastRefresh = new Date(lastRefreshDate);
-
-    // Check if today is Wednesday or Friday
-    const dayOfWeek = now.getDay();
-    const isWednesday = dayOfWeek === 3;
-    const isFriday = dayOfWeek === 5;
-
-    if (!isWednesday && !isFriday) {
-      return false; // Not a refresh day
-    }
-
-    // Check if already refreshed today after 8 AM
-    const todayRefreshTime = new Date(now);
-    todayRefreshTime.setHours(8, 0, 0, 0);
-
-    if (lastRefresh >= todayRefreshTime) {
-      return false; // Already refreshed today
-    }
-
-    // Check if current time is past 8 AM
-    const currentTime = now.getHours() * 60 + now.getMinutes();
-    const refreshTime = 8 * 60; // 8:00 AM in minutes
-
-    return currentTime >= refreshTime;
-  }
-
-  /**
-   * Auto-refresh expiries for all active symbols
-   * Called by scheduler on Wednesday and Friday at 8:00 AM
-   */
-  async autoRefreshExpiries() {
-    log.info('Starting auto-refresh of expiries');
-
-    try {
-      // Get all unique underlying symbols from watchlist
-      const symbols = await db.all(
-        `SELECT DISTINCT underlying_symbol as underlying, exchange
-         FROM watchlist_symbols
-         WHERE underlying_symbol IS NOT NULL AND tradable_options = 1`
-      );
-
-      if (symbols.length === 0) {
-        log.debug('No symbols to refresh expiries for');
-        return;
-      }
-
-      // Get a market data instance for fetching
-      const instance = await marketDataInstanceService.getRoundRobinInstance();
-
-      if (!instance) {
-        log.warn('No active market data instance available for expiry refresh');
-        return;
-      }
-
-      // Refresh expiries for each symbol
-      const results = await Promise.allSettled(
-        symbols.map(sym =>
-          this.fetchExpiries(sym.underlying, sym.exchange, instance)
-        )
-      );
-
-      const successful = results.filter(r => r.status === 'fulfilled').length;
-      const failed = results.filter(r => r.status === 'rejected').length;
-
-      log.info('Auto-refresh of expiries completed', {
-        total: symbols.length,
-        successful,
-        failed,
-      });
-    } catch (error) {
-      log.error('Failed to auto-refresh expiries', error);
-    }
-  }
-
-  /**
-   * Start auto-refresh scheduler
-   * Runs at 8:00 AM on Wednesday and Friday
-   */
-  startAutoRefreshScheduler() {
-    if (this.refreshSchedule) {
-      log.warn('Auto-refresh scheduler already running');
-      return;
-    }
-
-    // Check every 5 minutes if we need to refresh
-    this.refreshSchedule = setInterval(() => {
-      this._checkAndRefresh();
-    }, 5 * 60 * 1000); // 5 minutes
-
-    log.info('Auto-refresh scheduler started');
-  }
-
-  /**
-   * Stop auto-refresh scheduler
-   */
-  stopAutoRefreshScheduler() {
-    if (this.refreshSchedule) {
-      clearInterval(this.refreshSchedule);
-      this.refreshSchedule = null;
-      log.info('Auto-refresh scheduler stopped');
-    }
-  }
-
-  /**
-   * Check if refresh is needed and execute
-   * @private
-   */
-  async _checkAndRefresh() {
-    const now = new Date();
-    const dayOfWeek = now.getDay();
-    const currentTime = now.getHours() * 60 + now.getMinutes();
-    const refreshTime = 8 * 60; // 8:00 AM
-
-    // Only on Wednesday (3) or Friday (5)
-    const isRefreshDay = dayOfWeek === 3 || dayOfWeek === 5;
-
-    // Only after 8:00 AM
-    const isAfterRefreshTime = currentTime >= refreshTime;
-
-    // Only before 8:10 AM (10-minute window)
-    const isBeforeWindow = currentTime < refreshTime + 10;
-
-    if (isRefreshDay && isAfterRefreshTime && isBeforeWindow) {
-      // Check if already refreshed today
-      const lastRefresh = await this._getLastGlobalRefresh();
-      const todayStart = new Date(now);
-      todayStart.setHours(0, 0, 0, 0);
-
-      if (!lastRefresh || lastRefresh < todayStart) {
-        log.info('Triggering auto-refresh (scheduled)');
-        await this.autoRefreshExpiries();
-        await this._setLastGlobalRefresh();
-      }
-    }
-  }
-
-  /**
-   * Get last global refresh timestamp
-   * @private
-   */
-  async _getLastGlobalRefresh() {
-    try {
-      const result = await db.get(
-        'SELECT MAX(fetched_at) as last_refresh FROM expiry_calendar'
-      );
-      return result?.last_refresh ? new Date(result.last_refresh) : null;
-    } catch (error) {
-      log.error('Failed to get last global refresh', error);
-      return null;
-    }
-  }
-
-  /**
-   * Set last global refresh (marker)
-   * @private
-   */
-  async _setLastGlobalRefresh() {
-    // We can use the fetched_at timestamps in expiry_calendar as the marker
-    // No additional action needed since fetchExpiries updates timestamps
-  }
-
-  /**
    * Get all expiries for an underlying
    * @param {string} underlying - Underlying symbol
    * @param {string} exchange - Exchange
@@ -469,25 +287,7 @@ class ExpiryManagementService {
     }
   }
 
-  /**
-   * Clear expiry cache for specific underlying
-   * @param {string} underlying - Underlying symbol
-   * @param {string} exchange - Exchange
-   */
-  async clearCache(underlying, exchange) {
-    try {
-      await db.run(
-        'DELETE FROM expiry_calendar WHERE underlying = ? AND exchange = ?',
-        [underlying, exchange]
-      );
-
-      log.info('Cleared expiry cache', { underlying, exchange });
-    } catch (error) {
-      log.error('Failed to clear expiry cache', error);
-    }
-  }
 }
 
 // Export singleton instance
 export default new ExpiryManagementService();
-export { ExpiryManagementService };

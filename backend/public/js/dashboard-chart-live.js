@@ -6,14 +6,22 @@
  * No refetch and no re-render - `series.update()` mutates the last bar in place, which is what
  * keeps the price moving without the chart flickering or losing your zoom.
  *
- * Only the underlying updates this way. The stream carries the symbols the watchlists subscribe
- * to, and the resolved CE/PE contracts are not among them, so the option panes stay on their
- * fetched history until the next load. That is honest rather than convenient: inventing a tick
- * for a contract nothing is quoting would be worse than a slightly stale pane.
+ * The CE/PE option panes update too, by polling their contracts' quotes every CHART_POLL_MS
+ * (POST /symbols/quotes, which quotes any contract through the feed): the stream carries the
+ * watchlists' symbols, and the resolved contracts are not among them. They used to stay frozen on
+ * the history fetched when the panes opened, drifting behind the underlying.
  */
-const TIMEFRAME_SECONDS = {
-  '1m': 60, '5m': 300, '15m': 900, '30m': 1800, '1h': 3600, D: 86400,
-};
+/**
+ * Bar length in seconds for any timeframe the picker offers ('5s', '3m', '4h', 'D'). A lookup
+ * table of six entries used to fall back to 300 for every other one, so a 3m or 10s chart
+ * bucketed its live ticks into 5-minute bars.
+ */
+function timeframeSeconds(tf) {
+  if (tf === 'D') return 86400;
+  const m = /^(\d+)([smh])$/.exec(String(tf || ''));
+  if (!m) return 300;
+  return Number(m[1]) * { s: 1, m: 60, h: 3600 }[m[2]];
+}
 
 // IST_OFFSET_SECONDS comes from dashboard-chart.js (loaded first) - used only for bucket-boundary
 // math here (which bar a tick belongs to in IST wall-clock time), not a display shift. The chart
@@ -74,7 +82,8 @@ Object.assign(DashboardApp.prototype, {
     // was on screen before.
     this.lastChartTickAt = 0;
     this.chartPollInterval = setInterval(() => {
-      if (this.isPaused || this.currentView !== 'chart') return;
+      if (this.currentView !== 'chart') return;
+      this.pollOptionPaneQuotes().catch(() => { /* transient; the next tick retries */ });
       // Connection-level "is the socket up" is a safe enough proxy for the watchlist (its
       // symbols are always subscribed by construction), but not for the chart - a symbol can sit
       // unsubscribed on an otherwise-healthy socket. Fall back to REST unless a WS tick for THIS
@@ -91,6 +100,50 @@ Object.assign(DashboardApp.prototype, {
       clearInterval(this.chartPollInterval);
       this.chartPollInterval = null;
     }
+  },
+
+  /** One quote request for both option panes; each price folds into its own pane's last bar. */
+  async pollOptionPaneQuotes() {
+    const panes = Object.entries(this.optionPanes || {}).filter(([, p]) => p?.contract && p.series);
+    if (!panes.length) return;
+    const res = await api.getQuotes(panes.map(([, p]) => ({ exchange: p.contract.exchange, symbol: p.contract.symbol })));
+    for (const quote of res.data || []) {
+      for (const [key, pane] of panes) {
+        const same = this.buildWatchlistSymbolKey(quote.exchange, quote.symbol)
+          === this.buildWatchlistSymbolKey(pane.contract.exchange, pane.contract.symbol);
+        if (same) this.applyPaneQuote(key, quote);
+      }
+    }
+  },
+
+  applyPaneQuote(key, quote) {
+    const pane = this.optionPanes?.[key];
+    const ltp = Number(quote?.ltp);
+    if (!pane?.series || !Number.isFinite(ltp) || ltp <= 0 || isSentinel(ltp)) return;
+    const age = this.quoteAgeMs(quote);
+    if (age !== null && age > MAX_QUOTE_AGE_MS) return;
+
+    const seconds = timeframeSeconds(this.paneTimeframe(key));
+    const nowSec = Math.floor(Date.now() / 1000);
+    const bucket = Math.floor((nowSec + IST_OFFSET_SECONDS) / seconds) * seconds - IST_OFFSET_SECONDS;
+    const last = pane.candles[pane.candles.length - 1];
+    if (last && bucket < last.ts) return;
+
+    let bar = last;
+    if (last && last.ts === bucket) {
+      bar.close = ltp;
+      if (ltp > bar.high) bar.high = ltp;
+      if (ltp < bar.low) bar.low = ltp;
+    } else {
+      bar = { ts: bucket, open: ltp, high: ltp, low: ltp, close: ltp, volume: 0 };
+      pane.candles.push(bar);
+    }
+
+    const plain = PLAIN_SERIES_TYPES.some((t) => t.type === (pane.seriesType || 'candlestick'));
+    try {
+      if (plain) pane.series.update({ time: bar.ts, open: bar.open, high: bar.high, low: bar.low, close: bar.close });
+      else this.renderPaneSeries(key); // transformed types (Heikin-Ashi, Renko...) rebuild from candles
+    } catch (_) { /* pane rebuilt meanwhile */ }
   },
 
   /** Say so on the status line rather than freezing silently at a wrong price. */
@@ -171,7 +224,7 @@ Object.assign(DashboardApp.prototype, {
       .some((sym) => sym && this.buildWatchlistSymbolKey(exchange, sym) === wanted);
     if (!wanted || !matches) return false;
 
-    const seconds = TIMEFRAME_SECONDS[state.timeframe] || 300;
+    const seconds = timeframeSeconds(state.timeframe);
     // Bucket in IST, matching the history API's own day boundaries; a UTC-bucketed daily bar
     // would roll over at 05:30 IST, mid-session for crypto.
     const nowSec = Math.floor((quote.ltpTs || Date.now()) / 1000);
@@ -191,6 +244,7 @@ Object.assign(DashboardApp.prototype, {
     const haveVolume = Number.isFinite(cumulative) && cumulative >= 0 && !isSentinel(cumulative);
 
     let bar;
+    let startedBar = false;
     if (last && last.ts === bucket) {
       bar = last;
       bar.close = ltp;
@@ -213,6 +267,7 @@ Object.assign(DashboardApp.prototype, {
       if (haveVolume) bar._volBase = cumulative;
       candles.push(bar);
       this.chartCandles = candles;
+      startedBar = true;
     }
 
     if (this.volumeSeries && haveVolume) {
@@ -246,6 +301,9 @@ Object.assign(DashboardApp.prototype, {
 
     this.chartLastBar = bar;
     this.chartLastPrice = bar.close;
+    // A new bar scrolls the underlying on its own, which the link group does not see (it follows
+    // gestures) - keep the option panes on the same time window.
+    if (startedBar && typeof this.alignFollowers === 'function') this.alignFollowers();
     this.renderChartLegend();
     this.updateTicketPrices();
     this.refreshLiveIndicators();

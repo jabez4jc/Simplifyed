@@ -9,9 +9,7 @@ import symbolValidationService from '../../services/symbol-validation.service.js
 import instrumentsService from '../../services/instruments.service.js';
 import expiryManagementService from '../../services/expiry-management.service.js';
 import openalgoClient from '../../integrations/openalgo/client.js';
-import optionChainService from '../../services/option-chain.service.js';
 import derivativeResolutionService from '../../services/derivative-resolution.service.js';
-import db from '../../core/database.js';
 import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
 import { sanitizeString } from '../../utils/sanitizers.js';
@@ -99,43 +97,6 @@ router.get('/search', async (req, res, next) => {
   }
 });
 
-/**
- * POST /api/v1/symbols/validate
- * Validate and get detailed symbol information
- */
-router.post('/validate', async (req, res, next) => {
-  try {
-    const { symbol, exchange, instanceId } = req.body;
-
-    if (!symbol || !exchange) {
-      throw new ValidationError('symbol and exchange are required');
-    }
-
-    // Validate symbol using resolver + fallback to OpenAlgo
-    const resolved = await symbolResolutionService.validateSymbol(symbol, exchange);
-    let validated = resolved.instrument
-      ? { ...resolved.instrument, from_cache: true }
-      : null;
-
-    if (!validated) {
-      validated = await symbolValidationService.validateSymbol(
-        symbol,
-        exchange,
-        instanceId ? parseInt(instanceId, 10) : null
-      );
-    }
-
-    res.json({
-      status: 'success',
-      data: validated,
-      message: validated.from_cache
-        ? 'Symbol retrieved from cache'
-        : 'Symbol validated via OpenAlgo',
-    });
-  } catch (error) {
-    next(error);
-  }
-});
 
 /**
  * POST /api/v1/symbols/quotes
@@ -196,36 +157,6 @@ router.post('/quotes', async (req, res, next) => {
   }
 });
 
-/**
- * GET /api/v1/symbols/market-data/:exchange/:symbol
- * Get cached market data for a symbol
- */
-router.get('/market-data/:exchange/:symbol', async (req, res, next) => {
-  try {
-    const { exchange, symbol } = req.params;
-
-    const data = await db.get(
-      'SELECT * FROM market_data WHERE exchange = ? AND symbol = ?',
-      [exchange.toUpperCase(), symbol.toUpperCase()]
-    );
-
-    if (!data) {
-      res.json({
-        status: 'success',
-        data: null,
-        message: 'No cached data available',
-      });
-      return;
-    }
-
-    res.json({
-      status: 'success',
-      data,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
 
 /**
  * GET /api/v1/symbols/expiry
@@ -277,49 +208,6 @@ router.get('/expiry', async (req, res, next) => {
   }
 });
 
-/**
- * GET /api/v1/symbols/option-chain
- * Get option chain for a symbol
- */
-router.get('/option-chain', async (req, res, next) => {
-  try {
-    const { symbol, expiry, type, include_quotes, strike_window } = req.query;
-
-    if (!symbol) {
-      throw new ValidationError('symbol parameter is required');
-    }
-
-    if (!expiry) {
-      throw new ValidationError('expiry parameter is required');
-    }
-
-    const normalizedSymbol = sanitizeString(symbol).toUpperCase();
-    const normalizedExpiry = sanitizeString(expiry);
-    const normalizedType = type ? sanitizeString(type).toLowerCase() : null;
-    const includeQuotes = include_quotes === 'true' || include_quotes === true;
-    const window = strike_window ? parseInt(strike_window, 10) : null;
-
-    if (strike_window !== undefined && (!Number.isInteger(window) || window < 1 || window > 100)) {
-      throw new ValidationError('strike_window must be an integer from 1 to 100');
-    }
-
-    const optionChain = await optionChainService.getOptionChain(
-      normalizedSymbol,
-      normalizedExpiry,
-      normalizedType,
-      includeQuotes,
-      window
-    );
-
-    res.json({
-      status: 'success',
-      data: optionChain,
-      source: 'instruments',
-    });
-  } catch (error) {
-    next(error);
-  }
-});
 
 /**
  * POST /api/v1/symbols/utils
@@ -645,88 +533,6 @@ function parseFuturesSymbol(symbol) {
   return { underlying, expiry };
 }
 
-/**
- * POST /api/v1/symbols/quotes/subscribe
- * Subscribe to quotes for multiple symbol sources
- * Consolidates watchlist, positions, and ad-hoc symbols into a single request
- * Body: {
- *   watchlistSymbols: [{exchange, symbol}],
- *   positionSymbols: [{exchange, symbol}],
- *   additionalSymbols: [{exchange, symbol}],
- *   orderCritical: boolean
- * }
- */
-router.post('/quotes/subscribe', async (req, res, next) => {
-  try {
-    const {
-      watchlistSymbols = [],
-      positionSymbols = [],
-      additionalSymbols = [],
-      orderCritical = false,
-    } = req.body || {};
-
-    // Consolidate all symbol sources into unique list
-    const allSymbols = [
-      ...watchlistSymbols,
-      ...positionSymbols,
-      ...additionalSymbols,
-    ];
-
-    if (allSymbols.length === 0) {
-      return res.json({
-        status: 'success',
-        data: [],
-        count: 0,
-        sources: { watchlist: 0, positions: 0, additional: 0 },
-      });
-    }
-
-    // Fetch quotes with deduplication (handled by fetchQuotesForSymbols)
-    const quotes = await marketDataFeedService.fetchQuotesForSymbols(allSymbols, {
-      orderCritical,
-      useFallback: true,
-    });
-
-    // Pre-build lookup Sets for O(1) membership checks (avoids O(n*m) complexity)
-    const watchlistSet = new Set(watchlistSymbols.map(s => `${s.exchange}|${s.symbol}`));
-    const positionsSet = new Set(positionSymbols.map(s => `${s.exchange}|${s.symbol}`));
-    const additionalSet = new Set(additionalSymbols.map(s => `${s.exchange}|${s.symbol}`));
-
-    // Tag quotes by source for debugging (O(n) complexity with Set lookups)
-    const taggedQuotes = quotes.map(q => {
-      const key = `${q.exchange}|${q.symbol}`;
-      return {
-        ...q,
-        sources: {
-          watchlist: watchlistSet.has(key),
-          positions: positionsSet.has(key),
-          additional: additionalSet.has(key),
-        },
-      };
-    });
-
-    log.debug('Consolidated quote subscription', {
-      watchlistCount: watchlistSymbols.length,
-      positionsCount: positionSymbols.length,
-      additionalCount: additionalSymbols.length,
-      uniqueCount: quotes.length,
-      orderCritical,
-    });
-
-    res.json({
-      status: 'success',
-      data: taggedQuotes,
-      count: taggedQuotes.length,
-      sources: {
-        watchlist: watchlistSymbols.length,
-        positions: positionSymbols.length,
-        additional: additionalSymbols.length,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-});
 
 /**
  * GET /api/v1/symbols/greeks?symbol=&exchange=&instanceId=&underlyingSymbol=&underlyingExchange=
@@ -746,23 +552,5 @@ router.get('/greeks', async (req, res, next) => {
   }
 });
 
-/**
- * POST /api/v1/symbols/greeks/batch
- * Body: { instanceId, symbols: [{symbol, exchange, underlyingSymbol?, underlyingExchange?}, ...] (max 50), interestRate?, expiryTime? }
- */
-router.post('/greeks/batch', async (req, res, next) => {
-  try {
-    const { instanceId, symbols, interestRate, expiryTime } = req.body;
-    if (!instanceId) {
-      throw new ValidationError('instanceId is required');
-    }
-    const data = await optionGreeksService.getMultiGreeks(parseInt(instanceId, 10), {
-      symbols, interestRate, expiryTime,
-    });
-    res.json({ status: 'success', data });
-  } catch (error) {
-    next(error);
-  }
-});
 
 export default router;

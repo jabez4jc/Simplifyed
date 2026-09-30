@@ -47,14 +47,10 @@ function wireOrderStream(pollingService) {
 class PollingService {
   constructor() {
     this.instancePollInterval = null;
-    this.marketDataPollInterval = null;
     this.healthCheckInterval = null;
     this.isPolling = false;
-    this.isMarketDataPolling = false;
-    this.watchlistPageActive = false;
-    this.activeWatchlistId = null;
     this.instanceIntervalMs = config.polling.instanceInterval;
-    this.healthCheckIntervalMs = config.polling.healthCheckInterval || 60000;
+    this.healthCheckIntervalMs = config.polling.healthCheckInterval;
     this.lastOrderSyncAt = new Map(); // instanceId -> ms, for the sweep while the stream is live
     wireOrderStream(this);
   }
@@ -117,18 +113,12 @@ class PollingService {
       this.instancePollInterval = null;
     }
 
-    if (this.marketDataPollInterval) {
-      clearInterval(this.marketDataPollInterval);
-      this.marketDataPollInterval = null;
-    }
-
     if (this.healthCheckInterval) {
       clearInterval(this.healthCheckInterval);
       this.healthCheckInterval = null;
     }
 
     this.isPolling = false;
-    this.isMarketDataPolling = false;
 
     log.info('Polling service stopped');
   }
@@ -342,97 +332,7 @@ class PollingService {
       log.error('Failed to poll health checks', error);
     }
   }
-
-  /**
-   * Start market data polling for watchlist
-   * Only polls when watchlist page is active
-   * @param {number} watchlistId - Watchlist ID
-   */
-  async startMarketDataPolling(watchlistId) {
-    if (this.isMarketDataPolling && this.activeWatchlistId === watchlistId) {
-      log.debug('Market data polling already active for watchlist', {
-        watchlist_id: watchlistId,
-      });
-      return;
-    }
-
-    // Stop existing polling if different watchlist
-    if (this.isMarketDataPolling && this.activeWatchlistId !== watchlistId) {
-      this.stopMarketDataPolling();
-    }
-
-    this.watchlistPageActive = true;
-    this.activeWatchlistId = watchlistId;
-    this.isMarketDataPolling = true;
-
-    // Start polling interval
-    log.info('Market data polling disabled (handled by marketDataFeedService)', {
-      watchlist_id: watchlistId,
-    });
-  }
-
-  /**
-   * Stop market data polling
-   */
-  stopMarketDataPolling() {
-    this.watchlistPageActive = false;
-    this.activeWatchlistId = null;
-    this.isMarketDataPolling = false;
-
-    log.info('Market data polling stopped');
-  }
-
-  /**
-   * Poll market data for watchlist symbols
-   * @param {number} watchlistId - Watchlist ID
-   */
-  async pollMarketData() {
-    log.warn('pollMarketData is handled by marketDataFeedService; this method is deprecated.');
-  }
-
-  /**
-   * Get polling status
-   * @returns {Object} - Polling status
-   */
-  getStatus() {
-    return {
-      isPolling: this.isPolling,
-      isMarketDataPolling: this.isMarketDataPolling,
-      activeWatchlistId: this.activeWatchlistId,
-      intervals: {
-        instance: this.instanceIntervalMs,
-        marketData: config.polling.marketDataInterval,
-        healthCheck: this.healthCheckIntervalMs,
-      },
-    };
-  }
-
-  applyConfig(nextConfig = config) {
-    this.instanceIntervalMs = nextConfig.polling.instanceInterval;
-    this.healthCheckIntervalMs = nextConfig.polling.healthCheckInterval || 60000;
-
-    if (!this.isPolling) {
-      return;
-    }
-
-    if (this.instancePollInterval) {
-      clearInterval(this.instancePollInterval);
-    }
-    if (this.healthCheckInterval) {
-      clearInterval(this.healthCheckInterval);
-    }
-
-    this.instancePollInterval = setInterval(
-      () => this.pollAllInstances(),
-      this.instanceIntervalMs
-    );
-    this.healthCheckInterval = setInterval(
-      () => this.pollHealthChecks(),
-      this.healthCheckIntervalMs
-    );
-  }
 }
 
 // Export singleton instance
 export default new PollingService();
-export { PollingService };

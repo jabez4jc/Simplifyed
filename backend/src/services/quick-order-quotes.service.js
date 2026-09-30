@@ -21,12 +21,10 @@ class QuickOrderQuotesService {
   }
 
   /**
-   * Get underlying LTP using primary/secondary market data instances with failover
-   * Uses the designated primary or secondary instance for market data, not the order instance
+   * Underlying LTP from the market-data pool, not from the ordering instance
    */
   async getUnderlyingLTPWithFallback(instance, underlying, exchange) {
     try {
-      // Get the designated market data instance (primary with failover to secondary)
       const marketDataInstance = await marketDataInstanceService.getMarketDataInstance();
 
       log.debug('Using market data instance for LTP', {
@@ -34,7 +32,6 @@ class QuickOrderQuotesService {
         order_instance_name: instance.name,
         market_data_instance_id: marketDataInstance.id,
         market_data_instance_name: marketDataInstance.name,
-        market_data_role: marketDataInstance.market_data_role,
         underlying,
         exchange,
       });
@@ -44,7 +41,6 @@ class QuickOrderQuotesService {
 
       log.debug('Successfully fetched LTP from market data instance', {
         market_data_instance: marketDataInstance.name,
-        market_data_role: marketDataInstance.market_data_role,
         underlying,
         ltp,
       });
@@ -394,4 +390,3 @@ class QuickOrderQuotesService {
 
 const quickOrderQuotesService = new QuickOrderQuotesService();
 export default quickOrderQuotesService;
-export { QuickOrderQuotesService };

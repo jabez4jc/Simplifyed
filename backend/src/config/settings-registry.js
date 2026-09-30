@@ -11,16 +11,16 @@
  *   - GET /api/v1/settings/schema serves this to the UI, so adding a setting here is the only
  *     step needed to surface it. No parallel list to keep in sync.
  *
- * A setting belongs here only if changing it at runtime actually does something. Three classes
+ * A setting belongs here only if changing it at runtime actually does something. Two classes
  * of key are deliberately excluded:
  *
  *   1. Boot-only values - read once during module load or startup, so editing them silently
  *      does nothing until a restart (cors.*, server.port, logging.*, database.path).
  *   2. Secrets - session.secret and JWT_SECRET come from the environment only. A database row
  *      that overrides an env secret is a security regression, not a feature.
- *   3. Debug kill-switches - rate_limits.disabled and rate_limits.circuit_breaker_disabled turn
- *      off protections against overwhelming a live broker. They remain readable and functional
- *      for a developer who edits the row directly; they are not one mis-click away in a UI.
+ *
+ * Internal timing and rate tuning is not a setting either: it is a fixed value in core/config.js.
+ * A value lives in exactly one of the two places.
  *
  * Groups are ordered by how often an operator touches them, not by internal module structure.
  */
@@ -29,14 +29,11 @@
  * @typedef {Object} SettingField
  * @property {string}  key       Matches application_settings.key
  * @property {string}  label     Human label. No jargon, no "_ms".
- * @property {string}  help      One sentence: what it does and what happens if you change it.
+ * @property {string}  help      What it does, in plain words.
+ * @property {string[]} details  When to raise or lower it, with an example. Shown under the help.
  * @property {string}  [unit]    'ms' | 'percent' | 'time' | 'currency' - drives input rendering.
  * @property {number}  [min]     Inclusive bound, enforced server-side.
  * @property {number}  [max]     Inclusive bound, enforced server-side.
- * @property {string}  [pair]    Fields sharing a pair id render side by side (idle vs active).
- *
- * A group with `advanced: true` sits in the collapsed "Advanced" panel: timing, rate and retry
- * values whose defaults suit almost everyone. Everyday groups render up front.
  */
 
 export const SETTINGS_GROUPS = [
@@ -44,47 +41,67 @@ export const SETTINGS_GROUPS = [
     id: 'orders-costs',
     label: 'Orders & Costs',
     description:
-      'Guardrails applied when placing orders, and the brokerage assumptions used to turn raw '
-      + 'fills into net P&L.',
+      'A safety check applied before an order is sent, and the costs used to show your P&L '
+      + 'after brokerage.',
     sections: [
       {
         id: 'execution',
-        label: 'Execution Guardrails',
+        label: 'Order Safety',
         fields: [
           {
             key: 'market_data_feed.max_order_spread_pct',
             label: 'Maximum bid/ask spread',
             help:
-              'Orders are held back when the spread is wider than this, as a share of price '
-              + '(0.01 = 1%). Protects against filling into an illiquid book.',
-            unit: 'percent', min: 0, max: 1,
+              'Before sending a new order, the app compares the best buy price (bid) and best sell '
+              + 'price (ask). If the gap is wider than this percentage of the price, the order is '
+              + 'refused instead of being sent.',
+            details: [
+              'Example at 2%: an option quoted 100 / 103 has a 3% gap and is refused; 100 / 101.50 '
+                + 'has a 1.5% gap and is sent.',
+              'Lower it to avoid overpaying in thin markets, such as far out-of-the-money options. '
+                + 'More orders will be refused.',
+              'Raise it if orders are refused on contracts you know trade actively.',
+              'Exits are never blocked by this check - a position can always be closed.',
+            ],
+            unit: 'percent', min: 0.001, max: 1,
           },
         ],
       },
       {
         id: 'brokerage',
         label: 'Brokerage',
-        note: 'Used for net P&L only. It does not change what your broker actually charges.',
+        note:
+          'Used only to show net P&L. Changing these does not change what your broker charges. '
+          + 'The app adds 18% GST and exchange, SEBI and stamp charges on top by itself.',
         fields: [
           {
             key: 'brokerage.default',
-            label: 'Default brokerage per trade',
-            help: 'Applied to any broker without a specific rate below.',
+            label: 'Default brokerage per order',
+            help:
+              'The brokerage charged on each executed order, for any broker not listed under '
+              + 'Per-broker rates. A buy and its sell count as two orders.',
+            details: ['Most discount brokers charge ₹20 per executed order. Use 0 for a zero-brokerage plan.'],
             unit: 'currency', min: 0, max: 10000,
           },
           {
             key: 'brokerage.by_broker',
             label: 'Per-broker rates',
-            help: 'Overrides the default for named brokers.',
+            help: 'Brokerage per executed order for a specific broker. It replaces the default above for that broker.',
+            details: ['Leave a broker out to use the default. Enter 0 for a zero-brokerage plan.'],
             editor: 'broker-map',
           },
           {
             key: 'brokerage.market_order_support',
-            label: 'Market order support',
+            label: 'Market orders (crypto only)',
             help:
-              'Crypto brokers take market orders unless you switch them off here. Indian '
-              + 'exchanges (NSE, BSE, NFO, BFO, MCX, CDS) always get a limit order priced from the '
-              + 'market depth, as SEBI requires for algo orders - this switch cannot change that.',
+              'Whether an order with no price may be sent as a MARKET order. Only crypto brokers '
+              + 'can use this; they are on unless switched off here.',
+            details: [
+              'On: a crypto order without a price fills at the best available price straight away.',
+              'Off: it is sent as a LIMIT order priced from the order book.',
+              'Indian exchanges (NSE, BSE, NFO, BFO, MCX, CDS) always get LIMIT orders, as SEBI '
+                + 'requires for algo orders. This switch cannot change that.',
+            ],
             editor: 'broker-flags',
           },
         ],
@@ -95,8 +112,7 @@ export const SETTINGS_GROUPS = [
   {
     id: 'trading-hours',
     label: 'Trading Hours',
-    description:
-      'How the trading day is divided for P&L.',
+    description: 'How the trading day is divided for session P&L and loss limits.',
     sections: [
       {
         id: 'sessions',
@@ -106,8 +122,16 @@ export const SETTINGS_GROUPS = [
             key: 'trading_sessions',
             label: 'Session windows',
             help:
-              'Windows used as P&L baselines and auto-exit cutoffs. Each entry needs a label, '
-              + 'a start and an end in IST.',
+              'The parts of the day (IST, 24-hour HH:MM) over which each instance\'s session P&L, '
+              + 'session target and session max loss are measured.',
+            details: [
+              'Session P&L starts again from zero at the start of each window.',
+              'Reaching the session target or the session max loss switches that instance to '
+                + 'analyzer mode.',
+              'After a max-loss stop it goes back to live when the next window starts. After '
+                + 'reaching the target it stays in analyzer mode until you switch it back.',
+              'Outside every window, session limits are not checked.',
+            ],
             editor: 'sessions',
           },
         ],
@@ -116,228 +140,137 @@ export const SETTINGS_GROUPS = [
   },
 
   {
-    id: 'market-data',
-    advanced: true,
-    label: 'Market Data',
-    description:
-      'How often the terminal pulls fresh data from your brokers. Lower values mean fresher '
-      + 'numbers and more API calls; every broker enforces its own rate limits, so raising the '
-      + 'frequency past what Broker Connection allows will simply queue requests.',
-    sections: [
-      {
-        id: 'quotes',
-        label: 'Quotes',
-        note:
-          'Two values per row: the first applies when you hold no open positions, the second '
-          + 'when you do. The terminal switches automatically.',
-        fields: [
-          {
-            key: 'market_data_feed.quote_ttl_idle_ms',
-            label: 'Quote cache lifetime',
-            help: 'How long a fetched price stays usable before it is refetched.',
-            unit: 'ms', min: 1000, max: 120000, pair: 'quote-ttl', pairLabel: 'No positions',
-          },
-          {
-            key: 'market_data_feed.quote_ttl_active_ms',
-            label: 'Quote cache lifetime',
-            help: 'Same, while you hold open positions. Usually shorter.',
-            unit: 'ms', min: 1000, max: 120000, pair: 'quote-ttl', pairLabel: 'Holding positions',
-          },
-          {
-            key: 'market_data_feed.multiquote_cooldown_idle_ms',
-            label: 'Minimum gap between batch quote calls',
-            help: 'Floor between MultiQuotes requests. Raise it if a broker rate-limits you.',
-            unit: 'ms', min: 1000, max: 120000, pair: 'multiquote', pairLabel: 'No positions',
-          },
-          {
-            key: 'market_data_feed.multiquote_cooldown_active_ms',
-            label: 'Minimum gap between batch quote calls',
-            help: 'Same, while you hold open positions.',
-            unit: 'ms', min: 1000, max: 120000, pair: 'multiquote', pairLabel: 'Holding positions',
-          },
-        ],
-      },
-      {
-        id: 'positions',
-        label: 'Positions & Trades',
-        fields: [
-          {
-            key: 'market_data_feed.position_interval_idle_ms',
-            label: 'Position refresh',
-            help: 'How often the position book is re-read from the broker.',
-            unit: 'ms', min: 2000, max: 300000, pair: 'position', pairLabel: 'No positions',
-          },
-          {
-            key: 'market_data_feed.position_interval_active_ms',
-            label: 'Position refresh',
-            help: 'Same, while you hold open positions.',
-            unit: 'ms', min: 2000, max: 300000, pair: 'position', pairLabel: 'Holding positions',
-          },
-          {
-            key: 'market_data_feed.tradebook_interval_idle_ms',
-            label: 'Trade book refresh',
-            help: 'How often filled trades are re-read. Drives realised P&L.',
-            unit: 'ms', min: 2000, max: 300000, pair: 'tradebook', pairLabel: 'No positions',
-          },
-          {
-            key: 'market_data_feed.tradebook_interval_active_ms',
-            label: 'Trade book refresh',
-            help: 'Same, while you hold open positions.',
-            unit: 'ms', min: 2000, max: 300000, pair: 'tradebook', pairLabel: 'Holding positions',
-          },
-          {
-            key: 'market_data_feed.orderbook_interval_ms',
-            label: 'Order book refresh',
-            help: 'How often pending and completed orders are re-read.',
-            unit: 'ms', min: 2000, max: 300000,
-          },
-        ],
-      },
-      {
-        id: 'account',
-        label: 'Account',
-        fields: [
-          {
-            key: 'market_data_feed.funds_interval_ms',
-            label: 'Balance refresh',
-            help: 'How often available margin is re-read. Rarely needs to be frequent.',
-            unit: 'ms', min: 10000, max: 900000,
-          },
-          {
-            key: 'polling.instance_interval_ms',
-            label: 'Instance P&L refresh',
-            help: 'How often per-instance P&L totals on the dashboard are recalculated.',
-            unit: 'ms', min: 5000, max: 300000,
-          },
-          {
-            key: 'polling.market_data_interval_ms',
-            label: 'Background feed tick',
-            help: 'Base cadence of the shared market-data loop that serves every open session.',
-            unit: 'ms', min: 1000, max: 60000, advanced: true,
-          },
-        ],
-      },
-    ],
-  },
-
-  {
     id: 'broker-connection',
-    advanced: true,
     label: 'Broker Connection',
-    description:
-      'Timeouts, retries and request ceilings for calls to your OpenAlgo instances. These exist '
-      + 'to stay inside broker limits - raising them past what your broker permits gets requests '
-      + 'rejected, not served faster.',
+    description: 'Limits on how the app talks to your OpenAlgo instances. Each applies to every instance separately.',
     sections: [
       {
-        id: 'limits',
-        label: 'Request Limits',
-        note: 'Applied per instance. Match these to your broker\'s published rate limits.',
+        id: 'broker-limits',
+        label: 'Limits',
         fields: [
-          {
-            key: 'rate_limits.rps_per_instance',
-            label: 'Requests per second',
-            help: 'Ceiling on calls per second to a single instance.',
-            min: 1, max: 100,
-          },
-          {
-            key: 'rate_limits.rpm_per_instance',
-            label: 'Requests per minute',
-            help: 'Ceiling on calls per minute to a single instance.',
-            min: 10, max: 6000,
-          },
-          {
-            key: 'rate_limits.orders_per_second',
-            label: 'Orders per second (placeorder)',
-            help: 'Ceiling for the plain order-placement endpoint. Not currently exercised - '
-              + 'every order this app sends goes through the stricter smart-order endpoint below.',
-            min: 1, max: 100,
-            advanced: true,
-          },
           {
             key: 'rate_limits.smart_orders_per_second',
-            label: 'Orders per second (smart order)',
-            help: 'Ceiling on placesmartorder calls, the endpoint every order in this app '
-              + 'actually uses. OpenAlgo caps this stricter than plain order placement - '
-              + 'raise it only if your broker plugin is confirmed to allow more.',
-            min: 1, max: 100,
+            label: 'Orders per second',
+            help:
+              'The most orders the app sends to one instance in a second. Extra orders wait their '
+              + 'turn - none are dropped.',
+            details: [
+              'OpenAlgo accepts 2 orders per second unless its server is set higher. Setting this '
+                + 'above your OpenAlgo limit gets orders rejected.',
+              'A higher value finishes multi-leg strategies, Close All and the kill switch sooner.',
+              'SEBI requires an algo that sends more than 10 orders per second to be registered, '
+                + 'so the maximum here is 10.',
+            ],
+            min: 1, max: 10,
           },
-          {
-            key: 'rate_limits.max_concurrent_tasks',
-            label: 'Concurrent requests',
-            help: 'How many broker calls may be in flight at once across all instances.',
-            min: 1, max: 100, advanced: true,
-          },
-        ],
-      },
-      {
-        id: 'retries',
-        label: 'Timeouts & Retries',
-        note:
-          'Order placement and exits count as critical; quotes and book refreshes do not. '
-          + 'Critical calls retry harder because a dropped exit is worse than a stale price.',
-        fields: [
           {
             key: 'openalgo.request_timeout_ms',
-            label: 'Request timeout',
-            help: 'How long to wait for an instance before giving up on a call.',
-            unit: 'ms', min: 1000, max: 60000,
-          },
-          {
-            key: 'openalgo.critical.max_retries',
-            label: 'Retries — critical calls',
-            help: 'Retry attempts for order placement and exits.',
-            min: 0, max: 10, pair: 'critical', pairLabel: 'Attempts',
-          },
-          {
-            key: 'openalgo.critical.retry_delay_ms',
-            label: 'Retry delay — critical calls',
-            help: 'Wait between those retries.',
-            unit: 'ms', min: 100, max: 30000, pair: 'critical', pairLabel: 'Delay',
-          },
-          {
-            key: 'openalgo.non_critical.max_retries',
-            label: 'Retries — everything else',
-            help: 'Retry attempts for quotes, books and other non-order calls.',
-            min: 0, max: 10, pair: 'non-critical', pairLabel: 'Attempts', advanced: true,
-          },
-          {
-            key: 'openalgo.non_critical.retry_delay_ms',
-            label: 'Retry delay — everything else',
-            help: 'Wait between those retries.',
-            unit: 'ms', min: 100, max: 30000, pair: 'non-critical', pairLabel: 'Delay', advanced: true,
-          },
-        ],
-      },
-      {
-        id: 'health',
-        label: 'Health Checks',
-        fields: [
-          {
-            key: 'instance_health.ping_healthy_interval_ms',
-            label: 'Check healthy instances every',
-            help: 'How often a known-good instance is re-checked.',
-            unit: 'ms', min: 30000, max: 3600000,
-          },
-          {
-            key: 'instance_health.ping_unhealthy_interval_ms',
-            label: 'Retry unhealthy instances after',
-            help:
-              'First retry after an instance fails its check; the wait doubles on each further '
-              + 'failure, up to 10 minutes, and it is never given up on.',
-            unit: 'ms', min: 30000, max: 3600000,
-          },
-          {
-            key: 'instance_health.analyzer_check_interval_ms',
-            label: 'Analyzer-mode check every',
-            help: 'How often the terminal re-reads whether an instance is in analyzer mode.',
-            unit: 'ms', min: 5000, max: 600000, advanced: true,
+            label: 'Broker response timeout',
+            help: 'How long the app waits for an OpenAlgo instance to answer before treating the call as failed.',
+            details: [
+              'Raise it if you see timeouts at the market open, when brokers are slowest.',
+              'Lower it to notice an unreachable instance sooner. Too low, and slow but working '
+                + 'calls fail.',
+              'A timed-out order is retried safely: the app\'s orders set a target position, so a '
+                + 'retry cannot double it.',
+            ],
+            unit: 'ms', min: 3000, max: 60000,
           },
         ],
       },
     ],
   },
 ];
+
+/**
+ * Every runtime-editable setting and its default. The database row is the only value the app
+ * uses; this list seeds a missing row and is what the Settings screen shows as "Default".
+ * Everything that is not a setting is a fixed value in core/config.js - never both.
+ */
+export const ESSENTIAL_SETTINGS = [
+  {
+    key: 'openalgo.request_timeout_ms',
+    value: '15000',
+    description: 'How long to wait for an OpenAlgo instance before a call fails (ms).',
+    category: 'openalgo',
+    dataType: 'number',
+  },
+  {
+    key: 'rate_limits.smart_orders_per_second',
+    value: '2',
+    description: 'Most orders per second sent to one instance.',
+    category: 'rate_limits',
+    dataType: 'number',
+  },
+  {
+    key: 'market_data_feed.max_order_spread_pct',
+    value: '0.1',
+    description: 'Largest bid/ask gap, as a fraction of price (0.1 = 10%), at which a new order is still sent.',
+    category: 'market_data_feed',
+    dataType: 'number',
+  },
+  {
+    key: 'brokerage.default',
+    value: '20',
+    description: 'Brokerage per executed order for brokers without a specific rate.',
+    category: 'brokerage',
+    dataType: 'number',
+  },
+  {
+    key: 'brokerage.by_broker',
+    value: JSON.stringify({
+      fivepaisa: 20,
+      fivepaisax: 20,
+      aliceblue: 20,
+      angel: 20,
+      compositedge: 25,
+      dhan: 20,
+      dhan_sandbox: 20,
+      firstock: 20,
+      flattrade: 0,
+      fyers: 20,
+      groww: 20,
+      ibulls: 11,
+      iifl: 20,
+      indmoney: 20,
+      kotak: 10,
+      paytm: 20,
+      pocketful: 20,
+      shoonya: 5,
+      tradejini: 20,
+      upstox: 20,
+      wisdom: 20,
+      zebu: 20,
+      zerodha: 20,
+    }),
+    description: 'Brokerage per trade mapped by broker key (lowercase).',
+    category: 'brokerage',
+    dataType: 'json',
+  },
+  {
+    key: 'brokerage.market_order_support',
+    value: JSON.stringify({}),
+    description: 'Market order support mapped by broker key (lowercase).',
+    category: 'brokerage',
+    dataType: 'json',
+  },
+  {
+    key: 'trading_sessions',
+    value: JSON.stringify([
+      { label: 'Session 1', start: '09:00', end: '11:30' },
+      { label: 'Session 2', start: '12:30', end: '15:10' },
+      { label: 'Session 3', start: '15:45', end: '19:00' },
+      { label: 'Session 4', start: '20:30', end: '22:45' },
+    ]),
+    description: 'Session windows in IST used for session P&L baselines and auto cutoffs.',
+    category: 'trading',
+    dataType: 'json',
+  },
+];
+
+export function settingDefault(key) {
+  return ESSENTIAL_SETTINGS.find((setting) => setting.key === key)?.value;
+}
 
 /** Flat key -> field lookup, with group/section attached. Built once at import. */
 export const SETTINGS_FIELDS = new Map();
@@ -362,9 +295,6 @@ export function isEditable(key) {
   return SETTINGS_FIELDS.has(key);
 }
 
-export function getField(key) {
-  return SETTINGS_FIELDS.get(key) || null;
-}
 
 /**
  * Range check for a value about to be written. Type coercion stays in settings.service; this
@@ -376,9 +306,17 @@ export function validateValue(key, value) {
   const field = SETTINGS_FIELDS.get(key);
   if (!field) return `'${key}' is not a runtime-editable setting`;
 
-  if (field.unit === 'time') {
-    if (typeof value !== 'string' || !/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) {
-      return `'${key}' must be a 24-hour time in HH:MM format`;
+  if (field.editor === 'sessions') {
+    let sessions = value;
+    if (typeof sessions === 'string') {
+      try { sessions = JSON.parse(sessions); } catch { return `'${key}' must be a list of sessions`; }
+    }
+    if (!Array.isArray(sessions)) return `'${key}' must be a list of sessions`;
+    const hhmm = /^([01]\d|2[0-3]):[0-5]\d$/;
+    for (const s of sessions) {
+      if (!s || !hhmm.test(s.start) || !hhmm.test(s.end)) {
+        return `'${key}': every session needs a start and an end as 24-hour HH:MM times`;
+      }
     }
     return null;
   }
@@ -396,5 +334,3 @@ export function validateValue(key, value) {
 
   return null;
 }
-
-export default { SETTINGS_GROUPS, SETTINGS_FIELDS, isEditable, getField, validateValue };

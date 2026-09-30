@@ -74,9 +74,14 @@ export async function flatten(entries) {
   return closeEverythingOpened(instances, byInstance, () => {}, { includePast: false });
 }
 
-/** The TradingView webhook token, from the environment the app also reads. Never print it. */
-export function webhookToken() {
-  const token = process.env.WEBHOOK_TOKEN;
-  if (!token) throw new Error('WEBHOOK_TOKEN is not set - the webhook specs need it');
+/**
+ * The token the app checks: one rotated from Settings wins over WEBHOOK_TOKEN in .env, same as
+ * config.load(). Never print it.
+ */
+export async function webhookToken() {
+  await ready();
+  const rotated = await db.get("SELECT value FROM application_settings WHERE key = 'webhooks.tradingview.token'");
+  const token = rotated?.value || process.env.WEBHOOK_TOKEN;
+  if (!token) throw new Error('No webhook token - rotate one in Settings or set WEBHOOK_TOKEN');
   return token;
 }

@@ -21,5 +21,3 @@ export const STATUS = {
   UPSTREAM: 502,
 };
 
-/** True for any client-error status - the assertion for "this must not be a 500". */
-export const isClientError = (status) => status >= 400 && status < 500;

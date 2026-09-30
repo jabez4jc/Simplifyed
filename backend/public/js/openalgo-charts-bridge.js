@@ -15,7 +15,7 @@
 import {
   createChart, darkTheme, lightTheme, IST_OFFSET_SECONDS, indicatorDefaults, getIndicator, hasIndicator,
   registeredIndicators, indicatorStyleInputs, INDICATOR_SOURCES, INDICATOR_LINE_STYLES, PaneLegend,
-  PriceLevels, registerIndicator, VERSION as CHARTS_VERSION,
+  PriceLevels, registerIndicator, VERSION as CHARTS_VERSION, createLinkGroup, followerRange,
 } from '/vendor/openalgo-charts/openalgo-charts.mjs';
 import {
   DiagnosticBag, parse, check, emit, isError, sourceFile, renderDiagnostics,
@@ -108,6 +108,8 @@ for (const [id, source] of Object.entries(readScripts())) {
 
 window.OAC = {
   createChart,
+  createLinkGroup,
+  followerRange,
   darkTheme,
   lightTheme,
   IST_OFFSET_SECONDS,

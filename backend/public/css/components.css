@@ -7,29 +7,6 @@
   box-shadow: var(--shadow-sm);
 }
 
-.orders-trades-compact .card {
-  padding: var(--space-4);
-}
-
-.orders-trades-compact .card-header {
-  margin-bottom: var(--space-3);
-}
-
-.orders-trades-compact .table th,
-.orders-trades-compact .table td {
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--font-size-2xs);
-}
-
-.orders-trades-compact details summary {
-  padding: var(--space-3) var(--space-4);
-}
-
-.orders-trades-compact .tab-button {
-  padding: var(--space-2) var(--space-4);
-  font-size: var(--font-size-sm);
-}
-
 .card-header {
   display: flex;
   justify-content: space-between;
@@ -39,25 +16,6 @@
 
 .card-header.compact {
   margin-bottom: var(--space-2);
-}
-
-.card-header.align-start {
-  align-items: flex-start;
-}
-
-.card-header .header-left {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex: 1;
-  min-width: 0;
-}
-
-.card-header .header-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-shrink: 0;
 }
 
 .card-title {
@@ -70,48 +28,68 @@
   color: var(--color-neutral-700);
 }
 
+/* ========== Disclosure chevron (Utils.chevron) ========== */
+.chevron {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  transition: transform 0.2s ease;
+}
+
+[aria-expanded="true"] > .chevron,
+.is-open > .chevron,
+details[open] > summary > .chevron {
+  transform: rotate(90deg);
+}
+
+summary {
+  list-style: none;
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
+
+/* ========== Kill switch (navbar) ========== */
+.kill-switch-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2, 8px);
+  padding: 4px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-loss);
+  background: var(--color-loss-bg);
+  color: var(--color-loss);
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.kill-switch-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.kill-switch-btn:hover:not(:disabled) {
+  background: var(--color-loss);
+  color: var(--color-surface);
+}
+
+.kill-switch-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+@media (max-width: 640px) {
+  .kill-switch-btn span { display: none; }
+}
+
 /* ========== Tabs ========== */
 .tabs {
   display: flex;
   gap: 0;
   border-bottom: 2px solid var(--color-neutral-200);
   margin-bottom: -1px;
-}
-
-.tab-button {
-  padding: var(--space-3) var(--space-6);
-  background: none;
-  border: none;
-  border-bottom: 3px solid transparent;
-  cursor: pointer;
-  font-size: var(--font-size-base);
-  font-weight: 500;
-  color: var(--color-neutral-600);
-  transition: all 0.2s;
-  position: relative;
-  bottom: -2px;
-}
-
-.tab-button:hover {
-  color: var(--color-neutral-900);
-  background-color: var(--color-neutral-50);
-}
-
-.tab-button.active {
-  color: var(--color-primary-600);
-  border-bottom-color: var(--color-primary-600);
-}
-
-.tab-content {
-  min-height: 200px;
-}
-
-.tab-panel {
-  display: block;
-}
-
-.tab-panel.hidden {
-  display: none;
 }
 
 /* ========== Buttons ========== */
@@ -239,12 +217,6 @@
   border-color: var(--color-loss);
 }
 
-.form-error {
-  margin-top: var(--space-1);
-  font-size: var(--font-size-2xs);
-  color: var(--color-loss);
-}
-
 .form-help {
   display: block;
   margin-top: var(--space-1);
@@ -342,31 +314,12 @@
   padding: var(--space-4);
 }
 
-.pnl-label {
-  font-size: var(--font-size-sm);
-  color: var(--color-neutral-600);
-  margin-bottom: var(--space-2);
-}
-
-.pnl-value {
-  font-size: var(--font-size-3xl);
-  font-weight: 700;
-}
-
 .text-profit {
   color: var(--color-profit);
 }
 
 .text-loss {
   color: var(--color-loss);
-}
-
-.bg-profit-bg {
-  background-color: var(--color-profit-bg);
-}
-
-.bg-loss-bg {
-  background-color: var(--color-loss-bg);
 }
 
 /* ========== Stats Grid ========== */
@@ -589,49 +542,6 @@
   transform: translateX(0);
 }
 
-.toast-content {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-
-.toast-icon {
-  font-size: var(--font-size-xl);
-  font-weight: bold;
-}
-
-.toast-success {
-  border-left: 4px solid var(--color-profit);
-}
-
-.toast-success .toast-icon {
-  color: var(--color-profit);
-}
-
-.toast-error {
-  border-left: 4px solid var(--color-loss);
-}
-
-.toast-error .toast-icon {
-  color: var(--color-loss);
-}
-
-.toast-warning {
-  border-left: 4px solid var(--color-warning);
-}
-
-.toast-warning .toast-icon {
-  color: var(--color-warning);
-}
-
-.toast-info {
-  border-left: 4px solid var(--color-info);
-}
-
-.toast-info .toast-icon {
-  color: var(--color-info);
-}
-
 /* ========== Loading Spinner ==========
    Named app-loading-* (not loading-spinner/loading-dots) - those names are also daisyUI
    utility classes baked into tailwind.css, and daisyUI's version applies a small SVG
@@ -780,10 +690,6 @@
   margin-top: var(--space-4);
 }
 
-.mt-6 {
-  margin-top: var(--space-6);
-}
-
 .flex {
   display: flex;
 }
@@ -820,11 +726,10 @@
   text-align: right;
 }
 
-
 /* ---------------------------------------------------------------------------
    Feed status pill (navbar)
-   States are mutually exclusive: is-live | is-polling | is-stale | is-paused |
-   is-down | is-connecting. Colour is never the only signal - the label text
+   States are mutually exclusive: is-live | is-polling | is-stale | is-down |
+   is-connecting. Colour is never the only signal - the label text
    always states the condition, per the same rule the P&L columns follow.
    --------------------------------------------------------------------------- */
 .feed-status {
@@ -862,8 +767,7 @@
   animation: feedPulse 2s ease-in-out infinite;
 }
 
-.feed-status.is-stale,
-.feed-status.is-paused {
+.feed-status.is-stale {
   color: var(--color-warning);
   background: var(--color-warning-bg);
   border-color: var(--color-warning-bg);

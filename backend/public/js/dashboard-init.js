@@ -12,15 +12,14 @@ if (document.readyState === 'loading') {
   window.app.init();
 }
 
-// Pause background polling while the tab is backgrounded - separate from the user-facing
-// isPaused flag (togglePause()) so this never overrides a deliberate manual pause, and only
-// resumes what it auto-paused. The individual stop*Polling() calls are no-ops if already
+// Pause background polling while the tab is backgrounded, and resume only what this paused.
+// The individual stop*Polling() calls are no-ops if already
 // stopped, so this is safe to fire on every visibility flip.
 document.addEventListener('visibilitychange', () => {
   const app = window.app;
   if (!app) return;
   if (document.hidden) {
-    if (app.isPaused || app.autoPausedByVisibility) return;
+    if (app.autoPausedByVisibility) return;
     app.autoPausedByVisibility = true;
     app.stopAllWatchlistPolling();
     app.stopTradesPolling();

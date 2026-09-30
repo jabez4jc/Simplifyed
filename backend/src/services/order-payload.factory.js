@@ -19,19 +19,16 @@ function basePayload({ strategy = 'default', exchange, symbol, action, quantity,
   };
 }
 
-export function buildEquityOrder(params) {
+function buildEquityOrder(params) {
   return basePayload({ ...params });
 }
 
-export function buildFuturesOrder(params) {
+
+function buildOptionsOrder(params) {
   return basePayload({ ...params, product: params.product || 'NRML' });
 }
 
-export function buildOptionsOrder(params) {
-  return basePayload({ ...params, product: params.product || 'NRML' });
-}
-
-export function buildExitOrder(params) {
+function buildExitOrder(params) {
   // position_size dictates the final open position; default to 0 only when not provided
   const resolvedPositionSize = params.position_size !== undefined ? params.position_size : 0;
   return basePayload({
@@ -44,7 +41,6 @@ export function buildExitOrder(params) {
 
 export default {
   buildEquityOrder,
-  buildFuturesOrder,
   buildOptionsOrder,
   buildExitOrder,
 };

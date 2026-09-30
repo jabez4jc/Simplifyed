@@ -9,7 +9,7 @@ import {
   ValidationError,
   ForbiddenError,
 } from '../../core/errors.js';
-import { requireAuth, requirePermission } from '../../middleware/auth.js';
+import { requireAuth, requireAdmin, requirePermission } from '../../middleware/auth.js';
 import multer from 'multer';
 import { Parser } from '../../utils/csv.js';
 import db from '../../core/database.js';
@@ -30,12 +30,6 @@ function hasPermission(req, key) {
   return Array.isArray(req.user?.permissions) && req.user.permissions.includes(key);
 }
 
-function requireAdmin(req, _res, next) {
-  if (!req.user?.is_admin) {
-    return next(new ForbiddenError('Admin access required'));
-  }
-  return next();
-}
 
 /**
  * GET /api/v1/watchlists
@@ -149,39 +143,15 @@ router.delete('/:id', requirePermission('watchlists.manage'), async (req, res, n
   }
 });
 
-/**
- * POST /api/v1/watchlists/:id/clone
- * Clone watchlist
- */
-router.post('/:id/clone', requirePermission('watchlists.manage'), async (req, res, next) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const { name } = req.body;
-
-    if (!name) {
-      throw new ValidationError('Name is required for cloned watchlist');
-    }
-
-    const cloned = await watchlistService.cloneWatchlist(id, name);
-
-    res.status(201).json({
-      status: 'success',
-      message: 'Watchlist cloned successfully',
-      data: cloned,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
 
 /**
  * GET /api/v1/watchlists/:id/symbols
- * Get watchlist symbols with latest quotes
+ * Get watchlist symbols (with an is_expired flag)
  */
 router.get('/:id/symbols', requirePermission('pages.watchlists.view'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
-    const symbols = await watchlistService.getSymbolsWithQuotes(id);
+    const symbols = await watchlistService.getSymbols(id);
 
     res.json({
       status: 'success',

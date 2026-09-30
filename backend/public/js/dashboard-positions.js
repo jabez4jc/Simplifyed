@@ -166,19 +166,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     }).join('');
   }
 
-  switchPositionsTab(tab) {
-    const tabs = document.querySelectorAll('[data-positions-tab]');
-    tabs.forEach((btn) => {
-      const isActive = btn.dataset.positionsTab === tab;
-      btn.classList.toggle('active', isActive);
-    });
-    const livePanel = document.getElementById('positions-tab-live');
-    const analyzerPanel = document.getElementById('positions-tab-analyzer');
-    if (livePanel && analyzerPanel) {
-      livePanel.classList.toggle('hidden', tab !== 'live');
-      analyzerPanel.classList.toggle('hidden', tab !== 'analyzer');
-    }
-  }
 
   _countOpenPositions(instances = []) {
     return instances.reduce((acc, inst) => {
@@ -199,6 +186,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       : 0;
     const header = `
       <summary class="instance-card-header">
+        ${Utils.chevron()}
         <div class="instance-info">
           <div class="instance-title">${Utils.escapeHTML(inst.instance_name)}</div>
           <div class="instance-meta">
@@ -290,8 +278,8 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     if (!confirmed) return;
 
     try {
-      await api.closePositions(instanceId);
-      Utils.showToast('Close positions request sent', 'success');
+      const res = await api.closePositions(instanceId);
+      Utils.showToast(res?.message || 'Positions closed', 'success');
       await this.refreshCurrentView();
     } catch (error) {
       Utils.showToast(error.message, 'error');

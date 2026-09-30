@@ -6,7 +6,7 @@ import { useTestDb, truncate } from '../helpers/db.js';
 import { buildApp } from '../helpers/app.js';
 import { asAdmin, asTrader, asMonitor, asRoleless, withPermissions, withPermissionsExcept, bearer } from '../helpers/auth.js';
 import { makeInstance } from '../helpers/fixtures.js';
-import { installFakeOpenAlgo } from '../helpers/fake-openalgo.js';
+import { watchBroker, realInstance, realCredentials, UNREACHABLE, KOTAK, CRYPTO } from '../helpers/real-broker.js';
 import { STATUS } from '../helpers/http.js';
 import db from '../../src/core/database.js';
 import instanceRoutes from '../../src/routes/v1/instances.js';
@@ -17,7 +17,7 @@ let broker;
 before(async () => {
   await useTestDb('instances');
   app = buildApp(instanceRoutes, '/api/v1/instances');
-  broker = installFakeOpenAlgo();
+  broker = watchBroker();
 });
 
 after(() => broker.restore());
@@ -42,18 +42,13 @@ test('every instance route refuses an unauthenticated caller', async () => {
   const unauthenticated = [
     ['get', '/api/v1/instances'],
     ['get', `/api/v1/instances/${inst.id}`],
-    ['get', '/api/v1/instances/admin/instances'],
-    ['get', '/api/v1/instances/market-data/instance'],
     ['get', '/api/v1/instances/market-data/all'],
-    ['get', `/api/v1/instances/${inst.id}/circuit-breaker`],
     ['get', '/api/v1/instances/export/csv'],
     ['post', '/api/v1/instances'],
     ['post', '/api/v1/instances/test/connection'],
     ['post', '/api/v1/instances/test/apikey'],
     ['post', '/api/v1/instances/bulk-update'],
     ['post', `/api/v1/instances/${inst.id}/refresh`],
-    ['post', `/api/v1/instances/${inst.id}/health`],
-    ['post', `/api/v1/instances/${inst.id}/pnl`],
     ['post', `/api/v1/instances/${inst.id}/analyzer/toggle`],
     ['put', `/api/v1/instances/${inst.id}`],
     ['delete', `/api/v1/instances/${inst.id}`],
@@ -164,22 +159,26 @@ test('an unknown id is a 404, and a non-numeric id is not a 500', async () => {
 // Creating
 // ---------------------------------------------------------------------------
 
-test('creating an instance stores it and auto-detects the broker from ping', async () => {
+test('creating an instance stores it and auto-detects the broker from the real ping', async () => {
   const admin = await asAdmin();
-  broker.on('ping', { status: 'success', data: { broker: 'fyers' } });
+  const real = await realCredentials(CRYPTO);
 
   const res = await post('/api/v1/instances', admin).send({
     name: 'New Instance',
-    host_url: 'http://new-instance.test',
-    api_key: 'a-real-api-key-value',
+    host_url: real.host_url,
+    api_key: real.api_key,
   });
 
-  assert.strictEqual(res.status, 201, JSON.stringify(res.body));
-  assert.strictEqual(res.body.data.broker, 'fyers');
+  assert.strictEqual(res.status, 201, JSON.stringify(res.body).slice(0, 300));
+  assert.strictEqual(res.body.data.broker, real.broker);
+  assert.ok(!JSON.stringify(res.body).includes(real.api_key), 'the response must not carry the key');
 
-  const row = await db.get('SELECT * FROM instances WHERE host_url = ?', ['http://new-instance.test']);
+  const row = await db.get('SELECT * FROM instances WHERE host_url = ?', [real.host_url]);
   assert.ok(row, 'the row must actually exist');
-  assert.strictEqual(row.api_key, 'a-real-api-key-value', 'the real key is stored, only the response is masked');
+  assert.ok(row.api_key === real.api_key, 'the real key is stored, only the response is masked');
+  // Checked on creation, not left 'unknown' - only healthy instances serve quotes and charts.
+  assert.strictEqual(row.health_status, 'healthy');
+  assert.strictEqual(res.body.data.health_status, 'healthy');
 });
 
 test('a duplicate host url is rejected as a conflict, not a 500', async () => {
@@ -197,16 +196,14 @@ test('a duplicate host url is rejected as a conflict, not a 500', async () => {
 
 test('an unreachable broker blocks creation rather than storing a dead instance', async () => {
   const admin = await asAdmin();
-  broker.fail('ping', 'connect ECONNREFUSED');
-
   const res = await post('/api/v1/instances', admin).send({
     name: 'Dead',
-    host_url: 'http://dead.test',
+    host_url: UNREACHABLE,
     api_key: 'some-key',
   });
 
   assert.strictEqual(res.status, STATUS.VALIDATION);
-  const row = await db.get('SELECT id FROM instances WHERE host_url = ?', ['http://dead.test']);
+  const row = await db.get('SELECT id FROM instances WHERE host_url = ?', [UNREACHABLE]);
   assert.ok(!row, 'nothing should have been persisted');
 });
 
@@ -320,16 +317,15 @@ test('editing an instance whose broker is offline still saves', async () => {
   // broker answering, the one case the screen exists for is the one case it cannot handle.
   const admin = await asAdmin();
   const inst = await makeInstance();
-  broker.fail('ping', 'connect ETIMEDOUT');
 
   const res = await put(`/api/v1/instances/${inst.id}`, admin).send({
-    host_url: 'http://relocated.test',
+    host_url: `${UNREACHABLE}/relocated`,
     api_key: 'new-key-for-moved-host',
   });
 
   assert.strictEqual(res.status, 200, 'an offline broker must not block a credential fix');
   const row = await db.get('SELECT host_url, api_key FROM instances WHERE id = ?', [inst.id]);
-  assert.strictEqual(row.host_url, 'http://relocated.test');
+  assert.strictEqual(row.host_url, `${UNREACHABLE}/relocated`);
   assert.strictEqual(row.api_key, 'new-key-for-moved-host');
 });
 
@@ -432,13 +428,12 @@ test('deleting something that is already gone is a 404, not a 500', async () => 
 
 test('the analyzer toggle requires a boolean and reports the broker outcome', async () => {
   const admin = await asAdmin();
-  const inst = await makeInstance();
+  const inst = await realInstance(KOTAK);
 
   const bad = await post(`/api/v1/instances/${inst.id}/analyzer/toggle`, admin).send({ mode: 'yes' });
   assert.strictEqual(bad.status, STATUS.VALIDATION, 'a string must not be coerced into a live/analyzer decision');
 
-  broker.on('analyzer/toggle', { status: 'success', data: { mode: 'analyze', analyze_mode: true } });
-  broker.on('analyzer', { status: 'success', data: { mode: 'analyze', analyze_mode: true } });
+  // Switching ON only - the interlock refuses any test that would take an account live.
   const ok = await post(`/api/v1/instances/${inst.id}/analyzer/toggle`, admin).send({ mode: true });
   assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
 
@@ -450,8 +445,7 @@ test('a broker that refuses the mode switch does not leave the app claiming it s
   // The whole point of the safe-switch workflow: believing we are in analyzer mode while the
   // broker is still live means the next order is a real one.
   const admin = await asAdmin();
-  const inst = await makeInstance({ is_analyzer_mode: 0 });
-  broker.fail('analyzer/toggle', 'analyzer unsupported by this broker');
+  const inst = await makeInstance({ is_analyzer_mode: 0 }); // its broker is unreachable
 
   const res = await post(`/api/v1/instances/${inst.id}/analyzer/toggle`, admin).send({ mode: true });
 
@@ -469,15 +463,14 @@ test('a broker that refuses the mode switch does not leave the app claiming it s
 test('the connection test reports success and failure distinguishably', async () => {
   const admin = await asAdmin();
 
-  broker.on('ping', { status: 'success', data: { broker: 'upstox' } });
+  const real = await realCredentials(KOTAK);
   const ok = await post('/api/v1/instances/test/connection', admin)
-    .send({ host_url: 'http://x.test', api_key: 'k' });
+    .send({ host_url: real.host_url, api_key: real.api_key });
   assert.strictEqual(ok.body.status, 'success');
-  assert.strictEqual(ok.body.data.broker, 'upstox');
+  assert.strictEqual(ok.body.data.broker, real.broker);
 
-  broker.fail('ping', 'ECONNREFUSED');
   const bad = await post('/api/v1/instances/test/connection', admin)
-    .send({ host_url: 'http://x.test', api_key: 'k' });
+    .send({ host_url: UNREACHABLE, api_key: 'k' });
   assert.strictEqual(bad.body.status, 'error');
 });
 

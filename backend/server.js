@@ -171,7 +171,6 @@ app.use('/api/v1', auditLogger);
 // hook and calling next(), so mounted after the route it is simply never reached - the handler
 // responds and never calls next(). Every webhook-placed order went unaudited, which is the one
 // order path with no human in the loop and therefore the one that most needs the record.
-// (Same trap as the blackout guard that used to sit further down this file.)
 app.use('/webhook/tradingview', auditLogger);
 app.use('/webhook/tradingview', tradingviewWebhookRoutes);
 
@@ -231,38 +230,27 @@ async function startServer() {
     await config.loadFromDatabase();
     log.info('Configuration loaded from database');
 
-    // Clean up expired idempotency keys on boot and every 6 hours
+    // Clean up expired idempotency keys and audit logs older than 7 days, on boot and every 6 hours
+    const pruneAuditLogs = () => db.run("DELETE FROM audit_logs WHERE created_at < datetime('now', '-7 days')");
     await idempotencyService.cleanupExpired();
+    await pruneAuditLogs();
     setInterval(() => {
       idempotencyService.cleanupExpired().catch(() => {});
+      pruneAuditLogs().catch(() => {});
     }, 6 * 60 * 60 * 1000);
 
     // Initialize OpenAlgo client rate limits from database
     await openalgoClient.initializeRateLimits();
     log.info('OpenAlgo rate limits initialized');
 
-    // Set up event-driven rate limit reload on settings change
+    // Apply a saved Setting at once (see settings-registry.js for the full list).
     settingsService.on('settings:changed', async (data) => {
-      if (data.category === 'rate_limits') {
-        log.info('Rate limit settings changed, reloading...');
-        await openalgoClient.reloadRateLimits();
-      }
-
-      const needsReload = ['polling', 'market_data_feed', 'instance_health', 'market_hours'].includes(data.category);
-      if (needsReload) {
-        await config.loadFromDatabase();
-        marketDataFeedService.applyConfig(config);
-        pollingService.applyConfig(config);
-      }
+      if (data.category === 'rate_limits') await openalgoClient.reloadRateLimits();
+      if (data.category === 'openalgo') await config.loadFromDatabase();
     });
 
-    // Ensure test user exists in development.
-    // Gated solely on test mode, which already means authentication is disabled. Adding
-    // NODE_ENV to the condition bought nothing (test mode is never on in a real deployment) and
-    // reintroduced the defaulted variable as a security-relevant input. The old
-    // `!config.auth.googleClientId` clause dated from Google sign-in and was always true, which
-    // would have seeded a passwordless admin row into any development database - and, because
-    // creating a user closes /auth/register, blocked the real bootstrap admin from being made.
+    // Test mode (authentication disabled) needs a user row to act as. Gated on test mode alone:
+    // seeding it anywhere else would close /auth/register before the real admin is created.
     if (config.auth.enableTestMode === true) {
       const testUser = await db.get('SELECT * FROM users WHERE id = 1');
       if (!testUser) {
@@ -298,7 +286,7 @@ async function startServer() {
       }
     }
 
-    // Start WebSocket gateway (opt-in, session-authenticated)
+    // Start WebSocket gateway (opt-in, authenticated with the login token)
     wsGatewayService.start(server, {
       enabled: config.wsGateway?.enabled,
       path: config.wsGateway?.path,
@@ -340,7 +328,6 @@ async function startServer() {
       console.log('║    - GET  /api/v1/orders                                   ║');
       console.log('║    - GET  /api/v1/positions/:instanceId                    ║');
       console.log('║    - GET  /api/v1/symbols/search                           ║');
-      console.log('║    - GET  /api/v1/polling/status                           ║');
       console.log('║                                                            ║');
       console.log('╠════════════════════════════════════════════════════════════╣');
       console.log('║  Services:                                                 ║');
@@ -357,8 +344,6 @@ async function startServer() {
 
       // Start crypto instruments daily refresh cron (17:31 IST)
       instrumentsService.startCryptoDailyRefresh();
-
-      // Removed legacy Google OAuth test mode banner
     });
   } catch (error) {
     log.error('Failed to start server', error);
@@ -377,9 +362,6 @@ async function shutdown() {
   log.info('Shutting down server...');
 
   try {
-    // Telegram is webhook-based, not polling-based - no stopPolling method to call here
-    // (see the matching note at startup, ~line 66).
-
     stopBackgroundServices();
     instanceHealthService.stop();
     instrumentsService.stopCryptoDailyRefresh();

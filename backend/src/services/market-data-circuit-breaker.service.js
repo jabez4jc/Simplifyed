@@ -93,4 +93,3 @@ class MarketDataCircuitBreakerService {
 
 const marketDataCircuitBreakerService = new MarketDataCircuitBreakerService();
 export default marketDataCircuitBreakerService;
-export { MarketDataCircuitBreakerService };

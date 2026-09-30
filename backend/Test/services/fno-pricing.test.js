@@ -37,8 +37,8 @@ const CONTRACTS = [
 
 const onTick = (price, tick) => Math.abs(price / tick - Math.round(price / tick)) < 1e-6;
 
-function stubDepth(bid, ask) {
-  mock.method(settingsService, 'getSetting', async () => { throw new Error('unset'); });
+function stubDepth(bid, ask, maxSpreadPct = '0.05') {
+  mock.method(settingsService, 'getSetting', async () => ({ rawValue: maxSpreadPct }));
   mock.method(marketDataFeedService, 'fetchDepthForSymbol', async () => ({ bid, ask, fetchedAt: Date.now() }));
 }
 
@@ -62,7 +62,7 @@ describe('marketable limit price per traded segment', () => {
   }
 
   test('a spread wider than the limit is refused rather than priced', async () => {
-    stubDepth(100, 110); // ~9.5% - an illiquid far-OTM option
+    stubDepth(100, 110, '0.05'); // ~9.5% against a 5% limit - an illiquid far-OTM option
     await assert.rejects(
       () => limitPriceService.resolveLimitPrice({ exchange: 'NFO', symbol: 'NIFTY06OCT2628000CE', side: 'BUY', tickSize: 0.05 }),
       /spread too wide/i

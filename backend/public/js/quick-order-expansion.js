@@ -22,20 +22,14 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
       if (expansionRow.style.display !== 'none') {
         // Collapse
         expansionRow.style.display = 'none';
-        if (toggleBtn) {
-          toggleBtn.textContent = '▼';
-          toggleBtn.classList.remove('rotated');
-        }
+        toggleBtn?.setAttribute('aria-expanded', 'false');
         this.expandedRows.delete(rowKey);
         this.stopOptionPreviewPolling(symbolId);
         this.stopFuturesPreviewPolling(symbolId);
       } else {
         // Expand
         expansionRow.style.display = 'table-row';
-        if (toggleBtn) {
-          toggleBtn.textContent = '▲';
-          toggleBtn.classList.add('rotated');
-        }
+        toggleBtn?.setAttribute('aria-expanded', 'true');
         this.expandedRows.add(rowKey);
 
         // Best-effort cache warmup for derivatives/expiries to reduce first-click latency

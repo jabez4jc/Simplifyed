@@ -18,6 +18,12 @@ test('symbol_type is authoritative and wins over the name', () => {
   assert.strictEqual(mode('SENSEX', { symbol_type: 'INDEX' }), 'futures');
 });
 
+test('an option position is options even when matched to a futures or index row', () => {
+  assert.strictEqual(mode('BTC30SEP2683600CE', { symbol_type: 'FUTURES' }), 'options');
+  assert.strictEqual(mode('NIFTY26JUL24000PE', { symbol_type: 'INDEX' }), 'options');
+  assert.strictEqual(mode('NIFTY26JUL26FUT', { symbol_type: 'INDEX' }), 'futures');
+});
+
 test('equities containing CE or PE in their name are not options', () => {
   // The regression this guards: `symbol.includes('CE')` matched RELIAN-CE, so every one of
   // these was classified 'options' and had its Direct-tab stops silently ignored.

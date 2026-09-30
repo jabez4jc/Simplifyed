@@ -186,20 +186,18 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
     );
 
     const isDerivativeMode = tradeMode === 'FUTURES' || tradeMode === 'OPTIONS' || (symbolType === 'FUTURES' || symbolType === 'OPTIONS');
+    // Same rule as the chart and the server: F&O takes MIS (intraday) or NRML (carry forward);
+    // CNC is delivery and exists only for equity.
+    const productChoices = isDerivativeMode ? ['MIS', 'NRML'] : ['MIS', 'NRML', 'CNC'];
+    const shownProduct = isDerivativeMode && selectedProduct === 'CNC' ? 'NRML' : selectedProduct;
     const productField = renderField(
       'Product',
-      isDerivativeMode ? 'Futures/Options use NRML.' : 'Product type for all instances.',
-      isDerivativeMode
-        ? `<select class="select-compact" disabled>
-             <option value="NRML" selected>NRML</option>
-           </select>`
-        : `<select class="select-compact"
-                data-symbol-id="${symbolId}"
-                onchange="quickOrder.selectProduct(${symbolId}, this.value)">
-             <option value="MIS" ${selectedProduct === 'MIS' ? 'selected' : ''}>MIS</option>
-             <option value="NRML" ${selectedProduct === 'NRML' ? 'selected' : ''}>NRML</option>
-             <option value="CNC" ${selectedProduct === 'CNC' ? 'selected' : ''}>CNC</option>
-           </select>`
+      isDerivativeMode ? 'MIS: intraday, squared off by the broker. NRML: carry forward.' : 'Product type for all instances.',
+      `<select class="select-compact"
+              data-symbol-id="${symbolId}"
+              onchange="quickOrder.selectProduct(${symbolId}, this.value)">
+         ${productChoices.map((p) => `<option value="${p}" ${shownProduct === p ? 'selected' : ''}>${p}</option>`).join('')}
+       </select>`
     );
 
     const futuresPreviewBlock = tradeMode === 'FUTURES' && capabilities.futures

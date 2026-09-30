@@ -76,78 +76,7 @@ export function validatePrice(price, orderType) {
   return priceValue;
 }
 
-/**
- * Validate SELL order against current position
- * @param {number} sellQuantity - The quantity to sell
- * @param {number} currentPosition - The current position quantity
- * @param {string} symbol - The symbol being traded
- * @throws {ValidationError} if sell quantity exceeds position
- */
-export function validateSellAgainstPosition(sellQuantity, currentPosition, symbol) {
-  const qty = validateQuantity(sellQuantity, 'SELL');
-  const position = typeof currentPosition === 'string' ? parseFloat(currentPosition) : currentPosition;
 
-  if (isNaN(position)) {
-    log.warn('Unable to validate SELL quantity - position data unavailable', {
-      symbol,
-      sellQuantity: qty
-    });
-    // Don't block the order, but log warning
-    return qty;
-  }
-
-  // For LONG positions (position > 0)
-  if (position > 0 && qty > position) {
-    throw new ValidationError(
-      `Cannot SELL ${qty} - current position is only ${position} for ${symbol}`
-    );
-  }
-
-  // For SHORT positions (position < 0), SELL would increase the short
-  // This is valid in derivatives trading, so we allow it but log
-  if (position < 0) {
-    log.info('SELL order will increase SHORT position', {
-      symbol,
-      currentPosition: position,
-      sellQuantity: qty,
-      newPosition: position - qty
-    });
-  }
-
-  return qty;
-}
-
-/**
- * Validate BUY order against current position
- * @param {number} buyQuantity - The quantity to buy
- * @param {number} currentPosition - The current position quantity
- * @param {string} symbol - The symbol being traded
- * @throws {ValidationError} if buy quantity is invalid
- */
-export function validateBuyAgainstPosition(buyQuantity, currentPosition, symbol) {
-  const qty = validateQuantity(buyQuantity, 'BUY');
-  const position = typeof currentPosition === 'string' ? parseFloat(currentPosition) : currentPosition;
-
-  if (isNaN(position)) {
-    log.warn('Unable to validate BUY quantity - position data unavailable', {
-      symbol,
-      buyQuantity: qty
-    });
-    return qty;
-  }
-
-  // For SHORT positions (position < 0), BUY covers the short
-  if (position < 0 && qty > Math.abs(position)) {
-    log.info('BUY order will cover SHORT and create LONG position', {
-      symbol,
-      currentPosition: position,
-      buyQuantity: qty,
-      newPosition: position + qty
-    });
-  }
-
-  return qty;
-}
 
 /**
  * Validate exchange parameter
@@ -201,13 +130,3 @@ export function validateAction(action) {
 
   return normalizedAction;
 }
-
-export default {
-  validateQuantity,
-  validatePrice,
-  validateSellAgainstPosition,
-  validateBuyAgainstPosition,
-  validateExchange,
-  validateSymbol,
-  validateAction,
-};

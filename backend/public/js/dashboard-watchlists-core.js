@@ -206,9 +206,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             onclick="app.toggleWatchlist(${wl.id})"
             title="Expand/Collapse"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-            </svg>
+            ${Utils.chevron()}
           </button>
           <div class="watchlist-card-compact__info">
             <div class="watchlist-card-compact__title-row">
@@ -306,7 +304,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       } else if (this.currentView === 'positions') {
         await this.resyncAllPositionsFromSnapshots();
       }
-      this.lastSnapshotResyncAt = Date.now();
     } finally {
       this.isSnapshotResyncing = false;
     }
@@ -318,8 +315,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     if (!['watchlists', 'positions'].includes(viewName)) return;
     const intervalMs = 60000; // 60s gentle resync
     this.snapshotResyncInterval = setInterval(() => {
-      // Avoid hammering while paused or busy
-      if (this.isPaused || this.isSnapshotResyncing) return;
+      if (this.isSnapshotResyncing) return;
       this.triggerSnapshotResync();
     }, intervalMs);
   }

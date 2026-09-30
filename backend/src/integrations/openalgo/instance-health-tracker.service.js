@@ -2,11 +2,7 @@
  * OpenAlgo Instance Health Tracker Service
  * Per-instance circuit-breaker/cooldown tracking (DNS/HTML errors get immediate cooldown
  * with a manual-refresh escalation; other errors get exponential-backoff auto-recovery).
- * Extracted from client.js. The 'circuit breaker disabled' global override lives on
- * client.js (set from rate-limit settings, which stayed in client.js due to deeper coupling
- * with the concurrency engine) so isInstanceHealthy/getInstanceHealthStatus take it as an
- * explicit parameter rather than reading it directly - keeps this service fully self-
- * contained instead of reaching into another module's state.
+ * Extracted from client.js.
  * NOTE: forceClearBackoff intentionally stayed in client.js - despite living physically
  * next to this cluster in the original file, it only ever touched errorCounters (rate-
  * limiter state), never instanceHealth, so it isn't actually part of this cluster.
@@ -63,12 +59,7 @@ class InstanceHealthTrackerService {
    * @param {number|string} instanceId - Instance ID
    * @returns {boolean} - True if healthy, false if in cooldown or requires manual refresh
    */
-  isInstanceHealthy(instanceId, circuitBreakerDisabled = false) {
-    // If circuit breaker is disabled, always return healthy
-    if (circuitBreakerDisabled) {
-      return true;
-    }
-
+  isInstanceHealthy(instanceId) {
     const health = this.instanceHealth.get(instanceId);
     if (!health?.cooldownUntil) return true;
     // Once the cooldown lapses the circuit is half-open: the next request is the probe. Its
@@ -92,7 +83,7 @@ class InstanceHealthTrackerService {
    * @param {number|string} instanceId - Instance ID
    * @returns {Object|null} - Health status or null if healthy
    */
-  getInstanceHealthStatus(instanceId, circuitBreakerDisabled = false) {
+  getInstanceHealthStatus(instanceId) {
     const health = this.instanceHealth.get(instanceId);
     if (!health) return null;
 
@@ -100,7 +91,7 @@ class InstanceHealthTrackerService {
     const cooldownRemaining = health.cooldownUntil ? Math.max(0, health.cooldownUntil - now) : 0;
 
     return {
-      isHealthy: this.isInstanceHealthy(instanceId, circuitBreakerDisabled),
+      isHealthy: this.isInstanceHealthy(instanceId),
       requiresManualRefresh: health.requiresManualRefresh || false,
       dnsRetryCount: health.dnsRetryCount || 0,
       maxDnsRetries: this.instanceHealthConfig.maxDnsRetries,

@@ -269,4 +269,3 @@ class InstancePnlService {
 
 const instancePnlService = new InstancePnlService();
 export default instancePnlService;
-export { InstancePnlService };

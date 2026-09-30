@@ -5,7 +5,7 @@
 
 import winston from 'winston';
 import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import sqlite3 from 'sqlite3';
 
@@ -25,7 +25,7 @@ const logNotifications = process.env.LOG_NOTIFICATIONS === 'true';
 let notifDb = null;
 let notifDbReady = false;
 let notifDbFailed = false;
-const dbPath = join(__dirname, '../../', process.env.DATABASE_PATH || './database/simplifyed.db');
+const dbPath = resolve(__dirname, '../../', process.env.DATABASE_PATH || './database/simplifyed.db');
 
 function ensureNotifDb() {
   if (notifDbFailed || notifDbReady) return notifDbReady;
@@ -258,4 +258,3 @@ export const log = {
   },
 };
 
-export default logger;

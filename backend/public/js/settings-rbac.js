@@ -29,7 +29,48 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
           ${this.renderRbacSection()}
         </div>
       </div>
+      <div class="card mt-4">
+        <div class="card-header">
+          <h3 class="card-title">TradingView webhook token</h3>
+          <p class="text-sm text-neutral-600 mt-1">
+            Every TradingView alert must carry this token, and anyone who has it can place orders
+            through your webhooks. Rotate it if it may have leaked. The old token stops working at
+            once, so paste the new one into each TradingView alert afterwards.
+          </p>
+        </div>
+        <div class="p-6">
+          <button type="button" class="btn btn-exit btn-sm" id="rotate-webhook-token-btn"
+                  onclick="settings.rotateWebhookToken()">Rotate token</button>
+          <div id="rotated-webhook-token" class="mt-3" hidden>
+            <p class="text-sm text-neutral-600">New token - copy it now:</p>
+            <div class="flex items-center gap-2 mt-1">
+              <code class="code-inline" id="rotated-webhook-token-value"></code>
+              <button type="button" class="btn btn-neutral btn-outline btn-sm"
+                      onclick="Utils.copyToClipboard(document.getElementById('rotated-webhook-token-value').textContent)">Copy</button>
+            </div>
+          </div>
+        </div>
+      </div>
     `;
+  }
+
+  async rotateWebhookToken() {
+    const ok = await Utils.confirm(
+      'Every TradingView alert using the current token will be refused until you update it with the new one. Rotate now?',
+      'Rotate webhook token'
+    );
+    if (!ok) return;
+    try {
+      const { data } = await api.rotateWebhookToken();
+      // Broadcast watchlists build their alert URLs from this, so they show the new token too.
+      window.WEBHOOK_TOKEN = data.webhookToken;
+      window.appConfig = { ...(window.appConfig || {}), webhookToken: data.webhookToken };
+      document.getElementById('rotated-webhook-token-value').textContent = data.webhookToken;
+      document.getElementById('rotated-webhook-token').hidden = false;
+      Utils.showToast('Webhook token rotated', 'success');
+    } catch (error) {
+      Utils.showToast(error.message || 'Failed to rotate the webhook token', 'error');
+    }
   }
   async fetchRbacData() {
     try {
@@ -202,8 +243,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       instances: 'Instances',
       settings: 'Settings',
       rbac: 'RBAC',
-      marketdata: 'Market Data',
-      monitor: 'Monitoring',
+      killswitch: 'Kill Switch',
     };
 
     const allPerms = role.permissions || [];
@@ -228,7 +268,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       return `
         <details class="border rounded-lg rbac-group">
           <summary class="cursor-pointer select-none flex items-center justify-between gap-2 px-2 py-2 text-xs rbac-accordion-strip">
-            <span class="font-semibold">${Utils.escapeHTML(label)}</span>
+            <span class="font-semibold flex items-center gap-2">${Utils.chevron()}${Utils.escapeHTML(label)}</span>
             <span class="text-xs text-neutral-500">${checkedCount}/${grouped[group].length}</span>
           </summary>
           <div class="px-2 pb-2">
@@ -386,17 +426,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     this.refreshRbacSection();
   }
 
-  toggleRolePermissions(roleName, enabled) {
-    const checks = document.querySelectorAll(`.rbac-perm-checkbox[data-role="${roleName}"]`);
-    checks.forEach((checkbox) => {
-      checkbox.checked = enabled;
-      const pill = checkbox.closest('.rbac-pill');
-      if (pill) {
-        pill.classList.toggle('btn-primary', enabled);
-        pill.classList.toggle('btn-outline', !enabled);
-      }
-    });
-  }
 
   togglePermissionGroups(expand) {
     const groups = document.querySelectorAll('#rbac-role-panel details');

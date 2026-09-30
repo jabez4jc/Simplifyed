@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { login, switchView, waitForApp, collectPageErrors, assertNoPageErrors } from './helpers.js';
+import { webhookToken } from './broker.js';
 
 /**
  * User experience and accessibility.
@@ -270,14 +271,36 @@ test.describe('feedback', () => {
       .toBeVisible({ timeout: 10000 });
   });
 
-  test('pausing and resuming data fetching works and says so', async ({ page }) => {
-    // togglePause once referenced a variable from another method and threw on every click.
-    const errors = collectPageErrors(page);
-    await page.click('#pause-toggle-btn');
-    await expect(page.locator('#toast-container')).toContainText('Paused');
-    await page.click('#pause-toggle-btn');
-    await expect(page.locator('#toast-container')).toContainText('Resumed');
-    assertNoPageErrors(errors);
+  test('the kill switch is in the top bar and asks before doing anything', async ({ page }) => {
+    // Never confirmed here: it would close every position on the real e2e accounts. The server
+    // side is covered on a flat analyzer account by Test/integration/kill-switch.test.js.
+    const fired = [];
+    page.on('request', (r) => { if (r.url().includes('/api/v1/kill-switch')) fired.push(r.url()); });
+    await expect(page.locator('#pause-toggle-btn')).toHaveCount(0);
+
+    await page.locator('#kill-switch-btn').click();
+    const dialog = page.locator('.modal-overlay');
+    await expect(dialog).toContainText('Kill switch');
+    await expect(dialog).toContainText('switches every instance to analyzer mode');
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(fired, 'Cancel must not call the kill switch').toEqual([]);
+
+    // Confirm, with the request answered here so no server or broker is reached. What matters
+    // is the body: it was once JSON-encoded twice and the server refused it as invalid JSON.
+    let sent;
+    await page.route('**/api/v1/kill-switch', (route) => {
+      sent = route.request().postDataJSON();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ status: 'success', data: { success: true, instances: [] } }),
+      });
+    });
+    await page.locator('#kill-switch-btn').click();
+    await page.locator('.modal-overlay').getByRole('button', { name: 'Confirm' }).click();
+    await expect(page.locator('#toast-container')).toContainText('Kill switch done');
+    expect(sent).toEqual({ confirm: 'KILL' });
   });
 
   test('the dashboard survives the API being unreachable', async ({ page }) => {
@@ -292,6 +315,32 @@ test.describe('feedback', () => {
     await expect(page.locator('body')).toBeVisible();
     const real = errors.filter((e) => !/net::ERR_|Failed to (load|fetch)|4\d\d|5\d\d/i.test(e));
     expect(real, `an offline API produced uncaught page errors:\n${real.join('\n')}`).toEqual([]);
+  });
+});
+
+test.describe('settings', () => {
+  test('the webhook token can be rotated from Access Control, and the old one stops working', async ({ page, request }) => {
+    // Runs on the e2e copy; the webhook workflow specs after this one trade with the rotated
+    // token, read back from that copy. The token itself is never printed.
+    const errors = collectPageErrors(page);
+    const old = await webhookToken();
+    await login(page);
+    await switchView(page, 'settings');
+    await page.click('.settings-main-tab[data-tab="access"]');
+    await page.click('#rotate-webhook-token-btn');
+    await page.locator('.modal-overlay button[data-action="confirm"]').click();
+    const shown = page.locator('#rotated-webhook-token-value');
+    await expect(shown).toHaveText(/^[A-Za-z0-9_-]{32,}$/, { timeout: 10000 });
+    const fresh = await shown.innerText();
+
+    const probe = (token) => request.post('/webhook/tradingview/broadcast/no-such-slug', {
+      headers: { 'Content-Type': 'text/plain', 'X-Webhook-Token': token },
+      data: '{ not json',
+    });
+    expect(fresh === old, 'a different token').toBe(false);
+    expect((await probe(old)).status(), 'the old token is refused').toBe(401);
+    expect((await probe(fresh)).status(), 'the new token is accepted').toBe(422);
+    assertNoPageErrors(errors);
   });
 });
 

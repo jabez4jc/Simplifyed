@@ -5,7 +5,7 @@
  * quote-enrichment/spot-resolution logic that calls these.
  */
 
-export function erfApprox(x) {
+function erfApprox(x) {
   // Abramowitz and Stegun formula 7.1.26
   const sign = x < 0 ? -1 : 1;
   const a1 = 0.254829592;
@@ -21,16 +21,16 @@ export function erfApprox(x) {
   return sign * y;
 }
 
-export function normCdf(x) {
+function normCdf(x) {
   const erfFn = typeof Math.erf === 'function' ? Math.erf : erfApprox;
   return 0.5 * (1 + erfFn(x / Math.sqrt(2)));
 }
 
-export function normPdf(x) {
+function normPdf(x) {
   return (1 / Math.sqrt(2 * Math.PI)) * Math.exp(-0.5 * x * x);
 }
 
-export function d1d2(F, K, T, sigma) {
+function d1d2(F, K, T, sigma) {
   const volSqrtT = sigma * Math.sqrt(T);
   const lnFK = Math.log(F / K);
   const d1 = (lnFK + 0.5 * sigma * sigma * T) / volSqrtT;
@@ -38,7 +38,7 @@ export function d1d2(F, K, T, sigma) {
   return { d1, d2 };
 }
 
-export function black76Price(F, K, T, r, sigma, isCall) {
+function black76Price(F, K, T, r, sigma, isCall) {
   const { d1, d2 } = d1d2(F, K, T, sigma);
   const disc = Math.exp(-r * T);
   return isCall
@@ -46,7 +46,7 @@ export function black76Price(F, K, T, r, sigma, isCall) {
     : disc * (K * normCdf(-d2) - F * normCdf(-d1));
 }
 
-export function black76Greeks(F, K, T, r, sigma, isCall) {
+function black76Greeks(F, K, T, r, sigma, isCall) {
   const { d1, d2 } = d1d2(F, K, T, sigma);
   const disc = Math.exp(-r * T);
   const pdf = normPdf(d1);
@@ -72,7 +72,7 @@ export function black76Greeks(F, K, T, r, sigma, isCall) {
   };
 }
 
-export function impliedVolBlack76(targetPrice, F, K, T, r, isCall, opts = {}) {
+function impliedVolBlack76(targetPrice, F, K, T, r, isCall, opts = {}) {
   const options = {
     tol: 1e-6,
     maxIter: 100,
@@ -177,7 +177,7 @@ export function normalizeLeg(raw) {
  * reports IV as a fraction and vega per 1.00 of vol, so the chain renders the same scale either
  * way.
  */
-export function serverGreeksForLeg(leg) {
+function serverGreeksForLeg(leg) {
   const iv = Number(leg?.implied_volatility);
   if (leg?.implied_volatility == null || !Number.isFinite(iv) || iv <= 0) return null;
   const num = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Number(v));
@@ -193,7 +193,7 @@ export function serverGreeksForLeg(leg) {
   };
 }
 
-export function fillMissingLtp(leg) {
+function fillMissingLtp(leg) {
   if (!leg) return leg;
   const hasLtp = Number(leg.ltp || 0) > 0;
   if (!hasLtp) {
@@ -210,7 +210,7 @@ export function fillMissingLtp(leg) {
   return leg;
 }
 
-export function findNearestAtmRow(rows, atmStrike) {
+function findNearestAtmRow(rows, atmStrike) {
   if (!rows?.length) return null;
   if (!atmStrike) return rows[Math.floor(rows.length / 2)];
   let best = rows[0];
@@ -225,7 +225,7 @@ export function findNearestAtmRow(rows, atmStrike) {
   return best;
 }
 
-export function computeForwardSet({ spot, atmRow, T, r, q }) {
+function computeForwardSet({ spot, atmRow, T, r, q }) {
   const F_carry = Number.isFinite(spot) && spot > 0 ? spot * Math.exp((r - q) * T) : null;
   let F_synth_exact = null;
   let F_synth_simple = null;
@@ -241,7 +241,7 @@ export function computeForwardSet({ spot, atmRow, T, r, q }) {
   return { F_carry, F_synth_exact, F_synth_simple };
 }
 
-export function chooseForward(forwardSource, forwards) {
+function chooseForward(forwardSource, forwards) {
   const order = ['carry', 'synth_exact', 'synth_simple'];
   const requested = forwardSource && order.includes(forwardSource) ? forwardSource : 'carry';
   const value =

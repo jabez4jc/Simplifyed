@@ -1,5 +1,5 @@
 import assert from 'assert';
-import test, { before, after, skip } from 'node:test';
+import test, { before, after } from 'node:test';
 
 import db from '../../src/core/database.js';
 import openalgoClient from '../../src/integrations/openalgo/client.js';

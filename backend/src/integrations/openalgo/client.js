@@ -96,6 +96,7 @@ const ORDER_ENDPOINTS = {
   splitorder: (d) => [d],
   modifyorder: (d) => [d],
   basketorder: (d) => (Array.isArray(d?.orders) ? d.orders : []),
+  placegttorder: (d) => [d], // its trigger legs fire as MARKET orders when pricetype says so
 };
 
 /**
@@ -103,6 +104,11 @@ const ORDER_ENDPOINTS = {
  * a MARKET or SL-M order for NSE/BSE/NFO/BFO/MCX/CDS never leaves this process. Crypto is exempt.
  */
 export function assertLimitOnlyCompliance(endpoint, data) {
+  // OpenAlgo's closeposition squares off everything at MARKET and takes no price. Close through
+  // quickOrderService.closeAllPositions instead, which sends LIMIT orders.
+  if (endpoint === 'closeposition') {
+    throw new ValidationError('Refusing closeposition - it squares off at MARKET; SEBI requires LIMIT orders');
+  }
   const rows = ORDER_ENDPOINTS[endpoint]?.(data) || [];
   for (const row of rows) {
     const pricetype = String(row?.pricetype || '').toUpperCase();
@@ -118,8 +124,8 @@ export function assertLimitOnlyCompliance(endpoint, data) {
 class OpenAlgoClient extends EventEmitter {
   constructor() {
     super();
-    this.timeout = config.openalgo.requestTimeout;
-    // Store both critical and non-critical retry configs
+    // Retry counts are fixed (core/config.js). The timeout is a Setting, so it is read live -
+    // see the timeout getter below.
     this.criticalRetries = config.openalgo.critical.maxRetries;
     this.criticalRetryDelay = config.openalgo.critical.retryDelay;
     this.nonCriticalRetries = config.openalgo.nonCritical.maxRetries;
@@ -184,10 +190,10 @@ class OpenAlgoClient extends EventEmitter {
     this.globalRpm = [];
     this.globalOrders = [];
     this.currentTasks = 0;
+    // Fixed ceilings. Only the smart-order rate is a Setting (_loadRateLimitSettings).
     this.maxConcurrentTasks = 10;
     this.rpsLimitPerInstance = 5;
     this.rpmLimitPerInstance = 300;
-    this.rpmLimitGlobal = Number.POSITIVE_INFINITY; // optional global cap (disabled)
     this.ordersPerSecondLimit = 10;
     // OpenAlgo caps /placesmartorder at 2 req/sec, a stricter limit than plain /placeorder's
     // 10/sec. Every order this app places goes through placesmartorder (see order-placement
@@ -211,17 +217,18 @@ class OpenAlgoClient extends EventEmitter {
 
     // Symbol resolution cache and lot-size cache moved to resolution-cache.service.js
     // (fully self-contained, zero coupling to anything else in this file).
-    // Instance health/circuit-breaker tracking moved to instance-health-tracker.service.js
-    // (the "circuit breaker disabled" override below is the one piece of state that couldn't
-    // move with it - see the wrapper methods further down for why).
+    // Instance health/circuit-breaker tracking moved to instance-health-tracker.service.js.
+  }
+
+  /** Settings > Broker Connection, read on every call so a change applies at once. */
+  get timeout() {
+    return config.openalgo.requestTimeout;
   }
 
   // Delegated to instance-health-tracker.service.js - names/signatures kept identical so every
-  // existing internal and external call site keeps working unmodified. circuitBreakerDisabled
-  // (set in _loadRateLimitSettings below, which stayed in this file) is passed explicitly rather
-  // than read from shared state, so the tracker service stays fully self-contained.
+  // existing internal and external call site keeps working unmodified.
   isInstanceHealthy(instanceId) {
-    return instanceHealthTrackerService.isInstanceHealthy(instanceId, this.circuitBreakerDisabled);
+    return instanceHealthTrackerService.isInstanceHealthy(instanceId);
   }
 
   instanceRequiresManualRefresh(instanceId) {
@@ -229,7 +236,7 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   getInstanceHealthStatus(instanceId) {
-    return instanceHealthTrackerService.getInstanceHealthStatus(instanceId, this.circuitBreakerDisabled);
+    return instanceHealthTrackerService.getInstanceHealthStatus(instanceId);
   }
 
   /**
@@ -349,39 +356,9 @@ class OpenAlgoClient extends EventEmitter {
    * @private
    */
   async _loadRateLimitSettings() {
-    const settings = await settingsService.getSettingsByCategory('rate_limits');
-    const getNum = (key, fallback) => {
-      const entry = settings[key];
-      const raw = entry ? (entry.pendingValue ?? entry.value ?? entry.rawValue) : undefined;
-      const val = parseFloat(raw);
-      return Number.isNaN(val) ? fallback : val;
-    };
-    const getBool = (key, fallback) => {
-      const entry = settings[key];
-      const raw = entry ? (entry.pendingValue ?? entry.value ?? entry.rawValue) : undefined;
-      if (raw === undefined || raw === null) return fallback;
-      return raw === true || raw === 'true' || raw === '1';
-    };
-
-    this.rpsLimitPerInstance = getNum('rate_limits.rps_per_instance', this.rpsLimitPerInstance);
-    this.rpmLimitPerInstance = getNum('rate_limits.rpm_per_instance', this.rpmLimitPerInstance);
-    this.rpmLimitGlobal = Number.POSITIVE_INFINITY; // keep global cap disabled
-    this.ordersPerSecondLimit = getNum('rate_limits.orders_per_second', this.ordersPerSecondLimit);
-    this.smartOrdersPerSecondLimit = getNum('rate_limits.smart_orders_per_second', this.smartOrdersPerSecondLimit);
-    this.maxConcurrentTasks = getNum('rate_limits.max_concurrent_tasks', this.maxConcurrentTasks);
-
-    // Testing/debug settings
-    this.rateLimitsDisabled = getBool('rate_limits.disabled', false);
-    this.circuitBreakerDisabled = getBool('rate_limits.circuit_breaker_disabled', false);
-
+    const smart = Number(await settingsService.getRawValue('rate_limits.smart_orders_per_second'));
+    if (Number.isFinite(smart) && smart > 0) this.smartOrdersPerSecondLimit = smart;
     this.limitsCache.loadedAt = Date.now();
-
-    if (this.rateLimitsDisabled) {
-      log.warn('Rate limits are DISABLED - all requests will bypass throttling');
-    }
-    if (this.circuitBreakerDisabled) {
-      log.warn('Circuit breaker is DISABLED - unhealthy instances will still be used');
-    }
   }
 
   /**
@@ -933,11 +910,6 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   async _throttle(instance, endpoint, isOrderPlacement) {
-    // Skip throttling if rate limits are disabled
-    if (this.rateLimitsDisabled) {
-      return;
-    }
-
     const instKey = this._instanceKey(instance);
     const state = this._getRateState(instKey);
     let waitedOnce = false;
@@ -1001,11 +973,6 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   _ensureBackoffWindow(instKey, endpoint) {
-    // Skip backoff check if circuit breaker is disabled
-    if (this.circuitBreakerDisabled) {
-      return;
-    }
-
     const errState = this._getErrorState(instKey);
     if (errState.backoffUntil && Date.now() < errState.backoffUntil) {
       const waitMs = errState.backoffUntil - Date.now();
@@ -1349,11 +1316,7 @@ class OpenAlgoClient extends EventEmitter {
    * @param {Object} instance - Instance configuration
    * @returns {Promise<Array>} - Holdings list
    */
-  async getHoldings(instance) {
-    const response = await this.request(instance, 'holdings');
-    return response.data?.holdings || [];
-  }
-
+ 
   // ==========================================
   // Order APIs
   // ==========================================
@@ -1412,6 +1375,22 @@ class OpenAlgoClient extends EventEmitter {
     };
   }
 
+  /** A plain order (placeorder) - used for resting orders at the caller's own price. */
+  async placeOrder(instance, orderData) {
+    const response = await this.request(instance, 'placeorder', orderData, 'POST', { isCritical: true });
+    return {
+      orderid: response.orderid || response.data?.orderid,
+      status: response.status,
+      message: response.message,
+    };
+  }
+
+  /** Change a resting order's price/trigger (OpenAlgo modifyorder). */
+  async modifyOrder(instance, orderData) {
+    const response = await this.request(instance, 'modifyorder', orderData, 'POST', { isCritical: true });
+    return response.data || response;
+  }
+
   /**
    * Cancel all orders
    * @param {Object} instance - Instance configuration
@@ -1440,19 +1419,6 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   /**
-   * Close all positions
-   * @param {Object} instance - Instance configuration
-   * @param {string} strategy - Strategy tag
-   * @returns {Promise<Object>} - Result
-   */
-  async closePosition(instance, strategy) {
-    const response = await this.request(instance, 'closeposition', {
-      strategy,
-    }, 'POST', { isCritical: true });
-    return response.data || response;
-  }
-
-  /**
    * Get open position for specific symbol
    * @param {Object} instance - Instance configuration
    * @param {string} symbol - Trading symbol
@@ -1461,16 +1427,7 @@ class OpenAlgoClient extends EventEmitter {
    * @param {string} strategy - Strategy tag
    * @returns {Promise<Object>} - { quantity }
    */
-  async getOpenPosition(instance, symbol, exchange, product, strategy) {
-    const response = await this.request(instance, 'openposition', {
-      symbol,
-      exchange,
-      product,
-      strategy,
-    });
-    return response;
-  }
-
+ 
   // ==========================================
   // Trade APIs
   // ==========================================
@@ -2354,30 +2311,12 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   /**
-   * Place split order (splits large order into smaller chunks)
-   * @param {Object} instance - Instance configuration
-   * @param {Object} orderData - Order parameters with splitsize
-   * @returns {Promise<Object>} - { success_orders, failed_orders }
-   */
-  async placeSplitOrder(instance, orderData) {
-    const response = await this.request(instance, 'splitorder', orderData, 'POST', { isCritical: true });
-    return response.data || response;
-  }
-
-  /**
    * Modify existing order
    * @param {Object} instance - Instance configuration
    * @param {Object} orderData - Modified order parameters
    * @returns {Promise<Object>} - { orderid, status }
    */
-  async modifyOrder(instance, orderData) {
-    const response = await this.request(instance, 'modifyorder', orderData, 'POST', { isCritical: true });
-    return {
-      orderid: response.orderid || response.data?.orderid,
-      status: response.status,
-    };
-  }
-
+ 
   // ==========================================
   // Options & Derivatives APIs
   // ==========================================
@@ -2446,109 +2385,7 @@ class OpenAlgoClient extends EventEmitter {
    * @param {string} exchange - Exchange code
    * @returns {Promise<Object>} - Option chain data
    */
-  async getOptionChainWithFallback(instances, symbol, expiry, exchange = 'NFO') {
-    if (!instances || instances.length === 0) {
-      throw new Error('No instances available for option chain fetch');
-    }
-
-    let lastError = null;
-    let attemptsMade = 0;
-
-    // Separate healthy and unhealthy instances
-    const healthyInstances = instances.filter(i => this.isInstanceHealthy(i.id));
-
-    // CRITICAL: If all instances are unhealthy, force try the first one anyway
-    const instancesToTry = healthyInstances.length > 0
-      ? healthyInstances
-      : [instances[0]]; // Force try first instance if all unhealthy
-
-    if (healthyInstances.length === 0) {
-      log.warn('All instances unhealthy for option chain, forcing attempt on first instance', {
-        symbol,
-        expiry,
-        totalInstances: instances.length,
-        forcedInstance: instances[0]?.name,
-      });
-    }
-
-    for (const instance of instancesToTry) {
-      attemptsMade++;
-
-      try {
-        log.debug('Fetching option chain', {
-          instance: instance.name,
-          symbol,
-          expiry,
-          exchange,
-        });
-
-        const result = await this.getOptionChain(instance, symbol, expiry, exchange, {
-          skipBackoff: true, // Critical operation - bypass backoff
-        });
-
-        // Success - reset instance health
-        this.resetInstanceHealth(instance.id);
-
-        log.debug('Option chain fetched successfully', {
-          instance: instance.name,
-          symbol,
-          expiry,
-        });
-
-        return result;
-      } catch (error) {
-        lastError = error;
-
-        // Check if this is an HTML response (instance down)
-        const isHtml = error.isHtmlResponse === true ||
-                      (error.message && error.message.includes('Invalid JSON response'));
-
-        // Check if this is a DNS/network connectivity error
-        const isDnsError = error.isDnsError === true ||
-                          (error.message && (
-                            error.message.includes('getaddrinfo') ||
-                            error.message.includes('ENOTFOUND') ||
-                            error.message.includes('ECONNREFUSED')
-                          ));
-
-
-        log.warn('Option chain fetch failed, trying next instance', {
-          instance: instance.name,
-          symbol,
-          expiry,
-          error: error.message,
-          isHtml,
-          isDnsError,
-        });
-      }
-    }
-
-    // All instances failed - enrich error with context for upstream callers
-    const healthyCount = healthyInstances.length;
-    const totalCount = instances.length;
-    const errorMessage = `Failed to fetch option chain for ${symbol} ${expiry} after ${attemptsMade} attempts (${healthyCount}/${totalCount} healthy): ${lastError?.message || 'Unknown error'}`;
-
-    log.error('Option chain fetch exhausted all instances', {
-      symbol,
-      expiry,
-      exchange,
-      attemptsMade,
-      totalInstances: totalCount,
-      healthyInstances: healthyCount,
-      unhealthyInstances: totalCount - healthyCount,
-      lastError: lastError?.message,
-    });
-
-    // Create enriched error with metadata for upstream handling
-    const enrichedError = new Error(errorMessage);
-    enrichedError.attemptsMade = attemptsMade;
-    enrichedError.totalInstances = totalCount;
-    enrichedError.healthyInstances = healthyCount;
-    enrichedError.originalError = lastError;
-
-    throw enrichedError;
-  }
-
+ 
   // ==========================================
   // Historical Data APIs
   // ==========================================
@@ -2618,16 +2455,6 @@ class OpenAlgoClient extends EventEmitter {
       isCritical: true,
     });
     return response;
-  }
-
-  /**
-   * List active GTT orders (triggered/cancelled/expired are excluded by the broker)
-   * @param {Object} instance - Instance configuration
-   * @returns {Promise<Array>} - Active GTT orders
-   */
-  async getGttOrderBook(instance) {
-    const response = await this.request(instance, 'gttorderbook');
-    return response.data || [];
   }
 
   /**
@@ -2705,61 +2532,17 @@ class OpenAlgoClient extends EventEmitter {
    *   interest_rate?, expiry_time? }
    * @returns {Promise<Object>} - { status, data: [{status, symbol, exchange, implied_volatility, greeks}, ...], summary }
    */
-  async getMultiOptionGreeks(instance, params) {
-    const response = await this.request(instance, 'multioptiongreeks', params, 'POST', {
-      isCritical: false,
-    });
-    return response;
-  }
-
+ 
   // ==========================================
   // Utility Methods
   // ==========================================
-
-  /**
-   * Validate instance connection
-   * @param {Object} instance - Instance configuration
-   * @returns {Promise<boolean>} - true if connection is valid
-   */
-  async validateConnection(instance) {
-    try {
-      await this.ping(instance);
-      return true;
-    } catch (error) {
-      return false;
-    }
-  }
 
   /**
    * Get comprehensive account summary
    * @param {Object} instance - Instance configuration
    * @returns {Promise<Object>} - Complete account data
    */
-  async getAccountSummary(instance) {
-    try {
-      const [funds, holdings, positions, orders, trades] = await Promise.all([
-        this.getFunds(instance),
-        this.getHoldings(instance),
-        this.getPositionBook(instance),
-        this.getOrderBook(instance),
-        this.getTradeBook(instance),
-      ]);
-
-      return {
-        funds,
-        holdings,
-        positions,
-        orders,
-        trades,
-      };
-    } catch (error) {
-      throw new OpenAlgoError(
-        `Failed to fetch account summary: ${error.message}`,
-        'account_summary'
-      );
-    }
-  }
-
+ 
   // ==========================================
   // Private Helper Methods for Order Deduplication
   // ==========================================

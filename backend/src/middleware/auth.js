@@ -193,15 +193,3 @@ export function verifyLocalToken(token) {
     return null;
   }
 }
-
-export default {
-  optionalAuth,
-  requireAuth,
-  requireAdmin,
-  requirePermission,
-  getUserWithRole,
-  verifyLocalToken,
-  hashPassword,
-  verifyPassword,
-  signLocalToken,
-};

@@ -7,7 +7,6 @@ import express from 'express';
 import instanceService from '../../services/instance.service.js';
 import pollingService from '../../services/polling.service.js';
 import marketDataInstanceService from '../../services/market-data-instance.service.js';
-import openalgoClient from '../../integrations/openalgo/client.js';
 import { log } from '../../core/logger.js';
 import { ValidationError, ForbiddenError } from '../../core/errors.js';
 import {
@@ -17,7 +16,7 @@ import {
   maskInstanceForResponse,
   maskInstancesForResponse,
 } from '../../utils/sanitizers.js';
-import { requireAuth, requirePermission } from '../../middleware/auth.js';
+import { requireAuth, requireAdmin, requirePermission } from '../../middleware/auth.js';
 import db from '../../core/database.js';
 import multer from 'multer';
 import { Parser } from '../../utils/csv.js';
@@ -80,49 +79,11 @@ router.get('/', requirePermission('pages.instances.view'), async (req, res, next
   }
 });
 
-/**
- * GET /api/v1/instances/admin/instances
- * Get admin instances (primary and secondary)
- * NOTE: Must be before /:id route to avoid capturing "admin" as id
- */
-router.get('/admin/instances', requirePermission('pages.instances.view'), async (req, res, next) => {
-  try {
-    const adminInstances = await instanceService.getAdminInstances();
 
-    res.json({
-      status: 'success',
-      data: {
-        primary: maskInstanceForResponse(adminInstances.primary),
-        secondary: maskInstanceForResponse(adminInstances.secondary),
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
- * GET /api/v1/instances/market-data/instance
- * Get the current market data instance (primary with failover to secondary)
- * Used for frontend quote polling
- * NOTE: Must be before /:id route to avoid capturing "market-data" as id
- */
-router.get('/market-data/instance', requirePermission('pages.instances.view'), async (req, res, next) => {
-  try {
-    const instance = await marketDataInstanceService.getMarketDataInstance();
-
-    res.json({
-      status: 'success',
-      data: maskInstanceForResponse(instance),
-    });
-  } catch (error) {
-    next(error);
-  }
-});
 
 /**
  * GET /api/v1/instances/market-data/all
- * Get all market data instances (primary and secondary) for status display
+ * The market-data pool (instances with "Use this instance for market data" ticked)
  * NOTE: Must be before /:id route
  */
 router.get('/market-data/all', requirePermission('pages.instances.view'), async (req, res, next) => {
@@ -419,74 +380,7 @@ router.post('/:id/refresh', requirePermission('pages.instances.view'), async (re
   }
 });
 
-/**
- * POST /api/v1/instances/:id/health
- * Update health status
- */
-router.post('/:id/health', requirePermission('pages.instances.view'), async (req, res, next) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const instance = await instanceService.updateHealthStatus(id);
 
-    res.json({
-      status: 'success',
-      message: 'Health status updated',
-      data: maskInstanceForResponse(instance),
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
- * GET /api/v1/instances/:id/circuit-breaker
- * Get circuit breaker status for an instance
- * Returns information about whether the instance is in cooldown or requires manual refresh
- */
-router.get('/:id/circuit-breaker', requirePermission('pages.instances.view'), async (req, res, next) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-
-    // Get circuit breaker health status
-    const circuitBreakerStatus = openalgoClient.getInstanceHealthStatus(id);
-
-    res.json({
-      status: 'success',
-      data: circuitBreakerStatus || {
-        isHealthy: true,
-        requiresManualRefresh: false,
-        dnsRetryCount: 0,
-        maxDnsRetries: openalgoClient.instanceHealthConfig.maxDnsRetries,
-        cooldownRemaining: 0,
-        cooldownUntil: null,
-        lastError: null,
-        isDnsError: false,
-        isHtmlError: false,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
- * POST /api/v1/instances/:id/pnl
- * Update P&L data
- */
-router.post('/:id/pnl', requirePermission('pages.instances.view'), async (req, res, next) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const instance = await instanceService.updatePnLData(id);
-
-    res.json({
-      status: 'success',
-      message: 'P&L data updated',
-      data: maskInstanceForResponse(instance),
-    });
-  } catch (error) {
-    next(error);
-  }
-});
 
 /**
  * POST /api/v1/instances/:id/analyzer/toggle
@@ -513,117 +407,6 @@ router.post('/:id/analyzer/toggle', requirePermission('instances.toggle_mode'), 
   }
 });
 
-/**
- * POST /api/v1/instances/:id/test/session-cutoff
- * Admin-only: Simulate session cutoff evaluation without placing trades
- */
-router.post('/:id/test/session-cutoff', requireAdmin, async (req, res, next) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const { total_pnl: totalPnlRaw, commit, allow_mode_flip, simulate_analyzer_mode, now } = req.body || {};
-
-    const totalPnl = parseFloat(totalPnlRaw);
-    if (Number.isNaN(totalPnl)) {
-      throw new ValidationError('total_pnl must be a number');
-    }
-
-    const commitUpdate = parseBooleanSafe(commit, false);
-    const allowModeFlip = parseBooleanSafe(allow_mode_flip, false);
-    const overrideAnalyzer = simulate_analyzer_mode === undefined
-      ? null
-      : parseBooleanSafe(simulate_analyzer_mode, false);
-
-    const instance = await instanceService.getInstanceById(id);
-    const testNow = now ? new Date(now) : instanceService._nowInIST();
-    if (Number.isNaN(testNow?.getTime?.())) {
-      throw new ValidationError('now must be a valid date string');
-    }
-
-    const sessionState = await instanceService._computeSessionState(
-      instance,
-      totalPnl,
-      testNow,
-      { overrideAnalyzerMode: overrideAnalyzer }
-    );
-
-    const wouldSwitchToAnalyzer = !!(
-      sessionState.isLiveMode &&
-      sessionState.currentSession &&
-      sessionState.cutoffReason
-    );
-
-    if (commitUpdate) {
-      const sessionKey = sessionState.sessionKey || sessionState.hitsKey || null;
-      const cutoffAt = sessionState.cutoffReason ? testNow.toISOString() : null;
-      const modeFlip = allowModeFlip && wouldSwitchToAnalyzer ? 1 : instance.is_analyzer_mode ? 1 : 0;
-
-      await db.run(
-        `UPDATE instances SET
-          total_pnl = ?,
-          session_baseline_total_pnl = ?,
-          session_baseline_at = ?,
-          session_pnl = ?,
-          session_cutoff_reason = ?,
-          session_cutoff_at = ?,
-          session_max_loss_hits = ?,
-          session_max_loss_hits_date = ?,
-          last_live_total_pnl = ?,
-          last_live_total_pnl_at = ?,
-          is_analyzer_mode = ?,
-          last_updated = CURRENT_TIMESTAMP
-        WHERE id = ?`,
-        [
-          totalPnl,
-          sessionState.sessionBaseline,
-          sessionState.sessionBaselineAt,
-          sessionState.sessionPnl,
-          sessionState.cutoffReason,
-          cutoffAt,
-          sessionState.maxLossHits,
-          sessionKey,
-          sessionState.lastLiveTotalPnl,
-          sessionState.lastLiveTotalPnlAt,
-          modeFlip,
-          id,
-        ]
-      );
-    }
-
-    res.json({
-      status: 'success',
-      data: {
-        instance_id: id,
-        simulated: {
-          total_pnl: totalPnl,
-          now: testNow.toISOString(),
-          session_key: sessionState.sessionKey,
-          session_label: sessionState.sessionLabel,
-          session_pnl: sessionState.sessionPnl,
-          session_baseline_total_pnl: sessionState.sessionBaseline,
-          session_baseline_at: sessionState.sessionBaselineAt,
-          cutoff_reason: sessionState.cutoffReason,
-          max_loss_hits: sessionState.maxLossHits,
-          effective_target: sessionState.effectiveTarget,
-          effective_max_loss: sessionState.effectiveMaxLoss,
-          is_live_mode: sessionState.isLiveMode,
-          would_switch_to_analyzer: wouldSwitchToAnalyzer,
-        },
-        committed: commitUpdate,
-        allow_mode_flip: allowModeFlip,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Admin-only middleware
-function requireAdmin(req, _res, next) {
-  if (!req.user?.is_admin) {
-    return next(new ForbiddenError('Admin access required'));
-  }
-  return next();
-}
 
 /**
  * GET /api/v1/instances/export/csv

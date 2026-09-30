@@ -177,66 +177,6 @@ class WatchlistSymbolService {
     return rows.find((row) => !isContractExpired(row)) || rows[0] || null;
   }
 
-  async searchSymbolsByWatchlist(filters = {}) {
-    const {
-      watchlistId,
-      exchange,
-      symbol,
-      isEnabled,
-      tradableEquity,
-      tradableFutures,
-      tradableOptions,
-    } = filters;
-
-    let query = `
-      SELECT
-        ws.*,
-        w.name AS watchlist_name
-      FROM watchlist_symbols ws
-      JOIN watchlists w ON ws.watchlist_id = w.id
-      WHERE 1=1
-    `;
-    const params = [];
-
-    if (watchlistId) {
-      query += ' AND ws.watchlist_id = ?';
-      params.push(watchlistId);
-    }
-
-    if (exchange) {
-      query += ' AND ws.exchange = ?';
-      params.push(exchange);
-    }
-
-    if (symbol) {
-      query += ' AND ws.symbol LIKE ?';
-      params.push(`%${symbol}%`);
-    }
-
-    if (isEnabled !== undefined) {
-      query += ' AND ws.is_enabled = ?';
-      params.push(isEnabled ? 1 : 0);
-    }
-
-    if (tradableEquity !== undefined) {
-      query += ' AND ws.tradable_equity = ?';
-      params.push(tradableEquity ? 1 : 0);
-    }
-
-    if (tradableFutures !== undefined) {
-      query += ' AND ws.tradable_futures = ?';
-      params.push(tradableFutures ? 1 : 0);
-    }
-
-    if (tradableOptions !== undefined) {
-      query += ' AND ws.tradable_options = ?';
-      params.push(tradableOptions ? 1 : 0);
-    }
-
-    query += ' ORDER BY ws.watchlist_id, ws.created_at';
-
-    return db.all(query, params);
-  }
 
   _normalizeSymbolData(data, isPartial = false) {
     const normalized = {};

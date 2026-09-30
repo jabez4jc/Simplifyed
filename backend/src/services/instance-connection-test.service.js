@@ -134,4 +134,3 @@ class InstanceConnectionTestService {
 
 const instanceConnectionTestService = new InstanceConnectionTestService();
 export default instanceConnectionTestService;
-export { InstanceConnectionTestService };

@@ -48,6 +48,7 @@ import instanceService from './instance.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import orderRepository from './order-repository.js';
 import gttService from './gtt.service.js';
+import brokerCapabilitiesService from './broker-capabilities.service.js';
 import limitPriceService from './limit-price.service.js';
 
 const VALID_EXIT_MECHANISMS = ['POLLING', 'GTT'];
@@ -1044,8 +1045,17 @@ class StrategyService {
     //
     // With nothing to price from, resolveMarketablePricing refuses Indian legs (SEBI
     // limit-only) and lets crypto legs go MARKET.
+    //
+    // Crypto legs go MARKET outright when the broker allows it (Settings > Market orders), like
+    // every other crypto order in this app. A LIMIT priced off the last quote rested unfilled
+    // whenever BTC moved past it, and was then cancelled - the leg was "placed" but never held.
     const legBufferPoints = parseFloatSafe(anchorSymbol.limit_buffer_points, 0) || 0;
     for (const r of orderable) {
+      if (await brokerCapabilitiesService.supportsMarketOrders(instance.broker, r.exchange)) {
+        r.pricetype = 'MARKET';
+        r.price = 0;
+        continue;
+      }
       const pricing = await limitPriceService.resolveMarketablePricing({
         instanceId: instance.id,
         exchange: r.exchange,
@@ -1086,7 +1096,9 @@ class StrategyService {
       const isOption = Boolean(r.leg.option_type);
 
       if (legSuccess) {
-        if (r.leg.exit_mechanism === 'GTT') {
+        // A broker GTT fires its exit as a MARKET order, which SEBI does not allow on Indian
+        // exchanges - those legs use the app-managed exit, which closes with LIMIT orders.
+        if (r.leg.exit_mechanism === 'GTT' && isCryptoExchange(r.exchange)) {
           await this._placeLegExitGtt({
             strategy, leg: r.leg, instance, exchange: r.exchange, symbol: r.symbol,
             quantity: r.quantity, product: r.product, orderId: basketResult?.orderid,
