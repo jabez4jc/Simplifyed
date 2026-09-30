@@ -9,6 +9,12 @@ import db from '../core/database.js';
 // notification hook. See the matching note in positions.service.js.
 import { log } from '../core/logger.js';
 import { NotFoundError } from '../core/errors.js';
+import { isCryptoBroker, isCryptoExchange } from '../utils/broker-type.util.js';
+
+/** Does this instance's broker trade the exchange's segment? Crypto brokers only crypto. */
+export function tradesSegment(instance, exchange) {
+  return isCryptoBroker(instance?.broker) === isCryptoExchange(exchange);
+}
 
 class MarketDataInstanceService {
   constructor() {
@@ -95,10 +101,15 @@ class MarketDataInstanceService {
    * Get pooled market data instances (healthy only)
    * Note: getMarketDataInstances() already filters by is_active and market_data eligibility
    */
-  async getMarketDataPool() {
+  /**
+   * @param {string|null} exchange - when given, only instances whose broker trades that segment:
+   *   asking a crypto broker for NIFTY (or an Indian one for BTC) is a guaranteed failure, and for
+   *   option resolution that failure silently fell back to stale cached data.
+   */
+  async getMarketDataPool(exchange = null) {
     const all = await this.getMarketDataInstances();
-    // Only filter by health - eligibility already enforced by SQL query
-    return all.filter(inst => this._isHealthy(inst));
+    // Health, plus segment when asked - eligibility is already enforced by the SQL query
+    return all.filter((inst) => this._isHealthy(inst) && (!exchange || tradesSegment(inst, exchange)));
   }
 
   /**
@@ -123,8 +134,9 @@ class MarketDataInstanceService {
   /**
    * Get a market data instance using round-robin across the pool
    */
-  async getRoundRobinInstance() {
-    const pool = await this.getMarketDataPool();
+  /** @param {string|null} exchange - see getMarketDataPool */
+  async getRoundRobinInstance(exchange = null) {
+    const pool = await this.getMarketDataPool(exchange);
     if (pool.length === 0) return null;
     const inst = pool[this.poolIndex % pool.length];
     this.poolIndex = (this.poolIndex + 1) % pool.length;

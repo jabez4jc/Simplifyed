@@ -319,3 +319,35 @@ test('an OpenScript study applied from the picker is registered and switched on'
 
   assertNoPageErrors(errors);
 });
+
+test('a gap in the live feed is refilled from history, without a manual refresh', async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await ensureChartSymbol(page); // BTC perpetual on the crypto account: ticks 24x7
+  await switchView(page, 'chart');
+  await page.waitForFunction(() => Boolean(window.app?.chartLastPrice && window.app.chartCandles?.length > 10), null, { timeout: 30000 });
+  await page.evaluate(() => {
+    const app = window.app;
+    if (app.chartState.timeframe !== '1m') { app.chartState.timeframe = '1m'; }
+  });
+  await page.evaluate(() => window.app.loadChartData());
+  await page.waitForFunction(() => window.app.chartState.timeframe === '1m' && window.app.chartCandles?.length > 10, null, { timeout: 30000 });
+
+  // What a dropped feed leaves behind: the last few minutes never arrived. The once-a-minute
+  // backfill allowance is reset - opening the chart may already have used it (broker history
+  // can trail the live bar by a minute), and this gap stands for one found later in the day.
+  const cutTo = await page.evaluate(() => {
+    window.app._lastBackfillAt = 0;
+    const c = window.app.chartCandles;
+    c.splice(-3);
+    return c[c.length - 1].ts;
+  });
+
+  const reload = page.waitForResponse((r) => r.url().includes('/api/v1/history?'), { timeout: 45000 });
+  await reload;
+  // Every missed minute is back, with no hole between the cut and the live bar.
+  await page.waitForFunction((ts) => {
+    const after = window.app.chartCandles.filter((c) => c.ts > ts);
+    return after.length >= 3 && after.every((c, i) => i === 0 || c.ts - after[i - 1].ts === 60);
+  }, cutTo, { timeout: 15000 });
+  assertNoPageErrors(errors);
+});

@@ -250,11 +250,10 @@ Object.assign(DashboardApp.prototype, {
 
         <div id="chart-levels" class="chart-levels" hidden></div>
 
+        <div id="chart-exit-levels" class="chart-levels chart-exit-levels" hidden></div>
+
         <div id="chart-position" class="chart-position" hidden></div>
 
-        <p class="chart-attribution">
-          Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener noreferrer">TradingView</a>
-        </p>
       </div>
     `;
 
@@ -288,8 +287,10 @@ Object.assign(DashboardApp.prototype, {
       this.saveChartPreference();
       const badge = document.querySelector('[data-role="ticket-qty"]');
       if (badge) badge.textContent = this.chartState.qty;
-      const hint = document.getElementById('chart-size-hint');
-      if (hint) hint.textContent = this.sizeHintText(this.chartState.qty);
+      // The one writer of the hint: short total on screen, full arithmetic in the tooltip. This
+      // handler used to write the long text (cut off before its total) and left the tooltip
+      // showing the previous size.
+      this.applySizingLabel();
     });
 
 
@@ -318,6 +319,7 @@ Object.assign(DashboardApp.prototype, {
       this.lastChartTickAt = 0;
       this.loadChartData();
       this.loadChartPosition().then(() => this.loadChartLevels());
+      this.loadExitLevels();
       this.loadChartTradePanel();
       this.refreshSupportedTimeframes();
     });
@@ -326,6 +328,9 @@ Object.assign(DashboardApp.prototype, {
     await this.loadChartPosition();
     await this.loadChartLevels();
     this.attachLevelDragging();
+    this.loadExitLevels();
+    this.attachExitLevelDragging();
+    this.startExitLevelWatch();
     await this.loadChartTradePanel();
     // The trade panel restores the "Trade options" checkbox from state; the CE/PE panes have to
     // follow it. Without this a re-render leaves the box ticked with no option charts under it.
@@ -578,6 +583,9 @@ Object.assign(DashboardApp.prototype, {
     this.clearPriceLines(scope);
     this.drawPositionLine(scope);
     if (!scope) this.drawLevelLines();
+    // Exit levels on the underlying: the lines on the main chart, premium estimates on a pane.
+    if (!scope && typeof this.drawExitLevelLines === 'function') this.drawExitLevelLines();
+    if (scope && typeof this.drawProjectionLines === 'function') this.drawProjectionLines(scope);
   },
 
   /**
@@ -585,6 +593,8 @@ Object.assign(DashboardApp.prototype, {
    * Called only by redrawChartLines, which has already cleared the series.
    */
   drawPositionLine(scope) {
+    // With a trade layer, the position is its PositionMarker (live P&L, ✕ to square off).
+    if (typeof this.reconcileTrade === 'function' && this.reconcileTrade(scope)) return;
     const data = scope ? this.optionPanes?.[scope]?.positionData : this.chartPositionData;
     const series = scope ? this.optionPanes?.[scope]?.series : this.candleSeries;
     if (!data || !data.avgEntryPrice || !series) return;
@@ -1095,6 +1105,17 @@ Object.assign(DashboardApp.prototype, {
     }
     this.chartTradeMode = mode;
 
+    // The futures contract a FUTURES order here trades - named on the buttons, its expiry sent
+    // with the order (an index row's futures order is refused without one), sized in its lots.
+    this.chartFuture = null;
+    if (sym.tradableFutures) {
+      try {
+        const fut = await api.request(`/history/future?symbolId=${encodeURIComponent(state.symbolId)}`);
+        if (this.chartState?.symbolId !== requestedSymbolId) return;
+        this.chartFuture = fut.data || null;
+      } catch (_) { /* no future: futures buttons stay hidden */ }
+    }
+
     const blocked = Boolean(info.unavailable) || info.instances.length === 0;
     this.chartTradeBlocked = blocked;
     if (tickets) tickets.hidden = blocked;
@@ -1127,9 +1148,9 @@ Object.assign(DashboardApp.prototype, {
    * exit - none of those are "buy-coloured" or "sell-coloured" in the way a fresh order is.
    */
   optionActionTone(action) {
-    if (/^BUY(_|$)/.test(action)) return 'buy';
-    if (/^SELL(_|$)/.test(action)) return 'sell';
-    if (/^CLOSE_ALL/.test(action) || action === 'EXIT_ALL') return 'close';
+    if (/^BUY(_|$)/.test(action) || action === 'COVER') return 'buy';
+    if (/^SELL(_|$)/.test(action) || action === 'SHORT') return 'sell';
+    if (/^CLOSE_ALL/.test(action) || action === 'EXIT_ALL' || action === 'EXIT') return 'close';
     return 'neutral'; // REDUCE_*, INCREASE_*
   },
 
@@ -1146,12 +1167,23 @@ Object.assign(DashboardApp.prototype, {
 
     const optionAction = intent.optionAction || null;
     const action = optionAction || intent.side;
+    // A futures order: the FUT buttons in options mode, or the main tickets on a futures row.
+    const futuresOrder = !optionAction && !intent.contract
+      && (Boolean(intent.futures) || this.chartTradeMode === 'FUTURES');
+    const future = futuresOrder ? this.chartFuture : null;
     // Display only - the server always receives the raw action string above.
     const actionLabel = action.replace(/_/g, ' ');
     const orderType = intent.orderType || 'MARKET';
     const price = intent.price ?? null;
+    // The expiry the order will carry (see the order body below) - never a vague "nearest".
+    // CALL/PUT trade the contract on the matching option chart, on every instance.
+    const optionContract = optionAction
+      ? this.paneContracts?.[/_CE$/.test(optionAction) ? 'ce' : 'pe'] || null
+      : null;
+    const orderExpiry = optionContract?.expiry || this.chartState.optionExpiry || this.shownOptionExpiry;
     const legNote = optionAction
-      ? `${this.chartState.optionLeg || 'ATM'}${this.chartState.optionExpiry ? ` · ${this.chartState.optionExpiry}` : ' · nearest expiry'}`
+      ? (optionContract?.symbol
+        || `${this.chartState.optionLeg || 'ATM'}${orderExpiry ? ` · ${orderExpiry}` : ' · nearest expiry'}`)
       : null;
     const typeLabel = orderType === 'MARKET' ? 'Market'
       : orderType === 'LIMIT' ? `Limit @ ${Utils.formatNumber(price)}`
@@ -1163,15 +1195,19 @@ Object.assign(DashboardApp.prototype, {
     // An option ticket sizes in option lots; so does any order naming an explicit contract
     // directly (a pane's own right-click menu, not routed through optionAction resolution) -
     // anything else sizes as the underlying, even while options mode is on.
-    const forOptions = Boolean(optionAction) || Boolean(contract);
-    const sizing = this.sizingBreakdown(qty, forOptions, contract?.lotsize || null);
+    // Futures size in the future's own lots - an index row's lot_size is 1.
+    const forOptions = Boolean(optionAction) || Boolean(contract) || Boolean(future);
+    const sizing = this.sizingBreakdown(qty, forOptions, contract?.lotsize || future?.lotsize || null);
     if (!sizing) {
       Utils.showToast('Enter a valid size', 'error');
       return;
     }
-    const unitWord = sizing.unit === 'LOTS'
+    const unitWord = action === 'EXIT'
+      ? 'the whole open position'
+      : sizing.unit === 'LOTS'
       ? `${qty} lot${qty === 1 ? '' : 's'}`
       : `${fmtSize(qty)} qty`;
+    const shownSymbol = contract?.symbol || future?.symbol || state.symbol;
 
     const byId = new Map(sizing.perInstance.map((i) => [i.id, i]));
     const targets = this.selectedInstances();
@@ -1190,7 +1226,7 @@ Object.assign(DashboardApp.prototype, {
     modal.innerHTML = `
       <div class="modal-content chart-confirm">
         <div class="modal-header">
-          <h3>Confirm ${Utils.escapeHTML(actionLabel)} ${Utils.escapeHTML(typeLabel)} — ${Utils.escapeHTML(contract?.symbol || state.symbol)}</h3>
+          <h3>Confirm ${Utils.escapeHTML(actionLabel)} ${Utils.escapeHTML(typeLabel)} — ${Utils.escapeHTML(shownSymbol)}</h3>
         </div>
         <div class="modal-body">
           <p class="chart-confirm-lead">
@@ -1201,8 +1237,8 @@ Object.assign(DashboardApp.prototype, {
               ? `<strong>${Utils.escapeHTML(contract.symbol)}</strong>`
               : optionAction
               ? `${Utils.escapeHTML(state.symbol)} <strong>${Utils.escapeHTML(legNote)}</strong> options`
-              : Utils.escapeHTML(state.symbol)}
-            (${Utils.escapeHTML(this.effectiveProduct(state, contract, optionAction))}) — one per instance below.
+              : `<strong>${Utils.escapeHTML(shownSymbol)}</strong>`}
+            (${Utils.escapeHTML(this.effectiveProduct(state, contract, optionAction || futuresOrder))}) — one per instance below.
           </p>
           <p class="chart-confirm-lead chart-confirm-sizing">
             ${sizing.unknownLotSize
@@ -1213,7 +1249,13 @@ Object.assign(DashboardApp.prototype, {
               : 'Sized in units.'}
           </p>
           ${optionAction ? (
-            /^(BUY|SELL)_/.test(action)
+            optionContract
+              ? `<p class="chart-confirm-lead chart-confirm-sizing">
+                   ${/^(BUY|SELL)_/.test(action)
+                     ? `Every instance trades this same contract, ${Utils.escapeHTML(optionContract.symbol)}.`
+                     : `Acts on the ${Utils.escapeHTML(optionContract.symbol)} position only - other strikes are not touched.`}
+                 </p>`
+              : /^(BUY|SELL)_/.test(action)
               ? `<p class="chart-confirm-lead chart-confirm-sizing">
                    The exact strike is resolved per instance at execution from each one's live
                    price, so instances may end up on different strikes.
@@ -1223,11 +1265,17 @@ Object.assign(DashboardApp.prototype, {
                    open per instance - it will not open a new strike.
                  </p>`
           ) : ''}
-          ${orderType === 'MARKET' ? '' : `
+          ${orderType === 'MARKET' ? '' : intent.crosses ? `
+            <p class="chart-confirm-lead chart-confirm-resting">
+              This ${intent.side === 'BUY' ? 'buy' : 'sell'} limit is ${intent.side === 'BUY' ? 'above' : 'below'}
+              the last price (${Utils.formatNumber(intent.last ?? this.chartLastPrice)}), so it fills now at
+              the best available price, ${intent.side === 'BUY' ? 'paying no more' : 'taking no less'} than
+              ${Utils.formatNumber(price)}. Anything not filled rests at ${Utils.formatNumber(price)}.
+            </p>` : `
             <p class="chart-confirm-lead chart-confirm-resting">
               A ${orderType === 'LIMIT' ? 'limit' : 'stop'} order rests at the broker until it
               triggers or you cancel it. Last price is
-              ${Utils.formatNumber(this.chartLastPrice)}.
+              ${Utils.formatNumber(intent.last ?? this.chartLastPrice)}.
             </p>`}
 
           ${live.length ? `
@@ -1263,13 +1311,13 @@ Object.assign(DashboardApp.prototype, {
     modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
     modal.querySelector('[data-action="go"]').addEventListener('click', async () => {
       close();
-      await this.placeChartOrder({ action, typed: qty, orderType, price, optionAction, forOptions, contract });
+      await this.placeChartOrder({ action, typed: qty, orderType, price, optionAction, forOptions, contract, future, optionContract });
     });
   },
 
   async placeChartOrder({
     action, typed, orderType, price,
-    optionAction = null, forOptions = Boolean(optionAction), contract = null,
+    optionAction = null, forOptions = Boolean(optionAction), contract = null, future = null, optionContract = null,
   }) {
     const state = this.chartState;
     const info = this.chartTradeInfo;
@@ -1277,7 +1325,7 @@ Object.assign(DashboardApp.prototype, {
 
     // Convert once, here, to each endpoint's own unit. See the sizing block above.
     const lots = this.typedLots(typed, forOptions);
-    const units = this.typedUnits(typed, forOptions, contract?.lotsize || null);
+    const units = this.typedUnits(typed, forOptions, contract?.lotsize || future?.lotsize || null);
     if (lots === null || units === null) {
       Utils.showToast('Enter a valid size', 'error');
       return;
@@ -1341,15 +1389,26 @@ Object.assign(DashboardApp.prototype, {
         const base = {
           symbolId: state.symbolId,
           action,
-          tradeMode: optionAction ? 'OPTIONS' : this.chartTradeMode,
+          tradeMode: optionAction ? 'OPTIONS' : future ? 'FUTURES' : this.chartTradeMode,
+          // The contract the buttons named. Omitted only when the row IS the future.
+          ...(future && !future.isRow && future.expiry ? { expiry: future.expiry } : {}),
           // Strike offset + expiry are passed through; quick-order resolves the concrete
           // contract per instance via options-resolution.service. operatingMode and
           // strikePolicy travel too - REDUCE_*/INCREASE_* only resolve against the ACTUAL
           // open position (rather than a fresh ATM strike) when strikePolicy is FLOAT_OFS,
           // which is exactly the fix for a same-leg exit landing on a different strike.
           ...(optionAction ? {
+            // Options are sized by stepLots, not quantity. Omitted, the server used 1, so every
+            // chart option order traded 1 lot whatever Lots said (2 lots showed 780 units, 390 went).
+            stepLots: lots,
             optionsLeg: state.optionLeg || 'ATM',
-            ...(state.optionExpiry ? { expiry: state.optionExpiry } : {}),
+            // The contract on the option chart, named outright: every instance trades it, and
+            // REDUCE/CLOSE act on it alone. Without panes, the server resolves a strike as before.
+            ...(optionContract ? { contract: { exchange: optionContract.exchange, symbol: optionContract.symbol } } : {}),
+            // Always the expiry on screen. With "Nearest" selected no expiry used to be sent, so
+            // the server picked its own nearest - which was 29-DEC while the panes showed 06-OCT.
+            ...((optionContract?.expiry || state.optionExpiry || this.shownOptionExpiry)
+              ? { expiry: optionContract?.expiry || state.optionExpiry || this.shownOptionExpiry } : {}),
             operatingMode: state.operatingMode === 'WRITER' ? 'WRITER' : 'BUYER',
             strikePolicy: state.strikePolicy === 'ANCHOR_OFS' ? 'ANCHOR_OFS' : 'FLOAT_OFS',
           } : {}),
@@ -1865,13 +1924,16 @@ Object.assign(DashboardApp.prototype, {
 
     return [
       { side: 'BUY', orderType: 'MARKET', label: `Buy ${u} Market`, enabled: true },
-      { side: 'BUY', orderType: 'LIMIT', price, label: `Buy ${u} Limit @ ${p}`,
-        enabled: below, why: 'a buy limit must sit below the last price' },
+      // A limit on the far side of the market is a legitimate "fill now, capped at this price" -
+      // with MARKET barred on Indian exchanges, it is how an operator buys now without paying
+      // any price. It is offered and labelled as such; only stops keep the side-of-price rule.
+      { side: 'BUY', orderType: 'LIMIT', price, label: `Buy ${u} Limit @ ${p}${above ? ' (fills now)' : ''}`,
+        enabled: true, crosses: above, last: ltp },
       { side: 'BUY', orderType: 'SL-M', price, label: `Buy ${u} Stop @ ${p}`,
         enabled: above, why: 'a buy stop must sit above the last price' },
       { side: 'SELL', orderType: 'MARKET', label: `Sell ${u} Market`, enabled: true },
-      { side: 'SELL', orderType: 'LIMIT', price, label: `Sell ${u} Limit @ ${p}`,
-        enabled: above, why: 'a sell limit must sit above the last price' },
+      { side: 'SELL', orderType: 'LIMIT', price, label: `Sell ${u} Limit @ ${p}${below ? ' (fills now)' : ''}`,
+        enabled: true, crosses: below, last: ltp },
       { side: 'SELL', orderType: 'SL-M', price, label: `Sell ${u} Stop @ ${p}`,
         enabled: below, why: 'a sell stop must sit below the last price' },
     ];
@@ -1982,6 +2044,13 @@ Object.assign(DashboardApp.prototype, {
         ? this.contextMenuItemsFor(Number(price.toFixed(2)))
         : [];
 
+      // Exit levels need order permission (chartTradeInfo loads only with it) and a price.
+      const levelItems = Boolean(this.chartTradeInfo) && Number.isFinite(price)
+        && typeof this.openExitLevelDialog === 'function';
+      // A max loss belongs to a tradable contract: the row itself when it is an equity or future.
+      const sym = this.chartTradeInfo?.symbol;
+      const capContract = levelItems && (sym?.tradableEquity || this.chartFuture?.isRow)
+        ? { exchange: this.chartState.exchange, symbol: this.chartState.symbol } : null;
       const drawHidden = document.getElementById('chart-draw-tools')?.hidden;
       const gridStyle = this.loadChartGridStyle();
 
@@ -1993,6 +2062,10 @@ Object.assign(DashboardApp.prototype, {
             ${Utils.escapeHTML(it.label)}
           </button>`).join('')}
         ${tradeItems.length ? '<div class="chart-ctx-sep"></div>' : ''}
+        ${levelItems ? `
+          <button type="button" class="chart-ctx-item is-neutral" data-action="exit-level">Exit level @ ${Utils.escapeHTML(Utils.formatNumber(Number(price.toFixed(2))))}…</button>
+          ${capContract ? `<button type="button" class="chart-ctx-item is-neutral" data-action="max-loss">Max loss ₹… on ${Utils.escapeHTML(capContract.symbol)}</button>` : ''}
+          <div class="chart-ctx-sep"></div>` : ''}
         <button type="button" class="chart-ctx-item is-neutral" data-action="reset-view">Reset chart view</button>
         <button type="button" class="chart-ctx-item is-neutral" data-action="toggle-draw">
           ${drawHidden ? 'Show' : 'Hide'} drawing tools
@@ -2008,7 +2081,7 @@ Object.assign(DashboardApp.prototype, {
         </div>
       `;
 
-      const rowCount = tradeItems.length + (tradeItems.length ? 1 : 0) + 3;
+      const rowCount = tradeItems.length + (tradeItems.length ? 1 : 0) + 3 + (levelItems ? (capContract ? 3 : 2) : 0);
       this.placeChartMenu(menu, e, rowCount);
 
       menu.querySelectorAll('[data-trade-i]').forEach((btn) => {
@@ -2017,6 +2090,16 @@ Object.assign(DashboardApp.prototype, {
           hide();
           this.confirmChartOrder(tradeItems[Number(btn.dataset.tradeI)]);
         });
+      });
+      menu.querySelector('[data-action="exit-level"]')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        hide();
+        this.openExitLevelDialog(Number(price.toFixed(2)));
+      });
+      menu.querySelector('[data-action="max-loss"]')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        hide();
+        this.openMaxLossDialog(capContract);
       });
 
       menu.querySelector('[data-action="reset-view"]')?.addEventListener('click', (ev) => {
@@ -2087,6 +2170,8 @@ Object.assign(DashboardApp.prototype, {
    */
   sizingUnit(forOptions = this.chartOptionsOn) {
     if (forOptions) return 'LOTS';
+    // The tickets trade a future here (an index row with futures on): futures size in lots.
+    if (this.chartTradeMode === 'FUTURES') return 'LOTS';
     const mode = this.chartTradeInfo?.symbol?.mode;
     return mode === 'futures' || mode === 'options' ? 'LOTS' : 'QTY';
   },
@@ -2113,6 +2198,10 @@ Object.assign(DashboardApp.prototype, {
       const o = Number(sym?.optionLotSize);
       return Number.isFinite(o) && o > 0 ? o : null;
     }
+    // A futures order trades the named future, whose lot size the row may not carry - an index
+    // row's lot_size is 1, which showed 3 lots of NIFTY futures as "3 units".
+    const fut = this.chartTradeMode === 'FUTURES' ? Number(this.chartFuture?.lotsize) : NaN;
+    if (Number.isFinite(fut) && fut > 0) return fut;
     const n = Number(sym?.lotSize);
     return Number.isFinite(n) && n > 0 ? n : 1;
   },
@@ -2402,13 +2491,13 @@ Object.assign(DashboardApp.prototype, {
         btn.classList.add('active');
         this.chartState.optionLeg = btn.dataset.leg;
         this.saveChartPreference();
-        this.refreshOptionPanes();
+        this.refreshOptionPanes({ repin: true });
       });
     });
     const exp = document.getElementById('chart-opt-expiry');
     if (exp) exp.addEventListener('change', () => {
       this.chartState.optionExpiry = exp.value || null;
-      this.refreshOptionPanes();
+      this.refreshOptionPanes({ repin: true });
     });
     host.querySelectorAll('[data-mode]').forEach((btn) => {
       btn.addEventListener('click', () => {
@@ -2456,8 +2545,14 @@ Object.assign(DashboardApp.prototype, {
         <button type="button" class="chart-ticket is-buy" data-side="BUY">
           <span class="chart-ticket-price" data-role="buy-price">—</span>
           <span class="chart-ticket-label">BUY</span>
-        </button>`;
-      host.querySelectorAll('.chart-ticket').forEach((b) => b.addEventListener('click',
+        </button>
+        <div class="chart-ticket-col chart-ticket-exits">
+          <button type="button" class="chart-ticket-opt btn-action-compact btn-outline btn-cover" data-side="COVER"
+                  title="Buy back part of a short - never goes long">COVER</button>
+          <button type="button" class="chart-ticket-opt btn-action-compact btn-outline btn-exit" data-side="EXIT"
+                  title="Close the whole position, long or short">EXIT</button>
+        </div>`;
+      host.querySelectorAll('[data-side]').forEach((b) => b.addEventListener('click',
         () => this.confirmChartOrder({ side: b.dataset.side, orderType: 'MARKET' })));
       this.updateTicketPrices();
       return;
@@ -2496,8 +2591,23 @@ Object.assign(DashboardApp.prototype, {
       <div class="chart-ticket-col">
         <span class="chart-ticket-col-label">PUT</span>
         ${column('PE')}
-      </div>`;
+      </div>
+      ${this.chartFuture ? `
+      <div class="chart-ticket-col">
+        <span class="chart-ticket-col-label" title="${Utils.escapeHTML(this.chartFuture.symbol)}">FUT</span>
+        ${[
+          ['BUY', 'btn-buy', 'Add to a long, or flip a short to long'],
+          ['SELL', 'btn-sell', 'Reduce a long - never goes short'],
+          ['SHORT', 'btn-short', 'Add to a short, or flip a long to short'],
+          ['COVER', 'btn-cover', 'Reduce a short - never goes long'],
+          ['EXIT', 'btn-exit', 'Close the whole futures position'],
+        ].map(([side, cls, tip]) => `
+          <button type="button" class="chart-ticket-opt btn-action-compact btn-outline ${cls}" data-fut-side="${side}"
+                  title="${Utils.escapeHTML(`${tip} - ${this.chartFuture.symbol}`)}">${side} FUT</button>`).join('')}
+      </div>` : ''}`;
     host.querySelectorAll('[data-option-action]').forEach((b) => b.addEventListener('click',
       () => this.confirmChartOrder({ optionAction: b.dataset.optionAction, orderType: 'MARKET' })));
+    host.querySelectorAll('[data-fut-side]').forEach((b) => b.addEventListener('click',
+      () => this.confirmChartOrder({ side: b.dataset.futSide, orderType: 'MARKET', futures: true })));
   },
 });

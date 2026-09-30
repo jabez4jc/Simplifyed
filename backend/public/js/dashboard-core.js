@@ -74,7 +74,7 @@ class DashboardApp {
     // WebSocket streaming (optional)
     this.wsGatewayEnabled = false;
     this.wsGatewayPath = '/stream';
-    this.wsTopics = ['quotes:update', 'positions:update', 'funds:update', 'order_update'];
+    this.wsTopics = ['quotes:update', 'positions:update', 'funds:update', 'order_update', 'watchlists:update'];
     this.useWsGateway = this.loadWsPreference();
     this.ws = null;
     this.wsConnected = false;
@@ -702,6 +702,11 @@ class DashboardApp {
       case 'order_update': {
         this._recordOrderUpdate(msg.payload || {});
         this.wsRefreshOrders();
+        break;
+      }
+      case 'watchlists:update': {
+        // A futures row rolled to its next contract - refetch the rows so it quotes the new symbol.
+        if (this.currentView === 'watchlists') this.renderWatchlistsView();
         break;
       }
       default:

@@ -51,6 +51,7 @@ test('the settings an operator actually needs are editable, and each has one def
     'trading_sessions',
     'openalgo.request_timeout_ms',
     'rate_limits.smart_orders_per_second',
+    'futures.roll_days_before_expiry',
   ];
   assert.deepStrictEqual([...SETTINGS_FIELDS.keys()].sort(), [...editable].sort());
   for (const key of editable) {

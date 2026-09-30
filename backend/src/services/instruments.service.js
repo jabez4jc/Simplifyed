@@ -16,6 +16,7 @@ import { toISTISOString } from '../utils/time.js';
 import cron from 'node-cron';
 import { isCryptoBroker, isCryptoExchange } from '../utils/broker-type.util.js';
 import { parseExpiry, upcomingExpiries, isContractExpired } from '../utils/underlying.util.js';
+import futuresRollService from './futures-roll.service.js';
 
 const MONTH_ABBR_TO_NUMBER = {
   JAN: '01', FEB: '02', MAR: '03', APR: '04',
@@ -110,6 +111,8 @@ class InstrumentsService {
       removed += row.n;
     }
     if (removed > 0) log.info('Purged expired contracts from the instruments cache', { count: removed });
+    // Auto-roll rows move to their next contract first; only what could not roll is disabled.
+    await futuresRollService.rollAll(now);
     await this.disableExpiredWatchlistSymbols(now);
     return removed;
   }

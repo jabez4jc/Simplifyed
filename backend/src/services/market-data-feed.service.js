@@ -92,6 +92,7 @@ export function sanitiseQuote(quote) {
 class MarketDataFeedService extends EventEmitter {
   constructor() {
     super();
+    this.instrumentTokens = new Map(); // 'EXCH|SYMBOL' -> cached instrument token (or null)
     this.quoteCache = new Map();      // key: instanceId -> { data, fetchedAt }
     this.positionCache = new Map();
     this.fundsCache = new Map();
@@ -169,7 +170,7 @@ class MarketDataFeedService extends EventEmitter {
 
     // Start WS quotes (best-effort; falls back to HTTP polling)
     await this._startWsQuotes();
-    openalgoWsService.on('quote', ({ instanceId, quote }) => {
+    openalgoWsService.on('quote', async ({ instanceId, quote }) => {
       try {
         const clean = sanitiseQuote(quote);
         if (!clean) {
@@ -177,6 +178,7 @@ class MarketDataFeedService extends EventEmitter {
           // chart, the watchlist and the order preview alike.
           return;
         }
+        if (!(await this._frameIsForItsLabel(instanceId, clean))) return;
         const enriched = {
           ...clean,
           _source_instance_id: instanceId,
@@ -187,8 +189,9 @@ class MarketDataFeedService extends EventEmitter {
         log.warn('Failed to cache WS quote', { error: err.message });
       }
     });
-    openalgoWsService.on('depth', ({ instanceId, depth }) => {
+    openalgoWsService.on('depth', async ({ instanceId, depth }) => {
       try {
+        if (!(await this._frameIsForItsLabel(instanceId, depth))) return;
         const enriched = {
           ...depth,
           _source_instance_id: instanceId,
@@ -706,6 +709,40 @@ class MarketDataFeedService extends EventEmitter {
    * Exchange with Indian brokers; asking either for the other's symbols is a guaranteed
    * "Symbol not found" per instance per poll (seen live: Maha asked for CRYPTO:BTCUSDFUT).
    */
+  /**
+   * Is this WebSocket frame really for the contract it is labelled with?
+   *
+   * Seen live 2026-09-30 on Fyers: frames labelled NSE_INDEX:NIFTY carried the tokens of NIFTY
+   * options (40710 = NIFTY06OCT2622700CE) and the October future (48704). The chart folded them
+   * into the index's forming candle, which opened at an option premium - the "low of 0" candles.
+   * A frame's `token` is the exchange token, and the instruments cache stores the broker token
+   * ending in it (40715 -> ...640715), so a frame is dropped when it carries a token and the
+   * labelled symbol's cached token does not end with it. Kotak and Delta send no token: unchecked.
+   */
+  async _frameIsForItsLabel(instanceId, frame) {
+    const token = String(frame?.token ?? '').trim();
+    if (!token || !frame?.exchange || !frame?.symbol) return true;
+    const key = `${frame.exchange}|${frame.symbol}`.toUpperCase();
+    let known = this.instrumentTokens.get(key);
+    if (known === undefined) {
+      const row = await db.get(
+        'SELECT token FROM instruments WHERE UPPER(exchange) = ? AND UPPER(symbol) = ? LIMIT 1',
+        [String(frame.exchange).toUpperCase(), String(frame.symbol).toUpperCase()]
+      ).catch(() => null);
+      known = row?.token ? String(row.token) : null;
+      this.instrumentTokens.set(key, known);
+    }
+    if (!known || known.endsWith(token)) return true;
+    const warned = (this._mislabelWarned ||= new Set());
+    if (!warned.has(`${key}|${token}`)) {
+      warned.add(`${key}|${token}`);
+      log.warn('Dropped a WebSocket frame labelled with another contract', {
+        instanceId, exchange: frame.exchange, symbol: frame.symbol, reason: `frame token ${token}, ${frame.symbol} is ${known}`,
+      });
+    }
+    return false;
+  }
+
   _tradesExchange(instance, exchange) {
     return isCryptoBroker(instance?.broker) === isCryptoExchange(exchange);
   }
@@ -855,17 +892,25 @@ class MarketDataFeedService extends EventEmitter {
       }
     }
 
-    if (pendingSymbols.length > 0) {
-      if (useFallback && pool.length > 1) {
+    // What multiquotes left over goes only to instances of its own segment - the whole pool used to
+    // be tried, so an MCX quote was asked of the crypto broker (and failed there).
+    const segments = [
+      pendingSymbols.filter((s) => isCryptoExchange(s.exchange)),
+      pendingSymbols.filter((s) => !isCryptoExchange(s.exchange)),
+    ].filter((group) => group.length > 0);
+    for (const group of segments) {
+      const segPool = pool.filter((inst) => this._tradesExchange(inst, group[0].exchange));
+      if (segPool.length === 0) continue;
+      if (useFallback && segPool.length > 1) {
         fetchedQuotes = fetchedQuotes.concat(
-          await openalgoClient.getQuotesWithFallback(pool, pendingSymbols, { maxRetries: 2 })
+          await openalgoClient.getQuotesWithFallback(segPool, group, { maxRetries: 2 })
         );
       } else {
-        const batchSize = Math.max(3, Math.min(5, Math.ceil(pendingSymbols.length / Math.max(1, pool.length))));
-        const chunks = this._chunkSymbols(pendingSymbols, batchSize);
+        const batchSize = Math.max(3, Math.min(5, Math.ceil(group.length / Math.max(1, segPool.length))));
+        const chunks = this._chunkSymbols(group, batchSize);
 
         const batchPromises = chunks.map(async (chunk, idx) => {
-          const inst = pool[idx % pool.length];
+          const inst = segPool[idx % segPool.length];
           try {
             const quotes = await openalgoClient.getQuotes(inst, chunk, { perSymbol: true });
             return { success: true, quotes: Array.isArray(quotes) ? quotes : [], inst };
@@ -2252,7 +2297,11 @@ class MarketDataFeedService extends EventEmitter {
         if (!row?.payload) continue;
         try {
           const parsed = JSON.parse(row.payload);
-          const data = Array.isArray(parsed) ? parsed : parsed?.data || [];
+          // A snapshot saved before mislabelled frames were dropped may still hold one.
+          const data = [];
+          for (const q of (Array.isArray(parsed) ? parsed : parsed?.data || [])) {
+            if (await this._frameIsForItsLabel(row.instance_id, q)) data.push(q);
+          }
           const fetchedAt = row.fetched_at ? Number(row.fetched_at) : Date.now();
           this.setQuoteSnapshot(row.instance_id, data, { fetchedAt, source: 'l2' });
           this.quoteSnapshotHashes.set(row.instance_id, {

@@ -107,18 +107,6 @@
   .chart-toolbar-status { margin-left: 0; width: 100%; }
 }
 
-/* Apache-2.0 requires visible attribution to TradingView when using Lightweight Charts. */
-.chart-attribution {
-  font-size: var(--font-size-3xs);
-  color: var(--color-neutral-400);
-  text-align: right;
-}
-
-.chart-attribution a {
-  color: inherit;
-  text-decoration: underline;
-}
-
 /* --- Position overlay (phase 2) --------------------------------------------
    The aggregate line is drawn on the chart itself; this panel shows the parts
    it was averaged from, so "avg entry" is never an unexplained number.        */
@@ -489,6 +477,8 @@
 .chart-ticket.is-buy { background: var(--color-profit); color: #06281C; }
 .chart-ticket.is-sell { background: var(--color-loss); color: #2A0A0A; }
 
+.chart-ticket-exits { min-width: 64px; justify-content: center; }
+
 .chart-ticket-qty {
   display: flex;
   align-items: center;
@@ -730,7 +720,7 @@
   /* Wide enough for the longest label ("REDUCE CE"/"CLOSE ALL CE") at this font without
      truncating - a clipped action name on an order button is a correctness risk, not just
      cosmetic, so this errs wide rather than ellipsizing. */
-  max-width: 320px;
+  max-width: 420px; /* CE, PE and the FUT column */
   padding: var(--space-1);
   background: color-mix(in srgb, var(--color-surface) 88%, transparent);
   border: 1px solid var(--color-border);
@@ -791,11 +781,30 @@
 .chart-layout.is-split .chart-container { height: 640px; }
 
 .chart-panes {
-  display: grid;
-  grid-template-rows: 1fr 1fr;
+  display: flex;
+  flex-direction: column;
   gap: var(--space-3);
   min-width: 0;
 }
+
+.chart-panes > .chart-pane { flex: 1 1 0; }
+
+/* ATM suggestion + one chip per contract with a position or pending order. */
+.chart-pane-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); }
+.chart-pane-bar[hidden] { display: none; }
+.chart-pane-bar-label { font-size: var(--font-size-3xs); font-weight: 700; color: var(--color-neutral-500); margin-left: var(--space-1); }
+.chart-pane-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-neutral-600);
+  font-size: var(--font-size-3xs);
+  font-weight: 700;
+  cursor: pointer;
+}
+.chart-pane-chip.is-shown { border-color: var(--color-primary); color: var(--color-primary); }
+.chart-pane-chip.is-atm { border-color: var(--color-warning, #d4a017); color: var(--color-warning, #d4a017); }
 
 .chart-pane {
   display: flex;
@@ -810,12 +819,14 @@
 .chart-pane-title {
   display: flex;
   align-items: baseline;
-  gap: var(--space-2);
+  /* Wraps rather than clipping: with overflow hidden and no wrap, a narrow pane silently cut off
+     its Type/Ind controls and its BUY/SELL/EXIT buttons - an order button must never be hidden. */
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--color-border);
   font-size: var(--font-size-xs);
   white-space: nowrap;
-  overflow: hidden;
 }
 
 .chart-pane-sym { font-weight: 700; color: var(--color-neutral-900); }
@@ -839,6 +850,13 @@
 }
 
 .chart-pane-btn:hover { color: var(--color-neutral-900); }
+
+/* Trade THIS contract at market, from the pane's own header. */
+.chart-pane-trade { display: inline-flex; gap: 3px; margin-left: auto; }
+.chart-pane-btn.is-buy { color: var(--color-profit); border-color: var(--color-profit); }
+.chart-pane-btn.is-sell { color: var(--color-loss); border-color: var(--color-loss); }
+.chart-pane-btn.is-buy:hover { background: var(--color-profit); color: #06281C; }
+.chart-pane-btn.is-sell:hover { background: var(--color-loss); color: #2A0A0A; }
 
 /*
  * `position: fixed` with left/top set from the button's own getBoundingClientRect() in
@@ -1603,3 +1621,15 @@
   .chart-pop { right: auto; left: 0; min-width: 240px; }
   .chart-pop.is-wide { min-width: 240px; }
 }
+
+/* Exit levels on the underlying: the list under the chart, and the placement dialog. */
+.chart-exit-levels { margin-top: var(--space-3); }
+.chart-exit-level-list { list-style: none; margin: var(--space-2) 0 0; padding: 0; display: grid; gap: var(--space-1); }
+.chart-exit-level-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); font-size: var(--font-size-xs); }
+.chart-exit-level-list li.is-done { color: var(--color-neutral-500); }
+.chart-exit-level-fired { font-size: var(--font-size-3xs); color: var(--color-neutral-500); }
+.chart-exit-level-form { display: grid; gap: var(--space-2); margin-top: var(--space-2); font-size: var(--font-size-xs); }
+.chart-exit-level-form fieldset { border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: var(--space-2); display: flex; flex-wrap: wrap; gap: var(--space-3); }
+.chart-exit-level-form legend { font-weight: 700; padding: 0 var(--space-1); }
+.chart-exit-level-row { display: flex; align-items: center; gap: var(--space-2); }
+.chart-exit-level-row input[type="number"] { width: 90px; }

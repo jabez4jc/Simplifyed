@@ -9,7 +9,7 @@ import db from '../core/database.js';
 import optionsResolutionService from './options-resolution.service.js';
 import expiryManagementService from './expiry-management.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
-import marketDataInstanceService from './market-data-instance.service.js';
+import marketDataInstanceService, { tradesSegment } from './market-data-instance.service.js';
 import derivativeResolutionService from './derivative-resolution.service.js';
 import orderPlacementService from './order-placement.service.js';
 import orderPayloadFactory from './order-payload.factory.js';
@@ -22,7 +22,7 @@ import limitPriceService from './limit-price.service.js';
 import pnlSnapshotService from './pnl-snapshot.service.js';
 import brokerCapabilitiesService from './broker-capabilities.service.js';
 import { ValidationError, NotFoundError } from '../core/errors.js';
-import { contractExpiry, isContractExpired } from '../utils/underlying.util.js';
+import { contractExpiry, isContractExpired, resolveOptionsUnderlyingKey } from '../utils/underlying.util.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
 import instrumentsService from './instruments.service.js';
 import { toISTDate, toISTISOString } from '../utils/time.js';
@@ -59,7 +59,10 @@ class QuickOrderService {
       return marketDataInstanceService.getMarketDataInstance();
     }
 
-    const pool = await marketDataInstanceService.getMarketDataPool();
+    // Only instances that trade this symbol's segment - a crypto broker asked for NIFTY's option
+    // chain fails, and the preview then fell back to stale cached data.
+    const row = await db.get('SELECT exchange FROM watchlist_symbols WHERE id = ?', [symbolId]);
+    const pool = await marketDataInstanceService.getMarketDataPool(row?.exchange || null);
     if (!pool.length) {
       return marketDataInstanceService.getMarketDataInstance();
     }
@@ -73,7 +76,7 @@ class QuickOrderService {
       this.optionPreviewInstanceCache.delete(cacheKey);
     }
 
-    const instance = await marketDataInstanceService.getMarketDataInstance();
+    const instance = await marketDataInstanceService.getRoundRobinInstance(row?.exchange || null);
     if (instance) {
       this.optionPreviewInstanceCache.set(cacheKey, { instanceId: instance.id, ts: Date.now() });
     }
@@ -106,6 +109,7 @@ class QuickOrderService {
       operatingMode = 'BUYER',  // Buyer or Writer mode for OPTIONS
       strikePolicy = 'FLOAT_OFS',  // FLOAT_OFS or ANCHOR_OFS for OPTIONS
       stepLots = 1,  // Step size in lots for OPTIONS
+      contract = null, // { exchange, symbol } - trade THIS option contract, not a resolved strike
       triggerType = null,
       correlationId = null,
       requestId = null,
@@ -176,6 +180,8 @@ class QuickOrderService {
       throw new ValidationError(`${symbol.exchange}:${symbol.symbol} expired on ${contractExpiry(symbol)} - it no longer exists at the broker`);
     }
 
+    const contractRow = contract ? await this._validateOptionContract(symbol, contract, action, tradeMode) : null;
+
     // Get instances (single or all assigned)
     const instances = await this._getTargetInstances(instanceId, symbol.watchlist_id);
     const effectiveOrderType = await this._resolveBroadcastOrderType(instances);
@@ -202,6 +208,7 @@ class QuickOrderService {
         operatingMode,
         strikePolicy,
         stepLots,
+        contractRow,
         triggerType,
         correlationId,
         requestId,
@@ -418,7 +425,9 @@ class QuickOrderService {
         throw new NotFoundError('No active instances available for order placement');
       }
 
-      log.info(`Broadcasting order to ${instances.length} assigned instance(s)`);
+      // Also called by the read-only /quickorders/targets preview, so this says nothing about
+      // an order being sent.
+      log.info('Resolved assigned target instances', { count: instances.length });
       return instances;
     } else {
       // Get specific instance
@@ -503,7 +512,7 @@ class QuickOrderService {
     // For OPTIONS strategy, resolve option symbol ONCE using a market data instance
     let preResolvedOptionSymbol = null;
     if (strategy === 'OPTIONS_WITH_RECONCILIATION') {
-      const marketDataInstance = await this._getMarketDataInstance(instances);
+      const marketDataInstance = await this._getMarketDataInstance(instances, symbol.exchange);
       preResolvedOptionSymbol = await this._preResolveOptionSymbol(
         marketDataInstance,
         symbol,
@@ -1205,7 +1214,9 @@ class QuickOrderService {
     // EXCEPTION: For REDUCE/INCREASE actions in FLOAT_OFS mode, resolve per-instance
     // to target the ACTUAL open strikes instead of a new resolved strike
     const isReduceAction = ['REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE'].includes(action);
-    const shouldSkipPreResolution = isReduceAction && strikePolicy === 'FLOAT_OFS';
+    // A named contract pins every action to that one leg - no fanning out across strikes.
+    const legPinned = Boolean(orderParams.contractRow);
+    const shouldSkipPreResolution = isReduceAction && strikePolicy === 'FLOAT_OFS' && !legPinned;
 
     let optionSymbol;
     let expiry;
@@ -1274,10 +1285,10 @@ class QuickOrderService {
       'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE',
       'CLOSE_ALL_CE', 'CLOSE_ALL_PE', 'EXIT_ALL'
     ].includes(action);
-    const useTypeScope = strikePolicy === 'FLOAT_OFS' && isReduceOrClose;
+    const useTypeScope = strikePolicy === 'FLOAT_OFS' && isReduceOrClose && !legPinned;
 
     // For REDUCE/INCREASE in FLOAT_OFS mode, handle each open position separately
-    if (strikePolicy === 'FLOAT_OFS' && isReduceOrClose) {
+    if (strikePolicy === 'FLOAT_OFS' && isReduceOrClose && !legPinned) {
       log.info('FLOAT_OFS REDUCE/INCREASE: Handling each open position separately', {
         action,
         optionType,
@@ -1855,7 +1866,11 @@ class QuickOrderService {
       CLOSE_ALL_PE: 'PE',
     };
 
-    if (closeAllTypeMap[action] && tradeMode === 'OPTIONS') {
+    if (closeAllTypeMap[action] && tradeMode === 'OPTIONS' && orderParams.contractRow) {
+      // CLOSE on a named contract closes that contract - every product it is held in.
+      const c = orderParams.contractRow;
+      positionsToClose = await this._getOpenPositionsForSymbol(instance, c.symbol, c.exchange, null);
+    } else if (closeAllTypeMap[action] && tradeMode === 'OPTIONS') {
       const optionType = closeAllTypeMap[action];
       let expiry = userExpiry ? this._normalizeExpiryInput(userExpiry) : null;
       if (!expiry) {
@@ -1971,7 +1986,8 @@ class QuickOrderService {
           expiryInput = await expiryManagementService.getNearestExpiry(
             underlying,
             derivativeExchange,
-            instance
+            instance,
+            { kind: 'FUTURES' }
           );
           if (expiryInput) {
             expiryInput = this._normalizeExpiryInput(expiryInput);
@@ -2269,6 +2285,56 @@ class QuickOrderService {
   }
 
   /**
+   * Exit PART of one position row: `exitQty` units out of a signed `position.quantity`, in the
+   * row's own product, leaving the rest open. Priced like every exit (LIMIT on Indian exchanges,
+   * off the market; MARKET where the broker allows it). Sent ONCE - no repeat-until-target: a
+   * position-targeted retry against a lagging position book has sold twice before (Fyers).
+   * @param {Object} instance
+   * @param {{ symbol: string, exchange: string, product: string, quantity: number }} position
+   * @param {number} exitQty units to exit (> 0)
+   * @returns {Promise<{ order_id: string|null, status: string }>}
+   */
+  async exitPartOfPosition(instance, position, exitQty, { strategy = 'EXIT_LEVEL' } = {}) {
+    const held = Number(position.quantity) || 0;
+    const qty = Math.min(Math.abs(held), Math.abs(Number(exitQty) || 0));
+    if (!held || !qty) throw new ValidationError(`Nothing to exit on ${position.symbol}`);
+    const action = held > 0 ? 'SELL' : 'BUY';
+    const remaining = Math.sign(held) * (Math.abs(held) - qty);
+    const orderType = await this._resolveOrderTypeForInstance(instance);
+    const { pricetype, price } = orderType === 'LIMIT'
+      ? await limitPriceService.resolveMarketablePricing({
+        instanceId: instance?.id,
+        exchange: position.exchange,
+        symbol: position.symbol,
+        side: action,
+        bufferPoints: 0,
+        bypassSpreadCheck: true,
+        forceLtp: true,
+      })
+      : { pricetype: orderType, price: 0 };
+    const payload = orderPayloadFactory.buildExitOrder({
+      strategy,
+      exchange: position.exchange,
+      symbol: position.symbol,
+      action,
+      quantity: qty,
+      position_size: remaining,
+      product: this._normalizeProduct(position.product) || 'MIS',
+      pricetype,
+      price,
+    });
+    const result = await orderPlacementService.placeSmartOrder(instance, payload, {
+      request_type: 'EXIT_POSITION',
+      closing_symbol: position.symbol,
+      strategy,
+      repeatUntilClosed: false,
+      ignoreSlippage: true,
+      skipRateLimit: true,
+    });
+    return { order_id: result?.orderid || null, status: result?.status || 'unknown' };
+  }
+
+  /**
    * Close every open position on an instance, one symbol at a time through the exit path
    * above: LIMIT orders on Indian exchanges (SEBI), priced from depth and chased until filled.
    * OpenAlgo's own closeposition squares off at MARKET, so this app never calls it.
@@ -2521,8 +2587,9 @@ class QuickOrderService {
    * Uses round-robin across enabled market data instances
    * @private
    */
-  async _getMarketDataInstance(instances) {
-    const rr = await marketDataInstanceService.getRoundRobinInstance();
+  /** A market-data instance that trades `exchange`'s segment (see getMarketDataPool). */
+  async _getMarketDataInstance(instances, exchange = null) {
+    const rr = await marketDataInstanceService.getRoundRobinInstance(exchange);
     if (rr) {
       log.debug('Using round-robin market data instance', {
         instance_id: rr.id,
@@ -2530,13 +2597,14 @@ class QuickOrderService {
       });
       return rr;
     }
-    // Fallback: use provided instances list if any
-    if (instances && instances.length > 0) {
+    // Fallback: the order's own instances, again only those that trade this segment
+    const usable = (instances || []).filter((inst) => !exchange || tradesSegment(inst, exchange));
+    if (usable.length > 0) {
       log.warn('Round-robin market data pool empty, using fallback instance list', {
-        instance_id: instances[0].id,
-        name: instances[0].name,
+        instance_id: usable[0].id,
+        name: usable[0].name,
       });
-      return instances[0];
+      return usable[0];
     }
     throw new Error('No market data instance available');
   }
@@ -2639,11 +2707,53 @@ class QuickOrderService {
   }
 
   /**
+   * A contract named by the caller (the chart's CE/PE pane) must be a live option of THIS row's
+   * underlying, of the type the action trades - never trust the client with an arbitrary symbol.
+   * @returns {Promise<Object>} the instruments row
+   * @private
+   */
+  async _validateOptionContract(symbol, contract, action, tradeMode) {
+    if (tradeMode !== 'OPTIONS') throw new ValidationError('A named contract is only accepted for OPTIONS orders');
+    const exchange = String(contract?.exchange || '').trim().toUpperCase();
+    const name = String(contract?.symbol || '').trim().toUpperCase();
+    if (!exchange || !name) throw new ValidationError('contract needs exchange and symbol');
+    const row = await db.get(
+      "SELECT * FROM instruments WHERE UPPER(exchange) = ? AND UPPER(symbol) = ? AND instrumenttype IN ('CE','PE') LIMIT 1",
+      [exchange, name]
+    );
+    if (!row) throw new ValidationError(`${exchange}:${name} is not a known option contract`);
+    const key = await resolveOptionsUnderlyingKey(symbol);
+    if (!key || String(row.underlying_key || '').toUpperCase() !== String(key).toUpperCase()) {
+      throw new ValidationError(`${name} is not an option on ${symbol.symbol}`);
+    }
+    const wantType = this._getOptionTypeFromAction(action);
+    if (wantType && row.instrumenttype !== wantType) {
+      throw new ValidationError(`${action} trades ${wantType}, but ${name} is a ${row.instrumenttype}`);
+    }
+    if (isContractExpired(row)) throw new ValidationError(`${name} has expired`);
+    return row;
+  }
+
+  /**
    * Resolve option symbol for a single instance
    * @private
    */
   async _resolveOptionSymbolForInstance(instance, symbol, orderParams) {
     const { action, expiry: userExpiry, optionsLeg: userOptionsLeg } = orderParams;
+
+    // A named contract (the chart's displayed one) is used as-is on every instance.
+    if (orderParams.contractRow) {
+      const c = orderParams.contractRow;
+      return {
+        underlying: derivativeResolutionService.getDerivativeUnderlying(symbol),
+        expiry: this._normalizeExpiryInput(c.expiry),
+        optionSymbol: {
+          symbol: c.symbol, trading_symbol: c.symbol, strike: c.strike, targetStrike: c.strike,
+          option_type: c.instrumenttype, lot_size: c.lotsize || 1, tick_size: c.tick_size || 0.05,
+          exchange: c.exchange, token: c.token || null,
+        },
+      };
+    }
     const optionType = this._getOptionTypeFromAction(action);
 
     // Use the shared, normalized underlying derivation (strips embedded date/strike/CE/PE/FUT
@@ -2800,8 +2910,7 @@ class QuickOrderService {
       effectiveExpiry = await expiryManagementService.getNearestExpiry(
         underlying,
         symbol.exchange,
-        marketDataInstance,
-        true
+        marketDataInstance
       );
     }
 
@@ -3039,7 +3148,7 @@ class QuickOrderService {
         fallbackUnderlying,
         derivativeExchange,
         marketDataInstance,
-        true
+        { kind: 'FUTURES' }
       )
       : normalizedExpiry;
 

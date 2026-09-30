@@ -34,14 +34,23 @@ Object.assign(DashboardApp.prototype, {
   /**
    * Build or refresh the CE/PE panes for the current underlying, leg and expiry.
    * Safe to call repeatedly; it rebuilds from scratch rather than diffing.
+   *
+   * The panes are PINNED to the contracts they show. A rebuild (timeframe, indicators, options
+   * toggled back on) keeps them; only an explicit choice moves a pane - a strike or expiry pick
+   * (`repin`), "Switch" to the current ATM (`repin`), or a contract picked from the exposure
+   * strip (`pin`). Following ATM on every rebuild swapped the contract under an open position or
+   * a working order, taking its lines and its exit off the screen.
    */
-  async refreshOptionPanes() {
+  async refreshOptionPanes({ repin = false, pin = null } = {}) {
     const wrap = document.getElementById('chart-panes');
     const state = this.chartState;
     if (!wrap || !state) return;
 
     this.destroyOptionPanes();
     this.renderSyncBar();
+    // The expiry the panes show - what an option order must trade (see the order body in
+    // dashboard-chart.js). Cleared until this refresh has resolved it.
+    this.shownOptionExpiry = null;
 
     if (!this.chartOptionsOn || !this.chartLastPrice) {
       wrap.hidden = true;
@@ -53,6 +62,7 @@ Object.assign(DashboardApp.prototype, {
     document.getElementById('chart-layout')?.classList.add('is-split');
     wrap.hidden = false;
     wrap.innerHTML = `
+      <div class="chart-pane-bar" id="chart-pane-bar" hidden></div>
       <div class="chart-pane" data-pane="ce"><div class="chart-pane-title">Loading CE…</div><div class="chart-pane-body"></div></div>
       <div class="chart-pane" data-pane="pe"><div class="chart-pane-title">Loading PE…</div><div class="chart-pane-body"></div></div>`;
 
@@ -76,14 +86,100 @@ Object.assign(DashboardApp.prototype, {
       return;
     }
 
+    const held = this.paneContracts?.symbolId === state.symbolId ? this.paneContracts : null;
+    const shown = {
+      symbolId: state.symbolId,
+      ce: pin?.type === 'CE' ? pin : (!repin && held?.ce) || legs.ce,
+      pe: pin?.type === 'PE' ? pin : (!repin && held?.pe) || legs.pe,
+    };
+    this.paneContracts = shown;
+    this.atmLegs = { ce: legs.ce, pe: legs.pe, strike: legs.atmStrike };
+
     this.populateExpiries(legs.expiries);
+    this.shownOptionExpiry = shown.pe?.expiry || shown.ce?.expiry || legs.expiry || null;
 
     this.optionPanes = {};
     await Promise.all([
-      this._buildOptionPane('ce', legs.ce, legs),
-      this._buildOptionPane('pe', legs.pe, legs),
+      this._buildOptionPane('ce', shown.ce, legs),
+      this._buildOptionPane('pe', shown.pe, legs),
     ]);
     this.syncCharts();
+    this.renderPaneBar();
+    this.refreshExposure();
+    this.startPaneWatch();
+    if (typeof this.loadLevelProjections === 'function') this.loadLevelProjections();
+  },
+
+  /**
+   * The strip above the panes: "ATM is now 22,700 · Switch" when a pinned pane is no longer the
+   * strike the current price would pick, and one chip per contract carrying exposure (a position
+   * or a pending order) on this underlying - click to put it on its pane.
+   */
+  renderPaneBar() {
+    const bar = document.getElementById('chart-pane-bar');
+    if (!bar) return;
+    const shown = this.paneContracts || {};
+    const atm = this.atmLegs || {};
+    const moved = ['ce', 'pe'].some((k) => atm[k] && shown[k] && atm[k].symbol !== shown[k].symbol);
+    const exposure = this.paneExposure || [];
+    const onScreen = [shown.ce?.symbol, shown.pe?.symbol];
+    const chip = (c) => {
+      const qty = c.netQty ? ` · ${c.netQty > 0 ? '+' : ''}${c.netQty}` : '';
+      const orders = c.orders ? ` · ${c.orders} order${c.orders === 1 ? '' : 's'}` : '';
+      return `<button type="button" class="chart-pane-chip ${onScreen.includes(c.symbol) ? 'is-shown' : ''}"
+                data-pin="${Utils.escapeHTML(c.symbol)}" title="${Utils.escapeHTML(`${c.symbol} - show on the ${c.type} chart`)}">
+                ${Utils.escapeHTML(`${c.strike} ${c.type}`)}${Utils.escapeHTML(qty)}${Utils.escapeHTML(orders)}</button>`;
+    };
+    bar.innerHTML = `
+      ${moved ? `<button type="button" class="chart-pane-chip is-atm" data-action="to-atm"
+                  title="Show the strikes the current price picks">ATM is now ${Utils.escapeHTML(Utils.formatNumber(atm.strike))} · Switch</button>` : ''}
+      ${exposure.length ? `<span class="chart-pane-bar-label">Open</span>${exposure.map(chip).join('')}` : ''}`;
+    bar.hidden = !moved && !exposure.length;
+    bar.querySelector('[data-action="to-atm"]')?.addEventListener('click', () => this.refreshOptionPanes({ repin: true }));
+    bar.querySelectorAll('[data-pin]').forEach((b) => b.addEventListener('click', () => {
+      const c = exposure.find((x) => x.symbol === b.dataset.pin);
+      if (c) this.refreshOptionPanes({ pin: c });
+    }));
+  },
+
+  /** Contracts on this underlying with a position or a pending order (GET /history/exposure). */
+  async refreshExposure() {
+    const state = this.chartState;
+    if (!state || !this.chartOptionsOn) return;
+    // Only the latest answer counts: a slower, older request must not overwrite a newer one.
+    const seq = (this._exposureSeq = (this._exposureSeq || 0) + 1);
+    let data = [];
+    try {
+      data = (await api.request(`/history/exposure?symbolId=${encodeURIComponent(state.symbolId)}`)).data || [];
+    } catch (_) { /* keep it empty */ }
+    if (seq !== this._exposureSeq || this.chartState?.symbolId !== state.symbolId) return;
+    this.paneExposure = data;
+    this.renderPaneBar();
+  },
+
+  /** Where ATM is now, for the "Switch" suggestion - never moves a pane by itself. */
+  async checkPaneAtm() {
+    const state = this.chartState;
+    if (!state || !this.chartOptionsOn || !this.chartLastPrice || !this.paneContracts) return;
+    const seq = (this._atmSeq = (this._atmSeq || 0) + 1);
+    try {
+      const q = new URLSearchParams({ symbolId: state.symbolId, ltp: this.chartLastPrice, leg: state.optionLeg || 'ATM' });
+      if (state.optionExpiry) q.set('expiry', state.optionExpiry);
+      const legs = (await api.request(`/history/option-legs?${q}`)).data;
+      if (seq !== this._atmSeq || this.chartState?.symbolId !== state.symbolId || !legs?.available) return;
+      this.atmLegs = { ce: legs.ce, pe: legs.pe, strike: legs.atmStrike };
+      this.renderPaneBar();
+    } catch (_) { /* next round */ }
+  },
+
+  /** One timer for the strip: ATM and exposure every 20s while the option charts are open. */
+  startPaneWatch() {
+    if (this._paneWatch) return;
+    this._paneWatch = setInterval(() => {
+      if (this.currentView !== 'chart' || !this.chartOptionsOn) return;
+      this.checkPaneAtm();
+      this.refreshExposure();
+    }, 20000);
   },
 
   async _buildOptionPane(key, contract, legs) {
@@ -99,8 +195,17 @@ Object.assign(DashboardApp.prototype, {
 
     titleEl.innerHTML = `
       <span class="chart-pane-sym">${Utils.escapeHTML(contract.symbol)}</span>
-      <span class="chart-pane-meta">${Utils.escapeHTML(legs.expiry)} · ${Utils.escapeHTML(String(contract.strike))} · lot ${contract.lotsize}</span>
+      <span class="chart-pane-meta">${Utils.escapeHTML(contract.expiry || legs.expiry)} · ${Utils.escapeHTML(String(contract.strike))} · lot ${contract.lotsize}</span>
       <span class="chart-pane-last" data-role="${key}-last">—</span>
+      ${this.chartTradeBlocked ? '' : `
+        <span class="chart-pane-trade" role="group" aria-label="Trade ${Utils.escapeHTML(contract.symbol)}">
+          <button type="button" class="chart-pane-btn is-buy" data-pane-trade="BUY"
+                  title="Buy ${Utils.escapeHTML(contract.symbol)} at market">BUY</button>
+          <button type="button" class="chart-pane-btn is-sell" data-pane-trade="SELL"
+                  title="Sell ${Utils.escapeHTML(contract.symbol)} at market">SELL</button>
+          <button type="button" class="chart-pane-btn" data-pane-trade="EXIT"
+                  title="Close the open position in ${Utils.escapeHTML(contract.symbol)}">EXIT</button>
+        </span>`}
       ${this.chartSyncConfig().interval ? '' : `
         <select class="chart-pane-tf" data-pane-tf="${key}" aria-label="${key.toUpperCase()} timeframe">
           ${['1m', '5m', '15m', '30m', '1h', 'D'].map((tf) =>
@@ -124,6 +229,16 @@ Object.assign(DashboardApp.prototype, {
     const tfEl = titleEl.querySelector('[data-pane-tf]');
     if (tfEl) tfEl.addEventListener('change', () => this.setPaneTimeframe(key, tfEl.value));
     this.bindPanePopovers(host);
+    // This exact contract, at market - the BUY/SELL CE/PE tickets instead resolve a strike per
+    // instance. /orders turns a price-less order into a marketable LIMIT on Indian exchanges.
+    titleEl.querySelectorAll('[data-pane-trade]').forEach((b) => b.addEventListener('click', () => {
+      if (b.dataset.paneTrade === 'EXIT') {
+        if (this.optionPanes?.[key]?.positionData?.netQuantity) this.closePanePosition(key);
+        else Utils.showToast(`No open position in ${contract.symbol}`, 'info');
+        return;
+      }
+      this.confirmChartOrder({ side: b.dataset.paneTrade, orderType: 'MARKET', contract });
+    }));
 
     let candles = [];
     try {
@@ -542,6 +657,27 @@ Object.assign(DashboardApp.prototype, {
     return true;
   },
 
+  /**
+   * Give the CE/PE panes the main chart's indicators, settings included. The pane's own set is
+   * switched off and redrawn first: an indicator already on with other settings would otherwise
+   * keep its old parameters, since reconciliation only adds and removes.
+   */
+  copyMainIndicatorsTo(scopes = ['ce', 'pe']) {
+    const main = this.indicatorConfig();
+    for (const scope of scopes) {
+      const cleared = this.indicatorConfig(scope);
+      for (const v of Object.values(cleared)) v.on = false;
+      this.saveIndicatorConfig(scope);
+      this.ensureIndicators();
+      const cfg = this.indicatorConfig(scope);
+      for (const [id, v] of Object.entries(main)) cfg[id] = { on: v.on, settings: { ...v.settings } };
+      this.saveIndicatorConfig(scope);
+      this.renderPaneIndicatorBar(scope);
+    }
+    this.ensureIndicators();
+    Utils.showToast(`Main chart indicators copied to ${scopes.length === 2 ? 'both option charts' : `the ${scopes[0].toUpperCase()} chart`}`, 'success');
+  },
+
   /** The slots currently switched on, in catalogue order - what the toolbar and the settings
    * panel both show. With 100+ indicators available, "everything, always" is not a toolbar. */
   activeIndicatorDefs(scope) {
@@ -561,8 +697,12 @@ Object.assign(DashboardApp.prototype, {
                 title="Click to remove ${Utils.escapeHTML(d.label)}">${Utils.escapeHTML(this.indicatorLabel(d))}</button>`).join('')}
       <button type="button" class="chart-ind-btn ${this.enabledPatterns().length ? 'active' : ''}"
               data-ind="patterns">Patterns</button>
-      <button type="button" class="chart-ind-settings" data-action="settings" title="Indicator settings">Settings</button>`;
+      <button type="button" class="chart-ind-settings" data-action="settings" title="Indicator settings">Settings</button>
+      <button type="button" class="chart-ind-settings" data-action="copy-panes"
+              title="Put these indicators, with their settings, on the CE and PE option charts">Copy to option charts</button>`;
 
+    host.querySelector('[data-action="copy-panes"]')
+      .addEventListener('click', () => this.copyMainIndicatorsTo(['ce', 'pe']));
     host.querySelectorAll('.chart-ind-btn[data-ind]').forEach((b) => {
       if (b.dataset.ind === 'patterns') { b.addEventListener('click', () => this.togglePatternPicker()); return; }
       b.addEventListener('click', () => this.toggleIndicator(b.dataset.ind));
@@ -586,8 +726,12 @@ Object.assign(DashboardApp.prototype, {
       ${this.activeIndicatorDefs(scope).map((d) => `
         <button type="button" class="chart-ind-btn active" data-ind="${d.id}"
                 title="Click to remove ${Utils.escapeHTML(d.label)}">${Utils.escapeHTML(this.indicatorLabel(d, scope))}</button>`).join('')}
-      <button type="button" class="chart-ind-settings" data-action="settings" title="Indicator settings">Settings</button>`;
+      <button type="button" class="chart-ind-settings" data-action="settings" title="Indicator settings">Settings</button>
+      <button type="button" class="chart-ind-settings" data-action="copy-main"
+              title="Replace this chart's indicators with the main chart's, settings included">Copy from main chart</button>`;
 
+    host.querySelector('[data-action="copy-main"]')
+      .addEventListener('click', () => this.copyMainIndicatorsTo([scope]));
     host.querySelectorAll('.chart-ind-btn[data-ind]').forEach((b) => {
       b.addEventListener('click', () => this.toggleIndicator(b.dataset.ind, scope));
     });
@@ -994,10 +1138,9 @@ Object.assign(DashboardApp.prototype, {
    * Trade the CE/PE contract straight off its own pane.
    *
    * Right-click a price on the leg's chart and it places a resting order on THAT contract, on
-   * every selected instance. Deliberately limited to LIMIT and SL-M: a market order on options
-   * belongs to the BUY/SELL CE/PE tickets, which resolve a strike per instance from each one's
-   * live price. Picking a price on this pane means the opposite - this exact contract - so it
-   * goes to /orders with the symbol named outright.
+   * every selected instance - or at market. Unlike the BUY/SELL CE/PE tickets, which resolve a
+   * strike per instance from each one's live price, everything here trades THIS exact contract,
+   * so it goes to /orders with the symbol named outright.
    */
   attachOptionPaneOrders(key, bodyEl, chart, contract, candles) {
     if (!bodyEl || !chart || !contract) return;
@@ -1021,21 +1164,24 @@ Object.assign(DashboardApp.prototype, {
       if (!Number.isFinite(price)) return;
       const at = Number(price.toFixed(2));
 
-      // Same validity rules as the underlying's menu: a buy limit sits below the last traded
-      // price, a buy stop above it, and the reverse for a sell.
+      // Same rules as the underlying's menu: a stop must sit on the far side of the last traded
+      // price (above for a buy, below for a sell); a limit is always allowed.
       const below = last !== null && at < last;
       const above = last !== null && at > last;
       const p = Utils.formatNumber(at);
       const items = [
-        { side: 'BUY', orderType: 'LIMIT', price: at, label: `Buy Limit @ ${p}`, enabled: below,
-          why: 'a buy limit must sit below the last price' },
+        { side: 'BUY', orderType: 'MARKET', label: 'Buy Market', enabled: true },
+        // A limit across the market fills now, capped at its price - see contextMenuItemsFor.
+        { side: 'BUY', orderType: 'LIMIT', price: at, label: `Buy Limit @ ${p}${above ? ' (fills now)' : ''}`,
+          enabled: true, crosses: above },
         { side: 'BUY', orderType: 'SL-M', price: at, label: `Buy Stop @ ${p}`, enabled: above,
           why: 'a buy stop must sit above the last price' },
-        { side: 'SELL', orderType: 'LIMIT', price: at, label: `Sell Limit @ ${p}`, enabled: above,
-          why: 'a sell limit must sit above the last price' },
+        { side: 'SELL', orderType: 'MARKET', label: 'Sell Market', enabled: true },
+        { side: 'SELL', orderType: 'LIMIT', price: at, label: `Sell Limit @ ${p}${below ? ' (fills now)' : ''}`,
+          enabled: true, crosses: below },
         { side: 'SELL', orderType: 'SL-M', price: at, label: `Sell Stop @ ${p}`, enabled: below,
           why: 'a sell stop must sit below the last price' },
-      ].map((it) => ({ ...it, contract }));
+      ].map((it) => ({ ...it, contract, last })); // the option's own last price, for the confirmation
 
       // Closing is a distinct action, not an order on this contract at this price - it fans out
       // to the position-close endpoint (see closePanePosition), not /orders, so it is rendered
@@ -1050,13 +1196,15 @@ Object.assign(DashboardApp.prototype, {
                   ${it.enabled ? '' : `title="Not valid here — ${Utils.escapeHTML(it.why)}"`}>
             ${Utils.escapeHTML(it.label)}
           </button>`).join('')
+        + `<div class="chart-ctx-sep"></div>
+          <button type="button" class="chart-ctx-item is-neutral" data-action="max-loss">Max loss ₹… on this contract</button>`
         + (hasPosition ? `
           <div class="chart-ctx-sep"></div>
           <button type="button" class="chart-ctx-item is-neutral" data-action="close-position">
             Close position (${pane.positionData.netQuantity > 0 ? '+' : ''}${pane.positionData.netQuantity})
           </button>` : '');
 
-      this.placeChartMenu(menu, e, items.length + (hasPosition ? 3 : 1));
+      this.placeChartMenu(menu, e, items.length + (hasPosition ? 3 : 1) + 2);
 
       menu.querySelectorAll('.chart-ctx-item[data-i]').forEach((btn) => {
         btn.addEventListener('click', (ev) => {
@@ -1064,6 +1212,11 @@ Object.assign(DashboardApp.prototype, {
           menu.hidden = true;
           this.confirmChartOrder(items[Number(btn.dataset.i)]);
         });
+      });
+      menu.querySelector('[data-action="max-loss"]')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        menu.hidden = true;
+        this.openMaxLossDialog(contract);
       });
       menu.querySelector('[data-action="close-position"]')?.addEventListener('click', (ev) => {
         ev.stopPropagation();
@@ -1082,9 +1235,26 @@ Object.assign(DashboardApp.prototype, {
    * Positions page's own per-symbol close already uses for exactly this.
    */
   async closePanePosition(key) {
-    const pane = this.optionPanes?.[key];
-    const data = pane?.positionData;
-    if (!pane?.contract || !data?.legs?.length) return;
+    return this.closeChartPosition(key);
+  },
+
+  /**
+   * Square off what the chart shows: `scope` undefined is the main chart's own symbol (equity or
+   * future), 'ce'/'pe' that pane's contract. Every instance holding a leg, in each product it is
+   * held in (the exit path closes every product row), after a confirmation.
+   */
+  async closeChartPosition(scope) {
+    const key = scope;
+    const pane = key ? this.optionPanes?.[key] : null;
+    const data = key ? pane?.positionData : this.chartPositionData;
+    const contract = key
+      ? pane?.contract
+      : (this.chartState ? { symbol: this.chartState.symbol, exchange: this.chartState.exchange } : null);
+    if (!contract || !data?.legs?.length) {
+      Utils.showToast('No open position to close', 'info');
+      return;
+    }
+    const tradeMode = key ? 'OPTIONS' : /FUT$/i.test(contract.symbol) ? 'FUTURES' : 'EQUITY';
 
     const qty = Math.abs(data.netQuantity);
     const modal = document.createElement('div');
@@ -1092,12 +1262,12 @@ Object.assign(DashboardApp.prototype, {
     modal.innerHTML = `
       <div class="modal-content chart-confirm">
         <div class="modal-header">
-          <h3>Close position — ${Utils.escapeHTML(pane.contract.symbol)}</h3>
+          <h3>Close position — ${Utils.escapeHTML(contract.symbol)}</h3>
         </div>
         <div class="modal-body">
           <p class="chart-confirm-lead">
             Closes the ${data.netQuantity > 0 ? 'LONG' : 'SHORT'} <strong>${qty}</strong>
-            position on <strong>${Utils.escapeHTML(pane.contract.symbol)}</strong> across
+            position on <strong>${Utils.escapeHTML(contract.symbol)}</strong> across
             <strong>${data.legs.length}</strong> instance${data.legs.length === 1 ? '' : 's'} at market.
           </p>
           <p class="chart-confirm-note">
@@ -1122,9 +1292,9 @@ Object.assign(DashboardApp.prototype, {
         {
           method: 'POST',
           body: {
-            symbol: pane.contract.symbol,
-            exchange: pane.contract.exchange,
-            tradeMode: 'OPTIONS',
+            symbol: contract.symbol,
+            exchange: contract.exchange,
+            tradeMode,
             product: this.chartState?.product || 'MIS',
           },
         },
@@ -1135,7 +1305,8 @@ Object.assign(DashboardApp.prototype, {
         failed ? `Closed on ${ok}, failed on ${failed}` : `Position closed on ${ok} instance${ok === 1 ? '' : 's'}`,
         failed ? 'error' : 'success',
       );
-      await this.loadPanePosition(key);
+      if (key) await this.loadPanePosition(key);
+      else await this.loadChartPosition();
     });
   },
 

@@ -10,61 +10,50 @@ import openalgoClient from '../integrations/openalgo/client.js';
 import instrumentsService from './instruments.service.js';
 import { NotFoundError } from '../core/errors.js';
 import { toISTDate } from '../utils/time.js';
+import { parseExpiry, tradableExpiries } from '../utils/underlying.util.js';
+import { isCryptoExchange } from '../utils/broker-type.util.js';
+import derivativeResolutionService from './derivative-resolution.service.js';
 
 class ExpiryManagementService {
   /**
-   * Get nearest expiry date for an underlying
-   * @param {string} underlying - Underlying symbol (e.g., NIFTY, RELIANCE)
-   * @param {string} exchange - Exchange (NFO, BSE)
-   * @param {Object} instance - OpenAlgo instance
-   * @param {boolean} forceRefresh - Force refresh from OpenAlgo
+   * The nearest live expiry of an underlying's OPTIONS (default) or FUTURES.
+   *
+   * Read from the instruments cache, which is refreshed daily and purged of expired contracts. It
+   * used to come from `expiry_calendar`, which was filled once and never refreshed: after its last
+   * weekly (Aug) had passed, "nearest" NIFTY became 29-DEC, and chart orders sent with "Nearest"
+   * traded December instead of the weekly the chart showed.
+   *
+   * Options and futures are asked for separately because their expiries differ - NIFTY options are
+   * weekly while its futures are monthly, and MCX options expire days before their futures.
+   *
+   * @param {string} underlying - e.g. NIFTY, CRUDEOIL
+   * @param {string} exchange - the underlying's or the derivative's (NSE_INDEX and NFO both work)
+   * @param {Object} instance - asked only when the cache has nothing; must trade this segment
+   * @param {Object} [opts]
+   * @param {'OPTIONS'|'FUTURES'} [opts.kind='OPTIONS']
    * @returns {Promise<string>} Expiry date (YYYY-MM-DD)
    */
-  async getNearestExpiry(underlying, exchange, instance, forceRefresh = false) {
-    log.debug('Getting nearest expiry', { underlying, exchange, forceRefresh });
+  async getNearestExpiry(underlying, exchange, instance, { kind = 'OPTIONS' } = {}) {
+    const derivativeExchange = derivativeResolutionService.getDerivativeExchange(exchange);
+    const crypto = isCryptoExchange(derivativeExchange);
+    const instrumentTypes = kind === 'FUTURES' ? ['FUT'] : ['CE', 'PE'];
 
-    // Try cache first
-    if (!forceRefresh) {
-      const cached = await this._getNearestExpiryFromCache(underlying, exchange);
-      if (cached) {
-        log.debug('Using cached expiry', { underlying, expiry: cached });
-        return cached;
-      }
-    }
+    const cached = await instrumentsService.getExpiries(underlying, derivativeExchange, { instrumentTypes });
+    let nearest = tradableExpiries(cached, new Date(), { crypto })[0];
 
-    // Fetch from OpenAlgo
-    const expiries = await this.fetchExpiries(underlying, exchange, instance);
-
-    if (expiries.length === 0) {
-      throw new NotFoundError(`No expiry dates found for ${underlying}`);
-    }
-
-    // Return the nearest expiry (first in the sorted list)
-    return expiries[0].expiry_date;
-  }
-
-  /**
-   * Get nearest expiry from cache
-   * @private
-   */
-  async _getNearestExpiryFromCache(underlying, exchange) {
-    try {
-      const todayStr = this._formatDate(new Date());
-
-      const result = await db.get(
-        `SELECT expiry_date FROM expiry_calendar
-         WHERE underlying = ? AND exchange = ? AND is_active = 1
-         AND expiry_date >= ?
-         ORDER BY expiry_date ASC
-         LIMIT 1`,
-        [underlying, exchange, todayStr]
+    if (!nearest && instance) {
+      const fromBroker = await openalgoClient.getExpiry(
+        instance, underlying, derivativeExchange, kind === 'FUTURES' ? 'futures' : 'options'
       );
-
-      return result?.expiry_date || null;
-    } catch (error) {
-      log.error('Failed to get expiry from cache', error);
-      return null;
+      nearest = tradableExpiries(fromBroker, new Date(), { crypto })[0];
     }
+
+    const date = parseExpiry(nearest);
+    if (!date) {
+      throw new NotFoundError(`No live ${kind.toLowerCase()} expiry found for ${underlying} on ${derivativeExchange}`);
+    }
+    log.debug('Nearest expiry', { symbol: underlying, exchange: derivativeExchange, reason: `${kind} ${nearest}` });
+    return date.toISOString().slice(0, 10);
   }
 
   /**

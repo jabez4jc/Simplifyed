@@ -16,6 +16,8 @@ import { normalizeTradebookEntry } from '../utils/tradebook-utils.js';
 import marketCalendarService from './market-calendar.service.js';
 import { isCryptoExchange } from '../utils/broker-type.util.js';
 import { normalizeSymbolKey, normalizeExchange } from '../utils/symbol-parsing.util.js';
+import exitLevelsService from './exit-levels.service.js';
+import exitLossCapsService from './exit-loss-caps.service.js';
 
 const TRADE_MODE_MAP = {
   direct: 'EQUITY',
@@ -79,6 +81,11 @@ class AutoExitService {
 
     this.isCycleRunning = true;
     try {
+      // Levels on the underlying and the rupee max-loss run every cycle, whether or not any
+      // watchlist row has points-based exits configured (the early return below).
+      await exitLevelsService.evaluate();
+      await exitLossCapsService.evaluate();
+
       const configLookup = await this._buildAutoExitLookup();
       if (configLookup.size === 0) {
         log.debug('No auto-exit configurations found');

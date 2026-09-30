@@ -51,8 +51,12 @@ test('a discarded token sends the operator back to the login form', async ({ pag
   await expect(page).toHaveURL(/dashboard\.html/);
 
   await page.evaluate(() => localStorage.removeItem('auth_token'));
-  // The page redirects while it loads, so wait only for the response, not the load event.
-  await page.goto('/dashboard.html', { waitUntil: 'commit' });
+  // The page redirects while it loads, so wait only for the response, not the load event. The
+  // dashboard already open may notice the missing token first and redirect on its own, which
+  // aborts this navigation - either way the operator must end up on the login form, below.
+  await page.goto('/dashboard.html', { waitUntil: 'commit' }).catch((error) => {
+    if (!/ERR_ABORTED/.test(String(error))) throw error;
+  });
 
   await expect(page).toHaveURL(/login\.html/, { timeout: 15000 });
 });

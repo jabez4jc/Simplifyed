@@ -240,6 +240,24 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         </div>
       `)
       .join('');
+    // Dated futures on Indian exchanges can follow a series instead of one contract.
+    const isDatedFuture = ['NFO', 'BFO', 'MCX', 'CDS'].includes(String(symbolData.exchange || '').toUpperCase())
+      && (String(symbolData.instrumenttype || '').toUpperCase() === 'FUT'
+        || String(symbolData.symbol_type || '').toUpperCase() === 'FUTURES');
+    const autoRoll = Number(symbolData.auto_roll) || 0;
+    const autoRollHtml = isDatedFuture ? `
+            <div class="form-group">
+              <label class="form-label" for="symbol-auto-roll">Contract</label>
+              <select id="symbol-auto-roll" name="auto_roll" class="form-select">
+                <option value="0" ${autoRoll === 0 ? 'selected' : ''}>This contract only</option>
+                <option value="1" ${autoRoll === 1 ? 'selected' : ''}>Auto-roll: nearest expiry (1!)</option>
+                <option value="2" ${autoRoll === 2 ? 'selected' : ''}>Auto-roll: next expiry (2!)</option>
+              </select>
+              <p class="text-xs text-neutral-500 mt-1">
+                Auto-roll moves this row to the next contract when the current one expires. Futures
+                expire monthly, so nearest is the current month and next is the month after.
+              </p>
+            </div>` : '';
     const modalTitle = mode === 'edit' ? 'Edit Symbol Configuration' : 'Configure Symbol';
     const saveLabel = mode === 'edit' ? 'Save Changes' : 'Add Symbol';
     const modal = document.createElement('div');
@@ -290,6 +308,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
               </label>
             </div>
 
+            ${autoRollHtml}
             <div class="form-group">
               <label class="form-label">Underlying Symbol (for derivatives)</label>
               <input type="text" name="underlying_symbol" class="form-input"
@@ -433,13 +452,17 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         limit_buffer_points: Number.isFinite(limitBufferPoints) ? limitBufferPoints : 0,
         ...autoExitData,
       };
+      if (form.auto_roll) payload.auto_roll = Number(form.auto_roll.value) || 0;
 
-      if (context.mode === 'edit' && context.symbolId) {
-        await api.updateSymbol(targetWatchlistId, context.symbolId, payload);
-        Utils.showToast('Symbol updated successfully', 'success');
+      const response = context.mode === 'edit' && context.symbolId
+        ? await api.updateSymbol(targetWatchlistId, context.symbolId, payload)
+        : await api.addSymbol(targetWatchlistId, payload);
+      const saved = response?.data || {};
+      if (saved.roll?.message) {
+        // Saved, but the row could not move to its series' contract yet (open position, no contract...).
+        Utils.showToast(`Saved. Not rolled: ${saved.roll.message}`, 'warning');
       } else {
-        await api.addSymbol(targetWatchlistId, payload);
-        Utils.showToast('Symbol added successfully', 'success');
+        Utils.showToast(context.mode === 'edit' ? 'Symbol updated successfully' : 'Symbol added successfully', 'success');
       }
 
       if (this.symbolConfigModal) {

@@ -38,7 +38,7 @@ function d1d2(F, K, T, sigma) {
   return { d1, d2 };
 }
 
-function black76Price(F, K, T, r, sigma, isCall) {
+export function black76Price(F, K, T, r, sigma, isCall) {
   const { d1, d2 } = d1d2(F, K, T, sigma);
   const disc = Math.exp(-r * T);
   return isCall
@@ -72,7 +72,7 @@ function black76Greeks(F, K, T, r, sigma, isCall) {
   };
 }
 
-function impliedVolBlack76(targetPrice, F, K, T, r, isCall, opts = {}) {
+export function impliedVolBlack76(targetPrice, F, K, T, r, isCall, opts = {}) {
   const options = {
     tol: 1e-6,
     maxIter: 100,

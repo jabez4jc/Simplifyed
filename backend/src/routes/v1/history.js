@@ -14,8 +14,11 @@ import { requireAuth, requirePermission } from '../../middleware/auth.js';
 import { ValidationError } from '../../core/errors.js';
 import db from '../../core/database.js';
 import riskControlsService from '../../services/risk-controls.service.js';
-import { resolveOptionsUnderlyingKey, upcomingExpiries } from '../../utils/underlying.util.js';
+import { resolveOptionsUnderlyingKey, upcomingExpiries, tradableExpiries } from '../../utils/underlying.util.js';
 import { isCryptoExchange } from '../../utils/broker-type.util.js';
+import derivativeResolutionService from '../../services/derivative-resolution.service.js';
+import futuresRollService from '../../services/futures-roll.service.js';
+import positionsService from '../../services/positions.service.js';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -51,7 +54,9 @@ router.get('/symbols', VIEW, async (req, res, next) => {
               ws.symbol        AS symbol,
               w.id             AS watchlistId,
               w.name           AS watchlistName,
-              i.tick_size      AS tickSize
+              i.tick_size      AS tickSize,
+              ws.auto_roll     AS autoRoll,
+              ws.underlying_symbol AS underlyingSymbol
          FROM watchlist_symbols ws
          JOIN watchlists w ON w.id = ws.watchlist_id
          LEFT JOIN instruments i
@@ -59,7 +64,15 @@ router.get('/symbols', VIEW, async (req, res, next) => {
         WHERE w.is_active = 1
         ORDER BY w.name, ws.symbol`
     );
-    res.json({ status: 'success', data: rows });
+    // An auto-roll row's series name (CRUDEOIL1!): the chart keys its drawings by it so they
+    // survive the roll onto the next contract.
+    const data = rows.map(({ autoRoll, underlyingSymbol, ...row }) => ({
+      ...row,
+      series: autoRoll > 0
+        ? `${derivativeResolutionService.getDerivativeUnderlying({ ...row, underlying_symbol: underlyingSymbol })}${autoRoll}!`
+        : null,
+    }));
+    res.json({ status: 'success', data });
   } catch (error) {
     next(error);
   }
@@ -113,7 +126,10 @@ router.get('/option-legs', VIEW, async (req, res, next) => {
       [key]
     );
     const upcoming = upcomingExpiries(rows, new Date(), { crypto: isCryptoExchange(row.exchange) });
-    const expiry = wantExpiry || upcoming[0] || null;
+    // "Nearest" skips a crypto daily in its final hour (see tradableExpiries); it stays in the
+    // list, so it can still be chosen on purpose.
+    const nearest = tradableExpiries(rows, new Date(), { crypto: isCryptoExchange(row.exchange) })[0];
+    const expiry = wantExpiry || nearest || upcoming[0] || null;
 
     if (!expiry) {
       return res.json({ status: 'success', data: { available: false, reason: 'no expiry found' } });
@@ -166,6 +182,102 @@ router.get('/option-legs', VIEW, async (req, res, next) => {
         pe: pe || null,
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/history/future?symbolId=123
+ *
+ * The futures contract a FUTURES order on this row trades: the row itself when it is a future,
+ * otherwise the nearest live future of its underlying (NIFTY index -> NIFTY27OCT26FUT). The chart
+ * names it on its futures buttons, sends its expiry with the order - an index row's futures order
+ * without one is refused - and sizes in its lots. Read-only.
+ */
+router.get('/future', VIEW, async (req, res, next) => {
+  try {
+    const symbolId = parseInt(req.query.symbolId, 10);
+    if (!Number.isInteger(symbolId) || symbolId <= 0) {
+      throw new ValidationError('symbolId must be a positive integer');
+    }
+    const row = await db.get('SELECT * FROM watchlist_symbols WHERE id = ?', [symbolId]);
+    if (!row) throw new ValidationError(`Symbol ${symbolId} not found`);
+
+    if (row.symbol_type === 'FUTURES' || row.instrumenttype === 'FUT' || /FUT$/i.test(row.symbol || '')) {
+      return res.json({
+        status: 'success',
+        data: { symbol: row.symbol, exchange: row.exchange, expiry: row.expiry || null, lotsize: row.lot_size || 1, isRow: true },
+      });
+    }
+    const exchange = derivativeResolutionService.getDerivativeExchange(row.exchange);
+    const underlying = derivativeResolutionService.getDerivativeUnderlying(row);
+    const [future] = await futuresRollService.listFutures(exchange, underlying);
+    res.json({
+      status: 'success',
+      data: future
+        ? { symbol: future.symbol, exchange, expiry: future.expiry, lotsize: future.lotsize || 1, isRow: false }
+        : null,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/history/exposure?symbolId=123
+ *
+ * This row's option contracts that carry exposure - an open position on any active instance or a
+ * pending order - so the chart keeps them on screen whatever strike is at-the-money now. Read-only:
+ * positions come from the shared feed's cache (no broker traffic), orders from the local book.
+ */
+router.get('/exposure', VIEW, async (req, res, next) => {
+  try {
+    const symbolId = parseInt(req.query.symbolId, 10);
+    if (!Number.isInteger(symbolId) || symbolId <= 0) {
+      throw new ValidationError('symbolId must be a positive integer');
+    }
+    const row = await db.get('SELECT * FROM watchlist_symbols WHERE id = ?', [symbolId]);
+    if (!row) throw new ValidationError(`Symbol ${symbolId} not found`);
+    const key = await resolveOptionsUnderlyingKey(row);
+    if (!key) return res.json({ status: 'success', data: [] });
+
+    const byContract = new Map(); // EXCH|SYMBOL -> { netQty, orders }
+    const bump = (exchange, symbol, field, n) => {
+      const k = `${String(exchange || '').toUpperCase()}|${String(symbol || '').replace(/\s+/g, '').toUpperCase()}`;
+      const e = byContract.get(k) || { netQty: 0, orders: 0 };
+      e[field] += n;
+      byContract.set(k, e);
+    };
+    const all = await positionsService.getAllPositions({ onlyOpen: true, refresh: false });
+    for (const inst of all.instances || []) {
+      for (const p of inst.positions || []) {
+        const qty = Number(p.quantity ?? p.netqty ?? p.net_quantity ?? p.netQty ?? 0) || 0;
+        if (qty) bump(p.exchange || p.exch, p.symbol || p.tradingsymbol, 'netQty', qty);
+      }
+    }
+    const pending = await db.all("SELECT exchange, symbol FROM watchlist_orders WHERE status IN ('pending', 'open')")
+      .catch(() => []);
+    for (const o of pending) bump(o.exchange, o.symbol, 'orders', 1);
+
+    const data = [];
+    for (const [k, e] of byContract) {
+      const [exchange, symbol] = k.split('|');
+      const inst = await db.get(
+        `SELECT symbol, exchange, instrumenttype, strike, expiry, lotsize FROM instruments
+          WHERE UPPER(exchange) = ? AND UPPER(symbol) = ? AND instrumenttype IN ('CE','PE')
+            AND UPPER(underlying_key) = ? LIMIT 1`,
+        [exchange, symbol, String(key).toUpperCase()]
+      );
+      if (inst && (e.netQty || e.orders)) {
+        data.push({
+          symbol: inst.symbol, exchange: inst.exchange, type: inst.instrumenttype, strike: inst.strike,
+          expiry: inst.expiry, lotsize: inst.lotsize, netQty: e.netQty, orders: e.orders,
+        });
+      }
+    }
+    data.sort((a, b) => String(a.expiry).localeCompare(String(b.expiry)) || a.strike - b.strike || a.type.localeCompare(b.type));
+    res.json({ status: 'success', data });
   } catch (error) {
     next(error);
   }

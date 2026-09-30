@@ -170,7 +170,13 @@ class TelegramService {
     const failureList = failureInstances.length ? ` (${failureInstances.join(', ')})` : '';
     lines.push(`Results: ${successCount} success${successList}${failureCount ? `, ${failureCount} failed${failureList}` : ''}`);
 
-    const msg = lines.join('\n');
+    return this.broadcastText(lines.join('\n'));
+  }
+
+  /** Send one message to the global chat and every active subscriber. */
+  async broadcastText(msg) {
+    ensureConfigured();
+    await ensureSchema();
 
     const targets = [];
 

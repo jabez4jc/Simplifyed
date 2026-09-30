@@ -197,6 +197,10 @@ class StrategyService {
         // doesn't cause any order to be placed on its own.
         tradable_futures: true,
         tradable_options: true,
+        // A dated future (MCX has nothing else to anchor on) follows the nearest contract, so the
+        // strategy does not die with it at expiry. See futures-roll.service.js.
+        auto_roll: ['NFO', 'BFO', 'MCX', 'CDS'].includes(exchange)
+          && (resolved.symbol_type || resolved.symbolType) === 'FUTURES' ? 1 : 0,
       });
     }
 

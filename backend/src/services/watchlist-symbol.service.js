@@ -18,10 +18,15 @@ import {
   parseBooleanSafe,
 } from '../utils/sanitizers.js';
 import { isContractExpired } from '../utils/underlying.util.js';
+import futuresRollService from './futures-roll.service.js';
+
+// Exchanges with dated futures. Crypto has perpetuals, cash segments have no futures at all.
+const ROLLABLE_EXCHANGES = ['NFO', 'BFO', 'MCX', 'CDS'];
 
 class WatchlistSymbolService {
   async addSymbol(watchlistId, symbolData) {
     const normalized = this._normalizeSymbolData(symbolData);
+    this._assertRollable(normalized);
 
     const existing = await db.get(
       `SELECT id FROM watchlist_symbols
@@ -46,7 +51,7 @@ class WatchlistSymbolService {
       values
     );
 
-    const symbol = await db.get('SELECT * FROM watchlist_symbols WHERE id = ?', [
+    let symbol = await db.get('SELECT * FROM watchlist_symbols WHERE id = ?', [
       result.lastID,
     ]);
 
@@ -56,6 +61,8 @@ class WatchlistSymbolService {
       exchange: normalized.exchange,
     });
 
+    // A new row holds no position yet, so it can move to its series' contract straight away.
+    symbol = await this._applyRoll(symbol, { checkPositions: false });
     return symbol;
   }
 
@@ -80,6 +87,7 @@ class WatchlistSymbolService {
     }
 
     const normalized = this._normalizeSymbolData(updates, true);
+    this._assertRollable({ ...existing, ...normalized });
 
     const fields = [];
     const values = [];
@@ -101,14 +109,34 @@ class WatchlistSymbolService {
       values
     );
 
-    const symbol = await db.get(
+    let symbol = await db.get(
       'SELECT * FROM watchlist_symbols WHERE id = ?',
       [symbolId]
     );
 
     log.info('Symbol updated', { id: symbolId, updates: Object.keys(normalized) });
 
+    symbol = await this._applyRoll(symbol);
     return symbol;
+  }
+
+  _assertRollable(row) {
+    if (Number(row.auto_roll) > 0 && !ROLLABLE_EXCHANGES.includes(row.exchange)) {
+      throw new ValidationError(`Auto-roll is for ${ROLLABLE_EXCHANGES.join(', ')} futures, not ${row.exchange}`);
+    }
+  }
+
+  /**
+   * Move an auto-roll row onto the contract its series means now, e.g. after "Next" was chosen.
+   * The returned row carries `roll` ({status, message}) when the roll could not happen, so the
+   * caller can say why the row still shows the old contract.
+   */
+  async _applyRoll(row, opts = {}) {
+    if (!row || !(Number(row.auto_roll) > 0)) return row;
+    const roll = await futuresRollService.rollRow(row, opts);
+    if (roll.status === 'unchanged') return row;
+    const fresh = await db.get('SELECT * FROM watchlist_symbols WHERE id = ?', [row.id]);
+    return roll.status === 'rolled' ? fresh : { ...fresh, roll };
   }
 
   /** @param {number|null} watchlistId - see updateSymbol; scopes the delete to one watchlist. */
@@ -238,6 +266,17 @@ class WatchlistSymbolService {
       : 0;
 
     normalized.is_enabled = parseBooleanSafe(data.is_enabled, true) ? 1 : 0;
+
+    // 0 off, 1 nearest contract, 2 the one after (see futures-roll.service.js).
+    if (!isPartial || data.auto_roll !== undefined) {
+      const series = data.auto_roll === undefined || data.auto_roll === null || data.auto_roll === ''
+        ? 0
+        : Number(data.auto_roll);
+      if (![0, 1, 2].includes(series)) {
+        throw new ValidationError('auto_roll must be 0 (off), 1 (nearest) or 2 (next)');
+      }
+      normalized.auto_roll = series;
+    }
 
     if (!isPartial || data.margin_sizing_enabled !== undefined) {
       normalized.margin_sizing_enabled = parseBooleanSafe(data.margin_sizing_enabled, false) ? 1 : 0;

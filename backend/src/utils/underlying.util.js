@@ -113,6 +113,28 @@ export function upcomingExpiries(rows, now = new Date(), { crypto = false } = {}
     .map((r) => r.raw);
 }
 
+/**
+ * How long before a crypto daily's 5:30 PM IST expiry it stops being offered as "nearest".
+ * Seen on the Delta analyzer (30 Sep 2026): orders on the expiring daily filled from ~16:50 but
+ * never appeared in the position book, so they could not be tracked or closed from the app.
+ */
+const CRYPTO_NEAREST_CUTOFF_MINUTES = 60;
+
+/**
+ * upcomingExpiries() for picking a NEW trade's expiry ("nearest"): the same list, minus a crypto
+ * daily in its final hour. Deliberately not used for expiry checks - a position already held in
+ * that contract must stay quotable and closable until it really expires.
+ */
+export function tradableExpiries(rows, now = new Date(), { crypto = false } = {}) {
+  const list = upcomingExpiries(rows, now, { crypto });
+  if (!crypto || !list.length) return list;
+  const ist = toISTDate(now);
+  const today = Date.UTC(ist.getFullYear(), ist.getMonth(), ist.getDate());
+  const minutes = ist.getHours() * 60 + ist.getMinutes();
+  const lastHour = minutes >= CRYPTO_EXPIRY_CUTOFF_IST_MINUTES - CRYPTO_NEAREST_CUTOFF_MINUTES;
+  return lastHour ? list.filter((e) => parseExpiry(e)?.getTime() !== today) : list;
+}
+
 // A contract's expiry embedded in its symbol: ...DDMMMYYFUT or ...DDMMMYY<strike>CE/PE
 // (GOLDPETAL31AUG26FUT, NATGASMINI24JUL26275CE, BTC29SEP2683000CE). Perpetuals and cash
 // symbols carry none and never match.

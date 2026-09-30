@@ -180,6 +180,36 @@ export const SETTINGS_GROUPS = [
       },
     ],
   },
+
+  {
+    id: 'futures',
+    label: 'Futures',
+    description: 'How watchlist futures set to auto-roll move to the next contract.',
+    sections: [
+      {
+        id: 'futures-roll',
+        label: 'Auto-roll',
+        fields: [
+          {
+            key: 'futures.roll_days_before_expiry',
+            label: 'Roll days before expiry',
+            help:
+              'An auto-roll watchlist future moves to the next contract this many calendar days before '
+                + 'its expiry, instead of the day after it expires.',
+            details: [
+              '0 (default): roll only after expiry, when any position in the old contract has settled.',
+              'Raise it for MCX contracts entering their tender period, or stock futures near physical '
+                + 'settlement, where brokers block new positions in the expiring contract. Example: 3 '
+                + 'rolls a contract expiring on the 27th from the 24th.',
+              'An early roll waits while any instance holds the old contract, and alerts you instead. '
+                + 'Positions are never rolled for you.',
+            ],
+            min: 0, max: 15,
+          },
+        ],
+      },
+    ],
+  },
 ];
 
 /**
@@ -265,6 +295,13 @@ export const ESSENTIAL_SETTINGS = [
     description: 'Session windows in IST used for session P&L baselines and auto cutoffs.',
     category: 'trading',
     dataType: 'json',
+  },
+  {
+    key: 'futures.roll_days_before_expiry',
+    value: '0',
+    description: 'Calendar days before expiry that an auto-roll watchlist future moves to the next contract (0 = after expiry).',
+    category: 'futures',
+    dataType: 'number',
   },
 ];
 

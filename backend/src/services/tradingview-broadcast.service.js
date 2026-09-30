@@ -17,6 +17,7 @@ import marginSizingService from './margin-sizing.service.js';
 import { requiresLimitOrders } from '../utils/broker-type.util.js';
 import limitPriceService from './limit-price.service.js';
 import brokerUnitsService from './broker-units.service.js';
+import futuresRollService from './futures-roll.service.js';
 import openalgoClient, { assertLimitOnlyCompliance } from '../integrations/openalgo/client.js';
 
 // OpenAlgo v1 order constants (openalgo-docs api-documentation/v1/order-constants.md). The
@@ -234,8 +235,20 @@ class TradingviewBroadcastService {
     return normalized;
   }
 
-  async broadcast(normalizedPayload, options = {}) {
+  async broadcast(payload, options = {}) {
     const { watchlistId = null, watchlistSlug = null } = options;
+
+    // A TradingView continuous-futures alert (NIFTY1!, CRUDEOIL2!) names a series, not a contract.
+    // Brokers only know contracts, so resolve it to the one the series means today.
+    let normalizedPayload = payload;
+    const contract = await futuresRollService.resolveContinuousSymbol(payload.exchange, payload.symbol);
+    if (contract === null) {
+      throw new ValidationError(`No live ${payload.exchange} futures contract for ${payload.symbol}`);
+    }
+    if (contract !== payload.symbol) {
+      log.info('[TV Webhook] Continuous symbol resolved', { from: payload.symbol, to: contract });
+      normalizedPayload = { ...payload, symbol: contract };
+    }
     const { targets, watchlist } = await this._resolveTargets({ watchlistId, watchlistSlug });
 
     if (!targets.length) {

@@ -84,8 +84,8 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
                       ${sym.symbol_type || 'UNKNOWN'}
                     </span>
                   </td>
-                  <td class="col-expiry">${sym.expiry ? Utils.escapeHTML(sym.expiry) : '-'}${sym.is_expired ? ' <span class="badge-compact badge-expired">Expired</span>' : ''}</td>
-                  <td class="col-strike">${sym.strike ? sym.strike : '-'}</td>
+                  <td class="col-expiry">${sym.expiry ? Utils.escapeHTML(sym.expiry) : '-'}${sym.is_expired ? ' <span class="badge-compact badge-expired">Expired</span>' : ''}${Number(sym.auto_roll) > 0 ? ` <span class="badge-compact" title="Auto-roll: ${Number(sym.auto_roll) === 2 ? 'next' : 'nearest'} expiry - moves to the next contract when this one expires">⟳ ${Number(sym.auto_roll)}!</span>` : ''}</td>
+                  <td class="col-strike">${Number(sym.strike) > 0 ? sym.strike : '-'}</td>
                   <td class="col-lot">${sym.lot_size || sym.lotsize || 1}</td>
                   <td class="col-ltp ltp-cell" data-symbol-id="${sym.id}">
                     <span class="text-neutral-500">-</span>
@@ -653,7 +653,12 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
 
     // Create cache key
     const cacheKey = `${watchlistId}_${symbolId}`;
-    const cached = this.quoteCache.get(cacheKey) || {};
+    let cached = this.quoteCache.get(cacheKey) || {};
+    // An auto-roll row keeps its id when it moves to the next contract. Values cached for the old
+    // contract must not carry over - the volume guard below would keep showing its volume.
+    const quoteSymbol = this.normalizeQuoteSymbol(quote.symbol);
+    if (quoteSymbol && cached.symbol && cached.symbol !== quoteSymbol) cached = {};
+    if (quoteSymbol) cached.symbol = quoteSymbol;
     const now = Date.now();
 
     // Calculate change percent

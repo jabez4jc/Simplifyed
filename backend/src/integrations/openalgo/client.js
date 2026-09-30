@@ -9,7 +9,22 @@ import { log } from '../../core/logger.js';
 import { OpenAlgoError, ValidationError } from '../../core/errors.js';
 import { requiresLimitOrders } from '../../utils/broker-type.util.js';
 import brokerUnitsService from '../../services/broker-units.service.js';
-import { contractExpiry, isContractExpired } from '../../utils/underlying.util.js';
+import { contractExpiry, isContractExpired, parseExpiry } from '../../utils/underlying.util.js';
+
+const EXPIRY_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+
+/**
+ * OpenAlgo's /optionchain matches `expiry_date` only as DDMMMYY ("30SEP26"). Verified live on
+ * 30 Sep 2026: "2026-09-30" and "30-SEP-26" both answer "No strikes found", for every expiry - so
+ * order-side resolution, which passed ISO dates, silently fell back to the local cache.
+ */
+export function toBrokerExpiry(expiry) {
+  const raw = String(expiry || '').trim().toUpperCase();
+  if (/^\d{2}[A-Z]{3}\d{2}$/.test(raw)) return raw;
+  const d = parseExpiry(raw);
+  if (!d) return raw;
+  return `${String(d.getUTCDate()).padStart(2, '0')}${EXPIRY_MONTHS[d.getUTCMonth()]}${String(d.getUTCFullYear()).slice(-2)}`;
+}
 import config from '../../core/config.js';
 import { toISTISOString } from '../../utils/time.js';
 import { maskApiKey } from '../../utils/sanitizers.js';
@@ -2328,11 +2343,11 @@ class OpenAlgoClient extends EventEmitter {
    * @param {string} exchange - Exchange code (default: NFO)
    * @returns {Promise<Array>} - Array of expiry dates
    */
-  async getExpiry(instance, symbol, exchange = 'NFO') {
+  async getExpiry(instance, symbol, exchange = 'NFO', instrumenttype = 'options') {
     const response = await this.request(instance, 'expiry', {
       symbol,
       exchange,
-      instrumenttype: 'options',
+      instrumenttype,
     });
     return response.expiry_list || response.data || [];
   }
@@ -2358,7 +2373,7 @@ class OpenAlgoClient extends EventEmitter {
       exchange,
     };
     if (expiry) {
-      payload.expiry_date = expiry;
+      payload.expiry_date = toBrokerExpiry(expiry);
     }
     if (strikeCount) {
       payload.strike_count = strikeCount;

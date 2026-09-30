@@ -130,6 +130,7 @@ Object.assign(DashboardApp.prototype, {
     if (last && bucket < last.ts) return;
 
     let bar = last;
+    let before = null;
     if (last && last.ts === bucket) {
       bar.close = ltp;
       if (ltp > bar.high) bar.high = ltp;
@@ -137,6 +138,7 @@ Object.assign(DashboardApp.prototype, {
     } else {
       bar = { ts: bucket, open: ltp, high: ltp, low: ltp, close: ltp, volume: 0 };
       pane.candles.push(bar);
+      try { before = pane.chart.getVisibleLogicalRange(); } catch (_) { /* no view yet */ }
     }
 
     const plain = PLAIN_SERIES_TYPES.some((t) => t.type === (pane.seriesType || 'candlestick'));
@@ -144,6 +146,34 @@ Object.assign(DashboardApp.prototype, {
       if (plain) pane.series.update({ time: bar.ts, open: bar.open, high: bar.high, low: bar.low, close: bar.close });
       else this.renderPaneSeries(key); // transformed types (Heikin-Ashi, Renko...) rebuild from candles
     } catch (_) { /* pane rebuilt meanwhile */ }
+
+    // Appending a bar to a pane can throw its view ~1000 bars past its data (seen 30 Sep 2026:
+    // 1067-1126 -> 2070-2129 on 1123 bars) - the pane then shows an empty grid. Put the view back,
+    // one bar on if it was following the live edge.
+    if (before) {
+      try {
+        const after = pane.chart.getVisibleLogicalRange();
+        const count = pane.candles.length;
+        if (after && after.to > count + 50) {
+          const shift = before.to >= count - 2 ? 1 : 0;
+          pane.chart.setVisibleLogicalRange({ from: before.from + shift, to: before.to + shift });
+        }
+      } catch (_) { /* pane rebuilt meanwhile */ }
+    }
+  },
+
+  /**
+   * Refill the underlying's history after a gap in the live feed. Delayed a few seconds so the
+   * broker's history has the minutes that were missed, and at most once a minute: an illiquid
+   * contract with genuinely quiet minutes would otherwise reload on every trade.
+   */
+  scheduleChartBackfill() {
+    if (this._backfillTimer || Date.now() - (this._lastBackfillAt || 0) < 60000) return;
+    this._backfillTimer = setTimeout(() => {
+      this._backfillTimer = null;
+      this._lastBackfillAt = Date.now();
+      if (this.currentView === 'chart') this.loadChartData();
+    }, 3000);
   },
 
   /** Say so on the status line rather than freezing silently at a wrong price. */
@@ -263,6 +293,9 @@ Object.assign(DashboardApp.prototype, {
       if (last && typeof this.feedChartTransformOnClose === 'function') {
         this.feedChartTransformOnClose(last);
       }
+      // Whole bars went by with no tick - the feed dropped (broker socket, server restart) and
+      // those minutes would stay missing or half-drawn until a manual refresh. Reload history.
+      if (last && bucket - last.ts > seconds) this.scheduleChartBackfill();
       bar = { ts: bucket, open: ltp, high: ltp, low: ltp, close: ltp, volume: 0 };
       if (haveVolume) bar._volBase = cumulative;
       candles.push(bar);

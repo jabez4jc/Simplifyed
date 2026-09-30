@@ -116,8 +116,20 @@ Object.assign(DashboardApp.prototype, {
   },
 
 
-  /** Drawings are per instrument - a trend line on NIFTY means nothing on BTC. */
+  /**
+   * Drawings are per instrument - a trend line on NIFTY means nothing on BTC. An auto-roll
+   * futures row is keyed by its series (MCX:CRUDEOIL1!), as on TradingView, so its drawings
+   * follow it onto the next contract instead of staying behind on the expired one.
+   */
   drawStorageKey() {
+    const s = this.chartState;
+    if (!s) return null;
+    const series = (s.symbols || []).find((x) => String(x.symbolId) === String(s.symbolId))?.series;
+    return `chart-draw:${s.exchange}:${series || s.symbol}`;
+  },
+
+  /** The per-contract key, where drawings made before a row was set to auto-roll still live. */
+  contractDrawStorageKey() {
     const s = this.chartState;
     return s ? `chart-draw:${s.exchange}:${s.symbol}` : null;
   },
@@ -234,7 +246,11 @@ Object.assign(DashboardApp.prototype, {
     // through `migrateDrawings` - the one place both shapes are understood - first. Without
     // that, every layout saved by 2.x reads as "not an array" and silently restores nothing.
     let saved = null;
-    try { saved = JSON.parse(localStorage.getItem(key) || 'null'); } catch (_) { return; }
+    try {
+      // Nothing under the series key yet: adopt the current contract's drawings. The next save
+      // writes them under the series key, where they then follow every roll.
+      saved = JSON.parse(localStorage.getItem(key) || localStorage.getItem(this.contractDrawStorageKey()) || 'null');
+    } catch (_) { return; }
     if (!saved) return;
     const doc = window.OAC?.migrateDrawings ? window.OAC.migrateDrawings(saved) : null;
     if (doc && !doc.drawings.length) return;

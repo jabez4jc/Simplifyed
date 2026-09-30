@@ -203,6 +203,7 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
       operatingMode,
       strikePolicy,
       stepLots,
+      contract,
       request_id: requestId,
       trigger_type: triggerType,
       correlation_id: correlationId,
@@ -210,6 +211,11 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
 
     if (requestId !== undefined && (!requestId || typeof requestId !== 'string')) {
       throw new ValidationError('request_id must be a non-empty string');
+    }
+    // A named option contract (the chart's displayed one). Checked in full by the service.
+    if (contract !== undefined && contract !== null
+      && (typeof contract !== 'object' || typeof contract.exchange !== 'string' || typeof contract.symbol !== 'string')) {
+      throw new ValidationError('contract must be { exchange, symbol }');
     }
 
     // Validate required fields
@@ -310,6 +316,7 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
       operatingMode: operatingMode || 'BUYER',
       strikePolicy: strikePolicy || 'FLOAT_OFS',
       stepLots: stepLots ? parseInt(stepLots, 10) : undefined,
+      contract: contract ? { exchange: contract.exchange, symbol: contract.symbol } : null,
       triggerType: triggerType || 'Manual',
       correlationId: correlationId || req.correlationId || null,
       requestId,

@@ -206,6 +206,9 @@ test('an expired anchor: listed as expired, and execute is refused with a reason
   const { admin, wl } = await setup();
   await copyRealInstruments("exchange = 'MCX' AND name = 'CRUDEOIL' AND instrumenttype = 'FUT'");
   const { body: { data: s } } = await create(admin, wl, { underlying: 'CRUDEOIL', exchange: 'MCX' });
+  const seeded = await db.get('SELECT auto_roll FROM watchlist_symbols WHERE watchlist_id = ?', [wl.id]);
+  assert.strictEqual(seeded.auto_roll, 1, 'an MCX anchor follows the nearest contract, so the next expiry purge rolls it');
+  // Until that purge runs, an anchor left on an expired contract is refused, never traded.
   await db.run("UPDATE watchlist_symbols SET symbol = 'CRUDEOIL19AUG26FUT', expiry = '19-AUG-26' WHERE watchlist_id = ?", [wl.id]);
   const list = await get(`/api/v1/strategies?watchlist_id=${wl.id}`, admin);
   assert.strictEqual(list.body.data[0].anchor_expired, true);
