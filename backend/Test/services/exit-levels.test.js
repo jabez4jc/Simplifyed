@@ -4,7 +4,7 @@ import test, { before, beforeEach, afterEach } from 'node:test';
 import { useTestDb } from '../helpers/db.js';
 import db from '../../src/core/database.js';
 import exitLevels from '../../src/services/exit-levels.service.js';
-import exitLossCaps from '../../src/services/exit-loss-caps.service.js';
+import exitLossCaps, { unrealizedPnl } from '../../src/services/exit-loss-caps.service.js';
 import marketDataFeedService from '../../src/services/market-data-feed.service.js';
 import marketCalendarService from '../../src/services/market-calendar.service.js';
 import quickOrderService from '../../src/services/quick-order.service.js';
@@ -200,4 +200,12 @@ test("the rupee max-loss closes one account's position once its loss reaches the
     exitLossCaps.createCap({ symbolId: row.id, exchange: 'NFO', symbol: 'BANKNIFTYW51500CE', maxLoss: 500 }),
     /not on NIFTY/
   );
+});
+
+test('max-loss reads unrealized P&L only', () => {
+  assert.strictEqual(unrealizedPnl({ pnl: -300 }), -300);
+  assert.strictEqual(unrealizedPnl({ pnl: -300, realized_pnl: 500 }), -800, 'total minus realized');
+  assert.strictEqual(unrealizedPnl({ pnl: -300, realised_pnl: 500, unrealised_pnl: -800 }), -800, 'explicit field wins');
+  assert.strictEqual(unrealizedPnl({ mtm: -50 }), -50);
+  assert.strictEqual(unrealizedPnl({}), 0);
 });

@@ -1,3 +1,4 @@
+import { useLiveDatabase } from './live-db.js';
 import assert from 'assert';
 import test, { before, after } from 'node:test';
 
@@ -39,7 +40,7 @@ let touched = new Map(); // instanceId -> symbols this suite ordered, for the fi
 
 before(async () => {
   if (!LIVE_ENABLED) return;
-  process.env.DATABASE_PATH = process.env.DATABASE_PATH || './database/simplifyed.db';
+  await useLiveDatabase();
   await db.connect();
   touched = trackOrders();
 

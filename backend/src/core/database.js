@@ -13,6 +13,10 @@ import { DatabaseError } from './errors.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// How long a write waits for another connection's lock before giving up (see connect()).
+const BUSY_TIMEOUT_MS = 30000;
+const SLOW_TRANSACTION_MS = 2000;
+
 /**
  * Database class with Promise-based methods
  */
@@ -48,13 +52,20 @@ class Database {
           this.isConnected = true;
           log.info('Database connected', { path: dbPath });
 
-          // Enable foreign keys
-          this.db.run('PRAGMA foreign_keys = ON');
+          // A writer that finds the file locked by another connection - the dev server and a
+          // test run, a script, the cron - waits this long for it. SQLite's default is not to
+          // wait at all, which is what surfaced as "SQLITE_BUSY: database is locked".
+          db.configure('busyTimeout', BUSY_TIMEOUT_MS);
 
-          // Set journal mode to WAL for better concurrency
-          this.db.run('PRAGMA journal_mode = WAL');
-
-          resolve();
+          // Awaited, in order: the pragmas used to be fired and forgotten, so the first queries
+          // could run before WAL and foreign keys were in force.
+          const pragmas = [
+            'PRAGMA foreign_keys = ON',
+            'PRAGMA journal_mode = WAL', // readers never block the writer, nor it them
+            'PRAGMA synchronous = NORMAL', // the WAL's recommended pairing: a crash loses at most the last commit, never the file
+          ];
+          pragmas.reduce((chain, sql) => chain.then(() => this.run(sql)), Promise.resolve())
+            .then(resolve, (error) => reject(new DatabaseError('Failed to configure database', error)));
         }
       });
     });
@@ -177,10 +188,18 @@ class Database {
     this._ensureConnected();
 
     const run = async () => {
-      await this.run('BEGIN TRANSACTION');
+      // IMMEDIATE takes the write lock up front. A deferred BEGIN that reads first and writes
+      // later cannot be upgraded once another connection has written in between, and SQLite
+      // fails that at once with SQLITE_BUSY, however long the busy timeout is.
+      await this.run('BEGIN IMMEDIATE');
+      const heldFrom = Date.now();
       try {
         const result = await callback(this);
         await this.run('COMMIT');
+        const held = Date.now() - heldFrom;
+        // Every other writer, in any process, waits while this is open - so a long one is a bug
+        // to fix (fetch first, write after), not a number to raise.
+        if (held > SLOW_TRANSACTION_MS) log.warn('Slow transaction held the write lock', { held_ms: held });
         return result;
       } catch (error) {
         // A failed ROLLBACK must not mask the error that caused it.

@@ -59,6 +59,9 @@ Object.assign(DashboardApp.prototype, {
   bindOrderLineGestures(chart, refresh, scope) {
     if (!chart || chart._orderGesturesBound) return;
     chart._orderGesturesBound = true;
+    // The engine only lets an order line be grabbed once something subscribes to drags; without
+    // this the lines showed a resize cursor but never started a drag, so no order could be moved.
+    chart.subscribeDrag?.(() => {});
     chart.on('click', (e) => {
       const m = /^order:(\d+)::close$/.exec(e?.id || '');
       if (m) { this.cancelChartOrder(Number(m[1]), refresh, scope); return; }
@@ -177,7 +180,7 @@ Object.assign(DashboardApp.prototype, {
     const controller = holder?.controller;
     if (!controller) return false;
     const data = scope ? this.optionPanes?.[scope]?.positionData : this.chartPositionData;
-    const symbol = scope ? this.optionPanes?.[scope]?.contract?.symbol : this.chartState?.symbol;
+    const symbol = scope ? this.optionPanes?.[scope]?.contract?.symbol : this.chartOrderTarget().symbol;
     const positions = data?.netQuantity && data.avgEntryPrice
       ? [{ symbol, netQty: data.netQuantity, avgPrice: data.avgEntryPrice }]
       : [];
@@ -205,17 +208,18 @@ Object.assign(DashboardApp.prototype, {
   pushOrderLinesLtp() {
     const s = this.orderLinesState();
     if (!s.controller || !this.chartState || !Number.isFinite(this.chartLastPrice)) return;
-    try { s.controller.onLtp(this.chartState.symbol, this.chartLastPrice); } catch (_) { /* disposed */ }
+    try { s.controller.onLtp(this.chartOrderTarget().symbol, this.chartLastPrice); } catch (_) { /* disposed */ }
   },
 
   async refreshOrderLines() {
     const s = this.orderLinesState();
     const state = this.chartState;
     if (!s.controller || !state) return;
+    const target = this.chartOrderTarget();
 
     let rows;
     try {
-      const res = await api.request(`/orders?symbol=${encodeURIComponent(state.symbol)}&status=open,pending`);
+      const res = await api.request(`/orders?symbol=${encodeURIComponent(target.symbol)}&status=open,pending`);
       rows = res.data || [];
     } catch (_) {
       // No orders.view permission, most likely - a read-only chart is still fully usable.
@@ -225,13 +229,18 @@ Object.assign(DashboardApp.prototype, {
     // detached controller.
     if (s !== this.orderLinesState() || !s.controller) return;
 
-    // Only orders on THIS underlying's own exchange - an option leg carries a different symbol
-    // and belongs on its own pane's price scale, not the underlying's.
+    // Only orders on THIS chart's own instrument (the future, for an index) - an option leg
+    // carries a different symbol and belongs on its own pane's price scale.
     const { orders, groups } = this.groupChartOrders(rows
-      .filter((o) => (o.exchange || '').toUpperCase() === (state.exchange || '').toUpperCase()));
+      .filter((o) => (o.exchange || '').toUpperCase() === (target.exchange || '').toUpperCase()
+        && (o.symbol || '').toUpperCase() === target.symbol.toUpperCase()));
     s.lastOrders = orders;
     s.groups = groups;
     this.reconcileTrade(undefined);
+
+    // Same cadence refreshes the position marker, as on the option panes: a fill that lands after
+    // the order was sent (market orders, a resting one filling later) otherwise never showed.
+    if (typeof this.loadChartPosition === 'function') this.loadChartPosition();
   },
 
   /**

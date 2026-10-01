@@ -1,3 +1,4 @@
+import { useLiveDatabase } from './live-db.js';
 import assert from 'assert';
 import test, { before, after } from 'node:test';
 
@@ -47,7 +48,7 @@ async function assertAnalyzerModeAtBroker(instance) {
 
 before(async () => {
   if (!LIVE_ENABLED) return;
-  process.env.DATABASE_PATH = process.env.DATABASE_PATH || './database/simplifyed.db';
+  await useLiveDatabase();
   await db.connect();
   touched = trackOrders();
   hasUnits = (await db.all('PRAGMA table_info(watchlist_symbols)')).some((c) => c.name === 'exit_unit_futures');

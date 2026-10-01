@@ -100,6 +100,9 @@ Object.assign(DashboardApp.prototype, {
   unsyncCharts() {
     try { this._linkGroup?.destroy(); } catch (_) { /* already gone */ }
     this._linkGroup = null;
+    clearInterval(this._alignTimer);
+    this._alignedKey = null;
+    this._alignedPanes = null;
   },
 
   syncCharts() {
@@ -115,6 +118,25 @@ Object.assign(DashboardApp.prototype, {
     });
     for (const chart of charts) this._linkGroup.add(chart);
     this.alignFollowers();
+    // Nothing tells the group when the underlying's view moves on its own - the layout settling
+    // after the panes open re-anchors it a moment later (seen 1 Oct 2026: the panes stayed on
+    // the window it had at the first read, ~2000 bars off, an empty grid). So the panes are
+    // re-aligned whenever the underlying's range differs from the one they were aligned to.
+    this._alignTimer = setInterval(() => {
+      let r;
+      try { r = this.chart?.getVisibleLogicalRange(); } catch (_) { return; }
+      if (!r) return;
+      const key = `${r.from.toFixed(2)}|${r.to.toFixed(2)}|${this.chartCandles?.length}`;
+      // ...or when a pane has been moved off the window it was given (a pane's own new bar did
+      // that by ~650 bars).
+      const drifted = ['ce', 'pe'].some((k) => {
+        const set = this._alignedPanes?.[k];
+        let now;
+        try { now = this.optionPanes?.[k]?.chart?.getVisibleLogicalRange(); } catch (_) { return false; }
+        return set && now && Math.abs(now.to - set.to) > 1;
+      });
+      if (key !== this._alignedKey || drifted) this.alignFollowers();
+    }, 400);
   },
 
   /**
@@ -126,10 +148,31 @@ Object.assign(DashboardApp.prototype, {
     let range;
     try { range = this.chart.getVisibleLogicalRange(); } catch (_) { return; }
     if (!range) return;
-    for (const follower of this.chartSyncTargets().slice(1)) {
+    this._alignedKey = `${range.from.toFixed(2)}|${range.to.toFixed(2)}|${this.chartCandles?.length}`;
+    const mainCount = this.chartCandles?.length || 0;
+    const mainLast = this.chartCandles?.[mainCount - 1]?.ts;
+    const seconds = timeframeSeconds(this.chartState?.timeframe || '5m');
+    for (const key of ['ce', 'pe']) {
+      const pane = this.optionPanes?.[key];
+      if (!pane?.chart) continue;
       try {
-        const mapped = window.OAC.followerRange(this.chart.dataLayer, follower.dataLayer, range);
-        if (mapped) follower.setVisibleLogicalRange(mapped);
+        let mapped;
+        const last = pane.candles?.[pane.candles.length - 1]?.ts;
+        if (mainCount && last && range.to > mainCount - 1 && this.paneTimeframe(key) === this.chartState.timeframe) {
+          // The right-hand margin is the engine's guess at future bars, and it guesses differently
+          // per chart: the same time came back ~600 bars off on one pane and ~2000 on another, an
+          // empty grid either way. Past the live edge the margin is counted in bars instead,
+          // from where this pane's own data ends.
+          const lag = Math.round((mainLast - last) / seconds);
+          const to = pane.candles.length - 1 + (range.to - (mainCount - 1)) - lag;
+          mapped = { from: to - (range.to - range.from), to };
+        } else {
+          mapped = window.OAC.followerRange(this.chart.dataLayer, pane.chart.dataLayer, range);
+        }
+        if (mapped) {
+          pane.chart.setVisibleLogicalRange(mapped);
+          this._alignedPanes = { ...this._alignedPanes, [key]: pane.chart.getVisibleLogicalRange() };
+        }
       } catch (_) { /* destroyed mid-rebuild */ }
     }
   },

@@ -74,19 +74,23 @@ test('chart: BUY CE and BUY PE go out with the product selected (NRML), not MIS'
   // Underlying, CE and PE are linked (crosshair + time window) and their right edges sit at the
   // same instant - the panes used to keep their own scroll position and drift apart.
   await expect.poll(() => page.evaluate(() => window.app._linkGroup?.members().length || 0), { timeout: 30000 }).toBe(3);
-  const { edges, barSeconds } = await page.evaluate(() => ({
-    edges: window.app.chartSyncTargets().map((c) => c.dataLayer.indexToTimeFloat(c.getVisibleLogicalRange().to)),
-    barSeconds: timeframeSeconds(window.app.chartState.timeframe),
-  }));
-  for (const edge of edges.slice(1)) expect(Math.abs(edge - edges[0])).toBeLessThanOrEqual(barSeconds);
+  // The underlying settles on its live edge a moment after the layout does; the panes follow.
+  await expect.poll(() => page.evaluate(() => {
+    const edges = window.app.chartSyncTargets().map((c) => c.dataLayer.indexToTimeFloat(c.getVisibleLogicalRange().to));
+    return Math.max(...edges.slice(1).map((e) => Math.abs(e - edges[0]))) <= timeframeSeconds(window.app.chartState.timeframe);
+  }), { timeout: 10000 }).toBe(true);
 
   // Hovering the underlying marks the same moment on both panes (a vertical line on each).
   // Near the latest bars: an option's history is days shorter than its underlying's, and an
   // instant before a pane's first bar rightly marks nothing there.
   const box = await page.locator('#chart-container').boundingBox();
-  await page.mouse.move(box.x + box.width - 140, box.y + box.height * 0.5);
-  await expect.poll(() => page.evaluate(() => window.app.chartSyncTargets().slice(1)
-    .map((c) => window.app._linkGroup.crosshairIndex(c)))).toEqual([expect.any(Number), expect.any(Number)]);
+  let nudge = 0;
+  await expect.poll(async () => {
+    // The move is repeated: one that lands while the panes are still being laid out is lost.
+    await page.mouse.move(box.x + box.width - 140 - (nudge++ % 2) * 6, box.y + box.height * 0.5);
+    return page.evaluate(() => window.app.chartSyncTargets().slice(1)
+      .map((c) => window.app._linkGroup.crosshairIndex(c)));
+  }).toEqual([expect.any(Number), expect.any(Number)]);
 
   for (const type of ['CE', 'PE']) {
     await page.locator(`[data-option-action="BUY_${type}"]`).click();

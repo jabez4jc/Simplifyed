@@ -327,6 +327,13 @@ class OrderService {
         symbol: normalized.symbol,
       });
 
+      // A limit through the market fills on the spot, and a broker that pushes no order update
+      // (Delta's analyzer) leaves the row "pending" until the 3-minute sweep - a phantom working
+      // order on the chart. One look shortly after placement settles the common case.
+      if (callerChosePrice) {
+        setTimeout(() => this.syncOrderStatus(instanceId).catch(() => {}), 2000).unref?.();
+      }
+
       if (!instance.is_analyzer_mode) {
         const manualCounts = normalized.action === 'BUY'
           ? { manual_buy_signals: 1 }

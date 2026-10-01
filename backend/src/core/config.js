@@ -184,6 +184,9 @@ class Config {
       requestTimeout: Number(settingDefault('openalgo.request_timeout_ms')),
       critical: { maxRetries: 3, retryDelay: 500 },    // orders and exits
       nonCritical: { maxRetries: 1, retryDelay: 2000 }, // quotes, books, everything else
+      // The instrument list is one bulk download (NFO is ~85k rows, 11-14s on a good day), not a call
+      // that stalls: it gets its own, longer limit than the per-call timeout above.
+      instrumentsTimeout: 120000,
     };
 
     // LOG_LEVEL / ENABLE_DEBUG_LOGS are read by core/logger.js at import.

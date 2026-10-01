@@ -2181,7 +2181,7 @@ class OpenAlgoClient extends EventEmitter {
           headers: {
             'Accept': 'application/json',
           },
-          signal: AbortSignal.timeout(this.timeout)
+          signal: AbortSignal.timeout(config.openalgo.instrumentsTimeout)
         });
 
         const duration = Date.now() - startTime;

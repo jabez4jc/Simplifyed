@@ -1,6 +1,6 @@
 /**
- * The rupee max-loss backstop: exit ONE account's position in a contract once that account's loss
- * on it reaches the cap. A standing rule - it stays until removed, so a later position in the same
+ * The rupee max-loss backstop: exit ONE account's position in a contract once that account's UNREALIZED
+ * loss on it reaches the cap. A standing rule - it stays until removed, so a later position in the same
  * contract is covered too. Checked every auto-exit cycle from the cached position books, only
  * while the exchange is open, after the loss has held for the confirmation window, and at most
  * one close attempt per account and contract per minute.
@@ -15,6 +15,17 @@ import quickOrderService from './quick-order.service.js';
 import levels, { CONFIRM_MS, upper, qtyOf } from './exit-levels.service.js';
 
 const CAP_COOLDOWN_MS = 60000;
+
+const num = (v) => (v == null || v === '' ? null : Number(v));
+
+/** Unrealized P&L only: an explicit unrealized field wins, else the broker's total minus its realized part. */
+export function unrealizedPnl(p) {
+  const explicit = num(p.unrealized_pnl ?? p.unrealised_pnl ?? p.unrealizedPnl);
+  if (Number.isFinite(explicit)) return explicit;
+  const total = num(p.pnl ?? p.mtm);
+  const realized = num(p.realized_pnl ?? p.realised_pnl ?? p.realizedPnl);
+  return (Number.isFinite(total) ? total : 0) - (Number.isFinite(realized) ? realized : 0);
+}
 
 class ExitLossCapsService {
   constructor() {
@@ -74,7 +85,7 @@ class ExitLossCapsService {
         const snap = marketDataFeedService.getPositionSnapshot(inst.id);
         const rows = (Array.isArray(snap?.data) ? snap.data : [])
           .filter((p) => upper(p.symbol || p.tradingsymbol) === cap.symbol && upper(p.exchange || p.exch) === cap.exchange && qtyOf(p));
-        const pnl = rows.reduce((sum, p) => sum + (Number(p.pnl ?? p.unrealized_pnl) || 0), 0);
+        const pnl = rows.reduce((sum, p) => sum + unrealizedPnl(p), 0);
         const key = `cap${cap.id}|${inst.id}`;
         if (!rows.length || pnl > -cap.max_loss) { this.crossSince.delete(key); continue; }
         if ((this.capPendingUntil.get(key) || 0) > Date.now()) continue;

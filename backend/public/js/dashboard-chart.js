@@ -341,11 +341,9 @@ Object.assign(DashboardApp.prototype, {
 
 
     this.attachChartContextMenu();
-    document.querySelectorAll('.chart-ticket').forEach((btn) => {
-      btn.addEventListener('click', () => this.confirmChartOrder({
-        side: btn.dataset.side, orderType: 'MARKET',
-      }));
-    });
+    // The BUY/SELL tickets are bound where they are drawn (renderOptionTickets). Binding them here
+    // too gave a click two handlers whenever the trade panel had already drawn - two confirmations,
+    // and two orders if both were accepted.
 
     this.bindTimeframeButtons();
     this.refreshSupportedTimeframes();
@@ -932,10 +930,23 @@ Object.assign(DashboardApp.prototype, {
  * so the line always has a stated meaning rather than an assumed one.
  */
 Object.assign(DashboardApp.prototype, {
+  /**
+   * The instrument this chart's orders and position are held on. An index cannot be traded, so an
+   * order placed from an index chart goes to its named future (NIFTY27OCT26FUT, not NIFTY): the
+   * lines and the position marker read the future's book, or they never showed.
+   */
+  chartOrderTarget() {
+    const state = this.chartState;
+    const fut = this.chartFuture;
+    if (/_INDEX$/.test(state.exchange || '') && fut && !fut.isRow) return { exchange: fut.exchange, symbol: fut.symbol };
+    return { exchange: state.exchange, symbol: state.symbol };
+  },
+
   async loadChartPosition() {
     const state = this.chartState;
     const panel = document.getElementById('chart-position');
     if (!state || !panel || !this.candleSeries) return;
+    const target = this.chartOrderTarget();
 
     // Same race as loadChartLevels - see the note there.
     const token = (this._positionToken = (this._positionToken || 0) + 1);
@@ -944,8 +955,8 @@ Object.assign(DashboardApp.prototype, {
     let data;
     try {
       const res = await api.request(
-        `/positions/symbol?exchange=${encodeURIComponent(state.exchange)}`
-        + `&symbol=${encodeURIComponent(state.symbol)}`
+        `/positions/symbol?exchange=${encodeURIComponent(target.exchange)}`
+        + `&symbol=${encodeURIComponent(target.symbol)}`
       );
       if (!stillCurrent()) return;
       data = res.data;
@@ -1114,6 +1125,8 @@ Object.assign(DashboardApp.prototype, {
         if (this.chartState?.symbolId !== requestedSymbolId) return;
         this.chartFuture = fut.data || null;
       } catch (_) { /* no future: futures buttons stay hidden */ }
+      // An index chart's orders and position are the future's - now that it is known, read them.
+      if (this.chartFuture) { this.refreshOrderLines?.(); }
     }
 
     const blocked = Boolean(info.unavailable) || info.instances.length === 0;
@@ -1171,6 +1184,13 @@ Object.assign(DashboardApp.prototype, {
     const futuresOrder = !optionAction && !intent.contract
       && (Boolean(intent.futures) || this.chartTradeMode === 'FUTURES');
     const future = futuresOrder ? this.chartFuture : null;
+    // An index cannot be ordered itself, and its future could not be found: say so here rather
+    // than send the index to the server to be refused.
+    if (/_INDEX$/.test(state.exchange || '') && !optionAction && !intent.contract && !future
+      && (intent.orderType || 'MARKET') !== 'MARKET') {
+      Utils.showToast(`${state.symbol} is an index with no future to order - a chosen-price order needs one`, 'error');
+      return;
+    }
     // Display only - the server always receives the raw action string above.
     const actionLabel = action.replace(/_/g, ' ');
     const orderType = intent.orderType || 'MARKET';
@@ -1451,17 +1471,19 @@ Object.assign(DashboardApp.prototype, {
         // So fan out explicitly, one manual order per target instance. No position_size: the
         // server derives each instance's target from that instance's own position. The one on
         // screen is summed across instances and over-sized any instance holding less.
+        const named = Boolean(future && !future.isRow);
 
         const results = await Promise.allSettled(targets.map((inst) => api.request('/orders', {
           method: 'POST',
           body: {
             instanceId: inst.id,
-            symbolId: state.symbolId,
+            // A future of an index row is not a watchlist row (tick size comes from its own lookup).
+            ...(named ? {} : { symbolId: state.symbolId }),
             // watchlist_orders.watchlist_id is NOT NULL - omitting it made the insert fail
             // *after* the order had already gone to the broker.
             watchlistId: this.chartTradeInfo?.symbol?.watchlistId ?? null,
-            exchange: state.exchange,
-            symbol: state.symbol,
+            exchange: named ? future.exchange : state.exchange,
+            symbol: named ? future.symbol : state.symbol,
             action,
             // UNITS: order.service never multiplies by lot size, only by the instance
             // multiplier - so the lot conversion has to happen here.
@@ -1489,6 +1511,8 @@ Object.assign(DashboardApp.prototype, {
 
       await this.loadChartPosition();
       await this.loadChartLevels();
+      // The broker's position book lags the fill; look again shortly rather than show the old one.
+      setTimeout(() => this.refreshOrderLines?.(), 4500);
     } catch (error) {
       Utils.showToast(`Order failed: ${error.message}`, 'error');
     } finally {
@@ -1701,6 +1725,8 @@ Object.assign(DashboardApp.prototype, {
       return Number.isFinite(y) ? y : null;
     };
 
+    // Capture phase + stopPropagation once a line is grabbed: otherwise the chart's own canvas pans
+    // under the pointer and the level lands almost where it started (same fix as exit levels).
     container.addEventListener('pointerdown', (e) => {
       if (!this.levelLines) return;
       const rect = container.getBoundingClientRect();
@@ -1710,13 +1736,15 @@ Object.assign(DashboardApp.prototype, {
         if (ly !== null && Math.abs(ly - y) <= HIT_TOLERANCE_PX) {
           candidate = kind;
           startY = y;
+          e.stopPropagation();
           break;
         }
       }
-    });
+    }, true);
 
     container.addEventListener('pointermove', (e) => {
       if (!candidate) return;
+      e.stopPropagation();
       const rect = container.getBoundingClientRect();
       const y = e.clientY - rect.top;
 
@@ -1737,9 +1765,10 @@ Object.assign(DashboardApp.prototype, {
       this.previewLevelFromInput(candidate, String(points));
       const apply = document.querySelector('#chart-levels [data-action="apply"]');
       if (apply) apply.disabled = false;
-    });
+    }, true);
 
     const end = (e) => {
+      if (candidate) e.stopPropagation();
       if (dragging) {
         container.releasePointerCapture?.(e.pointerId);
         container.classList.remove('is-dragging-level');
@@ -1747,8 +1776,8 @@ Object.assign(DashboardApp.prototype, {
       candidate = null;
       dragging = false;
     };
-    container.addEventListener('pointerup', end);
-    container.addEventListener('pointercancel', end);
+    container.addEventListener('pointerup', end, true);
+    container.addEventListener('pointercancel', end, true);
   },
 
   confirmLevelChange() {

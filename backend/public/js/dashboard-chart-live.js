@@ -122,6 +122,7 @@ Object.assign(DashboardApp.prototype, {
     if (!pane?.series || !Number.isFinite(ltp) || ltp <= 0 || isSentinel(ltp)) return;
     const age = this.quoteAgeMs(quote);
     if (age !== null && age > MAX_QUOTE_AGE_MS) return;
+    this.markDataReceived();
 
     const seconds = timeframeSeconds(this.paneTimeframe(key));
     const nowSec = Math.floor(Date.now() / 1000);
@@ -147,18 +148,19 @@ Object.assign(DashboardApp.prototype, {
       else this.renderPaneSeries(key); // transformed types (Heikin-Ashi, Renko...) rebuild from candles
     } catch (_) { /* pane rebuilt meanwhile */ }
 
-    // Appending a bar to a pane can throw its view ~1000 bars past its data (seen 30 Sep 2026:
-    // 1067-1126 -> 2070-2129 on 1123 bars) - the pane then shows an empty grid. Put the view back,
-    // one bar on if it was following the live edge.
+    // Appending a bar to a pane can throw its view hundreds of bars off its data (seen 30 Sep 2026:
+    // 1067-1126 -> 2070-2129 on 1123 bars; 1 Oct: +646 on 766 bars, either way) - the pane then
+    // shows an empty grid. Whatever the engine did beyond the one-bar scroll of a view that
+    // follows the live edge is undone, then the panes are put back on the underlying's window.
     if (before) {
       try {
         const after = pane.chart.getVisibleLogicalRange();
-        const count = pane.candles.length;
-        if (after && after.to > count + 50) {
-          const shift = before.to >= count - 2 ? 1 : 0;
+        const shift = before.to >= pane.candles.length - 2 ? 1 : 0;
+        if (after && Math.abs(after.to - (before.to + shift)) > 1) {
           pane.chart.setVisibleLogicalRange({ from: before.from + shift, to: before.to + shift });
         }
       } catch (_) { /* pane rebuilt meanwhile */ }
+      if (typeof this.alignFollowers === 'function') this.alignFollowers();
     }
   },
 
@@ -205,6 +207,10 @@ Object.assign(DashboardApp.prototype, {
       // The endpoint already knows: it compares each snapshot against the quote TTL. Charting a
       // snapshot it has flagged stale is how a January price ended up on a July candle.
       if (instance.stale) { sawStale = instance.quotes?.length ? true : sawStale; continue; }
+      // A fresh snapshot IS the feed working, whichever view is open: the header pill reads
+      // "Stale" off this clock, and on the chart view nothing else was feeding it once the
+      // socket was not carrying this symbol.
+      if (instance.quotes?.length) this.markDataReceived(ts);
       for (const quote of instance.quotes || []) {
         if (this.applyChartQuote(this.hydrateQuoteWithLtp(quote, ts))) return;
       }

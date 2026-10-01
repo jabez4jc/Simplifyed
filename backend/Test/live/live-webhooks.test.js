@@ -1,3 +1,4 @@
+import { useLiveDatabase } from './live-db.js';
 import assert from 'assert';
 import test, { before, after } from 'node:test';
 import express from 'express';
@@ -54,7 +55,7 @@ async function nearestFuture(exchange, name) {
 
 before(async () => {
   if (!LIVE_ENABLED) return;
-  process.env.DATABASE_PATH = process.env.DATABASE_PATH || './database/simplifyed.db';
+  await useLiveDatabase();
   await db.connect();
   await config.loadFromDatabase?.();
   token = config.webhooks?.tradingviewBroadcast?.token || process.env.WEBHOOK_TOKEN;

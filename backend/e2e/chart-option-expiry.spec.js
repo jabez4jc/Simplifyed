@@ -341,8 +341,11 @@ test('the option charts stay on their contracts when NIFTY moves; ATM is offered
   await withPanes(page);
   const before = await page.evaluate(() => ({ ce: window.app.paneContracts.ce.symbol, pe: window.app.paneContracts.pe.symbol }));
 
-  // NIFTY 400 points higher, then a rebuild (what a timeframe or indicator change does).
+  // NIFTY 400 points higher, then a rebuild (what a timeframe or indicator change does). With the
+  // market open a live tick would put the real price straight back, so the feed is silenced.
   await page.evaluate(async () => {
+    window.app.stopChartLiveUpdates();
+    window.app.applyChartQuote = () => false;
     window.app.chartLastPrice += 400;
     await window.app.refreshOptionPanes();
   });
@@ -392,13 +395,18 @@ test('a contract with a position shows as a chip and goes onto its chart in one 
  * chart order across two accounts, and a position on the PE contract), and every modify, cancel
  * and close is intercepted: nothing reaches a broker.
  */
-async function withTradeBook(page, { analyzer }) {
+async function withTradeBook(page, { analyzer, atMarket = false }) {
   const { contract } = await withPanes(page);
   const pe = await page.evaluate(() => window.app.paneContracts.pe);
+  // The order sits at 50 unless asked to sit at the pane's price: with the market open a put can
+  // trade far from 50, and a line off the scale cannot be grabbed.
+  const px = atMarket
+    ? await page.evaluate(() => Math.round(window.app.optionPanes.pe.candles.at(-1).close))
+    : 50;
   const stamp = 'chart-9-BUY-LIMIT-1790000000000';
   const rows = [1, 2].map((inst, i) => ({
     id: 900 + i, instance_id: inst, instance_name: inst === 1 ? 'Acct A' : 'Acct B', instance_analyzer: analyzer ? 1 : (inst === 1 ? 1 : 0),
-    exchange: pe.exchange, symbol: pe.symbol, side: 'BUY', order_type: 'LIMIT', quantity: 65, price: 50, trigger_price: 0,
+    exchange: pe.exchange, symbol: pe.symbol, side: 'BUY', order_type: 'LIMIT', quantity: 65, price: px, trigger_price: 0,
     status: 'open', request_id: `${stamp}-${inst}`,
   }));
   const calls = [];
@@ -419,7 +427,7 @@ async function withTradeBook(page, { analyzer }) {
     return route.fulfill({ status: 200, json: { status: 'success', data: {} } });
   });
   await page.evaluate(async () => { await window.app.refreshPaneOrderLines('pe'); await window.app.loadPanePosition('pe'); });
-  return { pe, calls, contract };
+  return { pe, calls, contract, px };
 }
 
 test('one chart order on two accounts is one line; analyzer-only moves straight away', async ({ page }) => {
@@ -548,5 +556,126 @@ test('an exit level placed on the index chart shows, drags, estimates on the opt
   await page.locator('#chart-exit-levels [data-remove-level]').click();
   await page.locator('#chart-exit-levels [data-remove-cap]').click();
   await page.waitForFunction(() => !window.app.activeExitLevels().length && !(window.app.exitCaps || []).length, null, { timeout: 15000 });
+  assertNoPageErrors(errors);
+});
+
+/** The points-from-entry target/stop line drags by the pointer, not by a chart pan under it. */
+test('dragging the points target line moves it with the pointer instead of panning the chart', async ({ page }) => {
+  test.setTimeout(120000);
+  const errors = collectPageErrors(page);
+  await openNiftyChart(page);
+  const setup = await page.evaluate(async () => {
+    const app = window.app;
+    const ref = (await api.request(`/exit-levels/preview?symbolId=${app.chartState.symbolId}&price=1`)).data.ltp;
+    app.applyChartQuote({ symbol: 'NIFTY', exchange: 'NSE_INDEX', ltp: ref });
+    // With the market open a live tick rescales the chart between measuring the line and grabbing it.
+    app.stopChartLiveUpdates();
+    app.applyChartQuote = () => false;
+    app.resetChartToLastBars(app.chart, app.chartCandles);
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    const ltpY = app.chart.priceToCoordinate(ref, 0);
+    const price = app.chart.coordinateToPrice(ltpY - 60, 0);
+    const entry = ref - 50;
+    app.chartPositionData = { netQuantity: 1, avgEntryPrice: entry, legs: [{}] };
+    app.chartLevels = { mode: 'PER_POSITION', points: { target: Number((price - entry).toFixed(2)), stoploss: null } };
+    app.redrawChartLines();
+    // The panel input is not rendered for this stubbed position; record what the drag previews.
+    const preview = app.previewLevelFromInput.bind(app);
+    app.previewLevelFromInput = (kind, raw) => { window.__dragPts = Number(raw); preview(kind, raw); };
+    const y = app.chart.priceToCoordinate(price, 0);
+    // Where 30px lower is, on the scale as it stands before anything is dragged.
+    return { y, expectedPts: Number((app.chart.coordinateToPrice(y + 30, 0) - entry).toFixed(2)) };
+  });
+  const box = await page.locator('#chart-container').boundingBox();
+  await page.mouse.move(box.x + 300, box.y + setup.y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 300, box.y + setup.y + 15);
+  await page.mouse.move(box.x + 300, box.y + setup.y + 30);
+  await page.mouse.up();
+  // A chart panning under the pointer keeps the price under it almost where it started, so the
+  // level would land near its old points instead of 30px down the scale.
+  const pts = await page.evaluate(() => window.__dragPts);
+  expect(Math.abs(pts - setup.expectedPts), `level previewed at ${pts} pts, expected ${setup.expectedPts}`).toBeLessThan(2);
+  assertNoPageErrors(errors);
+});
+
+/**
+ * A right-click Limit on an index chart used to post the INDEX itself (NSE_INDEX:NIFTY), which the
+ * server refuses ("Index symbols cannot be traded directly"), so the order never reached a broker.
+ * It now names the index's future. The request is intercepted: nothing is sent anywhere.
+ */
+test('a limit from the index chart menu orders the index future, not the index', async ({ page }) => {
+  test.setTimeout(120000);
+  const errors = collectPageErrors(page);
+  await openNiftyChart(page);
+  const posted = [];
+  await page.route('**/api/v1/orders', async (route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    posted.push(route.request().postDataJSON());
+    return route.fulfill({ status: 201, json: { status: 'success', data: { id: 1 } } });
+  });
+  const ref = await page.evaluate(() => window.app.chartLastPrice);
+  await page.evaluate((p) => { window.app.chart.coordinateToPrice = () => p - 50; }, ref);
+  await page.locator('#chart-container').click({ button: 'right', position: { x: 200, y: 200 } });
+  await page.locator('#chart-ctx [data-trade-i]', { hasText: /Buy .* Limit @/ }).click();
+  const dialog = page.locator('.modal-overlay .chart-confirm');
+  await expect(dialog).toContainText(/FUT/);
+  await dialog.locator('[data-action="go"]').click();
+  await expect.poll(() => posted.length, { timeout: 10000 }).toBeGreaterThan(0);
+  for (const body of posted) {
+    expect(body.symbol, 'the future, not the index').toMatch(/FUT$/);
+    expect(body.exchange).toBe('NFO');
+    expect(body.pricetype).toBe('LIMIT');
+    expect(body.symbolId, 'the future is not a watchlist row').toBeUndefined();
+  }
+  assertNoPageErrors(errors);
+});
+
+/**
+ * The real gesture. The engine starts dragging an order line only once something subscribes to
+ * drags, which the app did not do, so the lines showed a resize cursor and never moved. The other
+ * tests call moveChartOrder directly and could not see it.
+ */
+test('dragging a working order line with the mouse moves the order', async ({ page }) => {
+  test.setTimeout(150000);
+  const errors = collectPageErrors(page);
+  await openNiftyChart(page);
+  const { calls, px } = await withTradeBook(page, { analyzer: true, atMarket: true });
+  // The pane can still be rebuilding when the book lands; grab the line only once it is settled.
+  await page.waitForFunction(() => window.app.optionPanes.pe.orderLines?.groups?.has('900'));
+  await page.waitForTimeout(1000);
+  await page.waitForFunction((p) => Number.isFinite(window.app.optionPanes.pe.chart.priceToCoordinate(p, 0)), px, { timeout: 15000 });
+  const at = await page.evaluate((px) => {
+    const r = document.querySelector('.chart-pane[data-pane="pe"] .chart-pane-body').getBoundingClientRect();
+    return { x: r.x, top: r.y, y: window.app.optionPanes.pe.chart.priceToCoordinate(px, 0) };
+  }, px);
+  // The BUY tag of the line at px - the part of the line that takes the grab.
+  await page.mouse.move(at.x + 200, at.top + at.y);
+  await page.mouse.down();
+  await page.mouse.move(at.x + 200, at.top + at.y + 12, { steps: 4 });
+  await page.mouse.move(at.x + 200, at.top + at.y + 24, { steps: 4 });
+  await page.mouse.up();
+  await expect.poll(() => calls.length, { timeout: 10000 }).toBe(2);
+  expect(calls.every((c) => /orders\/90[01]\/modify$/.test(c.url) && c.body.price < px)).toBe(true);
+  assertNoPageErrors(errors);
+});
+
+/**
+ * An order placed from the index chart is held on the index's future (NIFTY27OCT26FUT), so the
+ * chart used to look for it under NIFTY, find nothing, and show no line to modify or cancel.
+ */
+test('an order sent from the index chart shows as a line on it, though it is held on the future', async ({ page }) => {
+  test.setTimeout(120000);
+  const errors = collectPageErrors(page);
+  await openNiftyChart(page);
+  const future = await page.evaluate(() => window.app.chartFuture);
+  const ref = await page.evaluate(() => Math.round(window.app.chartLastPrice));
+  await page.route('**/api/v1/orders?*', (route) => route.fulfill({ status: 200, json: { status: 'success', data: [{
+    id: 777, instance_id: 1, instance_name: 'Acct A', instance_analyzer: 1, exchange: future.exchange, symbol: future.symbol,
+    side: 'BUY', order_type: 'LIMIT', quantity: 975, price: ref - 40, trigger_price: 0, status: 'open', request_id: 'chart-1-BUY-LIMIT-1790000000000-1',
+  }] } }));
+  await page.evaluate(() => window.app.refreshOrderLines());
+  await page.waitForFunction(() => window.app.orderLinesState().groups?.has('777'), null, { timeout: 15000 });
+  expect(await page.evaluate(() => window.app.orderLinesState().lastOrders.length)).toBe(1);
   assertNoPageErrors(errors);
 });

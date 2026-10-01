@@ -1,3 +1,4 @@
+import { useLiveDatabase } from './live-db.js';
 import assert from 'assert';
 import test, { before, after } from 'node:test';
 
@@ -43,7 +44,7 @@ const CRYPTO_UNDERLYINGS = [
 let instances = [];
 let touched = new Map(); // instanceId -> symbols this suite ordered, for the final cleanup
 const contractsBySegment = { indian: [], crypto: [] };
-const sent = []; // every placesmartorder payload, in order
+const sent = []; // every placesmartorder and placeorder payload, in order (a caller-priced order goes by placeorder)
 
 const segmentOf = (instance) => (isCryptoBroker(instance.broker) ? 'crypto' : 'indian');
 const onTick = (price, tick) => Math.abs(price / tick - Math.round(price / tick)) < 1e-6;
@@ -120,7 +121,7 @@ async function resolveContracts(quoteInstances, segment) {
 
 before(async () => {
   if (!LIVE_ENABLED) return;
-  process.env.DATABASE_PATH = process.env.DATABASE_PATH || './database/simplifyed.db';
+  await useLiveDatabase();
   await db.connect();
   touched = trackOrders();
   instances = await db.all(
@@ -133,7 +134,7 @@ before(async () => {
   }
   const original = openalgoClient.request.bind(openalgoClient);
   openalgoClient.request = async (inst, endpoint, data, ...rest) => {
-    if (endpoint === 'placesmartorder') sent.push({ instanceId: inst.id, ...data });
+    if (endpoint === 'placesmartorder' || endpoint === 'placeorder') sent.push({ instanceId: inst.id, ...data });
     return original(inst, endpoint, data, ...rest);
   };
 });

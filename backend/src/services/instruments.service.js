@@ -1303,25 +1303,12 @@ class InstrumentsService {
       let totalInstruments = 0;
       const exchangeStats = {};
 
-      // Resolve which exchange segments belong to this instance's broker (Indian vs crypto)
-      // and only clear those - a crypto instance sync must not wipe cached Indian broker
-      // instruments (and an Indian broker sync must not wipe cached crypto instruments)
+      // Resolve which exchange segments belong to this instance's broker (Indian vs crypto).
+      // Only those are replaced - a crypto instance sync must not wipe cached Indian broker
+      // instruments (and an Indian broker sync must not wipe cached crypto instruments).
+      // An exchange is cleared only once its new list has arrived, so a failed download
+      // leaves the previous cache in place instead of an empty exchange.
       const exchanges = getExchangesForInstance(instance);
-
-      log.info('Clearing existing instruments for exchanges', { exchanges });
-      const clearPlaceholders = exchanges.map(() => '?').join(', ');
-      await db.run(`DELETE FROM instruments WHERE exchange IN (${clearPlaceholders})`, exchanges);
-
-      // Notify progress callback
-      if (onProgress) {
-        onProgress({
-          status: 'clearing',
-          message: 'Clearing existing instruments...',
-          currentExchange: null,
-          completedExchanges: [],
-          totalInstruments: 0
-        });
-      }
 
       // Fetch from each exchange
       for (const exchange of exchanges) {
@@ -1351,6 +1338,8 @@ class InstrumentsService {
             exchangeStats[exchange] = { count: 0, status: 'empty' };
             continue;
           }
+
+          await db.run('DELETE FROM instruments WHERE exchange = ?', [exchange]);
 
           // Insert instruments in batches
           const BATCH_SIZE = 70;

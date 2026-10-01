@@ -1756,10 +1756,14 @@ class MarketDataFeedService extends EventEmitter {
     const invalidationPromises = [];
 
     if (feeds.includes('positions')) {
-      this.positionCache.delete(instanceId);
       this.positionRefreshTimestamps.delete(instanceId);
       if (refresh) {
+        // The old book stays until the new one replaces it. Deleting it first left readers an
+        // empty answer for as long as the broker took (or for good, with the instance paused):
+        // the chart showed an open position vanish the moment an order was placed.
         invalidationPromises.push(this.refreshPositionsForInstance(instanceId, { force: true }));
+      } else {
+        this.positionCache.delete(instanceId);
       }
     }
 

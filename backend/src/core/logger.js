@@ -91,6 +91,9 @@ const kvFormatter = winston.format.printf(({ timestamp, level, message, ...rest 
   fields.push(`ts=${timestamp}`);
   fields.push(`lvl=${level.toUpperCase()}`);
   if (meta.service || rest.service) fields.push(`svc=${meta.service || rest.service}`);
+  // Several processes write one log (the app, a test run, a script): without this nobody can say
+  // whose rate-limit and pause lines they are.
+  fields.push(`pid=${process.pid}`);
   // Append meta in deterministic order, only allowed keys to avoid bloat
   const keys = Object.keys(meta).filter((k) => allowedMetaKeys.has(k));
   keys.sort();
