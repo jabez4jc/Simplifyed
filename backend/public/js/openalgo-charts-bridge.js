@@ -31,11 +31,17 @@ import {
   FootprintAggregator, Footprint,
 } from '/vendor/openalgo-charts/openalgo-charts.profile.mjs';
 import { TradeController } from '/vendor/openalgo-charts/openalgo-charts.trade.mjs';
-import {
-  HeikinAshiTransform, RenkoTransform, RangeBarsTransform, LineBreakTransform,
-  PointFigureTransform, KagiTransform, runTransform,
-} from '/vendor/openalgo-charts/openalgo-charts.transform.mjs';
+// Side effects only: the transform tier registers Heikin Ashi, Renko, range bars, line break,
+// point and figure and Kagi as transforms the chart applies itself (`chart.setSeriesTransform`),
+// live, tick by tick - see dashboard-chart-types.js.
+import '/vendor/openalgo-charts/openalgo-charts.transform.mjs';
 import '/vendor/openalgo-charts/openalgo-charts.webgl.mjs';
+// The widget tier's own study dialogs - the picker and the per-study settings (Inputs / Style
+// tabs, live preview, Cancel reverts) - mounted over this app's bare charts through
+// `createAlertUi`'s context rather than a whole `createWidget` shell. See dashboard-chart-panes.js.
+import {
+  createAlertUi, mountIndicatorSettings, mountIndicatorPicker,
+} from '/vendor/openalgo-charts/openalgo-charts.widget.mjs';
 
 registerBuiltinIndicators();
 registerBuiltinDrawingTools();
@@ -136,13 +142,9 @@ window.OAC = {
   FootprintAggregator,
   Footprint,
   TradeController,
-  HeikinAshiTransform,
-  RenkoTransform,
-  RangeBarsTransform,
-  LineBreakTransform,
-  PointFigureTransform,
-  KagiTransform,
-  runTransform,
+  createAlertUi,
+  mountIndicatorSettings,
+  mountIndicatorPicker,
   applyScript,
   removeScript,
   savedScripts: readScripts,

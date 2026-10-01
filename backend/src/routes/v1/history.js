@@ -158,7 +158,7 @@ router.get('/option-legs', VIEW, async (req, res, next) => {
     const peStrike = list[clamp(atmIdx + off)];
 
     const find = async (strike, type) => db.get(
-      `SELECT symbol, exchange, lotsize, strike, expiry FROM instruments
+      `SELECT symbol, exchange, lotsize, strike, expiry, tick_size AS tickSize FROM instruments
         WHERE UPPER(underlying_key) = ? AND expiry = ? AND strike = ? AND instrumenttype = ?
         LIMIT 1`,
       [key, expiryRow.expiry, strike, type]
@@ -204,10 +204,21 @@ router.get('/future', VIEW, async (req, res, next) => {
     const row = await db.get('SELECT * FROM watchlist_symbols WHERE id = ?', [symbolId]);
     if (!row) throw new ValidationError(`Symbol ${symbolId} not found`);
 
+    // The tick the chart rounds a picked price to, so what it shows is what the order carries.
     if (row.symbol_type === 'FUTURES' || row.instrumenttype === 'FUT' || /FUT$/i.test(row.symbol || '')) {
+      // The contract's own lot size wins over the row's: the exchange refuses any other multiple,
+      // and a row added without one (lot_size 1) sent CRUDEOILM orders of 1 unit, not 10.
+      const inst = await db.get(
+        'SELECT tick_size, lotsize FROM instruments WHERE UPPER(exchange) = UPPER(?) AND UPPER(symbol) = UPPER(?)',
+        [row.exchange, row.symbol]
+      );
       return res.json({
         status: 'success',
-        data: { symbol: row.symbol, exchange: row.exchange, expiry: row.expiry || null, lotsize: row.lot_size || 1, isRow: true },
+        data: {
+          symbol: row.symbol, exchange: row.exchange, expiry: row.expiry || null,
+          lotsize: Number(inst?.lotsize) || row.lot_size || 1,
+          tickSize: Number(inst?.tick_size) || null, isRow: true,
+        },
       });
     }
     const exchange = derivativeResolutionService.getDerivativeExchange(row.exchange);
@@ -216,7 +227,7 @@ router.get('/future', VIEW, async (req, res, next) => {
     res.json({
       status: 'success',
       data: future
-        ? { symbol: future.symbol, exchange, expiry: future.expiry, lotsize: future.lotsize || 1, isRow: false }
+        ? { symbol: future.symbol, exchange, expiry: future.expiry, lotsize: future.lotsize || 1, tickSize: Number(future.tick_size) || null, isRow: false }
         : null,
     });
   } catch (error) {

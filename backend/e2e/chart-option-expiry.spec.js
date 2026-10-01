@@ -180,17 +180,16 @@ test('the main chart\'s indicators, settings included, copy onto the option char
   await withPanes(page);
 
   // Two indicators on the main chart, one with a non-default setting; a different one on CE.
-  const want = await page.evaluate(() => {
+  await page.evaluate(() => {
     const app = window.app;
-    for (const [id, v] of Object.entries(app.indicatorConfig())) if (v.on) app.toggleIndicator(id);
-    const ids = ['rsi', 'macd'].filter((id) => app.indicatorConfig()[id]);
-    ids.forEach((id) => app.toggleIndicator(id));
-    app.setIndicatorParam('rsi', 'length', 9);
-    const other = Object.keys(app.indicatorConfig('ce')).find((id) => !ids.includes(id));
-    if (!app.indicatorConfig('ce')[other].on) app.toggleIndicator(other, 'ce');
-    return { ids: ids.sort(), rsiLength: app.indicatorConfig().rsi.settings.length };
+    for (const scope of [undefined, 'ce']) {
+      const chart = app.indicatorChart(scope);
+      for (const inst of [...chart.indicators()].reverse()) chart.removeIndicator(inst.id);
+    }
+    app.chart.addIndicator('rsi', { length: 9 });
+    app.chart.addIndicator('macd');
+    app.optionPanes.ce.chart.addIndicator('sma');
   });
-  expect(want.ids).toEqual(['macd', 'rsi']);
 
   await page.click('[data-pop="indicators"]');
   await page.click('#chart-indicators-bar [data-action="copy-panes"]');
@@ -198,60 +197,14 @@ test('the main chart\'s indicators, settings included, copy onto the option char
 
   const got = await page.evaluate(() => {
     const app = window.app;
-    const on = (scope) => app.activeIndicatorDefs(scope).map((d) => d.id).sort();
+    const on = (scope) => app.indicatorChart(scope).indicators().map((i) => i.indicatorId).sort();
     return {
       ce: on('ce'), pe: on('pe'),
-      ceRsi: app.indicatorConfig('ce').rsi.settings.length,
-      ceLive: app.optionPanes.ce.liveIndicators?.size ?? 0,
-      peLive: app.optionPanes.pe.liveIndicators?.size ?? 0,
+      ceRsi: app.optionPanes.ce.chart.indicators().find((i) => i.indicatorId === 'rsi')?.settings().length,
+      saved: JSON.parse(localStorage.getItem('chart-indicators-pe')).map((s) => s.indicatorId).sort(),
     };
   });
-  expect(got).toEqual({ ce: want.ids, pe: want.ids, ceRsi: 9, ceLive: 2, peLive: 2 });
-  assertNoPageErrors(errors);
-});
-
-test('an option chart put off its data by a new bar is brought back to its candles', async ({ page }) => {
-  test.setTimeout(180000);
-  const errors = collectPageErrors(page);
-  await openNiftyChart(page);
-  await withPanes(page);
-
-  // The charting library, on some appends, moves a pane's view ~1000 bars past its data (captured
-  // 30 Sep 2026: 1067-1126 -> 2070-2129 on 1123 bars) and the pane shows an empty grid. It is
-  // intermittent, so it is reproduced here exactly as captured, on the pane's next real append.
-  await page.evaluate(() => {
-    const p = window.app.optionPanes.pe;
-    const update = p.series.update;
-    let lastTime = p.candles[p.candles.length - 1].ts;
-    p.series.update = function (bar) {
-      const res = update.call(this, bar);
-      if (bar.time > lastTime && !window.__appended) {
-        window.__appended = true;
-        const r = p.chart.getVisibleLogicalRange();
-        p.chart.setVisibleLogicalRange({ from: r.from + 1003, to: r.to + 1003 });
-      }
-      lastTime = Math.max(lastTime, bar.time);
-      return res;
-    };
-  });
-  // Outside market hours no new minute arrives by itself - start one with the pane's own price.
-  await page.evaluate(() => {
-    const p = window.app.optionPanes.pe;
-    const bucket = Math.floor((Date.now() / 1000 + 19800) / 60) * 60 - 19800;
-    if (p.candles[p.candles.length - 1].ts < bucket) {
-      window.app.applyPaneQuote('pe', { ltp: p.candles[p.candles.length - 1].close });
-    }
-  });
-  await page.waitForFunction(() => window.__appended, null, { timeout: 90000 });
-  await page.waitForTimeout(500);
-
-  const view = await page.evaluate(() => {
-    const p = window.app.optionPanes.pe;
-    const r = p.chart.getVisibleLogicalRange();
-    return { from: r.from, to: r.to, bars: p.candles.length };
-  });
-  expect(view.to, JSON.stringify(view)).toBeLessThanOrEqual(view.bars + 50);
-  expect(view.from, JSON.stringify(view)).toBeLessThan(view.bars);
+  expect(got).toEqual({ ce: ['macd', 'rsi'], pe: ['macd', 'rsi'], ceRsi: 9, saved: ['macd', 'rsi'] });
   assertNoPageErrors(errors);
 });
 
@@ -407,7 +360,7 @@ async function withTradeBook(page, { analyzer, atMarket = false }) {
   const rows = [1, 2].map((inst, i) => ({
     id: 900 + i, instance_id: inst, instance_name: inst === 1 ? 'Acct A' : 'Acct B', instance_analyzer: analyzer ? 1 : (inst === 1 ? 1 : 0),
     exchange: pe.exchange, symbol: pe.symbol, side: 'BUY', order_type: 'LIMIT', quantity: 65, price: px, trigger_price: 0,
-    status: 'open', request_id: `${stamp}-${inst}`,
+    status: 'open', request_id: `${stamp}-${inst}`, order_id: `E2E-${900 + i}`,
   }));
   const calls = [];
   await page.route('**/api/v1/orders?*', (route) => route.fulfill({ status: 200, json: { status: 'success', data: rows.filter((r) => route.request().url().includes(encodeURIComponent(r.symbol))) } }));
@@ -575,8 +528,11 @@ test('dragging the points target line moves it with the pointer instead of panni
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     const ltpY = app.chart.priceToCoordinate(ref, 0);
     const price = app.chart.coordinateToPrice(ltpY - 60, 0);
+    // The position is the future's, so its entry is a future price: the chart draws it 50 below
+    // the index by converting it back through the basis.
+    await app.pollFutureQuote();
     const entry = ref - 50;
-    app.chartPositionData = { netQuantity: 1, avgEntryPrice: entry, legs: [{}] };
+    app.chartPositionData = { netQuantity: 1, avgEntryPrice: app.indexToFuturePrice(entry), legs: [{}] };
     app.chartLevels = { mode: 'PER_POSITION', points: { target: Number((price - entry).toFixed(2)), stoploss: null } };
     app.redrawChartLines();
     // The panel input is not rendered for this stubbed position; record what the drag previews.
@@ -614,16 +570,21 @@ test('a limit from the index chart menu orders the index future, not the index',
     posted.push(route.request().postDataJSON());
     return route.fulfill({ status: 201, json: { status: 'success', data: { id: 1 } } });
   });
+  // A level on the index chart converts through the future's live price; wait for its first quote.
+  await page.waitForFunction(() => window.app.chartBasis() !== null, null, { timeout: 30000 });
   const ref = await page.evaluate(() => window.app.chartLastPrice);
   await page.evaluate((p) => { window.app.chart.coordinateToPrice = () => p - 50; }, ref);
   await page.locator('#chart-container').click({ button: 'right', position: { x: 200, y: 200 } });
-  await page.locator('#chart-ctx [data-trade-i]', { hasText: /Buy .* Limit @/ }).click();
+  const item = page.locator('#chart-ctx [data-trade-i]', { hasText: /Buy .* Limit @/ });
+  const sent = Number((await item.innerText()).match(/FUT ([\d,.]+)/)[1].replace(/,/g, ''));
+  await item.click();
   const dialog = page.locator('.modal-overlay .chart-confirm');
   await expect(dialog).toContainText(/FUT/);
   await dialog.locator('[data-action="go"]').click();
   await expect.poll(() => posted.length, { timeout: 10000 }).toBeGreaterThan(0);
   for (const body of posted) {
     expect(body.symbol, 'the future, not the index').toMatch(/FUT$/);
+    expect(body.price, 'the future\'s price for the level, not the index\'s number').toBe(sent);
     expect(body.exchange).toBe('NFO');
     expect(body.pricetype).toBe('LIMIT');
     expect(body.symbolId, 'the future is not a watchlist row').toBeUndefined();
@@ -647,13 +608,24 @@ test('dragging a working order line with the mouse moves the order', async ({ pa
   await page.waitForFunction((p) => Number.isFinite(window.app.optionPanes.pe.chart.priceToCoordinate(p, 0)), px, { timeout: 15000 });
   const at = await page.evaluate((px) => {
     const r = document.querySelector('.chart-pane[data-pane="pe"] .chart-pane-body').getBoundingClientRect();
-    return { x: r.x, top: r.y, y: window.app.optionPanes.pe.chart.priceToCoordinate(px, 0) };
+    return { x: r.x, top: r.y, w: r.width, y: window.app.optionPanes.pe.chart.priceToCoordinate(px, 0) };
   }, px);
-  // The BUY tag of the line at px - the part of the line that takes the grab.
-  await page.mouse.move(at.x + 200, at.top + at.y);
+  // Find the line the way a pointer does: move along it until the engine reports the order under
+  // it. Where its grabbable span starts moves with the pane's width and its axis, so a fixed x
+  // missed it now and then.
+  await page.evaluate(() => {
+    window.__paneHover = null;
+    window.app.optionPanes.pe.chart.on('hover', (e) => { window.__paneHover = e?.id || null; });
+  });
+  let gx = null;
+  for (let x = at.w - 60; x > 20 && gx === null; x -= 5) {
+    await page.mouse.move(at.x + x, at.top + at.y);
+    if (/^order:\d+$/.test((await page.evaluate(() => window.__paneHover)) || '')) gx = at.x + x;
+  }
+  expect(gx, 'the order line can be grabbed somewhere along it').not.toBeNull();
   await page.mouse.down();
-  await page.mouse.move(at.x + 200, at.top + at.y + 12, { steps: 4 });
-  await page.mouse.move(at.x + 200, at.top + at.y + 24, { steps: 4 });
+  await page.mouse.move(gx, at.top + at.y + 12, { steps: 4 });
+  await page.mouse.move(gx, at.top + at.y + 24, { steps: 4 });
   await page.mouse.up();
   await expect.poll(() => calls.length, { timeout: 10000 }).toBe(2);
   expect(calls.every((c) => /orders\/90[01]\/modify$/.test(c.url) && c.body.price < px)).toBe(true);
@@ -672,7 +644,7 @@ test('an order sent from the index chart shows as a line on it, though it is hel
   const ref = await page.evaluate(() => Math.round(window.app.chartLastPrice));
   await page.route('**/api/v1/orders?*', (route) => route.fulfill({ status: 200, json: { status: 'success', data: [{
     id: 777, instance_id: 1, instance_name: 'Acct A', instance_analyzer: 1, exchange: future.exchange, symbol: future.symbol,
-    side: 'BUY', order_type: 'LIMIT', quantity: 975, price: ref - 40, trigger_price: 0, status: 'open', request_id: 'chart-1-BUY-LIMIT-1790000000000-1',
+    side: 'BUY', order_type: 'LIMIT', quantity: 975, price: ref - 40, trigger_price: 0, status: 'open', request_id: 'chart-1-BUY-LIMIT-1790000000000-1', order_id: 'E2E-777',
   }] } }));
   await page.evaluate(() => window.app.refreshOrderLines());
   await page.waitForFunction(() => window.app.orderLinesState().groups?.has('777'), null, { timeout: 15000 });

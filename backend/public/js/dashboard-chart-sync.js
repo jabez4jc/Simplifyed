@@ -162,9 +162,12 @@ Object.assign(DashboardApp.prototype, {
           // The right-hand margin is the engine's guess at future bars, and it guesses differently
           // per chart: the same time came back ~600 bars off on one pane and ~2000 on another, an
           // empty grid either way. Past the live edge the margin is counted in bars instead,
-          // from where this pane's own data ends.
+          // from where this pane's own data ends: the pane's right edge is the main chart's right
+          // edge in TIME, so a pane whose data ends `lag` bars earlier reaches `lag` bars further.
+          // (Subtracting it put the two edges at different times, and the link group, mapping by
+          // time, moved the main chart to match - a loop that walked both off their data.)
           const lag = Math.round((mainLast - last) / seconds);
-          const to = pane.candles.length - 1 + (range.to - (mainCount - 1)) - lag;
+          const to = pane.candles.length - 1 + (range.to - (mainCount - 1)) + lag;
           mapped = { from: to - (range.to - range.from), to };
         } else {
           mapped = window.OAC.followerRange(this.chart.dataLayer, pane.chart.dataLayer, range);

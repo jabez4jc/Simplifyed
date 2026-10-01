@@ -4,6 +4,8 @@ import { producedFor } from './produced.js';
 export function alertKey(index) {
     return `openscript:alert:${index}`;
 }
+/** The key each row's bar in the run travels under, for the message to be read at. */
+const BAR_KEY = 'openscript:bar';
 /**
  * Each declared alert's message channel, as the run left it.
  *
@@ -37,12 +39,25 @@ export function buildAlerts(program, lookup) {
             ...(declared.messageChannel === null
                 ? {}
                 : {
-                    message: (ctx) => messageAt(producedFor(ctx.settings).messages[index], ctx.index) ?? title,
+                    message: (ctx) => messageAt(producedFor(ctx.settings).messages[index], barOf(ctx)) ?? title,
                 }),
             when: (ctx) => ctx.values[key]?.[ctx.index] === 1,
         });
     }
+    // One column for every message, and none for a study with no message to read.
+    if (alerts.some((one) => one.message !== undefined))
+        columns.push({ key: BAR_KEY, part: 'bar' });
     return { alerts, columns };
+}
+/**
+ * The bar of the run the chart's row came from.
+ *
+ * A table without the column is one a host built itself rather than one this
+ * descriptor returned, and its rows are the run's bars as they stand.
+ */
+function barOf(ctx) {
+    const at = ctx.values[BAR_KEY]?.[ctx.index];
+    return typeof at === 'number' ? at : ctx.index;
 }
 /** The message one bar published, or nothing where it published none. */
 function messageAt(column, index) {

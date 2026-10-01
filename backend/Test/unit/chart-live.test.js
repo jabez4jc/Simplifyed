@@ -39,10 +39,6 @@ function app({ timeframe = '5m', candles = [], exchange = 'MCX', symbol = 'NATGA
   a.noteStaleQuote = () => {};
   a.renderChartLegend = () => {};
   a.updateTicketPrices = () => {};
-  // Lives on the prototype from dashboard-chart-panes.js; counted here so an accepted tick that
-  // silently skips the indicators is caught.
-  a.indicatorRefreshes = 0;
-  a.refreshLiveIndicators = () => { a.indicatorRefreshes += 1; };
   return { a, updates };
 }
 
@@ -72,13 +68,10 @@ test('a tick inside the current bar updates close and extends the range', () => 
   assert.strictEqual(a.chartLastPrice, 97);
 
   // The series is told about every tick, with the raw (unshifted) time - the chart engine
-  // renders IST natively from raw UTC seconds, so no display shift is applied here.
+  // renders IST natively from raw UTC seconds, so no display shift is applied here. That update
+  // is also what advances every study: the engine recomputes them from the series it feeds.
   assert.strictEqual(updates.length, 2);
   assert.strictEqual(updates[1].time, BASE);
-
-  // Every accepted tick must advance the indicators too - a moving price over frozen SMAs and a
-  // stale RSI is worse than not updating at all, because it reads as a real divergence.
-  assert.strictEqual(a.indicatorRefreshes, 2);
 });
 
 test('a tick past the interval opens exactly one new bar', () => {
@@ -124,8 +117,7 @@ test('a late or replayed tick never rewrites a closed bar', () => {
   assert.strictEqual(a.applyChartQuote(tick(50, BASE + 10)), false, 'a tick for the previous bar is dropped');
   assert.strictEqual(a.chartCandles.length, 2);
   assert.strictEqual(a.chartCandles[0].low, 99, 'the closed bar is untouched');
-  assert.strictEqual(updates.length, 0, 'nothing is pushed to the series');
-  assert.strictEqual(a.indicatorRefreshes, 0, 'a rejected tick must not recompute anything');
+  assert.strictEqual(updates.length, 0, 'nothing is pushed to the series, so no study recomputes');
 });
 
 test('quotes for other symbols are ignored', () => {

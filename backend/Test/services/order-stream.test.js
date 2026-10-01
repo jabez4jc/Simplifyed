@@ -106,3 +106,50 @@ test('the stream counts as live only after subscribe_orders is acknowledged, and
   openalgoWsService.stop();
   assert.strictEqual(openalgoWsService.isOrderStreamLive(inst.id), false);
 });
+
+test('a day order from an earlier session that the broker book no longer lists is closed out; today\'s and crypto are not', async (t) => {
+  t.mock.method(openalgoClient, 'getOrderBook', async () => []);
+  const inst = await makeInstance();
+  const stale = await makeOrder(inst.id, 'OLD-1');
+  const fresh = await makeOrder(inst.id, 'NEW-1');
+  const crypto = await makeOrder(inst.id, 'GTC-1');
+  const unacked = await makeOrder(inst.id, null, 'pending');
+  await db.run("UPDATE watchlist_orders SET placed_at = datetime('now', '-1 day') WHERE id IN (?, ?, ?)", [stale, crypto, unacked]);
+  await db.run("UPDATE watchlist_orders SET exchange = 'CRYPTO', symbol = 'BTCUSDFUT' WHERE id = ?", [crypto]);
+
+  await orderService.syncOrderStatus(inst.id);
+
+  assert.strictEqual(await statusOf(stale), 'cancelled', 'lapsed at the close of its session');
+  assert.strictEqual(await statusOf(fresh), 'open', 'today\'s order missing from a book is not assumed gone');
+  assert.strictEqual(await statusOf(crypto), 'open', 'a crypto order can rest across days');
+  assert.strictEqual(await statusOf(unacked), 'pending', 'no broker id, nothing to judge it by');
+});
+
+test('a book read before a cancel landed does not bring the cancelled order back', async (t) => {
+  const inst = await makeInstance();
+  const row = await makeOrder(inst.id, 'RACE-1', 'pending');
+  // The book is read while the cancel commits: it still lists the order as open.
+  t.mock.method(openalgoClient, 'getOrderBook', async () => {
+    await db.run("UPDATE watchlist_orders SET status = 'cancelled' WHERE id = ?", [row]);
+    return [{ orderid: 'RACE-1', order_status: 'open' }];
+  });
+  await orderService.syncOrderStatus(inst.id);
+  assert.strictEqual(await statusOf(row), 'cancelled');
+});
+
+test('a cancel the broker refuses because the order is already final records that state', async (t) => {
+  const inst = await makeInstance();
+  const done = await makeOrder(inst.id, 'GONE-1');
+  const live = await makeOrder(inst.id, 'LIVE-1');
+  t.mock.method(openalgoClient, 'cancelOrder', async () => { throw new Error('OpenAlgo: Cannot cancel order in cancelled status'); });
+  t.mock.method(openalgoClient, 'getOrderBook', async () => [
+    { orderid: 'GONE-1', order_status: 'cancelled' },
+    { orderid: 'LIVE-1', order_status: 'open' },
+  ]);
+
+  await assert.rejects(orderService.cancelOrder(done), /already cancelled at the broker/);
+  assert.strictEqual(await statusOf(done), 'cancelled', 'no longer drawn as working');
+
+  await assert.rejects(orderService.cancelOrder(live), /Cannot cancel order in cancelled status/, 'a working order keeps the broker\'s own error');
+  assert.strictEqual(await statusOf(live), 'open');
+});

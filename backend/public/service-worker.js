@@ -48,7 +48,8 @@
  * v4: openalgo-charts 2.5.9 and the vendored OpenScript engine (/vendor/openalgo-script), both
  * under unversioned /vendor urls - same reason as v3.
  */
-const CACHE_NAME = 'simplifyed-v5';
+/** v6: openalgo-charts 2.6.0 (with the widget tier's study dialogs) and OpenScript 0.8.1. */
+const CACHE_NAME = 'simplifyed-v6';
 
 const OFFLINE_ASSETS = [
   '/',

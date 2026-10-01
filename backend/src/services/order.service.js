@@ -14,6 +14,7 @@ import limitPriceService from './limit-price.service.js';
 import pnlSnapshotService from './pnl-snapshot.service.js';
 import brokerCapabilitiesService from './broker-capabilities.service.js';
 import { isDerivativeExchange, isCryptoExchange } from '../utils/broker-type.util.js';
+import { toISTISOString } from '../utils/time.js';
 import {
   NotFoundError,
   ValidationError,
@@ -81,7 +82,11 @@ class OrderService {
       throw new ValidationError('Only limit and stop orders can be moved');
     }
 
-    await openalgoClient.modifyOrder(instance, payload);
+    try {
+      await openalgoClient.modifyOrder(instance, payload);
+    } catch (error) {
+      await this._settleFromBroker(instance, order, error);
+    }
     await db.run(
       'UPDATE watchlist_orders SET price = ?, trigger_price = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
       [Number(payload.price) || 0, Number(payload.trigger_price) || 0, orderId]
@@ -506,11 +511,15 @@ class OrderService {
         broker_order_id: order.order_id,
       });
 
-      await openalgoClient.cancelOrder(
-        instance,
-        order.order_id,
-        instance.strategy_tag || 'default'
-      );
+      try {
+        await openalgoClient.cancelOrder(
+          instance,
+          order.order_id,
+          instance.strategy_tag || 'default'
+        );
+      } catch (error) {
+        await this._settleFromBroker(instance, order, error);
+      }
 
       // Update order status
       await db.run(
@@ -782,6 +791,7 @@ class OrderService {
       const orderbook = await openalgoClient.getOrderBook(instance);
 
       let updatedCount = 0;
+      const todayIst = toISTISOString().slice(0, 10);
 
       // Update order statuses
       for (const dbOrder of pendingOrders) {
@@ -796,10 +806,14 @@ class OrderService {
           );
 
           if (status !== dbOrder.status) {
+            // Only over a row still working: the book was read after the rows were, so a cancel
+            // or a fill recorded in between is newer than it. Unguarded, a book fetched a moment
+            // before a cancel landed wrote 'open' over 'cancelled', and the cancelled order came
+            // back on the chart as a line that could be neither moved nor cancelled.
             await db.run(
               `UPDATE watchlist_orders
                SET status = ?, broker_order_id = ?, metadata = ?, updated_at = CURRENT_TIMESTAMP
-               WHERE id = ?`,
+               WHERE id = ? AND status IN ('pending', 'open')`,
               [
                 status,
                 brokerOrder.orderid || brokerOrder.order_id,
@@ -809,6 +823,19 @@ class OrderService {
             );
             updatedCount++;
           }
+        } else if (dbOrder.order_id && !isCryptoExchange(dbOrder.exchange)
+          && toISTISOString(new Date(`${String(dbOrder.placed_at).replace(' ', 'T')}Z`)).slice(0, 10) < todayIst) {
+          // An Indian exchange order is a DAY order, and a broker's book lists today's session
+          // only. One from an earlier session that the book no longer has lapsed at the close;
+          // left 'open' it stayed on the chart as a line no modify could ever reach (seen on a
+          // BANKNIFTY future placed at 21:16 the night before).
+          await db.run(
+            `UPDATE watchlist_orders
+             SET status = 'cancelled', message = ?, updated_at = CURRENT_TIMESTAMP
+             WHERE id = ? AND status IN ('pending', 'open')`,
+            ['Expired: a day order from an earlier session, no longer in the broker book', dbOrder.id]
+          );
+          updatedCount++;
         }
       }
 
@@ -848,6 +875,29 @@ class OrderService {
       [status, orderId, JSON.stringify(order), instanceId, orderId, orderId, status]
     );
     return (result?.changes || 0) > 0;
+  }
+
+  /**
+   * A cancel or a move the broker refused: when the broker already holds the order in a final
+   * state (filled, cancelled elsewhere, rejected), record that state and say so, so the order
+   * stops showing as working. Otherwise the broker's own error stands. Always throws.
+   * @private
+   */
+  async _settleFromBroker(instance, order, error) {
+    let row = null;
+    try {
+      const book = await openalgoClient.getOrderBook(instance, { ignoreCircuit: true });
+      row = book.find((o) => String(o.orderid ?? o.order_id) === String(order.order_id)) || null;
+    } catch (_) { /* the book is unreadable too: the original error is all there is to report */ }
+    const status = row ? this._mapOrderStatus(row.order_status || row.status) : null;
+    if (!['complete', 'cancelled', 'rejected'].includes(status)) throw error;
+    await db.run(
+      `UPDATE watchlist_orders SET status = ?, metadata = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND status IN ('pending', 'open')`,
+      [status, JSON.stringify(row), order.id]
+    );
+    log.warn('Order was already final at the broker', { orderId: order.id, symbol: order.symbol, status });
+    throw new ValidationError(`The order is already ${status === 'complete' ? 'filled' : status} at the broker`);
   }
 
   /**

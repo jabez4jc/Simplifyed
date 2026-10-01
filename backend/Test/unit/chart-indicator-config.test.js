@@ -5,19 +5,13 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 /**
- * The indicator config decides what settings the engine's `chart.addIndicator` is called with. A
- * bad value here is silent - an out-of-range length yields an empty series, so the indicator
- * simply does not appear and looks like it was never switched on. The bounds are therefore
- * pinned.
+ * The chart owns its studies (openalgo-charts' design); this app persists what is on each chart
+ * and puts it back on a rebuilt one. A study lost here is silent - it simply is not there after a
+ * reload - so the round trip, the pre-2.6 migration and the pending list are pinned.
  *
  * These are browser modules that assign onto DashboardApp.prototype, so they are evaluated
  * against a stub rather than imported. `window.OAC` stands in for the real openalgo-charts
- * bridge - `getIndicator` returns full descriptor objects (with a real `inputs` array, the same
- * shape `hasIndicator`/`indicatorDefaults`/`indicatorStyleInputs` all key off in the real
- * library), not bare strings, because dashboard-chart-panes.js now reads `descriptor.inputs`
- * directly (for labels, the settings panel, and validation bounds) rather than a flat settings
- * object - a mock returning something shallower would hide exactly the kind of mismatch this
- * suite exists to catch (see the RSI/MACD field names below, taken from the real descriptors).
+ * bridge, with full descriptor objects (a real `inputs` array) since the chip labels read them.
  */
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const load = (file) => fs.readFileSync(path.join(dir, '../../public/js', file), 'utf8');
@@ -110,121 +104,89 @@ function freshApp() {
   return { app: new sandbox.DashboardApp(), store };
 }
 
-test('defaults include two SMAs, three EMAs, VWAP and both oscillators', () => {
-  const { app } = freshApp();
-  const cfg = app.indicatorConfig();
-  assert.deepStrictEqual(
-    Object.keys(cfg),
-    [
-      'sma1', 'sma2', 'ema1', 'ema2', 'ema3', 'vwap', 'rsi', 'macd',
-      'wma1', 'bollinger1', 'stochastic1', 'adx1', 'atr1', 'cci1', 'mfi1', 'obv1', 'adl1',
-      'volume1', 'supertrend1', 'parabolicsar1', 'ichimoku1', 'vixfix1',
-    ]
-  );
-  const defaultsOf = (id) => Object.fromEntries(DESCRIPTORS[id].inputs.map((i) => [i.key, i.default]));
-  assert.deepStrictEqual(cfg.rsi.settings, defaultsOf('rsi'));
-  assert.deepStrictEqual(cfg.macd.settings, defaultsOf('macd'));
-  assert.strictEqual(cfg.sma1.settings.length, 20);
-  assert.strictEqual(cfg.sma2.settings.length, 50);
-  assert.strictEqual(cfg.ema1.settings.length, 9);
-  assert.strictEqual(cfg.ema2.settings.length, 21);
-  assert.strictEqual(cfg.ema3.settings.length, 50);
-});
-
-test('RSI and MACD can be on at the same time', () => {
-  // The regression this guards: oscillators used to be mutually exclusive, so enabling MACD
-  // silently switched RSI off.
-  const { app } = freshApp();
-  app.renderIndicatorBar = () => {};
-  app.ensureIndicators = () => {};
-  app.toggleIndicator('rsi');
-  app.toggleIndicator('macd');
-  assert.strictEqual(app.indicatorConfig().rsi.on, true);
-  assert.strictEqual(app.indicatorConfig().macd.on, true);
-});
-
-test('out-of-range lengths are rejected and leave the previous value intact', () => {
-  // Bounds come from the descriptor's own min/max (1..1000 for sma's length), not a guessed
-  // table - 1 is the descriptor's actual floor, so it is a valid value, not a rejected one.
-  const { app } = freshApp();
-  for (const bad of [0, -5, 1001, 'abc', '']) {
-    assert.strictEqual(app.setIndicatorParam('sma1', 'length', bad), false, `${bad} must be rejected`);
-  }
-  assert.strictEqual(app.indicatorConfig().sma1.settings.length, 20);
-  assert.strictEqual(app.setIndicatorParam('sma1', 'length', 1), true, 'the descriptor\'s own floor is valid');
-  assert.strictEqual(app.setIndicatorParam('sma1', 'length', 200), true);
-  assert.strictEqual(app.indicatorConfig().sma1.settings.length, 200);
-});
-
-test('MACD refuses fastPeriod >= slowPeriod', () => {
-  // A MACD with fast >= slow draws a plausible-looking line that means nothing.
-  const { app } = freshApp();
-  assert.strictEqual(app.setIndicatorParam('macd', 'fastPeriod', 26), false);
-  assert.strictEqual(app.setIndicatorParam('macd', 'fastPeriod', 30), false);
-  assert.strictEqual(app.setIndicatorParam('macd', 'slowPeriod', 12), false);
-  assert.strictEqual(app.setIndicatorParam('macd', 'fastPeriod', 8), true);
-  assert.strictEqual(app.indicatorConfig().macd.settings.fastPeriod, 8);
-  assert.strictEqual(app.indicatorConfig().macd.settings.slowPeriod, 26);
-});
-
-test('unknown indicators and settings keys are ignored rather than creating entries', () => {
-  const { app } = freshApp();
-  assert.strictEqual(app.setIndicatorParam('nope', 'length', 10), false);
-  assert.strictEqual(app.setIndicatorParam('rsi', 'fastPeriod', 10), false);
-  assert.strictEqual(app.indicatorConfig().nope, undefined);
-  assert.strictEqual(app.indicatorConfig().rsi.settings.fastPeriod, undefined);
-});
-
-test('saved config survives a reload and merges over new defaults', () => {
-  const { app, store } = freshApp();
-  app.setIndicatorParam('rsi', 'length', 21);
-
-  // Simulate a release that adds an indicator: the saved blob predates ema3.
-  const saved = JSON.parse(store['chart-indicator-config']);
-  delete saved.ema3;
-  const reopened = freshApp();
-  reopened.store['chart-indicator-config'] = JSON.stringify(saved);
-  const cfg = reopened.app.indicatorConfig();
-
-  assert.strictEqual(cfg.rsi.settings.length, 21, 'user value must persist');
-  assert.strictEqual(cfg.ema3.settings.length, 50, 'a newly added indicator falls back to its default');
-});
-
-test('labels reflect the configured lengths, drawn from the descriptor\'s own numeric inputs', () => {
-  const { app } = freshApp();
-  app.setIndicatorParam('ema1', 'length', 34);
-  app.setIndicatorParam('rsi', 'oversold', 25);
-  // Real INDICATOR_DEFS entries, not hand-built stubs - indicatorLabel reads `indicatorId` to
-  // look up the descriptor's own inputs, which a stub missing that field would hide.
-  const defs = {
-    ema1: { id: 'ema1', indicatorId: 'ema', label: 'EMA' },
-    macd: { id: 'macd', indicatorId: 'macd', label: 'MACD' },
-    vwap: { id: 'vwap', indicatorId: 'vwap', label: 'VWAP' },
-    rsi: { id: 'rsi', indicatorId: 'rsi', label: 'RSI' },
+/** A chart double with the slice of the engine's study API the persistence layer calls. */
+function fakeChart({ refuse = [] } = {}) {
+  const studies = [];
+  let n = 0;
+  return {
+    isDestroyed: false,
+    indicators: () => studies.slice(),
+    addIndicator(indicatorId, settings = {}, options = {}) {
+      if (refuse.includes(indicatorId)) throw new Error('OS6010: the study needs bars');
+      let shown = true;
+      const inst = {
+        id: options.instanceId || `ind-${++n}`, indicatorId, name: indicatorId.toUpperCase(),
+        settings: () => ({ ...settings }), visible: () => shown, setVisible: (v) => { shown = v; },
+      };
+      studies.push(inst);
+      return inst;
+    },
+    removeIndicator(id) { const at = studies.findIndex((s) => s.id === id); if (at >= 0) studies.splice(at, 1); },
+    on() {},
   };
-  assert.strictEqual(app.indicatorLabel(defs.ema1), 'EMA 34');
-  assert.strictEqual(app.indicatorLabel(defs.macd), 'MACD 12/26/9');
-  assert.strictEqual(app.indicatorLabel(defs.vwap), 'VWAP');
-  assert.strictEqual(app.indicatorLabel(defs.rsi), 'RSI 14/70/25');
+}
+
+test('a pre-2.6 slot config migrates to one study per switched-on slot', () => {
+  const { app, store } = freshApp();
+  store['chart-indicator-config'] = JSON.stringify({
+    sma1: { on: true, settings: { length: 20 } },
+    ema2: { on: true, settings: { length: 21 } },
+    rsi: { on: false, settings: { length: 14 } },
+    'oscript-mine': { on: true, settings: {} },
+  });
+  assert.deepStrictEqual(app.savedIndicators(), [
+    { indicatorId: 'sma', settings: { length: 20 }, visible: true },
+    { indicatorId: 'ema', settings: { length: 21 }, visible: true },
+    { indicatorId: 'oscript-mine', settings: {}, visible: true },
+  ]);
+  // A pane migrates from its own key, never from the main chart's.
+  assert.deepStrictEqual(app.savedIndicators('ce'), []);
 });
 
-test('RSI refuses an oversold level at or above the overbought level', () => {
-  // Inverted bands shade the wrong regions and read as a permanently overbought instrument.
-  const { app } = freshApp();
-  assert.strictEqual(app.setIndicatorParam('rsi', 'oversold', 70), false, 'equal is not ordered');
-  assert.strictEqual(app.setIndicatorParam('rsi', 'oversold', 85), false);
-  assert.strictEqual(app.setIndicatorParam('rsi', 'overbought', 30), false);
-  assert.strictEqual(app.setIndicatorParam('rsi', 'overbought', 80), true);
-  assert.strictEqual(app.setIndicatorParam('rsi', 'oversold', 20), true);
-  assert.strictEqual(app.indicatorConfig().rsi.settings.overbought, 80);
-  assert.strictEqual(app.indicatorConfig().rsi.settings.oversold, 20);
+test('saved studies come back on a fresh chart, and one that waits for bars is kept, not dropped', () => {
+  const { app, store } = freshApp();
+  store['chart-indicators'] = JSON.stringify([
+    { indicatorId: 'ema', instanceId: 'a', settings: { length: 9 }, visible: true },
+    { indicatorId: 'rsi', instanceId: 'b', settings: { length: 21 }, visible: false },
+    { indicatorId: 'oscript-wait', settings: {} },
+  ]);
+  app.chart = fakeChart({ refuse: ['oscript-wait'] });
+  app.applyIndicatorsTo(app.chart);
 
-  // The descriptor's own bounds (50..100 for overbought, 0..50 for oversold) allow the extremes
-  // of the RSI's own range - 100 and 0 are valid, only actually out-of-range values are rejected.
-  assert.strictEqual(app.setIndicatorParam('rsi', 'overbought', 100), true);
-  assert.strictEqual(app.setIndicatorParam('rsi', 'oversold', 0), true);
-  assert.strictEqual(app.setIndicatorParam('rsi', 'overbought', 101), false);
-  assert.strictEqual(app.setIndicatorParam('rsi', 'oversold', -1), false);
+  const live = app.chart.indicators();
+  assert.deepStrictEqual(live.map((i) => [i.id, i.indicatorId, i.settings().length]), [['a', 'ema', 9], ['b', 'rsi', 21]]);
+  assert.strictEqual(live[1].visible(), false, 'a study hidden from its legend eye stays hidden');
+
+  app.saveIndicators();
+  const saved = JSON.parse(store['chart-indicators']);
+  assert.deepStrictEqual(saved.map((s) => s.indicatorId), ['ema', 'rsi', 'oscript-wait']);
+
+  // The same chart again (a symbol switch keeps it): nothing is added twice.
+  app.applyIndicatorsTo(app.chart);
+  assert.strictEqual(app.chart.indicators().length, 2);
+});
+
+test('copying to an option chart replaces its studies with the main chart\'s, settings included', () => {
+  const { app, store } = freshApp();
+  app.chart = fakeChart();
+  app.applyIndicatorsTo(app.chart);
+  app.chart.addIndicator('rsi', { length: 9 });
+  app.optionPanes = { ce: { chart: fakeChart() } };
+  app.applyIndicatorsTo(app.optionPanes.ce.chart);
+  app.optionPanes.ce.chart.addIndicator('macd');
+
+  app.copyMainIndicatorsTo(['ce']);
+  const ce = app.optionPanes.ce.chart.indicators();
+  assert.deepStrictEqual(ce.map((i) => [i.indicatorId, i.settings().length]), [['rsi', 9]]);
+  assert.deepStrictEqual(JSON.parse(store['chart-indicators-ce']).map((s) => s.indicatorId), ['rsi']);
+});
+
+test('a chip names the study with its numeric inputs, from the descriptor', () => {
+  const { app } = freshApp();
+  const inst = (indicatorId, settings) => ({ indicatorId, name: indicatorId.toUpperCase(), settings: () => settings });
+  assert.strictEqual(app.indicatorLabel(inst('ema', { length: 34, source: 'close' })), 'EMA 34');
+  assert.strictEqual(app.indicatorLabel(inst('macd', { fastPeriod: 12, slowPeriod: 26, signalPeriod: 9 })), 'MACD 12/26/9');
+  assert.strictEqual(app.indicatorLabel(inst('vwap', { anchor: 'session' })), 'VWAP');
 });
 
 test('pattern defaults follow each pattern\'s direction and persist', () => {

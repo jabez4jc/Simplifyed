@@ -222,7 +222,6 @@ Object.assign(DashboardApp.prototype, {
         <div class="chart-pane-pop is-wide" data-pane-pop-for="ind-${key}" hidden>
           <div id="chart-pane-ind-${key}" class="chart-ind-bar"></div>
           <div id="chart-pane-ind-pick-${key}" class="chart-pattern-picker" hidden></div>
-          <div id="chart-pane-ind-cfg-${key}" class="chart-ind-config" hidden></div>
         </div>
       </div>`;
 
@@ -282,14 +281,15 @@ Object.assign(DashboardApp.prototype, {
     // Independent chart type per pane (see setPaneSeriesType() below) - defaults to candlestick
     // like the main chart, not mirrored FROM the main chart, since "independent" starts at zero.
     const seriesType = this.paneSeriesType(key);
-    const series = chart.addSeries(this.seriesRenderType(seriesType));
+    const series = chart.addSeries('candlestick');
+    this.applySeriesType(chart, series, seriesType);
     chart.timeScale.setRightOffset(RIGHT_OFFSET_BARS);
 
     this.optionPanes[key] = { chart, series, contract, candles, seriesType };
     // No IST display shift needed - the engine renders IST natively from raw UTC seconds (see
     // the TIME AXIS note in dashboard-chart.js).
     this.renderPaneSeries(key);
-    chart.timeScale.fitContent(120);
+    this.frameLatestBars(chart);
 
     const last = candles[candles.length - 1];
     const lastEl = host.querySelector(`[data-role="${key}-last"]`);
@@ -300,10 +300,9 @@ Object.assign(DashboardApp.prototype, {
     }
 
     this.attachOptionPaneOrders(key, bodyEl, chart, contract, candles);
-    this.applyIndicatorsTo(chart, series, candles);
+    this.applyIndicatorsTo(chart);
     this.applyPatternsTo(chart, series, candles);
     this.renderPaneTypeBar(key);
-    this.renderPaneIndicatorBar(key);
     if (typeof this.loadPanePosition === 'function') this.loadPanePosition(key);
     if (typeof this.attachPaneOrderLines === 'function') this.attachPaneOrderLines(key);
   },
@@ -358,30 +357,21 @@ Object.assign(DashboardApp.prototype, {
     try { localStorage.setItem(`chart-pane-type-${key}`, type); } catch (_) { /* private mode */ }
   },
 
+  /** In place, like the main chart: the pane's studies and lines stay on the same series. */
   setPaneSeriesType(key, type) {
     const pane = this.optionPanes?.[key];
     if (!pane?.chart) return;
     pane.seriesType = type;
     this.savePaneSeriesType(key, type);
-    try { pane.series?.remove(); } catch (_) { /* disposed */ }
-    pane.series = pane.chart.addSeries(this.seriesRenderType(type));
-    this.renderPaneSeries(key);
+    try { this.applySeriesType(pane.chart, pane.series, type); } catch (error) { Utils.showToast(error.message, 'error'); }
     this.renderPaneTypeBar(key);
   },
 
-  /** Pane equivalent of renderChartSeries() (dashboard-chart-types.js) - same shared
-   * computeSeriesBars() helper, retargeted at one pane's own series/candles/box-size. Panes are
-   * rebuilt from scratch on every refreshOptionPanes(), never live-ticked, so unlike the main
-   * chart there is no incremental transform state to persist between calls. */
+  /** The pane's real bars; the chart draws them as the pane's type (dashboard-chart-types.js). */
   renderPaneSeries(key) {
     const pane = this.optionPanes?.[key];
     if (!pane?.series) return;
-    const lastClose = pane.candles?.[pane.candles.length - 1]?.close || 100;
-    const box = lastClose >= 10000 ? 5 : lastClose >= 1000 ? 1 : lastClose >= 100 ? 0.5 : 0.1;
-    const { bars } = this.computeSeriesBars(pane.candles, pane.seriesType || 'candlestick', box);
-    // Whole bars, not a projection down to OHLC - see renderChartSeries in
-    // dashboard-chart-types.js for why Kagi and P&F need the fields a candle does not read.
-    pane.series.setData(bars);
+    pane.series.setData(this.seriesBars(pane.candles));
   },
 
   renderPaneTypeBar(key) {
@@ -406,85 +396,35 @@ Object.assign(DashboardApp.prototype, {
 });
 
 /**
- * Indicators.
+ * Indicators, the way openalgo-charts is designed to carry them.
  *
- * The engine (openalgo-charts) owns the maths, series creation and pane placement for every
- * indicator instance - see ensureIndicators() below. This layer is only the config (on/off,
- * per-instance settings) and the toolbar UI on top of it.
+ * The CHART owns the studies: each one is an instance (`chart.addIndicator`) with its own row in
+ * the engine-drawn legend - eye, gear and close - and its own settings dialog. The dialog and the
+ * picker are the widget tier's (`mountIndicatorSettings`, `mountIndicatorPicker`): the picker is
+ * the registry grouped by category with a search box, and the settings dialog is the study's own
+ * Inputs and Style tabs, built from its descriptor, previewing every edit live and putting the
+ * touched keys back on Cancel. Two EMAs are simply two instances, each with its own dialog.
+ *
+ * Both dialogs run on a bare chart through `createAlertUi(...).context` - the widget tier's
+ * context for a host that brings its own chart rather than a whole `createWidget` shell.
+ *
+ * This layer only persists what is on each chart (per scope: the main chart, `'ce'` and `'pe'`),
+ * puts it back on a rebuilt chart, and draws the toolbar popover. A study that cannot be put back
+ * yet - an OpenScript study refuses a chart with no bars (OS6010), or a script that no longer
+ * compiles - is held as pending and kept in the saved list, so it is retried rather than lost.
  */
-/**
- * Presets: the handful of slots this app opinionates about, either because it wants SEVERAL
- * instances of one descriptor (sma1/sma2, ema1/ema2/ema3 - the engine is fine with that, it just
- * does not name them for us) or because it prefers a different starting point from the
- * descriptor's own default. Everything else the engine registers is picked up automatically by
- * indicatorDefs() below, so this list is a set of opinions, not a catalogue.
- *
- * `indicatorId` names the openalgo-charts descriptor (see openalgo-charts/indicators); `id` is
- * ours, and is what the persisted config is keyed by - so these ids must not change.
- *
- * `settings` seeds the preferred starting point; indicatorConfig() merges it over
- * `indicatorDefaults()` rather than restating every key, so an upstream default change (colour,
- * source) still comes through untouched.
- */
-const INDICATOR_PRESETS = [
-  { id: 'sma1', indicatorId: 'sma', label: 'SMA', settings: { length: 20 } },
-  { id: 'sma2', indicatorId: 'sma', label: 'SMA', settings: { length: 50 } },
-  { id: 'ema1', indicatorId: 'ema', label: 'EMA', settings: { length: 9 } },
-  { id: 'ema2', indicatorId: 'ema', label: 'EMA', settings: { length: 21 } },
-  { id: 'ema3', indicatorId: 'ema', label: 'EMA', settings: { length: 50 } },
-  { id: 'vwap', indicatorId: 'vwap', label: 'VWAP', settings: {} },
-  { id: 'rsi', indicatorId: 'rsi', label: 'RSI', settings: { length: 14 } },
-  { id: 'macd', indicatorId: 'macd', label: 'MACD', settings: {} },
-  { id: 'wma1', indicatorId: 'wma', label: 'WMA', settings: {} },
-  { id: 'bollinger1', indicatorId: 'bollinger', label: 'Bollinger Bands', settings: {} },
-  { id: 'stochastic1', indicatorId: 'stochastic', label: 'Stochastic', settings: {} },
-  { id: 'adx1', indicatorId: 'adx', label: 'ADX / DMI', settings: {} },
-  { id: 'atr1', indicatorId: 'atr', label: 'ATR', settings: {} },
-  { id: 'cci1', indicatorId: 'cci', label: 'CCI', settings: {} },
-  { id: 'mfi1', indicatorId: 'mfi', label: 'MFI', settings: {} },
-  { id: 'obv1', indicatorId: 'obv', label: 'OBV', settings: {} },
-  { id: 'adl1', indicatorId: 'adl', label: 'ADL', settings: {} },
-  { id: 'volume1', indicatorId: 'volume', label: 'Volume', settings: {} },
-  { id: 'supertrend1', indicatorId: 'supertrend', label: 'Supertrend', settings: {} },
-  { id: 'parabolicsar1', indicatorId: 'parabolic-sar', label: 'Parabolic SAR', settings: {} },
-  { id: 'ichimoku1', indicatorId: 'ichimoku', label: 'Ichimoku Cloud', settings: {} },
-  { id: 'vixfix1', indicatorId: 'williams-vix-fix', label: 'Williams VIX Fix', settings: {} },
-];
-
-let _indicatorDefs = null;
-let _indicatorDefsFor = 0;
+const indicatorStoreKey = (scope) => (scope ? `chart-indicators-${scope}` : 'chart-indicators');
 
 /**
- * Every indicator slot the app offers: the presets above, plus one slot for each descriptor the
- * engine registers that no preset already covers.
- *
- * openalgo-charts 2.x ships 102 built-ins; a hand-written list offered 22 of them, and every
- * release that added an indicator quietly widened that gap. The registry is the source of truth,
- * so a new built-in is on the chart the moment the library is upgraded, with the engine's own
- * name, category, inputs and defaults behind it.
- *
- * A preset id can never collide with a generated one: a descriptor a preset names is excluded
- * from the generated half, so `vwap` (a preset id that happens to equal its descriptor id) is
- * listed once.
- *
- * Memoized only once the registry actually answers - this can be reached before the bridge
- * module has run, and caching an empty catalogue would leave the chart with no indicators for
- * the life of the page.
+ * The config saved before 2.6.0 was `{ [slotId]: { on, settings } }` over a fixed set of slots.
+ * These are the slots whose id was not the descriptor's own; every other slot id was.
  */
-function indicatorDefs() {
-  const registry = window.OAC?.registeredIndicators?.() || [];
-  // Re-derived when the registry grows: an OpenScript study applied after load registers a new
-  // descriptor (see openalgo-charts-bridge.js), and it has to show up in the picker.
-  if (_indicatorDefs && _indicatorDefsFor === registry.length) return _indicatorDefs;
-  if (!registry.length) return INDICATOR_PRESETS;
-  _indicatorDefsFor = registry.length;
-  const covered = new Set(INDICATOR_PRESETS.map((d) => d.indicatorId));
-  const generated = registry
-    .filter((d) => !covered.has(d.id))
-    .map((d) => ({ id: d.id, indicatorId: d.id, label: d.name, settings: {} }));
-  _indicatorDefs = [...INDICATOR_PRESETS, ...generated];
-  return _indicatorDefs;
-}
+const LEGACY_INDICATOR_SLOTS = {
+  sma1: 'sma', sma2: 'sma', ema1: 'ema', ema2: 'ema', ema3: 'ema', wma1: 'wma', bollinger1: 'bollinger',
+  stochastic1: 'stochastic', adx1: 'adx', atr1: 'atr', cci1: 'cci', mfi1: 'mfi', obv1: 'obv', adl1: 'adl',
+  volume1: 'volume', supertrend1: 'supertrend', parabolicsar1: 'parabolic-sar', ichimoku1: 'ichimoku',
+  vixfix1: 'williams-vix-fix',
+};
 
 const OPENSCRIPT_TEMPLATE = `version 1
 
@@ -493,11 +433,6 @@ study("My script", overlay = true)
 length = input(20, "Length")
 plot(sma(close, length), "SMA", orange, width = 2)
 `;
-
-/** The engine's own grouping for a slot ('Trend', 'Momentum', ...), for the picker's headings. */
-function indicatorCategory(def) {
-  return window.OAC?.getIndicator?.(def.indicatorId)?.category || 'Other';
-}
 
 /** Below this, the price pane and its axis labels stop being usable. */
 const MIN_CHART_BUDGET_HEIGHT = 360;
@@ -509,409 +444,247 @@ const MIN_CHART_BUDGET_HEIGHT = 360;
  */
 const RIGHT_OFFSET_BARS = 8;
 
-/**
- * The descriptor's OWN default settings, keyed by ITS field names (`length`, `fastPeriod`, not a
- * guessed `period`/`fast` - guessing those instead of reading them from `indicatorDefaults` got
- * two of five wrong on the first pass). Covers BOTH the descriptor's tunable `inputs` (length,
- * source, overbought/oversold...) and its derived per-plot style inputs (`ma:opacity`,
- * `histogram:lineStyle`...) from `indicatorStyleInputs` - `indicatorDefaults` alone only covers
- * the former, and the settings panel below needs both to actually show every knob the engine
- * exposes for an indicator, not just the "core" ones. Falls back to `{}` before the bridge module
- * has populated `window.OAC` - indicatorConfig() re-derives once it has, since nothing here is
- * cached across a missing descriptor.
- */
-function nativeDefaults(indicatorId) {
-  if (!window.OAC?.hasIndicator?.(indicatorId)) return {};
-  const descriptor = window.OAC.getIndicator(indicatorId);
-  const defaults = { ...window.OAC.indicatorDefaults(descriptor) };
-  for (const input of window.OAC.indicatorStyleInputs(descriptor)) {
-    if (!(input.key in defaults)) defaults[input.key] = input.default;
-  }
-  return defaults;
-}
-
-/**
- * Every settings-panel field for one indicator: the descriptor's own `inputs` (length, source,
- * overbought/oversold, colour...) plus its derived style inputs (per-plot opacity, thickness,
- * line style, plot type), deduped by key - a handful of single-plot indicators (SMA, EMA, VWAP,
- * RSI) declare `color` in both lists, and `inputs` wins since it is the one `calc`/the plot's
- * `colorKey` actually reads first.
- */
-function indicatorInputsFor(indicatorId) {
-  if (!window.OAC?.hasIndicator?.(indicatorId)) return [];
-  const descriptor = window.OAC.getIndicator(indicatorId);
-  const own = descriptor.inputs || [];
-  const seen = new Set(own.map((i) => i.key));
-  const style = window.OAC.indicatorStyleInputs(descriptor).filter((i) => !seen.has(i.key));
-  return [...own, ...style];
+/** What persists of one study: enough for `addIndicator` to bring the same study back. */
+function indicatorSnapshot(inst) {
+  return { indicatorId: inst.indicatorId, instanceId: inst.id, settings: inst.settings(), visible: inst.visible() };
 }
 
 Object.assign(DashboardApp.prototype, {
-  /**
-   * Indicator state: `{ [id]: { on, settings } }`, persisted so a workspace survives a reload.
-   * `settings` starts from the descriptor's own defaults, merged with this app's preferred
-   * starting point (a second EMA at 21, RSI at 14...) and then whatever was saved - so a
-   * settings key the library adds or renames later is picked up automatically rather than a
-   * saved config silently going stale.
-   *
-   * `scope` is `undefined` for the main chart, or `'ce'`/`'pe'` for an option pane - each gets
-   * its OWN storage key and cache slot, so a CE pane's indicator selection never leaks onto the
-   * main chart or the PE pane. A pane that has never been customized starts from the SAME
-   * defaults as the main chart (nothing on) rather than mirroring whatever the main chart
-   * currently has on - "independent" means independent from the start, not a one-time copy.
-   */
-  indicatorConfig(scope) {
-    const storageKey = scope ? `chart-indicator-config-${scope}` : 'chart-indicator-config';
-    let saved = {};
-    try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch (_) {}
-    const cfg = {};
-    for (const def of indicatorDefs()) {
-      const s = saved[def.id] || {};
-      cfg[def.id] = {
-        on: Boolean(s.on),
-        settings: { ...nativeDefaults(def.indicatorId), ...def.settings, ...(s.settings || {}) },
-      };
-    }
-    // Preserve any live indicator handle across a config re-read; ensureIndicators() diffs
-    // against this - the same object identity would otherwise be lost every call.
-    this._indCfgByScope = this._indCfgByScope || {};
-    this._indCfgByScope[scope || 'main'] = cfg;
-    return cfg;
+  /** The chart a scope names: the main chart, or one CE/PE pane's. */
+  indicatorChart(scope) {
+    return scope ? this.optionPanes?.[scope]?.chart || null : this.chart || null;
   },
 
-  saveIndicatorConfig(scope) {
-    const storageKey = scope ? `chart-indicator-config-${scope}` : 'chart-indicator-config';
-    const src = this._indCfgByScope?.[scope || 'main'];
+  /** Per-scope bookkeeping: which chart the saved list was put on, and what is still pending. */
+  indicatorScope(scope) {
+    this._indScopes = this._indScopes || {};
+    return (this._indScopes[scope || 'main'] = this._indScopes[scope || 'main'] || { chart: null, pending: [], ui: null });
+  },
+
+  /** The saved studies for a scope, migrating a pre-2.6 slot config the first time. */
+  savedIndicators(scope) {
     try {
-      const plain = {};
-      for (const [id, v] of Object.entries(src || {})) plain[id] = { on: v.on, settings: v.settings };
-      localStorage.setItem(storageKey, JSON.stringify(plain));
-    } catch (_) { /* private mode */ }
-  },
-
-  /** Numeric CORE inputs only (length, fastPeriod/slowPeriod/signalPeriod, overbought/oversold)
-   * - the descriptor's own declared inputs, in its own declaration order, not the derived style
-   * inputs (opacity/thickness/...), which say nothing useful in a compact button label. */
-  indicatorLabel(def, scope) {
-    const s = this.indicatorConfig(scope)[def.id].settings;
-    const parts = (window.OAC?.getIndicator?.(def.indicatorId)?.inputs || [])
-      .filter((i) => i.type === 'number')
-      .map((i) => s[i.key]);
-    return parts.length ? `${def.label} ${parts.join('/')}` : def.label;
-  },
-
-  toggleIndicator(id, scope) {
-    const cfg = this.indicatorConfig(scope);
-    if (!cfg[id]) return;
-    cfg[id].on = !cfg[id].on;
-    this.saveIndicatorConfig(scope);
-    if (scope) {
-      this.renderPaneIndicatorBar(scope);
-    } else {
-      this.renderIndicatorBar();
-      this.updateChartBarChips?.();
+      const saved = JSON.parse(localStorage.getItem(indicatorStoreKey(scope)) || 'null');
+      if (Array.isArray(saved)) return saved.filter((s) => s && typeof s.indicatorId === 'string');
+      const legacy = JSON.parse(localStorage.getItem(scope ? `chart-indicator-config-${scope}` : 'chart-indicator-config') || '{}');
+      return Object.entries(legacy)
+        .filter(([, v]) => v?.on)
+        .map(([slot, v]) => ({ indicatorId: LEGACY_INDICATOR_SLOTS[slot] || slot, settings: v.settings || {}, visible: true }));
+    } catch (_) {
+      return [];
     }
+  },
+
+  /** Live studies plus the pending ones, so a study that could not be put back is not dropped. */
+  saveIndicators(scope) {
+    const st = this.indicatorScope(scope);
+    const chart = this.indicatorChart(scope);
+    if (!chart || chart !== st.chart || chart.isDestroyed) return;
+    const list = [...chart.indicators().map(indicatorSnapshot), ...st.pending];
+    try { localStorage.setItem(indicatorStoreKey(scope), JSON.stringify(list)); } catch (_) { /* private mode */ }
+  },
+
+  /**
+   * Put `list` on `chart`; returns what it refused, for the caller to keep as pending. OS6010 is
+   * an OpenScript study waiting for bars, anything else is logged.
+   */
+  _addIndicators(chart, list) {
+    const taken = new Set(chart.indicators().map((i) => i.id));
+    const left = [];
+    for (const saved of list) {
+      const options = saved.instanceId && !taken.has(saved.instanceId) ? { instanceId: saved.instanceId } : {};
+      try {
+        let inst;
+        try {
+          inst = chart.addIndicator(saved.indicatorId, saved.settings || {}, options);
+        } catch (error) {
+          // A setting a newer descriptor refuses is not worth losing the study over.
+          if (!window.OAC.hasIndicator(saved.indicatorId) || String(error?.message).startsWith('OS6010')) throw error;
+          inst = chart.addIndicator(saved.indicatorId, {}, options);
+        }
+        if (saved.visible === false) inst.setVisible(false);
+      } catch (error) {
+        left.push(saved);
+        if (String(error?.message).startsWith('OS6010')) console.warn(`[Chart] ${saved.indicatorId} waits for bars`);
+        else console.error(`[Chart] indicator ${saved.indicatorId} could not be restored`, error);
+      }
+    }
+    return left;
+  },
+
+  /**
+   * Bring a scope's saved studies onto its chart. A chart seen for the first time (a rebuild) gets
+   * the saved list and the listeners; a chart already carrying its studies (a symbol switch keeps
+   * the chart) only retries what is pending. Called after every history load.
+   */
+  applyIndicatorsTo(chart) {
+    if (!chart || !window.OAC) return;
+    const scope = chart === this.chart ? undefined : ['ce', 'pe'].find((k) => this.optionPanes?.[k]?.chart === chart);
+    if (scope === undefined && chart !== this.chart) return;
+    const st = this.indicatorScope(scope);
+    if (st.chart !== chart) {
+      st.chart = chart;
+      st.pending = this.savedIndicators(scope);
+      st.ui = null;
+      this._bindIndicatorEvents(scope, chart);
+    }
+    if (st.pending.length) st.pending = this._addIndicators(chart, st.pending);
+    this.renderIndicatorBar(scope);
+  },
+
+  ensureIndicators() {
+    this.applyIndicatorsTo(this.chart);
+    for (const key of ['ce', 'pe']) this.applyIndicatorsTo(this.optionPanes?.[key]?.chart);
+  },
+
+  /** Kept as a named call: renderChartView and the timeframe switch still call it. */
+  refreshOscillator() {
     this.ensureIndicators();
   },
 
   /**
-   * Validate and store one settings field, typed against the descriptor's OWN input schema -
-   * `type: 'number'` reads bounds from the input's own `min`/`max` rather than a guessed table,
-   * `'boolean'` coerces to a real boolean, everything else (`color`/`text`/`select`/`source`)
-   * passes through as a string. An out-of-range length yields an empty series and a blank pane,
-   * hence the bounds check; the two cross-field checks below are real trading-correctness rules
-   * this app adds on top of the engine's own (which does not know one field's value should
-   * constrain another).
+   * The engine announces every study change on `objects:change` (add, remove, settings, eye) and
+   * asks for a study's settings through its legend gear (`indicatorSettings`).
    */
-  setIndicatorParam(id, key, raw, scope) {
-    const cfg = this.indicatorConfig(scope)[id];
-    const def = indicatorDefs().find((d) => d.id === id);
-    if (!cfg || !def || cfg.settings[key] === undefined) return false;
-    const input = indicatorInputsFor(def.indicatorId).find((i) => i.key === key);
-
-    let value;
-    if (input?.type === 'number') {
-      const n = Number(raw);
-      const lo = input.min ?? -Infinity;
-      const hi = input.max ?? Infinity;
-      if (!Number.isFinite(n) || n < lo || n > hi) return false;
-      value = input.step && input.step < 1 ? Math.round(n / input.step) * input.step : Math.round(n);
-    } else if (input?.type === 'boolean') {
-      value = Boolean(raw);
-    } else {
-      value = String(raw);
-    }
-
-    // MACD is meaningless unless fast < slow; silently accepting the inverse draws a line that
-    // looks plausible and means nothing.
-    if (id === 'macd' && (key === 'fastPeriod' || key === 'slowPeriod')) {
-      const next = { ...cfg.settings, [key]: value };
-      if (next.fastPeriod >= next.slowPeriod) return false;
-    }
-    if (id === 'rsi' && (key === 'overbought' || key === 'oversold')) {
-      const next = { ...cfg.settings, [key]: value };
-      if (next.oversold >= next.overbought) return false;
-    }
-    cfg.settings[key] = value;
-    this.saveIndicatorConfig(scope);
-    return true;
+  _bindIndicatorEvents(scope, chart) {
+    let timer = null;
+    chart.on('objects:change', () => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        if (chart.isDestroyed || this.indicatorChart(scope) !== chart) return;
+        this.saveIndicators(scope);
+        this.renderIndicatorBar(scope);
+        if (!scope) this.updateChartBarChips?.();
+      }, 150);
+    });
+    chart.on('indicatorSettings', ({ instanceId }) => this.openIndicatorSettings(scope, instanceId));
   },
 
   /**
-   * Give the CE/PE panes the main chart's indicators, settings included. The pane's own set is
-   * switched off and redrawn first: an indicator already on with other settings would otherwise
-   * keep its old parameters, since reconciliation only adds and removes.
+   * The widget tier's dialog layer for a scope's chart, made on first use. Mounted over the whole
+   * chart view, not the chart's own box: a CE/PE pane is too narrow to hold a settings dialog.
+   * Dialogs only read `draw` to refuse a pick while a drawing tool is active.
+   */
+  indicatorUi(scope) {
+    const chart = this.indicatorChart(scope);
+    const host = document.querySelector('.chart-view');
+    if (!chart || !host || !window.OAC?.createAlertUi) return null;
+    const st = this.indicatorScope(scope);
+    const theme = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+    if (!st.ui || st.ui.context.chart !== chart || !st.ui.root.isConnected) {
+      st.ui?.destroy();
+      st.ui = window.OAC.createAlertUi(host, {
+        chart,
+        draw: { activeTool: () => (scope ? null : this._draw?.controller?.activeTool?.() ?? null) },
+        theme,
+      });
+    }
+    st.ui.setTheme(theme);
+    return st.ui;
+  },
+
+  /** One study's own settings dialog - the engine's Inputs and Style tabs for that instance. */
+  openIndicatorSettings(scope, instanceId, anchor) {
+    const ui = this.indicatorUi(scope);
+    if (!ui) return;
+    window.OAC.mountIndicatorSettings(ui.context, anchor, { instanceId });
+  },
+
+  /** The engine's indicator picker; each pick adds an instance and the picker stays up. */
+  openIndicatorPicker(scope, anchor) {
+    const ui = this.indicatorUi(scope);
+    if (!ui) return;
+    window.OAC.mountIndicatorPicker(ui.context, anchor, { templates: null });
+  },
+
+  removeIndicatorInstance(scope, instanceId) {
+    this.indicatorChart(scope)?.removeIndicator(instanceId);
+  },
+
+  /** Name plus the study's numeric inputs ("EMA 21", "MACD 12/26/9") for a toolbar chip. */
+  indicatorLabel(inst) {
+    const s = inst.settings();
+    const parts = (window.OAC?.getIndicator?.(inst.indicatorId)?.inputs || [])
+      .filter((i) => i.type === 'number' && s[i.key] !== undefined)
+      .map((i) => s[i.key]);
+    return parts.length ? `${inst.name} ${parts.join('/')}` : inst.name;
+  },
+
+  /**
+   * Replace the CE/PE panes' studies with the main chart's, settings included. Removed highest
+   * pane first, so no removal reindexes a study still waiting to be removed.
    */
   copyMainIndicatorsTo(scopes = ['ce', 'pe']) {
-    const main = this.indicatorConfig();
+    const main = this.chart ? this.chart.indicators().map(indicatorSnapshot) : [];
     for (const scope of scopes) {
-      const cleared = this.indicatorConfig(scope);
-      for (const v of Object.values(cleared)) v.on = false;
-      this.saveIndicatorConfig(scope);
-      this.ensureIndicators();
-      const cfg = this.indicatorConfig(scope);
-      for (const [id, v] of Object.entries(main)) cfg[id] = { on: v.on, settings: { ...v.settings } };
-      this.saveIndicatorConfig(scope);
-      this.renderPaneIndicatorBar(scope);
+      const chart = this.indicatorChart(scope);
+      try { localStorage.setItem(indicatorStoreKey(scope), JSON.stringify(main)); } catch (_) { /* private mode */ }
+      if (!chart) continue;
+      const live = [...chart.indicators()].sort((a, b) => (b.paneIndex ?? 0) - (a.paneIndex ?? 0));
+      for (const inst of live) chart.removeIndicator(inst.id);
+      this.indicatorScope(scope).pending = this._addIndicators(chart, main);
+      this.saveIndicators(scope);
+      this.renderIndicatorBar(scope);
     }
-    this.ensureIndicators();
     Utils.showToast(`Main chart indicators copied to ${scopes.length === 2 ? 'both option charts' : `the ${scopes[0].toUpperCase()} chart`}`, 'success');
   },
 
-  /** The slots currently switched on, in catalogue order - what the toolbar and the settings
-   * panel both show. With 100+ indicators available, "everything, always" is not a toolbar. */
-  activeIndicatorDefs(scope) {
-    const cfg = this.indicatorConfig(scope);
-    return indicatorDefs().filter((d) => cfg[d.id]?.on);
-  },
-
-  renderIndicatorBar() {
-    const host = document.getElementById('chart-indicators-bar');
+  /**
+   * The toolbar popover for a scope: Add (the engine's picker), one chip per study on the chart -
+   * its name opens that study's own settings, × removes it - then OpenScript, Patterns (main chart
+   * only: the pattern config is shared) and the copy action.
+   */
+  renderIndicatorBar(scope) {
+    const host = document.getElementById(scope ? `chart-pane-ind-${scope}` : 'chart-indicators-bar');
     if (!host) return;
-    const active = this.activeIndicatorDefs();
+    const chart = this.indicatorChart(scope);
+    const studies = chart && !chart.isDestroyed ? chart.indicators() : [];
+    const pending = this.indicatorScope(scope).pending;
     host.innerHTML = `
-      <span class="chart-toolbar-label">Indicators</span>
+      ${scope ? '' : '<span class="chart-toolbar-label">Indicators</span>'}
       <button type="button" class="chart-ind-btn" data-action="add" title="Add an indicator">+ Add</button>
-      ${active.map((d) => `
-        <button type="button" class="chart-ind-btn active" data-ind="${d.id}"
-                title="Click to remove ${Utils.escapeHTML(d.label)}">${Utils.escapeHTML(this.indicatorLabel(d))}</button>`).join('')}
-      <button type="button" class="chart-ind-btn ${this.enabledPatterns().length ? 'active' : ''}"
-              data-ind="patterns">Patterns</button>
-      <button type="button" class="chart-ind-settings" data-action="settings" title="Indicator settings">Settings</button>
-      <button type="button" class="chart-ind-settings" data-action="copy-panes"
-              title="Put these indicators, with their settings, on the CE and PE option charts">Copy to option charts</button>`;
+      ${studies.map((inst) => `
+        <span class="chart-ind-chip ${inst.visible() ? '' : 'is-hidden'}">
+          <button type="button" class="chart-ind-btn active" data-settings="${Utils.escapeHTML(inst.id)}"
+                  title="${Utils.escapeHTML(`${inst.name} settings`)}">${Utils.escapeHTML(this.indicatorLabel(inst))}</button>
+          <button type="button" class="chart-ind-x" data-remove="${Utils.escapeHTML(inst.id)}"
+                  aria-label="${Utils.escapeHTML(`Remove ${inst.name}`)}" title="Remove">×</button>
+        </span>`).join('')}
+      ${pending.length ? `<span class="chart-ind-pending" title="${Utils.escapeHTML(pending.map((p) => p.indicatorId).join(', '))}">${pending.length} waiting</span>` : ''}
+      ${scope ? '' : `<button type="button" class="chart-ind-btn ${this.enabledPatterns().length ? 'active' : ''}"
+              data-action="patterns">Patterns</button>`}
+      <button type="button" class="chart-ind-settings" data-action="script"
+              title="Write an indicator or strategy in OpenScript">OpenScript…</button>
+      ${scope
+        ? `<button type="button" class="chart-ind-settings" data-action="copy-main"
+                  title="Replace this chart's indicators with the main chart's, settings included">Copy from main chart</button>`
+        : `<button type="button" class="chart-ind-settings" data-action="copy-panes"
+                  title="Put these indicators, with their settings, on the CE and PE option charts">Copy to option charts</button>`}`;
 
-    host.querySelector('[data-action="copy-panes"]')
-      .addEventListener('click', () => this.copyMainIndicatorsTo(['ce', 'pe']));
-    host.querySelectorAll('.chart-ind-btn[data-ind]').forEach((b) => {
-      if (b.dataset.ind === 'patterns') { b.addEventListener('click', () => this.togglePatternPicker()); return; }
-      b.addEventListener('click', () => this.toggleIndicator(b.dataset.ind));
-    });
-    host.querySelector('[data-action="add"]')
-      .addEventListener('click', () => this.toggleIndicatorPicker());
-    host.querySelector('[data-action="settings"]')
-      .addEventListener('click', () => this.toggleIndicatorSettings());
+    host.querySelector('[data-action="add"]').addEventListener('click', (e) => this.openIndicatorPicker(scope, e.currentTarget));
+    host.querySelectorAll('[data-settings]').forEach((b) =>
+      b.addEventListener('click', () => this.openIndicatorSettings(scope, b.dataset.settings, b)));
+    host.querySelectorAll('[data-remove]').forEach((b) =>
+      b.addEventListener('click', () => this.removeIndicatorInstance(scope, b.dataset.remove)));
+    host.querySelector('[data-action="patterns"]')?.addEventListener('click', () => this.togglePatternPicker());
+    host.querySelector('[data-action="script"]').addEventListener('click', () => this.openScriptEditor(scope));
+    host.querySelector('[data-action="copy-panes"]')?.addEventListener('click', () => this.copyMainIndicatorsTo(['ce', 'pe']));
+    host.querySelector('[data-action="copy-main"]')?.addEventListener('click', () => this.copyMainIndicatorsTo([scope]));
   },
 
   /**
-   * The CE/PE pane equivalent of renderIndicatorBar() - same markup and behaviour, scoped to one
-   * pane's own indicator selection. Rebuilt each time a pane popover opens/updates, same as the
-   * pane itself is rebuilt from scratch on every refreshOptionPanes() call.
+   * OpenScript editor, in the popover under the chips. Apply compiles the script
+   * (window.OAC.applyScript), which registers it as an ordinary indicator. Instances of it already
+   * on this chart are rebuilt from the new descriptor with their settings; with none, one is added.
+   * Either way it then has its own legend row and settings dialog like any built-in.
    */
-  renderPaneIndicatorBar(scope) {
-    const host = document.getElementById(`chart-pane-ind-${scope}`);
-    if (!host) return;
-    host.innerHTML = `
-      <button type="button" class="chart-ind-btn" data-action="add" title="Add an indicator">+ Add</button>
-      ${this.activeIndicatorDefs(scope).map((d) => `
-        <button type="button" class="chart-ind-btn active" data-ind="${d.id}"
-                title="Click to remove ${Utils.escapeHTML(d.label)}">${Utils.escapeHTML(this.indicatorLabel(d, scope))}</button>`).join('')}
-      <button type="button" class="chart-ind-settings" data-action="settings" title="Indicator settings">Settings</button>
-      <button type="button" class="chart-ind-settings" data-action="copy-main"
-              title="Replace this chart's indicators with the main chart's, settings included">Copy from main chart</button>`;
-
-    host.querySelector('[data-action="copy-main"]')
-      .addEventListener('click', () => this.copyMainIndicatorsTo([scope]));
-    host.querySelectorAll('.chart-ind-btn[data-ind]').forEach((b) => {
-      b.addEventListener('click', () => this.toggleIndicator(b.dataset.ind, scope));
-    });
-    host.querySelector('[data-action="add"]')
-      .addEventListener('click', () => this.toggleIndicatorPicker(scope));
-    host.querySelector('[data-action="settings"]')
-      .addEventListener('click', () => this.togglePaneIndicatorSettings(scope));
-  },
-
-  /**
-   * The openalgo-charts settings panel: every field the engine itself declares for each
-   * indicator (indicatorInputsFor - the descriptor's own `inputs` plus its derived per-plot
-   * style inputs), not a hand-curated subset. A number gets its bounds from the descriptor's own
-   * `min`/`max`; a colour gets a colour swatch; `select`/`source` get the descriptor's own option
-   * list (line style, plot type, price source...) instead of a free-text box.
-   */
-  _indicatorFieldControl(defId, input, value) {
-    const common = `data-ind="${defId}" data-key="${Utils.escapeHTML(input.key)}"`;
-    if (input.type === 'number') {
-      return `<input type="number" ${common} value="${value}"
-                     min="${input.min ?? ''}" max="${input.max ?? ''}" step="${input.step ?? 1}" />`;
-    }
-    if (input.type === 'boolean') {
-      return `<input type="checkbox" ${common} ${value ? 'checked' : ''} />`;
-    }
-    if (input.type === 'color') {
-      return `<input type="color" ${common} value="${value}" />`;
-    }
-    if (input.type === 'select' || input.type === 'source') {
-      const options = input.type === 'source' ? (window.OAC?.INDICATOR_SOURCES || []) : (input.options || []);
-      return `<select ${common}>
-        ${options.map((o) => `<option value="${o.value}" ${o.value === value ? 'selected' : ''}>${Utils.escapeHTML(o.label)}</option>`).join('')}
-      </select>`;
-    }
-    return `<input type="text" ${common} value="${Utils.escapeHTML(String(value ?? ''))}" />`;
-  },
-
-  /**
-   * The settings panel, scoped to the main chart (no `scope`) or one CE/PE pane. Patterns stay
-   * main-chart-only - `applyPatternsTo` draws markers from the same shared pattern config
-   * regardless of pane, so a per-pane "Choose patterns…" row would edit the same thing twice
-   * under two different UIs; only offered here, not on pane panels.
-   */
-  toggleIndicatorSettings(scope) {
-    const panel = document.getElementById(scope ? `chart-pane-ind-cfg-${scope}` : 'chart-ind-config');
-    if (!panel) return;
-    if (!panel.hidden) { panel.hidden = true; return; }
-
-    const cfg = this.indicatorConfig(scope);
-    const active = this.activeIndicatorDefs(scope);
-    panel.hidden = false;
-    panel.innerHTML = `
-      <div class="chart-ind-cfg-grid">
-        ${active.length ? '' : '<p class="chart-ind-cfg-note">No indicators on this chart yet — add one from “+ Add”.</p>'}
-        ${active.map((d) => {
-          const inputs = indicatorInputsFor(d.indicatorId);
-          const settings = cfg[d.id].settings;
-          return `
-          <div class="chart-ind-cfg-row">
-            <span class="chart-ind-cfg-name">${Utils.escapeHTML(d.label)}</span>
-            ${inputs.length
-              ? inputs.map((inp) => `
-                  <label class="chart-ind-cfg-field" title="${Utils.escapeHTML(inp.group ? `${inp.group} · ${inp.label}` : inp.label)}">
-                    <span>${Utils.escapeHTML(inp.label)}</span>
-                    ${this._indicatorFieldControl(d.id, inp, settings[inp.key])}
-                  </label>`).join('')
-              : '<span class="chart-ind-cfg-none">no settings</span>'}
-          </div>`;
-        }).join('')}
-        ${scope ? '' : `
-        <div class="chart-ind-cfg-row">
-          <span class="chart-ind-cfg-name">Patterns</span>
-          <button type="button" class="chart-ind-settings" data-action="patterns">Choose patterns…</button>
-        </div>`}
-      </div>
-      <p class="chart-ind-cfg-note">
-        Changes apply immediately. MACD requires fast &lt; slow; RSI requires oversold &lt; overbought.
-      </p>`;
-
-    panel.querySelector('[data-action="patterns"]')
-      ?.addEventListener('click', () => this.togglePatternPicker());
-
-    panel.querySelectorAll('[data-ind][data-key]').forEach((field) => {
-      field.addEventListener('change', () => {
-        const raw = field.type === 'checkbox' ? field.checked : field.value;
-        const ok = this.setIndicatorParam(field.dataset.ind, field.dataset.key, raw, scope);
-        if (!ok) {
-          // Snap back rather than leaving an invalid figure sitting in the box.
-          const prev = this.indicatorConfig(scope)[field.dataset.ind].settings[field.dataset.key];
-          if (field.type === 'checkbox') field.checked = Boolean(prev); else field.value = prev;
-          Utils.showToast('Value out of range for this indicator', 'error');
-          return;
-        }
-        if (scope) this.renderPaneIndicatorBar(scope); else this.renderIndicatorBar();
-        this.ensureIndicators();
-      });
-    });
-  },
-
-  togglePaneIndicatorSettings(scope) {
-    this.toggleIndicatorSettings(scope);
-  },
-
-  /**
-   * The indicator catalogue: every descriptor openalgo-charts registers, grouped under the
-   * engine's own category ('Trend', 'Momentum', 'Volatility', 'Volume') and filtered by a search
-   * box. This replaces the row of buttons that used to hold every indicator at once - workable
-   * at 22, not at the 102 the library now ships.
-   *
-   * Rows are checkboxes over the SAME toggleIndicator() the toolbar chips use, so an indicator
-   * switched on here is indistinguishable from one switched on there; nothing about placement,
-   * settings or persistence is special-cased to the picker.
-   */
-  toggleIndicatorPicker(scope) {
+  openScriptEditor(scope) {
     const panel = document.getElementById(scope ? `chart-pane-ind-pick-${scope}` : 'chart-ind-picker');
     if (!panel) return;
     if (!panel.hidden) { panel.hidden = true; return; }
-
-    const cfg = this.indicatorConfig(scope);
-    const groups = new Map();
-    for (const def of indicatorDefs()) {
-      const cat = indicatorCategory(def);
-      if (!groups.has(cat)) groups.set(cat, []);
-      groups.get(cat).push(def);
-    }
-
-    panel.hidden = false;
-    panel.innerHTML = `
-      <div class="chart-pat-head">
-        <span>Indicators</span>
-        <input type="search" class="form-input chart-ind-search" data-role="search"
-               placeholder="Search ${indicatorDefs().length} indicators" aria-label="Search indicators" />
-        <span class="chart-pat-count" data-role="count">${this.activeIndicatorDefs(scope).length} on</span>
-        <button type="button" class="chart-ind-settings" data-action="script"
-                title="Write an indicator or strategy in OpenScript">OpenScript…</button>
-        <button type="button" class="chart-ind-settings" data-action="close">Done</button>
-      </div>
-      <div class="chart-pat-list">
-        ${[...groups.entries()].map(([cat, defs]) => `
-          <div class="chart-ind-pick-group" data-group="${Utils.escapeHTML(cat)}">
-            <div class="chart-ind-pick-cat">${Utils.escapeHTML(cat)}</div>
-            ${defs.map((d) => `
-              <label class="chart-pat-row chart-ind-pick-row" data-name="${Utils.escapeHTML(d.label.toLowerCase())}">
-                <input type="checkbox" data-pick="${Utils.escapeHTML(d.id)}" ${cfg[d.id]?.on ? 'checked' : ''} />
-                <span>${Utils.escapeHTML(d.label)}</span>
-              </label>`).join('')}
-          </div>`).join('')}
-      </div>`;
-
-    panel.querySelectorAll('input[data-pick]').forEach((el) =>
-      el.addEventListener('change', () => {
-        this.toggleIndicator(el.dataset.pick, scope);
-        panel.querySelector('[data-role="count"]').textContent = `${this.activeIndicatorDefs(scope).length} on`;
-      }));
-
-    const search = panel.querySelector('[data-role="search"]');
-    search.addEventListener('input', () => {
-      const q = search.value.trim().toLowerCase();
-      panel.querySelectorAll('.chart-ind-pick-row').forEach((row) => {
-        row.hidden = Boolean(q) && !row.dataset.name.includes(q);
-      });
-      // A heading with nothing left under it is noise, so it goes with its rows.
-      panel.querySelectorAll('.chart-ind-pick-group').forEach((group) => {
-        group.hidden = !group.querySelector('.chart-ind-pick-row:not([hidden])');
-      });
-    });
-
-    panel.querySelector('[data-action="close"]').addEventListener('click', () => { panel.hidden = true; });
-    panel.querySelector('[data-action="script"]').addEventListener('click', () => this.openScriptEditor(scope, panel));
-  },
-
-  /**
-   * OpenScript editor, drawn in place of the picker it was opened from. Apply compiles the script
-   * (window.OAC.applyScript), which registers it as an ordinary indicator; it is then switched on
-   * for this chart/pane through the same toggleIndicator() every other indicator uses. Re-applying
-   * an edited script that is already on goes off-then-on, so the live instance is rebuilt from the
-   * new descriptor instead of keeping the old one's calc.
-   */
-  openScriptEditor(scope, panel) {
     const saved = Object.entries(window.OAC?.savedScripts?.() || {});
+    panel.hidden = false;
     panel.innerHTML = `
       <div class="chart-pat-head">
         <span>OpenScript</span>
@@ -921,7 +694,7 @@ Object.assign(DashboardApp.prototype, {
         </select>
         <button type="button" class="chart-ind-settings" data-action="apply">Apply</button>
         <button type="button" class="chart-ind-settings" data-action="delete">Delete</button>
-        <button type="button" class="chart-ind-settings" data-action="back">Back</button>
+        <button type="button" class="chart-ind-settings" data-action="close">Close</button>
       </div>
       <textarea class="form-input chart-script-src" data-role="src" spellcheck="false" rows="14"
                 aria-label="OpenScript source"></textarea>
@@ -948,143 +721,35 @@ Object.assign(DashboardApp.prototype, {
         return;
       }
       errors.hidden = true;
-      const cfg = this.indicatorConfig(scope);
-      if (cfg[descriptor.id]?.on) this.toggleIndicator(descriptor.id, scope);
-      this.toggleIndicator(descriptor.id, scope);
+      const chart = this.indicatorChart(scope);
+      const st = this.indicatorScope(scope);
+      if (chart) {
+        const live = chart.indicators().filter((i) => i.indicatorId === descriptor.id).map(indicatorSnapshot);
+        for (const inst of live) chart.removeIndicator(inst.instanceId);
+        st.pending = [
+          ...st.pending.filter((p) => p.indicatorId !== descriptor.id),
+          ...this._addIndicators(chart, live.length ? live : [{ indicatorId: descriptor.id, settings: {} }]),
+        ];
+        this.saveIndicators(scope);
+        this.renderIndicatorBar(scope);
+      }
       Utils.showToast(`${descriptor.name} applied`, 'success');
       panel.hidden = true;
     });
 
     panel.querySelector('[data-action="delete"]').addEventListener('click', () => {
       if (!pick.value) return;
-      if (this.indicatorConfig(scope)[pick.value]?.on) this.toggleIndicator(pick.value, scope);
+      const chart = this.indicatorChart(scope);
+      for (const inst of chart ? chart.indicators().filter((i) => i.indicatorId === pick.value) : []) chart.removeIndicator(inst.id);
+      const st = this.indicatorScope(scope);
+      st.pending = st.pending.filter((p) => p.indicatorId !== pick.value);
+      this.saveIndicators(scope);
       window.OAC.removeScript(pick.value);
       Utils.showToast('Script deleted; it leaves the indicator list on the next reload', 'success');
       panel.hidden = true;
     });
 
-    panel.querySelector('[data-action="back"]').addEventListener('click', () => {
-      panel.hidden = true;
-      this.toggleIndicatorPicker(scope);
-    });
-  },
-
-  /**
-   * Reconcile the chart's live indicator instances against `indicatorConfig()`.
-   *
-   * The engine owns series creation, pane placement (RSI/MACD get their own pane
-   * automatically), recompute-on-data-change, and teardown for each instance - which is what
-   * let this replace the ~250 lines of hand-rolled pane-height/stretch-factor/live-recompute
-   * bookkeeping the previous (Lightweight Charts based) implementation needed. Diffed rather
-   * than rebuilt from scratch each call, so toggling one indicator does not flicker the rest.
-   */
-  ensureIndicators() {
-    this._liveIndicators = this._liveIndicators || new Map(); // our id -> IndicatorApi
-    this._reconcileIndicators(this.chart, this._liveIndicators, this.indicatorConfig());
-    // Each CE/PE pane reconciles against its OWN indicator config, not the main chart's - see
-    // indicatorConfig(scope). Independent selection per pane, not a shared one applied 3x.
-    for (const key of ['ce', 'pe']) {
-      const pane = this.optionPanes?.[key];
-      if (!pane?.chart) continue;
-      pane.liveIndicators = pane.liveIndicators || new Map();
-      this._reconcileIndicators(pane.chart, pane.liveIndicators, this.indicatorConfig(key));
-    }
-  },
-
-  /**
-   * The actual reconciliation, generic over WHICH chart AND which config - the main chart and
-   * each CE/PE pane carry their own indicator set against their own `cfg`/`store` pair (a plain
-   * id -> IndicatorApi map), so switching on RSI on the PE pane never touches the main chart or
-   * the CE pane.
-   */
-  _reconcileIndicators(chart, store, cfg) {
-    if (!chart || !window.OAC || !store || !cfg) return;
-
-    /**
-     * chart.removeIndicator(id), not live.remove(): the empty-pane cleanup (an oscillator's pane
-     * disappearing once its last indicator leaves it) lives specifically in the chart's
-     * removeIndicator, one level above the instance's own remove(). Calling remove() directly
-     * detaches the series but leaves the now-empty pane sitting there permanently.
-     *
-     * There is a real bug in that same removeIndicator, though: removing one indicator's pane
-     * reindexes every indicator ABOVE it (shiftPane(-1), pane 2 becomes pane 1) - but a survivor
-     * from an EARLIER, already-returned reconcile call does not have that shift reflected in
-     * whatever internal reference removeIndicator's own series lookup holds for it, so removing
-     * IT next throws reading a property of undefined. This is not just an ordering-within-one-
-     * call problem (sorting a single removal batch by pane index does not help): toggling RSI
-     * off, then in a SEPARATE later click toggling MACD off, hits it too, since MACD survived
-     * RSI's removal as a "live" instance whose pane the engine already silently shifted under it.
-     *
-     * The reliable fix - verified against the vendored engine directly, not just inferred - is to
-     * never call removeIndicator on a survivor of a PRIOR reconcile at all: whenever anything
-     * needs removing, drop every currently-live instance in this store (highest pane first, all
-     * still fresh - none of them has survived a removal yet at that point) and re-add whichever
-     * ones are still wanted. A few indicators recomputing from scratch is cheap; a permanently
-     * stuck blank pane is the alternative.
-     */
-    const toRemove = indicatorDefs().some((def) => !cfg[def.id].on && store.has(def.id));
-    if (toRemove) {
-      const live = [...store.entries()].sort((a, b) => (b[1].paneIndex ?? 0) - (a[1].paneIndex ?? 0));
-      for (const [id, api] of live) {
-        try { chart.removeIndicator(api.id); } catch (error) { console.error(`[Chart] removing indicator ${id} failed`, error); }
-        store.delete(id);
-      }
-    }
-
-    for (const def of indicatorDefs()) {
-      const want = cfg[def.id];
-      if (!want.on) continue;
-      const live = store.get(def.id);
-      if (live) {
-        let ok = true;
-        try { live.setSettings(want.settings); } catch (_) { ok = false; /* disposed; recreate below */ }
-        if (ok) continue;
-        store.delete(def.id);
-      }
-      try {
-        store.set(def.id, chart.addIndicator(def.indicatorId, want.settings));
-      } catch (error) {
-        // An OpenScript study refuses to start on a chart with no bars yet (OS6010). Nothing is
-        // stored for it, so the next reconcile after data loads adds it; that is not a failure.
-        if (String(error?.message).startsWith('OS6010')) {
-          console.warn(`[Chart] ${def.id} waits for bars`);
-        } else {
-          console.error(`[Chart] indicator ${def.id} failed`, error);
-        }
-      }
-    }
-  },
-
-  /**
-   * Overlays and oscillators alike now come from ensureIndicators()/`_reconcileIndicators`; kept
-   * as an alias so the existing call sites (loadChartData, the timeframe/symbol switch handlers,
-   * and `_buildOptionPane` for each CE/PE pane) need no changes beyond passing their own chart.
-   */
-  applyIndicatorsTo(chart) {
-    if (!chart) return;
-    if (chart === this.chart) { this.ensureIndicators(); return; }
-    for (const key of ['ce', 'pe']) {
-      const pane = this.optionPanes?.[key];
-      if (pane?.chart !== chart) continue;
-      pane.liveIndicators = pane.liveIndicators || new Map();
-      this._reconcileIndicators(chart, pane.liveIndicators, this.indicatorConfig(key));
-      return;
-    }
-  },
-
-  /**
-   * Advance every indicator to the live bar.
-   *
-   * A no-op by design: `chart.addIndicator` instances recompute themselves when the source
-   * series changes, which `applyChartQuote`'s `candleSeries.update()` call already is. Kept as
-   * a named call (rather than removing the call site in dashboard-chart-live.js) so a future
-   * indicator that needs an explicit nudge has one place to add it.
-   */
-  refreshLiveIndicators() {},
-
-  /** Kept as an alias: oscillator panes are now indicator instances, not separate sub-charts. */
-  refreshOscillator() {
-    this.ensureIndicators();
+    panel.querySelector('[data-action="close"]').addEventListener('click', () => { panel.hidden = true; });
   },
 
   /**
@@ -1100,24 +765,17 @@ Object.assign(DashboardApp.prototype, {
     const container = document.getElementById('chart-container');
     if (!container) return MIN_CHART_BUDGET_HEIGHT;
     const top = container.getBoundingClientRect().top;
-    // 16px of border breathing room, plus the attribution line below the chart (the Apache-2.0
-    // notice required by Lightweight Charts) and the flex gap in front of it - leaving those out
-    // was the last few pixels of page scroll the fit was supposed to eliminate.
+    // 16px of border breathing room, plus the attribution line below the chart and the flex gap
+    // in front of it - leaving those out was the last few pixels of page scroll the fit was
+    // supposed to eliminate.
     const bottomPad = 48;
     const available = window.innerHeight - top - bottomPad;
     return Math.max(MIN_CHART_BUDGET_HEIGHT, Math.round(available));
   },
 
   /**
-   * Size the chart element to hold the price pane plus every oscillator.
-   *
-   * The container used to be set to the literal SUM of every pane's preferred height, which
-   * overflowed the viewport the moment two or three oscillators were on - RSI and MACD both
-   * ended up below the fold, reachable only by scrolling the whole page. Stretch factors (see
-   * refreshOscillator) allocate space as RATIOS, not pixels, so the actual container height can
-   * be whatever fits the screen; the proportions - and a user's own dragged sizes - are
-   * preserved regardless. The container is capped to `chartBudgetHeight()` instead of the raw
-   * sum, so the full widget always fits in one viewport.
+   * Size the chart element to fit the viewport. The engine shares that height between the price
+   * pane and every oscillator pane by their weights, so the whole widget always fits one screen.
    */
   resizeChartForPanes() {
     const container = document.getElementById('chart-container');
@@ -1125,13 +783,7 @@ Object.assign(DashboardApp.prototype, {
     container.style.height = `${this.chartBudgetHeight()}px`;
   },
 
-  /**
-   * No-ops kept as named call sites (destroyChart calls rememberOscHeights;
-   * chartBudgetHeight/resizeChartForPanes still size the container). Oscillators are now
-   * `chart.addIndicator` instances the engine tears down with the chart itself in one
-   * `chart.destroy()` - there is no separate pane bookkeeping left to do here.
-   */
- 
+  /** No-op kept as a named call site (destroyChart): the engine owns oscillator pane heights. */
   rememberOscHeights() {},
 
   /**
@@ -1162,7 +814,7 @@ Object.assign(DashboardApp.prototype, {
       const paneCandles = this.optionPanes?.[key]?.candles || candles;
       const last = paneCandles?.length ? paneCandles[paneCandles.length - 1].close : null;
       if (!Number.isFinite(price)) return;
-      const at = Number(price.toFixed(2));
+      const at = snapToTick(price, Number(contract.tickSize) || 0.05);
 
       // Same rules as the underlying's menu: a stop must sit on the far side of the last traded
       // price (above for a buy, below for a sell); a limit is always allowed.

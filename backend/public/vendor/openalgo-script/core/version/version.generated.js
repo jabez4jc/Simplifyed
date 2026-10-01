@@ -3,7 +3,7 @@
 // VERSION comes from package.json and COMPILED_FORMAT_VERSION from
 // spec/compiled-program.md, so neither can drift from the thing it names.
 /** This build's package version. The release refuses to publish unless the tag, the manifest and this agree. */
-export const VERSION = "0.8.0";
+export const VERSION = "0.8.1";
 /**
  * The compiled program format this compiler emits.
  *

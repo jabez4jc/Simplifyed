@@ -39,10 +39,18 @@ export function colourColumns(key, channel) {
 export function valuesFrom(specs, columns, from, to) {
     const out = {};
     for (const spec of specs) {
-        const column = columns[spec.channel] ?? [];
         const built = new Array(Math.max(0, to - from));
-        for (let bar = from; bar < to; bar += 1) {
-            built[bar - from] = partOf(column[bar] ?? null, spec.part);
+        if (spec.part === 'bar') {
+            // The bar's own index, never its offset into the tail: the chart splices
+            // a tail by position, so a row carries the same number either way.
+            for (let bar = from; bar < to; bar += 1)
+                built[bar - from] = bar;
+        }
+        else {
+            const column = columns[spec.channel] ?? [];
+            for (let bar = from; bar < to; bar += 1) {
+                built[bar - from] = partOf(column[bar] ?? null, spec.part);
+            }
         }
         out[spec.key] = built;
     }

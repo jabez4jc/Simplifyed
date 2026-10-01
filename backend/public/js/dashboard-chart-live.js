@@ -84,6 +84,7 @@ Object.assign(DashboardApp.prototype, {
     this.chartPollInterval = setInterval(() => {
       if (this.currentView !== 'chart') return;
       this.pollOptionPaneQuotes().catch(() => { /* transient; the next tick retries */ });
+      this.pollFutureQuote().catch(() => { /* transient; the next tick retries */ });
       // Connection-level "is the socket up" is a safe enough proxy for the watchlist (its
       // symbols are always subscribed by construction), but not for the chart - a symbol can sit
       // unsubscribed on an otherwise-healthy socket. Fall back to REST unless a WS tick for THIS
@@ -99,6 +100,35 @@ Object.assign(DashboardApp.prototype, {
     if (this.chartPollInterval) {
       clearInterval(this.chartPollInterval);
       this.chartPollInterval = null;
+    }
+  },
+
+  /**
+   * The future's own last price, beside the index's, on an index chart that trades its future:
+   * the two make the basis every priced order and line on that chart is converted by (see
+   * chartBasis). The lines follow the basis as it moves, but not under a line being dragged.
+   */
+  async pollFutureQuote() {
+    if (!this.tradesFutureOfIndex()) return;
+    const fut = this.chartFuture;
+    // Asked of one of this chart's own order instances: the shared feed skips a closed market,
+    // and a level picked after the close still needs the future's last price to convert.
+    const via = this.chartTradeInfo?.instances?.[0]?.id;
+    const res = await api.getQuotes([{ exchange: fut.exchange, symbol: fut.symbol }], via);
+    if (this.chartFuture !== fut) return; // switched symbol meanwhile
+    const quote = (res.data || []).find((q) => this.buildWatchlistSymbolKey(q.exchange, q.symbol)
+      === this.buildWatchlistSymbolKey(fut.exchange, fut.symbol));
+    const ltp = Number(quote?.ltp);
+    if (!Number.isFinite(ltp) || ltp <= 0 || isSentinel(ltp)) return;
+    const age = this.quoteAgeMs(quote);
+    if (age !== null && age > MAX_QUOTE_AGE_MS) return;
+    const before = this.chartBasis();
+    this.chartFutureLtp = ltp;
+    this.chartFutureLtpAt = Date.now();
+    const after = this.chartBasis();
+    const tick = Number(fut.tickSize) || 0.05;
+    if (before === null || Math.abs(after - before) >= tick) {
+      if (!this.chart?._lineDragging) this.redrawChartLines();
     }
   },
 
@@ -131,7 +161,7 @@ Object.assign(DashboardApp.prototype, {
     if (last && bucket < last.ts) return;
 
     let bar = last;
-    let before = null;
+    let startedBar = false;
     if (last && last.ts === bucket) {
       bar.close = ltp;
       if (ltp > bar.high) bar.high = ltp;
@@ -139,29 +169,19 @@ Object.assign(DashboardApp.prototype, {
     } else {
       bar = { ts: bucket, open: ltp, high: ltp, low: ltp, close: ltp, volume: 0 };
       pane.candles.push(bar);
-      try { before = pane.chart.getVisibleLogicalRange(); } catch (_) { /* no view yet */ }
+      startedBar = true;
     }
 
-    const plain = PLAIN_SERIES_TYPES.some((t) => t.type === (pane.seriesType || 'candlestick'));
+    // The real bar, whatever the pane draws: a transformed pane forms its elements from it.
     try {
-      if (plain) pane.series.update({ time: bar.ts, open: bar.open, high: bar.high, low: bar.low, close: bar.close });
-      else this.renderPaneSeries(key); // transformed types (Heikin-Ashi, Renko...) rebuild from candles
+      pane.series.update({ time: bar.ts, open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume });
     } catch (_) { /* pane rebuilt meanwhile */ }
 
-    // Appending a bar to a pane can throw its view hundreds of bars off its data (seen 30 Sep 2026:
-    // 1067-1126 -> 2070-2129 on 1123 bars; 1 Oct: +646 on 766 bars, either way) - the pane then
-    // shows an empty grid. Whatever the engine did beyond the one-bar scroll of a view that
-    // follows the live edge is undone, then the panes are put back on the underlying's window.
-    if (before) {
-      try {
-        const after = pane.chart.getVisibleLogicalRange();
-        const shift = before.to >= pane.candles.length - 2 ? 1 : 0;
-        if (after && Math.abs(after.to - (before.to + shift)) > 1) {
-          pane.chart.setVisibleLogicalRange({ from: before.from + shift, to: before.to + shift });
-        }
-      } catch (_) { /* pane rebuilt meanwhile */ }
-      if (typeof this.alignFollowers === 'function') this.alignFollowers();
-    }
+    // A new bar scrolls the pane by itself; keep the panes on the underlying's time window. (A
+    // pane's view used to jump hundreds of bars off its data here - len-120 bars each time, the
+    // `timeScale.fitContent(120)` framing the engine corrected on the next append. See
+    // frameLatestBars.)
+    if (startedBar && typeof this.alignFollowers === 'function') this.alignFollowers();
   },
 
   /**
@@ -293,12 +313,6 @@ Object.assign(DashboardApp.prototype, {
         if (cumulative < bar._volBase) bar._volBase = cumulative;
       }
     } else {
-      // `last` just closed - feed it to the active chart-type transform (Renko etc.), if any,
-      // BEFORE starting the new bar. These transforms are built from discrete completed price
-      // movements, not intrabar noise, so they only ever see finished bars.
-      if (last && typeof this.feedChartTransformOnClose === 'function') {
-        this.feedChartTransformOnClose(last);
-      }
       // Whole bars went by with no tick - the feed dropped (broker socket, server restart) and
       // those minutes would stay missing or half-drawn until a manual refresh. Reload history.
       if (last && bucket - last.ts > seconds) this.scheduleChartBackfill();
@@ -322,16 +336,13 @@ Object.assign(DashboardApp.prototype, {
       } catch (_) { /* series disposed */ }
     }
 
-    // No display-time shift needed: the engine renders IST natively from raw UTC seconds. Skipped
-    // while a chart-type transform is active (Renko etc.) - the forming real bar's intrabar
-    // movement isn't what those series render; only completed bars reach them, via
-    // feedChartTransformOnClose() above.
-    if (!this._chartType?.transform) {
-      this.candleSeries.update({
-        time: bar.ts,
-        open: bar.open, high: bar.high, low: bar.low, close: bar.close,
-      });
-    }
+    // No display-time shift needed: the engine renders IST natively from raw UTC seconds. The
+    // real bar goes in under every chart type - with a transform on (Renko etc.) the chart forms
+    // the newest element again from it on each tick (see dashboard-chart-types.js).
+    this.candleSeries.update({
+      time: bar.ts,
+      open: bar.open, high: bar.high, low: bar.low, close: bar.close, volume: bar.volume,
+    });
 
     // Only a WS-sourced tick counts as proof WS is delivering FOR THIS SYMBOL - stamping it on
     // REST-polled ticks too would make the poll's own success look like "WS is fine" and starve
@@ -345,7 +356,6 @@ Object.assign(DashboardApp.prototype, {
     if (startedBar && typeof this.alignFollowers === 'function') this.alignFollowers();
     this.renderChartLegend();
     this.updateTicketPrices();
-    this.refreshLiveIndicators();
     if (typeof this.feedProfileTick === 'function') this.feedProfileTick(quote);
     if (typeof this.pushOrderLinesLtp === 'function') this.pushOrderLinesLtp();
     return true;

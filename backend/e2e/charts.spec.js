@@ -70,8 +70,7 @@ test('the bridge publishes every export the chart code calls', async ({ page }) 
       'DrawingController', 'registeredDrawingTools', 'getDrawingTool', 'migrateDrawings',
       'keyToDrawingAction', 'drawingToolIcon', 'iconSvg', 'computeVolumeProfileSessions',
       'VolumeProfile', 'computeFootprint', 'cumulativeDelta', 'FootprintAggregator', 'Footprint',
-      'TradeController', 'HeikinAshiTransform', 'RenkoTransform', 'RangeBarsTransform',
-      'LineBreakTransform', 'PointFigureTransform', 'KagiTransform', 'runTransform',
+      'TradeController', 'createAlertUi', 'mountIndicatorSettings', 'mountIndicatorPicker',
       'applyScript', 'removeScript', 'savedScripts',
     ];
     return required.filter((key) => !window.OAC[key]);
@@ -113,25 +112,41 @@ test('every series type the picker offers can actually be built and drawn', asyn
   assertNoPageErrors(errors);
 });
 
-test('every bar transform the type picker offers produces bars', async ({ page }) => {
+test('every transform the type picker offers is applied by the chart, live', async ({ page }) => {
+  const errors = collectPageErrors(page);
   const result = await page.evaluate(`(() => {
     const bars = ${BARS_SCRIPT};
-    const made = {
-      'heikin-ashi': new window.OAC.HeikinAshiTransform(),
-      renko: new window.OAC.RenkoTransform({ boxSize: 1 }),
-      'range-bars': new window.OAC.RangeBarsTransform({ range: 1 }),
-      'line-break': new window.OAC.LineBreakTransform({ lines: 3 }),
-      'point-figure': new window.OAC.PointFigureTransform({ boxSize: 1 }),
-      kagi: new window.OAC.KagiTransform({ reversal: 1 }),
-    };
-    const counts = {};
-    for (const [id, t] of Object.entries(made)) counts[id] = window.OAC.runTransform(t, bars).length;
-    return counts;
+    const host = document.createElement('div');
+    host.style.cssText = 'width:800px;height:400px';
+    document.body.appendChild(host);
+    const chart = window.OAC.createChart(host, { renderer: 'auto', timezone: 'Asia/Kolkata' });
+    const series = chart.addSeries('candlestick');
+    series.setData(bars);
+    const out = {};
+    for (const type of ['heikin-ashi', 'renko', 'range-bars', 'line-break', 'point-figure', 'kagi']) {
+      try {
+        window.app.applySeriesType(chart, series, type);
+        const last = bars[bars.length - 1];
+        // A tick on the real bar: the series keeps taking bars, the chart re-forms the elements.
+        series.update({ ...last, close: last.close + 1, high: Math.max(last.high, last.close + 1) });
+        out[type] = { spec: chart.seriesTransform(series)?.type, bars: series.getData().length };
+      } catch (e) {
+        out[type] = { error: e.message };
+      }
+    }
+    window.app.applySeriesType(chart, series, 'candlestick');
+    out.plain = chart.seriesTransform(series);
+    chart.destroy();
+    host.remove();
+    return { out, given: bars.length };
   })()`);
 
-  for (const [id, count] of Object.entries(result)) {
-    expect(count, `${id} produced no bars`).toBeGreaterThan(0);
+  for (const type of ['heikin-ashi', 'renko', 'range-bars', 'line-break', 'point-figure', 'kagi']) {
+    // getData hands back the host's bars, not the elements: the transform never replaces them.
+    expect(result.out[type], type).toEqual({ spec: type, bars: result.given });
   }
+  expect(result.out.plain, 'Candles takes the transform off').toBeNull();
+  assertNoPageErrors(errors);
 });
 
 test('every registered indicator can be placed on a chart', async ({ page }) => {
@@ -289,13 +304,13 @@ test('the chart view builds a chart with the engine options this app asks for', 
   assertNoPageErrors(errors);
 });
 
-test('an OpenScript study applied from the picker is registered and switched on', async ({ page }) => {
+test('an OpenScript study applied from the editor is registered and put on the chart', async ({ page }) => {
   const errors = collectPageErrors(page);
   await ensureChartSymbol(page);
   await switchView(page, 'chart');
+  await page.waitForFunction(() => window.app?.chartCandles?.length > 0, null, { timeout: 30000 });
   await page.click('[data-pop="indicators"]');
-  await page.evaluate(() => window.app.toggleIndicatorPicker());
-  await page.click('#chart-ind-picker [data-action="script"]');
+  await page.click('#chart-indicators-bar [data-action="script"]');
   await page.fill('#chart-ind-picker [data-role="src"]', [
     'version 1',
     'study("E2E mean", overlay = true)',
@@ -305,14 +320,13 @@ test('an OpenScript study applied from the picker is registered and switched on'
 
   const state = await page.evaluate(() => ({
     registered: window.OAC.hasIndicator('oscript-e2e-mean'),
-    on: window.app.indicatorConfig()['oscript-e2e-mean']?.on,
+    on: window.app.chart.indicators().some((i) => i.indicatorId === 'oscript-e2e-mean'),
     saved: Object.keys(window.OAC.savedScripts()),
   }));
   expect(state).toEqual({ registered: true, on: true, saved: ['oscript-e2e-mean'] });
 
   // A script that does not compile shows its diagnostics instead of registering anything.
-  await page.evaluate(() => window.app.toggleIndicatorPicker());
-  await page.click('#chart-ind-picker [data-action="script"]');
+  await page.click('#chart-indicators-bar [data-action="script"]');
   await page.fill('#chart-ind-picker [data-role="src"]', 'version 1\nstudy("Broken")\nplot(nope)\n');
   await page.click('#chart-ind-picker [data-action="apply"]');
   await expect(page.locator('#chart-ind-picker [data-role="errors"]')).toBeVisible();

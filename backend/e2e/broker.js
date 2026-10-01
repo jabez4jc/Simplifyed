@@ -47,6 +47,16 @@ export async function netPosition(name, symbol) {
     .reduce((sum, p) => sum + Number(p.quantity ?? p.netqty ?? 0), 0);
 }
 
+/**
+ * The broker's own row for one order id, from its order book - what actually rests at the broker,
+ * not what the app recorded. Quantities come back in canonical units, as the app reads them.
+ */
+export async function brokerOrder(name, orderid) {
+  const inst = await instance(name);
+  const book = await openalgoClient.getOrderBook(inst, { ignoreCircuit: true });
+  return book.find((o) => String(o.orderid ?? o.order_id) === String(orderid)) || null;
+}
+
 /** Poll until the broker reports `want` (fills in analyzer mode land within a few seconds). */
 export async function waitForNet(name, symbol, want, timeoutMs = 30000) {
   const until = Date.now() + timeoutMs;

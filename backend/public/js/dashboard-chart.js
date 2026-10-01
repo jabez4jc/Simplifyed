@@ -57,6 +57,17 @@ const HISTORY_SPAN_DAYS = {
 
 /** Gridline visibility presets for the context menu's "Grid" submenu - maps 1:1 to the engine's
  * own `chart.setGridOptions({ vertLines, horzLines })`. */
+/**
+ * A picked price rounded to the contract's tick, so the menu, the confirmation and the order all
+ * say the same number (the server rounds to the tick too; showing 83,666.55 for an order that rests
+ * at 83,666.50 is a wrong label on a real order).
+ */
+function snapToTick(price, tick) {
+  const t = tick > 0 ? tick : 0.01;
+  const decimals = Math.min(6, (String(t).split('.')[1] || '').length);
+  return Number((Math.round(price / t) * t).toFixed(decimals));
+}
+
 const GRID_STYLES = [
   { id: 'grid', label: 'Grid', vertLines: true, horzLines: true },
   { id: 'horizontal', label: 'Horizontal', vertLines: false, horzLines: true },
@@ -177,7 +188,6 @@ Object.assign(DashboardApp.prototype, {
             <div class="chart-pop is-wide" data-pop-for="indicators" hidden>
               <div id="chart-indicators-bar" class="chart-ind-bar"></div>
               <div id="chart-ind-picker" class="chart-pattern-picker" hidden></div>
-              <div id="chart-ind-config" class="chart-ind-config" hidden></div>
               <div id="chart-pattern-picker" class="chart-pattern-picker" hidden></div>
             </div>
           </div>
@@ -509,13 +519,11 @@ Object.assign(DashboardApp.prototype, {
     // reassigned map silently orphans the lines it used to hold - they then stay on the chart
     // permanently with no handle left to remove them.
     this._priceLines = [];
-    // A transform pattern renders through whichever SeriesType its definition names - candles
-    // for Renko and friends, its own renderer for Point & Figure and Kagi. See
-    // seriesRenderType() in dashboard-chart-types.js.
-    const savedType = this._chartType?.type || 'candlestick';
-    this.candleSeries = chart.addSeries(
-      typeof this.seriesRenderType === 'function' ? this.seriesRenderType(savedType) : savedType,
-    );
+    // Built as candles, then given the saved type or transform in place - see
+    // dashboard-chart-types.js. The series always takes the real bars; the chart forms Renko,
+    // Kagi and the rest from them.
+    this.candleSeries = chart.addSeries('candlestick');
+    if (typeof this.applyChartSeriesType === 'function') this.applyChartSeriesType();
 
     // Hidden overlay scale ('' priceScaleId): the histogram shares the price pane rather than
     // getting one of its own, same as the old volume-pane-margin trick.
@@ -596,6 +604,8 @@ Object.assign(DashboardApp.prototype, {
     const data = scope ? this.optionPanes?.[scope]?.positionData : this.chartPositionData;
     const series = scope ? this.optionPanes?.[scope]?.series : this.candleSeries;
     if (!data || !data.avgEntryPrice || !series) return;
+    const at = scope ? data.avgEntryPrice : this.chartEntryOnScreen();
+    if (!at) return;
 
     const css = getComputedStyle(document.documentElement);
     const colour = (data.netQuantity >= 0
@@ -603,7 +613,7 @@ Object.assign(DashboardApp.prototype, {
       : css.getPropertyValue('--color-loss')).trim();
 
     this.addPriceLine({
-      price: data.avgEntryPrice,
+      price: at,
       color: colour || '#888',
       lineWidth: 2,
       dashed: true,
@@ -700,8 +710,8 @@ Object.assign(DashboardApp.prototype, {
     if (sendBtn) sendBtn.classList.toggle('is-blocked', Boolean(this.chartTradeBlocked));
 
     const ind = document.getElementById('chart-ind-count');
-    if (ind && typeof this.indicatorConfig === 'function') {
-      const on = Object.values(this.indicatorConfig()).filter((c) => c.on).length;
+    if (ind) {
+      const on = this.chart && !this.chart.isDestroyed ? this.chart.indicators().length : 0;
       ind.textContent = on ? String(on) : '';
     }
 
@@ -814,9 +824,20 @@ Object.assign(DashboardApp.prototype, {
       } catch (_) { /* fall through to a fresh fit */ }
     }
 
-    // Room to the right of the live bar - see RIGHT_OFFSET_BARS in dashboard-chart-panes.js.
-    ts.setRightOffset(8);
-    ts.fitContent(120);
+    this.frameLatestBars(this.chart);
+  },
+
+  /**
+   * Frame the newest bars: the chart's own default view (what a double-click does), at 120 bars,
+   * with room to the right of the live bar. `timeScale.fitContent(n)` is not this - it anchors
+   * the view at bar n-1, the OLDEST n bars, which a later tick happened to repair on 2.5.x.
+   * `resetScale` fits the whole dataset first, so it counts elements on a transformed chart too.
+   */
+  frameLatestBars(chart) {
+    if (!chart) return;
+    chart.setNavigationOptions({ defaultVisibleBars: 120 });
+    chart.resetScale();
+    chart.timeScale.setRightOffset(RIGHT_OFFSET_BARS);
   },
 
   async loadChartData() {
@@ -862,22 +883,13 @@ Object.assign(DashboardApp.prototype, {
         return;
       }
 
-      // Reference price for the tickets, the legend and the context menu's validity rules. Set
-      // BEFORE renderChartSeries() - transform box-size defaults read chartTickSize(), which
-      // doesn't need this, but keeping candles-then-render in one order avoids re-litigating it.
+      // Reference price for the tickets, the legend and the context menu's validity rules.
       this.chartCandles = candles;
 
       // No display-time shift needed: the engine renders its time axis in IST natively from raw
-      // UTC seconds (see the TIME AXIS note at the top of this file). Goes through
-      // renderChartSeries() (dashboard-chart-types.js) rather than a direct setData() so the
-      // active chart-type/pattern selection (candlestick, Heikin Ashi, Renko, ...) is honoured.
-      if (typeof this.renderChartSeries === 'function') {
-        this.renderChartSeries();
-      } else {
-        this.candleSeries.setData(candles.map((c) => ({
-          time: c.ts, open: c.open, high: c.high, low: c.low, close: c.close,
-        })));
-      }
+      // UTC seconds (see the TIME AXIS note at the top of this file). The real bars go in
+      // whatever the chart type - the chart forms a transform's elements itself.
+      this.renderChartSeries();
 
       const css = getComputedStyle(document.documentElement);
       const up = css.getPropertyValue('--color-profit-bg').trim() || 'rgba(52,211,153,0.5)';
@@ -893,7 +905,7 @@ Object.assign(DashboardApp.prototype, {
 
       this.chartLastBar = candles[candles.length - 1];
       this.chartLastPrice = this.chartLastBar.close;
-      this.applyIndicatorsTo(this.chart, this.candleSeries, candles);
+      this.applyIndicatorsTo(this.chart);
       this.applyPatternsTo(this.chart, this.candleSeries, candles);
       // A different symbol or timeframe shares nothing with whatever ticks were accumulated for
       // the last one - reset before Volume Profile (history-derived, recomputes cleanly either
@@ -940,6 +952,45 @@ Object.assign(DashboardApp.prototype, {
     const fut = this.chartFuture;
     if (/_INDEX$/.test(state.exchange || '') && fut && !fut.isRow) return { exchange: fut.exchange, symbol: fut.symbol };
     return { exchange: state.exchange, symbol: state.symbol };
+  },
+
+  /** An index chart whose orders, lines and position are its future's. */
+  tradesFutureOfIndex() {
+    return /_INDEX$/.test(this.chartState?.exchange || '') && Boolean(this.chartFuture) && !this.chartFuture.isRow;
+  },
+
+  /**
+   * Future minus index, live: what turns a level picked on the index chart into the future's
+   * price, and the future's prices back into levels on the index chart. A price picked on the
+   * index used to go to the future unchanged, so with the future ~98 points above the index a
+   * sell limit picked above the index sat below the future's market and filled at once.
+   * Null while either side lacks a fresh price: nothing priced is then sent or drawn.
+   */
+  chartBasis() {
+    const fut = this.chartFutureLtp;
+    const idx = this.chartLastPrice;
+    if (!(fut > 0) || !(idx > 0) || Date.now() - (this.chartFutureLtpAt || 0) > 60000) return null;
+    return fut - idx;
+  },
+
+  /** An index level as the future's price, on the future's tick. Identity on any other chart. */
+  indexToFuturePrice(level) {
+    if (!this.tradesFutureOfIndex()) return level;
+    const basis = this.chartBasis();
+    return basis === null ? null : snapToTick(level + basis, this.chartFuture.tickSize);
+  },
+
+  /** A future's price as the index level it stands at now. Identity on any other chart. */
+  futureToIndexPrice(price) {
+    if (!this.tradesFutureOfIndex()) return price;
+    const basis = this.chartBasis();
+    return basis === null ? null : price - basis;
+  },
+
+  /** The position's average entry where the main chart draws it (an index level on an index chart). */
+  chartEntryOnScreen() {
+    const entry = this.chartPositionData?.avgEntryPrice;
+    return entry ? this.futureToIndexPrice(entry) : null;
   },
 
   async loadChartPosition() {
@@ -1119,6 +1170,7 @@ Object.assign(DashboardApp.prototype, {
     // The futures contract a FUTURES order here trades - named on the buttons, its expiry sent
     // with the order (an index row's futures order is refused without one), sized in its lots.
     this.chartFuture = null;
+    this.chartFutureLtp = null; // another contract's price would make another contract's basis
     if (sym.tradableFutures) {
       try {
         const fut = await api.request(`/history/future?symbolId=${encodeURIComponent(state.symbolId)}`);
@@ -1126,7 +1178,8 @@ Object.assign(DashboardApp.prototype, {
         this.chartFuture = fut.data || null;
       } catch (_) { /* no future: futures buttons stay hidden */ }
       // An index chart's orders and position are the future's - now that it is known, read them.
-      if (this.chartFuture) { this.refreshOrderLines?.(); }
+      // ...and its future's price, without which no level on an index chart can be converted.
+      if (this.chartFuture) { this.refreshOrderLines?.(); this.pollFutureQuote?.().catch(() => {}); }
     }
 
     const blocked = Boolean(info.unavailable) || info.instances.length === 0;
@@ -1205,9 +1258,11 @@ Object.assign(DashboardApp.prototype, {
       ? (optionContract?.symbol
         || `${this.chartState.optionLeg || 'ATM'}${orderExpiry ? ` · ${orderExpiry}` : ' · nearest expiry'}`)
       : null;
+    // An index chart's level and the future's price it became, when they differ.
+    const atLevel = intent.level !== undefined && intent.level !== price ? ` (index ${Utils.formatNumber(intent.level)})` : '';
     const typeLabel = orderType === 'MARKET' ? 'Market'
-      : orderType === 'LIMIT' ? `Limit @ ${Utils.formatNumber(price)}`
-      : `Stop @ ${Utils.formatNumber(price)}`;
+      : orderType === 'LIMIT' ? `Limit @ ${Utils.formatNumber(price)}${atLevel}`
+      : `Stop @ ${Utils.formatNumber(price)}${atLevel}`;
 
     // A leg order names its contract outright, so it is neither the underlying nor a
     // per-instance resolution - it is one known symbol at one known lot size.
@@ -1509,10 +1564,20 @@ Object.assign(DashboardApp.prototype, {
         failed ? 'warning' : 'success'
       );
 
+      // The rows are stored once /orders answers, so the lines are drawn now, on the chart the
+      // order was placed from - a contract's on its option chart, which otherwise waited for an
+      // order-stream push or its 30s poll. A line has to be there to be dragged.
+      const redrawLines = () => {
+        this.refreshOrderLines?.();
+        for (const key of ['ce', 'pe']) {
+          if (contract && this.optionPanes?.[key]?.contract?.symbol === contract.symbol) this.refreshPaneOrderLines?.(key);
+        }
+      };
+      redrawLines();
       await this.loadChartPosition();
       await this.loadChartLevels();
       // The broker's position book lags the fill; look again shortly rather than show the old one.
-      setTimeout(() => this.refreshOrderLines?.(), 4500);
+      setTimeout(redrawLines, 4500);
     } catch (error) {
       Utils.showToast(`Order failed: ${error.message}`, 'error');
     } finally {
@@ -1583,14 +1648,14 @@ Object.assign(DashboardApp.prototype, {
   },
 
   pointsToPrice(kind, points) {
-    const entry = this.chartPositionData?.avgEntryPrice;
+    const entry = this.chartEntryOnScreen();
     if (!entry || !points) return null;
     const d = this._levelDirection();
     return kind === 'target' ? entry + d * points : entry - d * points;
   },
 
   priceToPoints(kind, price) {
-    const entry = this.chartPositionData?.avgEntryPrice;
+    const entry = this.chartEntryOnScreen();
     if (!entry || !price) return null;
     const d = this._levelDirection();
     const pts = kind === 'target' ? (price - entry) * d : (entry - price) * d;
@@ -1950,21 +2015,31 @@ Object.assign(DashboardApp.prototype, {
     const below = ltp !== null && price < ltp;
     const above = ltp !== null && price > ltp;
     const p = Utils.formatNumber(price);
+    // On an index chart the level picked is the index's; the order is the future's, at the same
+    // distance from its own market (see chartBasis). Both are named, and with no live basis the
+    // priced items are refused rather than sent at the index's number.
+    const onFuture = this.tradesFutureOfIndex();
+    const sent = this.indexToFuturePrice(price);
+    const fut = onFuture && sent !== null ? ` → FUT ${Utils.formatNumber(sent)}` : '';
+    const last = onFuture ? this.chartFutureLtp : ltp;
+    const priced = (it) => (sent === null
+      ? { ...it, enabled: false, why: `${this.chartFuture?.symbol || 'the future'} has no live price to convert this index level` }
+      : { ...it, price: sent, level: price, last });
 
     return [
       { side: 'BUY', orderType: 'MARKET', label: `Buy ${u} Market`, enabled: true },
       // A limit on the far side of the market is a legitimate "fill now, capped at this price" -
       // with MARKET barred on Indian exchanges, it is how an operator buys now without paying
       // any price. It is offered and labelled as such; only stops keep the side-of-price rule.
-      { side: 'BUY', orderType: 'LIMIT', price, label: `Buy ${u} Limit @ ${p}${above ? ' (fills now)' : ''}`,
-        enabled: true, crosses: above, last: ltp },
-      { side: 'BUY', orderType: 'SL-M', price, label: `Buy ${u} Stop @ ${p}`,
-        enabled: above, why: 'a buy stop must sit above the last price' },
+      priced({ side: 'BUY', orderType: 'LIMIT', label: `Buy ${u} Limit @ ${p}${fut}${above ? ' (fills now)' : ''}`,
+        enabled: true, crosses: above }),
+      priced({ side: 'BUY', orderType: 'SL-M', label: `Buy ${u} Stop @ ${p}${fut}`,
+        enabled: above, why: 'a buy stop must sit above the last price' }),
       { side: 'SELL', orderType: 'MARKET', label: `Sell ${u} Market`, enabled: true },
-      { side: 'SELL', orderType: 'LIMIT', price, label: `Sell ${u} Limit @ ${p}${below ? ' (fills now)' : ''}`,
-        enabled: true, crosses: below, last: ltp },
-      { side: 'SELL', orderType: 'SL-M', price, label: `Sell ${u} Stop @ ${p}`,
-        enabled: below, why: 'a sell stop must sit below the last price' },
+      priced({ side: 'SELL', orderType: 'LIMIT', label: `Sell ${u} Limit @ ${p}${fut}${below ? ' (fills now)' : ''}`,
+        enabled: true, crosses: below }),
+      priced({ side: 'SELL', orderType: 'SL-M', label: `Sell ${u} Stop @ ${p}${fut}`,
+        enabled: below, why: 'a sell stop must sit below the last price' }),
     ];
   },
 
@@ -2070,7 +2145,7 @@ Object.assign(DashboardApp.prototype, {
       // on a non-tradeable instrument (an index) where the menu used to not open at all.
       const tradeItems = (this.candleSeries && this.chartTradeInfo && !this.chartTradeBlocked
         && Number.isFinite(price))
-        ? this.contextMenuItemsFor(Number(price.toFixed(2)))
+        ? this.contextMenuItemsFor(snapToTick(price, this.chartFuture?.tickSize || this.chartTickSize()))
         : [];
 
       // Exit levels need order permission (chartTradeInfo loads only with it) and a price.

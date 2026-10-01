@@ -118,7 +118,7 @@ function checkRequest(checker, call, name, placement) {
     if (written !== undefined && !TIMEFRAME.test(written)) {
         checker.report('OS6001', timeframe?.span ?? call.span, { value: written });
     }
-    const mode = modeOf(call);
+    const mode = modeOf(checked);
     if (mode === 'lookahead') {
         checker.report('OS8005', call.span, { mode });
         checker.repaints = true;
@@ -153,14 +153,24 @@ function timeframeArgument(call, name) {
     const positional = call.args.filter((one) => one.label === undefined);
     return positional[name === 'req.symbol' ? 1 : 0];
 }
-function modeOf(call) {
-    const labelled = call.args.find((one) => one.label?.text === 'mode');
-    const written = labelled === undefined ? undefined : stringLiteral(labelled.value);
+/**
+ * The mode as the signature bound it, written by its label or in its place.
+ *
+ * `language.md` 11.2 fills parameters from the left, so `mode` is the third
+ * argument of `req.timeframe` and the fifth of `req.symbol` whether or not it
+ * carries its label, and the emitter reads every other argument of a read from
+ * the same binding. Looking for the label alone read a positional
+ * `"lookahead"` as the default: the study ran confirmed, with no OS8005 and no
+ * repaint mark, while its source named the mode on the line.
+ */
+function modeOf(checked) {
+    const bound = argumentOf(checked, 'mode');
+    const written = bound === undefined ? undefined : stringLiteral(bound.value);
     if (written === 'confirmed' || written === 'developing' || written === 'lookahead') {
         return written;
     }
     // The default is the one mode that never repaints (stdlib.md 15.3).
-    return labelled === undefined ? 'confirmed' : 'unknown';
+    return bound === undefined ? 'confirmed' : 'unknown';
 }
 function stringLiteral(expression) {
     const inner = withoutGrouping(expression);

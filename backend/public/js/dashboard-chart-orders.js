@@ -67,9 +67,22 @@ Object.assign(DashboardApp.prototype, {
       if (m) { this.cancelChartOrder(Number(m[1]), refresh, scope); return; }
       if (/^position:.+::close$/.test(e?.id || '')) this.closeChartPosition(scope);
     });
+    // A line is not redrawn under the pointer while it is being dragged (see pollFutureQuote).
+    chart.on('drag:start', () => { chart._lineDragging = true; });
+    chart.on('drag:cancel', () => { chart._lineDragging = false; });
     chart.on('drag:end', (e) => {
+      chart._lineDragging = false;
       const m = /^order:(\d+)$/.exec(e?.id || '');
-      if (m && Number.isFinite(e.price)) this.moveChartOrder(Number(m[1]), e.price, refresh, scope);
+      if (!m || !Number.isFinite(e.price)) return;
+      // The main chart of an index draws its future's orders at index levels: the drop is one,
+      // and the order moves to the future's price that level stands for now.
+      const price = scope ? e.price : this.indexToFuturePrice(e.price);
+      if (price === null) {
+        Utils.showToast('The future has no live price to convert this level - the order was not moved', 'error');
+        refresh();
+        return;
+      }
+      this.moveChartOrder(Number(m[1]), price, refresh, scope);
     });
   },
 
@@ -137,6 +150,9 @@ Object.assign(DashboardApp.prototype, {
       const suffix = `-${o.instance_id}`;
       const base = rid.startsWith('chart-') && rid.endsWith(suffix) ? rid.slice(0, -suffix.length) : `row${o.id}`;
       const type = /SL-M/i.test(o.order_type) ? 'SL-M' : /SL/i.test(o.order_type) ? 'SL' : /LIMIT/i.test(o.order_type) ? 'LIMIT' : 'MARKET';
+      // A line is a resting order the broker holds: one it never acknowledged (no order id) or a
+      // market order has no price to rest at, and drew as a line no drag or ✕ could ever act on.
+      if (!o.order_id || type === 'MARKET') continue;
       const side = (o.side || '').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
       const key = `${base}|${side}|${type}|${Number(o.price) || 0}|${Number(o.trigger_price) || 0}`;
       const g = byKey.get(key);
@@ -181,11 +197,18 @@ Object.assign(DashboardApp.prototype, {
     if (!controller) return false;
     const data = scope ? this.optionPanes?.[scope]?.positionData : this.chartPositionData;
     const symbol = scope ? this.optionPanes?.[scope]?.contract?.symbol : this.chartOrderTarget().symbol;
-    const positions = data?.netQuantity && data.avgEntryPrice
-      ? [{ symbol, netQty: data.netQuantity, avgPrice: data.avgEntryPrice }]
+    // An index chart draws its future's orders and position at the index levels they stand at
+    // (see chartBasis); with no live basis there is nothing truthful to draw, so nothing is.
+    const basis = !scope && this.tradesFutureOfIndex() ? this.chartBasis() : 0;
+    const shift = (p) => (p === undefined ? p : p - basis);
+    const orders = basis === null ? [] : (holder.lastOrders || []).map((o) => (basis
+      ? { ...o, price: shift(o.price), ...(o.triggerPrice !== undefined ? { triggerPrice: shift(o.triggerPrice) } : {}) }
+      : o));
+    const positions = basis !== null && data?.netQuantity && data.avgEntryPrice
+      ? [{ symbol, netQty: data.netQuantity, avgPrice: shift(data.avgEntryPrice) }]
       : [];
     try {
-      controller.reconcile(holder.lastOrders || [], positions);
+      controller.reconcile(orders, positions);
       const ltp = scope
         ? this.optionPanes?.[scope]?.candles?.at(-1)?.close
         : this.chartLastPrice;

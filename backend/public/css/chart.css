@@ -6,6 +6,8 @@
  */
 
 .chart-view {
+  /* The openalgo-charts dialog layer (study settings, picker) is laid over the whole view. */
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -940,80 +942,39 @@
 
 .chart-ind-settings:hover { color: var(--color-neutral-900); }
 
-.chart-ind-config {
-  margin-bottom: var(--space-3);
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-}
-
 /* `hidden` alone loses to the display below - see the note on .chart-ctx. */
-.chart-ind-config[hidden],
 .chart-sync-bar[hidden] { display: none; }
 
-/* Rows carry between zero and four fields (RSI has length, MA, overbought and oversold), so
-   the track has to fit the widest of them. Anything narrower overflows its cell and paints on
-   top of the neighbouring row. */
-.chart-ind-cfg-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-  gap: var(--space-2) var(--space-3);
+/* One study on the chart: its name opens its own settings dialog, the cross removes it. */
+.chart-ind-chip {
+  display: inline-flex;
+  align-items: center;
 }
 
-.chart-ind-cfg-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-  padding: var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
+.chart-ind-chip .chart-ind-btn { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+
+.chart-ind-x {
+  padding: 3px 7px;
+  border: 1px solid var(--color-primary);
+  border-left: none;
+  border-radius: 0 999px 999px 0;
+  background: transparent;
+  color: var(--color-neutral-500);
   font-size: var(--font-size-3xs);
-}
-
-.chart-ind-cfg-name {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 74px;
   font-weight: 700;
-  color: var(--color-neutral-700);
+  line-height: inherit;
+  cursor: pointer;
 }
 
-.chart-ind-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
+.chart-ind-x:hover { color: var(--color-loss); }
 
-.chart-ind-cfg-field {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  flex: 0 0 auto;
+/* Hidden from its legend eye - still on the chart, not drawn. */
+.chart-ind-chip.is-hidden .chart-ind-btn { opacity: 0.5; }
+
+.chart-ind-pending {
+  font-size: var(--font-size-3xs);
   color: var(--color-neutral-500);
 }
-
-.chart-ind-cfg-field input,
-.chart-ind-cfg-field select {
-  /* Wide enough for three digits plus the spinner - at 56px the stepper clipped the value. */
-  width: 68px;
-  padding: 2px 6px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-bg);
-  color: var(--color-neutral-900);
-  font-size: var(--font-size-3xs);
-  font-variant-numeric: tabular-nums;
-}
-
-.chart-ind-cfg-field select { width: auto; max-width: 128px; }
-.chart-ind-cfg-field input[type="color"] { width: 32px; padding: 1px; }
-.chart-ind-cfg-field input[type="checkbox"] { width: auto; }
-
-.chart-ind-cfg-none { color: var(--color-neutral-400); }
 
 /* --- Pattern picker -------------------------------------------------------- */
 
@@ -1062,36 +1023,6 @@
   align-items: center;
   gap: var(--space-2);
   padding: 2px 0;
-}
-
-/* Indicator picker (see toggleIndicatorPicker in dashboard-chart-panes.js). It reuses the
-   pattern picker's shell; these add the category headings, the search box, and the display:none
-   that `hidden` alone cannot do against the flex rows above. */
-.chart-ind-pick-cat {
-  padding: var(--space-2) 0 var(--space-1);
-  font-size: var(--font-size-3xs);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-neutral-500);
-}
-
-.chart-ind-pick-row {
-  font-size: var(--font-size-3xs);
-  color: var(--color-neutral-700);
-  cursor: pointer;
-}
-
-.chart-ind-pick-row[hidden],
-.chart-ind-pick-group[hidden] { display: none; }
-
-.chart-ind-search {
-  width: 220px;
-  padding: 2px var(--space-2);
-  font-size: var(--font-size-3xs);
-  font-weight: 400;
-  text-transform: none;
-  letter-spacing: 0;
 }
 
 .chart-script-src,
@@ -1600,7 +1531,6 @@
 .chart-pop .chart-options,
 .chart-pop .chart-instances,
 .chart-pop .chart-ind-bar,
-.chart-pop .chart-ind-config,
 .chart-pop .chart-pattern-picker,
 .chart-pop .chart-sync-bar {
   border: none;
