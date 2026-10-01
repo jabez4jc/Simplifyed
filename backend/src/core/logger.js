@@ -75,37 +75,33 @@ function pushNotification(level, message, meta = {}) {
   }
 }
 
-// Structured, high-signal formatter (key=value, stable field order)
-const allowedMetaKeys = new Set([
-  'trace_id', 'user_id', 'instance_id', 'instance_name', 'order_id', 'event', 'status',
-  'duration_ms', 'endpoint', 'method', 'path', 'symbol', 'exchange',
-  'error_code', 'error_message', 'reason', 'count', 'size', 'host', 'port', 'chat_id',
-  // camelCase spellings most services use - without these, every rejection logged its
-  // endpoint and nothing about which instance failed or why
-  'error', 'statusCode', 'instanceId', 'instanceName', 'instance'
-]);
+// Keys that never print their value. Matched as substrings so apiKey, webhook_token and the like
+// are caught too (rule: secrets are never logged).
+const SECRET_KEY = /token|api_?key|password|secret|authorization/i;
+// Written by the formatter itself - a meta key of the same name must not duplicate or shadow them.
+const RESERVED_KEYS = new Set(['ts', 'lvl', 'svc', 'pid', 'msg', 'service']);
 
-const kvFormatter = winston.format.printf(({ timestamp, level, message, ...rest }) => {
-  const meta = rest[Symbol.for('splat')]?.[0] || {};
-  const fields = [];
-  fields.push(`ts=${timestamp}`);
-  fields.push(`lvl=${level.toUpperCase()}`);
-  if (meta.service || rest.service) fields.push(`svc=${meta.service || rest.service}`);
+/**
+ * One key=value log line: every primitive meta key is printed (sanitizeMeta has already dropped
+ * objects), in sorted order after the fixed prefix, with the message last for grep-friendliness.
+ */
+export function formatKv({ timestamp, level, message, service }, meta = {}) {
+  const fields = [`ts=${timestamp}`, `lvl=${level.toUpperCase()}`];
+  if (meta.service || service) fields.push(`svc=${meta.service || service}`);
   // Several processes write one log (the app, a test run, a script): without this nobody can say
   // whose rate-limit and pause lines they are.
   fields.push(`pid=${process.pid}`);
-  // Append meta in deterministic order, only allowed keys to avoid bloat
-  const keys = Object.keys(meta).filter((k) => allowedMetaKeys.has(k));
-  keys.sort();
-  for (const k of keys) {
+  for (const k of Object.keys(meta).sort()) {
     const v = meta[k];
-    if (v === undefined || v === null) continue;
-    fields.push(`${k}=${v}`);
+    if (v === undefined || v === null || RESERVED_KEYS.has(k)) continue;
+    fields.push(`${k}=${SECRET_KEY.test(k) ? '[REDACTED]' : v}`);
   }
-  // Message last for grep-friendliness
   if (message) fields.push(`msg="${String(message)}"`);
   return fields.join(' ');
-});
+}
+
+const kvFormatter = winston.format.printf(({ timestamp, level, message, ...rest }) =>
+  formatKv({ timestamp, level, message, service: rest.service }, rest[Symbol.for('splat')]?.[0] || {}));
 
 const consoleFormat = winston.format.combine(
   winston.format.timestamp({ format: 'YYYY-MM-DDTHH:mm:ss.SSSZ' }),
@@ -166,10 +162,13 @@ function scheduleDailyTruncate() {
 }
 scheduleDailyTruncate();
 
-const sanitizeMeta = (meta = {}) => {
-  // Keep only primitive values; drop objects/arrays to prevent noisy logs
+export const sanitizeMeta = (meta = {}) => {
+  // Keep only primitive values; drop objects/arrays to prevent noisy logs. An Error is kept as
+  // its message, so `{ err }` prints instead of vanishing.
   return Object.fromEntries(
-    Object.entries(meta).filter(([, v]) => ['string', 'number', 'boolean'].includes(typeof v))
+    Object.entries(meta)
+      .map(([k, v]) => [k, v instanceof Error ? v.message : v])
+      .filter(([, v]) => ['string', 'number', 'boolean'].includes(typeof v))
   );
 };
 
