@@ -204,7 +204,7 @@ class OpenAlgoClient extends EventEmitter {
     this.instanceRate = new Map(); // key -> { rps:[], rpm:[], orders:[] }
     this.globalRpm = [];
     this.globalOrders = [];
-    this.currentTasks = 0;
+    this.currentTasks = new Map(); // instKey -> in-flight count, so one hung broker can't starve the rest
     // Fixed ceilings. Only the smart-order rate is a Setting (_loadRateLimitSettings).
     this.maxConcurrentTasks = 10;
     this.rpsLimitPerInstance = 5;
@@ -767,38 +767,44 @@ class OpenAlgoClient extends EventEmitter {
 
   async _executeWithConcurrency(instance, endpoint, method, url, payload, isOrderPlacement, timeoutOverride = null) {
     const instKey = this._instanceKey(instance);
-    await this._waitForConcurrency(instKey, endpoint, isOrderPlacement);
-
-    // Record timestamps for rate tracking
-    const now = Date.now();
-    const state = this._getRateState(instKey);
-    state.rps.push(now);
-    state.rpm.push(now);
-    this.globalRpm.push(now);
-    if (isOrderPlacement) {
-      state.orders.push(now);
-      this.globalOrders.push(now);
-    }
+    await this._waitForConcurrencySlot(instKey, endpoint);
 
     try {
+      // The bucket wait can throw (429 after 100 retries). It must run inside this try so the
+      // finally below always releases the slot acquired above - previously the throw happened
+      // between acquiring the slot and entering any try/finally, so it leaked forever and, after
+      // maxConcurrentTasks leaks, every call through the limiter spun in its while loop forever.
+      await this._waitForRateBucket(instKey, endpoint, isOrderPlacement);
+
+      // Record timestamps for rate tracking
+      const now = Date.now();
+      const state = this._getRateState(instKey);
+      state.rps.push(now);
+      state.rpm.push(now);
+      this.globalRpm.push(now);
+      if (isOrderPlacement) {
+        state.orders.push(now);
+        this.globalOrders.push(now);
+      }
+
       return await this._makeRequest(url, method, payload, timeoutOverride);
     } finally {
-      this.currentTasks = Math.max(0, this.currentTasks - 1);
+      this._releaseConcurrencySlot(instKey);
     }
   }
 
-  async _waitForConcurrency(instKey, endpoint, isOrderPlacement = false) {
+  async _waitForConcurrencySlot(instKey, endpoint) {
     const delay = 50;
     let waited = 0;
     let logged = false;
-    while (this.currentTasks >= this.maxConcurrentTasks) {
+    while ((this.currentTasks.get(instKey) || 0) >= this.maxConcurrentTasks) {
       // Log once per wait (not once per 50ms poll iteration) to avoid flooding the log when
-      // the global concurrency pool is briefly saturated - a common, often benign occurrence.
+      // this instance's concurrency pool is briefly saturated - a common, often benign occurrence.
       if (!logged) {
         log.warn('Throttling due to concurrent task limit', {
           endpoint,
           instKey,
-          currentTasks: this.currentTasks,
+          currentTasks: this.currentTasks.get(instKey) || 0,
         });
         logged = true;
       }
@@ -806,25 +812,29 @@ class OpenAlgoClient extends EventEmitter {
       waited += delay;
       if (waited % 2000 === 0) {
         log.warn('Still throttled by concurrent task limit', {
-          endpoint, instKey, currentTasks: this.currentTasks, waitedMs: waited,
+          endpoint, instKey, currentTasks: this.currentTasks.get(instKey) || 0, waitedMs: waited,
         });
       }
     }
-    this.currentTasks += 1;
+    this.currentTasks.set(instKey, (this.currentTasks.get(instKey) || 0) + 1);
+  }
 
-    // Token bucket by endpoint class
+  _releaseConcurrencySlot(instKey) {
+    this.currentTasks.set(instKey, Math.max(0, (this.currentTasks.get(instKey) || 0) - 1));
+  }
+
+  async _waitForRateBucket(instKey, endpoint, isOrderPlacement = false) {
     const bucketKind = this._bucketKindForEndpoint(endpoint, isOrderPlacement);
-    if (bucketKind) {
-      const bucket = this._getBucket(instKey, bucketKind);
-      let retries = 0;
-      while (!this._allowBucket(bucket)) {
-        await sleep(25);
-        retries += 1;
-        if (retries > 100) {
-          const error = new OpenAlgoError(`Rate bucket throttle for ${bucketKind}`, endpoint);
-          error.statusCode = 429;
-          throw error;
-        }
+    if (!bucketKind) return;
+    const bucket = this._getBucket(instKey, bucketKind);
+    let retries = 0;
+    while (!this._allowBucket(bucket)) {
+      await sleep(25);
+      retries += 1;
+      if (retries > 100) {
+        const error = new OpenAlgoError(`Rate bucket throttle for ${bucketKind}`, endpoint);
+        error.statusCode = 429;
+        throw error;
       }
     }
   }
@@ -1105,13 +1115,13 @@ class OpenAlgoClient extends EventEmitter {
           rpsUsed: rate.rps.length,
           rpmUsed: rate.rpm.length,
           ordersUsed: rate.orders.length,
-          currentConcurrent: this.currentTasks,
+          currentConcurrent: this.currentTasks.get(instKey) || 0,
         },
         remaining: {
           rps: Math.max(0, rpsLimit - rate.rps.length),
           rpm: Math.max(0, rpmLimit - rate.rpm.length),
           orders: Math.max(0, ordersLimit - rate.orders.length),
-          concurrentSlots: Math.max(0, this.maxConcurrentTasks - this.currentTasks),
+          concurrentSlots: Math.max(0, this.maxConcurrentTasks - (this.currentTasks.get(instKey) || 0)),
         },
       });
     }
