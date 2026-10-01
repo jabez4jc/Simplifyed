@@ -1468,10 +1468,8 @@ Object.assign(DashboardApp.prototype, {
           // The contract the buttons named. Omitted only when the row IS the future.
           ...(future && !future.isRow && future.expiry ? { expiry: future.expiry } : {}),
           // Strike offset + expiry are passed through; quick-order resolves the concrete
-          // contract per instance via options-resolution.service. operatingMode and
-          // strikePolicy travel too - REDUCE_*/INCREASE_* only resolve against the ACTUAL
-          // open position (rather than a fresh ATM strike) when strikePolicy is FLOAT_OFS,
-          // which is exactly the fix for a same-leg exit landing on a different strike.
+          // contract per instance via options-resolution.service. REDUCE_*/INCREASE_*
+          // resolve against the ACTUAL open position, not a fresh ATM strike.
           ...(optionAction ? {
             // Options are sized by stepLots, not quantity. Omitted, the server used 1, so every
             // chart option order traded 1 lot whatever Lots said (2 lots showed 780 units, 390 went).
@@ -1485,7 +1483,6 @@ Object.assign(DashboardApp.prototype, {
             ...((optionContract?.expiry || state.optionExpiry || this.shownOptionExpiry)
               ? { expiry: optionContract?.expiry || state.optionExpiry || this.shownOptionExpiry } : {}),
             operatingMode: state.operatingMode === 'WRITER' ? 'WRITER' : 'BUYER',
-            strikePolicy: state.strikePolicy === 'ANCHOR_OFS' ? 'ANCHOR_OFS' : 'FLOAT_OFS',
           } : {}),
           // LOTS: quick-order.service does `baseLots = quantity` then multiplies by lot size.
           quantity: lots,
@@ -2543,7 +2540,6 @@ Object.assign(DashboardApp.prototype, {
     const on = Boolean(this.chartOptionsOn);
 
     const operatingMode = st.operatingMode === 'WRITER' ? 'WRITER' : 'BUYER';
-    const strikePolicy = st.strikePolicy === 'ANCHOR_OFS' ? 'ANCHOR_OFS' : 'FLOAT_OFS';
 
     host.hidden = false;
     host.innerHTML = `
@@ -2567,12 +2563,6 @@ Object.assign(DashboardApp.prototype, {
           <button type="button" class="btn-operating ${operatingMode === 'WRITER' ? 'active' : ''}"
                   data-mode="WRITER" title="Writer mode: SELL opens, INCREASE/CLOSE exit">Writer</button>
         </div>
-
-        <span class="chart-toolbar-label">Policy</span>
-        <select id="chart-opt-policy" class="form-input chart-opt-policy">
-          <option value="FLOAT_OFS" ${strikePolicy === 'FLOAT_OFS' ? 'selected' : ''}>Float (strike follows ATM)</option>
-          <option value="ANCHOR_OFS" ${strikePolicy === 'ANCHOR_OFS' ? 'selected' : ''}>Anchor (strike fixed once opened)</option>
-        </select>
 
         <span class="chart-opt-note">
           CE/PE tickets are market only — the strike is resolved per instance at execution.
@@ -2610,10 +2600,6 @@ Object.assign(DashboardApp.prototype, {
         this.renderOptionsPanel();
         this.renderOptionTickets();
       });
-    });
-    const policySel = document.getElementById('chart-opt-policy');
-    if (policySel) policySel.addEventListener('change', () => {
-      this.chartState.strikePolicy = policySel.value;
     });
   },
 

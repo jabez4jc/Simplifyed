@@ -61,7 +61,6 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
     const quantity = this.defaultQuantities.get(symbolId) || 1;
     const selectedExpiry = this.selectedExpiries.get(symbolId);
     const operatingMode = this.operatingModes.get(symbolId) || 'BUYER';
-    const strikePolicy = this.strikePolicies.get(symbolId) || 'FLOAT_OFS';
     const stepLots = this.stepLots.get(symbolId) || quantity;
     const selectedProduct = this.selectedProducts.get(symbolId) || 'MIS';
 
@@ -105,7 +104,6 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
 
       if (tradeMode === 'OPTIONS') {
         orderData.operatingMode = operatingMode;
-        orderData.strikePolicy = strikePolicy;
         orderData.stepLots = stepLots;
         // debug removed
       }

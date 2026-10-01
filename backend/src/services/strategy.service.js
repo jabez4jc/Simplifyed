@@ -72,7 +72,6 @@ const sumQty = (rows) => rows.reduce((total, r) => total + r.quantity, 0);
 const VALID_ENTRY_TRIGGERS = ['MANUAL', 'WEBHOOK'];
 const VALID_ACTIONS = ['BUY', 'SELL'];
 const VALID_OPTION_TYPES = ['CE', 'PE'];
-const VALID_STRIKE_POLICIES = ['FLOAT_OFS', 'ANCHOR_OFS'];
 const VALID_QTY_TYPES = ['LOTS', 'FIXED', 'MARGIN_BASED'];
 
 class StrategyService {
@@ -348,17 +347,16 @@ class StrategyService {
 
     const result = await db.run(
       `INSERT INTO strategy_legs (
-        strategy_id, leg_order, option_type, action, strike_policy, strike_offset,
+        strategy_id, leg_order, option_type, action, strike_offset,
         qty_type, qty_value, product_type,
         target_points, stoploss_points, trailing_stoploss_points, trailing_activation_points,
         exit_mechanism, leg_tag, exit_unit
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         strategyId,
         resolvedOrder,
         normalized.option_type,
         normalized.action,
-        normalized.strike_policy,
         normalized.strike_offset,
         normalized.qty_type,
         normalized.qty_value,
@@ -395,7 +393,7 @@ class StrategyService {
 
     await db.run(
       `UPDATE strategy_legs SET
-        option_type = ?, action = ?, strike_policy = ?, strike_offset = ?,
+        option_type = ?, action = ?, strike_offset = ?,
         qty_type = ?, qty_value = ?, product_type = ?,
         target_points = ?, stoploss_points = ?, trailing_stoploss_points = ?, trailing_activation_points = ?,
         exit_mechanism = ?, leg_tag = ?, exit_unit = ?,
@@ -404,7 +402,6 @@ class StrategyService {
       [
         normalized.option_type,
         normalized.action,
-        normalized.strike_policy,
         normalized.strike_offset,
         normalized.qty_type,
         normalized.qty_value,
@@ -1519,10 +1516,6 @@ class StrategyService {
       throw new ValidationError(`option_type must be one of: ${VALID_OPTION_TYPES.join(', ')}`);
     }
 
-    const strikePolicy = data.strike_policy && VALID_STRIKE_POLICIES.includes(data.strike_policy)
-      ? data.strike_policy
-      : 'FLOAT_OFS';
-
     const qtyType = data.qty_type && VALID_QTY_TYPES.includes(data.qty_type) ? data.qty_type : 'LOTS';
     const exitMechanism = VALID_EXIT_MECHANISMS.includes(data.exit_mechanism) ? data.exit_mechanism : 'POLLING';
     if (exitMechanism === 'GTT' && String(data.product_type || '').toUpperCase() === 'MIS') {
@@ -1532,7 +1525,6 @@ class StrategyService {
     return {
       option_type: optionType,
       action,
-      strike_policy: strikePolicy,
       strike_offset: optionType ? (data.strike_offset || 'ATM') : null,
       qty_type: qtyType,
       qty_value: parseFloatSafe(data.qty_value, 1),

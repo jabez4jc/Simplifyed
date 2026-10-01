@@ -107,7 +107,6 @@ class QuickOrderService {
       expiry = null,  // User-selected expiry date
       optionsLeg = null,  // User-selected options leg (ITM2, ATM, OTM1, etc.)
       operatingMode = 'BUYER',  // Buyer or Writer mode for OPTIONS
-      strikePolicy = 'FLOAT_OFS',  // FLOAT_OFS or ANCHOR_OFS for OPTIONS
       stepLots = 1,  // Step size in lots for OPTIONS
       contract = null, // { exchange, symbol } - trade THIS option contract, not a resolved strike
       triggerType = null,
@@ -126,7 +125,6 @@ class QuickOrderService {
       expiry,
       optionsLeg,
       operatingMode,
-      strikePolicy,
       stepLots,
       triggerType,
       correlationId,
@@ -206,7 +204,6 @@ class QuickOrderService {
         expiry,
         optionsLeg,
         operatingMode,
-        strikePolicy,
         stepLots,
         contractRow,
         triggerType,
@@ -1216,7 +1213,6 @@ class QuickOrderService {
       action,
       product,
       operatingMode = 'BUYER',
-      strikePolicy = 'FLOAT_OFS',
       stepLots = 1,
       triggerType,
       correlationId,
@@ -1238,7 +1234,6 @@ class QuickOrderService {
     log.info('Executing options order with Buyer/Writer mode', {
       action,
       operatingMode,
-      strikePolicy,
       stepLots,
       writerGuard,
     });
@@ -1253,7 +1248,7 @@ class QuickOrderService {
     const isReduceAction = ['REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE'].includes(action);
     // A named contract pins every action to that one leg - no fanning out across strikes.
     const legPinned = Boolean(orderParams.contractRow);
-    const shouldSkipPreResolution = isReduceAction && strikePolicy === 'FLOAT_OFS' && !legPinned;
+    const shouldSkipPreResolution = isReduceAction && !legPinned;
 
     let optionSymbol;
     let expiry;
@@ -1277,34 +1272,14 @@ class QuickOrderService {
       log.info('Resolving option symbol per-instance', {
         action,
         isReduceAction,
-        strikePolicy,
         shouldSkipPreResolution,
         instance_id: instance.id,
       });
-      // For ANCHOR_OFS, check if strike is already anchored
-      const anchoredStrike = strikePolicy === 'ANCHOR_OFS'
-        ? await this._manageAnchoredStrike(symbol.id, optionType, orderParams.expiry || null)
-        : null;
-
-      if (anchoredStrike) {
-        // Use anchored strike - resolve symbol with specific strike
-        log.info('Using anchored strike', { optionType, strike: anchoredStrike });
-        // TODO: Implement strike-specific resolution
-        // For now, resolve normally and we'll anchor after first resolution
-      }
-
       const resolution = await this._resolveOptionSymbolForInstance(instance, symbol, orderParams);
       optionSymbol = resolution.optionSymbol;
       expiry = resolution.expiry;
       underlying = resolution.underlying;
       strike = optionSymbol.targetStrike || optionSymbol.strike;
-
-      // For ANCHOR_OFS on first add action, anchor this strike
-      if (strikePolicy === 'ANCHOR_OFS' && !anchoredStrike &&
-          (action === 'BUY_CE' || action === 'BUY_PE' || action === 'SELL_CE' || action === 'SELL_PE')) {
-        await this._manageAnchoredStrike(symbol.id, optionType, expiry, strike, true);
-        log.info('Anchored strike for ANCHOR_OFS', { optionType, strike, expiry });
-      }
     }
 
     // Determine the correct derivatives exchange
@@ -1316,17 +1291,17 @@ class QuickOrderService {
     );
 
     // Determine scope: TYPE-level or LEG-level position calculation
-    // FLOAT_OFS + reduce/close actions → TYPE scope (aggregate across strikes)
-    // ANCHOR_OFS or add actions → LEG scope (single strike)
+    // reduce/close actions → TYPE scope (aggregate across strikes)
+    // add actions → LEG scope (single strike)
     const isReduceOrClose = [
       'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE',
       'CLOSE_ALL_CE', 'CLOSE_ALL_PE', 'EXIT_ALL'
     ].includes(action);
-    const useTypeScope = strikePolicy === 'FLOAT_OFS' && isReduceOrClose && !legPinned;
+    const useTypeScope = isReduceOrClose && !legPinned;
 
     // For REDUCE/INCREASE in FLOAT_OFS mode, handle each open position separately
-    if (strikePolicy === 'FLOAT_OFS' && isReduceOrClose && !legPinned) {
-      log.info('FLOAT_OFS REDUCE/INCREASE: Handling each open position separately', {
+    if (isReduceOrClose && !legPinned) {
+      log.info('REDUCE/INCREASE: Handling each open position separately', {
         action,
         optionType,
         expiry,
@@ -1581,13 +1556,12 @@ class QuickOrderService {
         orders: orderResults,
         action,
         operating_mode: operatingMode,
-        strike_policy: strikePolicy,
         position_count: allOpenPositions.length,
         orders_placed: orderResults.length,
       };
     }
 
-    // For all other cases (BUY/SELL actions, ANCHOR_OFS, CLOSE_ALL in FLOAT_OFS), use legacy logic
+    // For all other cases (BUY/SELL actions, CLOSE_ALL), use legacy logic
     // Get current position
     let currentPosition;
     if (useTypeScope) {
@@ -1855,7 +1829,6 @@ class QuickOrderService {
       quantity,
       action: algoAction,
       operating_mode: operatingMode,
-      strike_policy: strikePolicy,
       current_position: currentPosition,
       target_position: targetPosition,
       // No longer available synchronously - verifyFinalOptionsPosition() above now runs
@@ -3485,46 +3458,6 @@ class QuickOrderService {
       // fallback to REST refresh
     }
     await marketDataFeedService.refreshQuotes({ force: true });
-  }
-
-  /**
-   * Get or create anchored strike for ANCHOR_OFS policy
-   * @param {number} symbolId - Watchlist symbol ID
-   * @param {string} optionType - CE or PE
-   * @param {string} expiry - Expiry date
-   * @param {number} strike - Strike price (if setting anchor)
-   * @param {boolean} setAnchor - Whether to set/update the anchor
-   * @returns {Promise<number|null>} - Anchored strike or null
-   * @private
-   */
-  async _manageAnchoredStrike(symbolId, optionType, expiry, strike = null, setAnchor = false) {
-    const columnName = optionType === 'CE' ? 'anchored_ce_strike' : 'anchored_pe_strike';
-
-    if (setAnchor && strike) {
-      // Set or update anchored strike
-      await db.run(`
-        UPDATE watchlist_symbols
-        SET ${columnName} = ?, anchored_expiry = ?
-        WHERE id = ?
-      `, [strike, expiry, symbolId]);
-
-      log.info('Anchored strike set', { symbolId, optionType, strike, expiry });
-      return strike;
-    } else {
-      // Get existing anchored strike
-      const row = await db.get(`
-        SELECT ${columnName} as strike, anchored_expiry
-        FROM watchlist_symbols
-        WHERE id = ?
-      `, [symbolId]);
-
-      // Only return anchored strike if expiry matches
-      if (row && row.anchored_expiry === expiry) {
-        return row.strike ? parseIntSafe(row.strike) : null;
-      }
-
-      return null;
-    }
   }
 
   /**

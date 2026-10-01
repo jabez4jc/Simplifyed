@@ -20,7 +20,7 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
   /**
    * Render trading controls UI
    */
-  renderTradingControls({ watchlistId, symbolId, symbol, exchange, symbolType, tradeMode, capabilities = {}, availableModes = [], optionsLeg, quantity, expiries, selectedExpiry, selectedProduct, operatingMode, strikePolicy, writerGuard, isMcx = false }) {
+  renderTradingControls({ watchlistId, symbolId, symbol, exchange, symbolType, tradeMode, capabilities = {}, availableModes = [], optionsLeg, quantity, expiries, selectedExpiry, selectedProduct, operatingMode, writerGuard, isMcx = false }) {
     const showOptionsLeg = tradeMode === 'OPTIONS' && capabilities.options;
     // A watchlist symbol that's already itself the tradable contract (a dated future or a
     // crypto perpetual) has no separate expiry-dated series to pick - the anchor symbol IS
@@ -29,7 +29,6 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
       (tradeMode === 'FUTURES' && capabilities.futures && symbolType !== 'FUTURES') ||
       (tradeMode === 'OPTIONS' && capabilities.options);
     const showOperatingMode = tradeMode === 'OPTIONS' && capabilities.options;
-    const showStrikePolicy = tradeMode === 'OPTIONS' && capabilities.options;
 
     // debug removed
 
@@ -146,31 +145,6 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
         )
       : '';
 
-    const strikePolicyHint = strikePolicy === 'ANCHOR_OFS'
-      ? 'Anchors the selected strike after the first order.'
-      : 'Strikes float with ATM as it moves.';
-
-    const strikePolicyField = showStrikePolicy
-      ? renderField(
-          'Policy',
-          'How strikes migrate as ATM moves.',
-          `<div class="flex flex-col gap-1">
-            <select
-              class="select-compact"
-              data-symbol-id="${symbolId}"
-              onchange="quickOrder.selectStrikePolicy(${symbolId}, this.value)">
-              <option value="FLOAT_OFS" ${strikePolicy === 'FLOAT_OFS' ? 'selected' : ''}>
-                FLOAT_OFS
-              </option>
-              <option value="ANCHOR_OFS" ${strikePolicy === 'ANCHOR_OFS' ? 'selected' : ''}>
-                ANCHOR_OFS
-              </option>
-            </select>
-            <span class="text-xs text-neutral-500">${strikePolicyHint}</span>
-          </div>`
-        )
-      : '';
-
     const quantityField = renderField(
       'Qty',
       'Lots/contracts dispatched per click.',
@@ -231,7 +205,6 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
               ${expiryField}
               ${optionsLegField}
               ${operatingModeField}
-              ${strikePolicyField}
               ${quantityField}
               ${productField}
             </div>
@@ -241,7 +214,7 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
             </div>
           </div>
           <div class="quick-order-actions-compact">
-            ${this.renderActionButtons(watchlistId, symbolId, symbol, exchange, tradeMode, operatingMode, strikePolicy, quantity, selectedExpiry, optionsLeg)}
+            ${this.renderActionButtons(watchlistId, symbolId, symbol, exchange, tradeMode, operatingMode, quantity, selectedExpiry, optionsLeg)}
           </div>
         </div>
       </div>
@@ -255,12 +228,11 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
     const tradeMode = this.selectedTradeModes.get(symbolId);
     const expiry = this.selectedExpiries.get(symbolId);
     const operatingMode = this.operatingModes.get(symbolId);
-    const strikePolicy = this.strikePolicies.get(symbolId);
     const quantity = this.defaultQuantities.get(symbolId);
 
     // For OPTIONS mode, all settings must be present
     if (tradeMode === 'OPTIONS') {
-      return !!(expiry && operatingMode && strikePolicy && quantity && quantity > 0);
+      return !!(expiry && operatingMode && quantity && quantity > 0);
     }
 
     // For other modes, only basic settings needed
@@ -270,7 +242,7 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
   /**
    * Render action buttons based on trade mode and operating mode
    */
-  renderActionButtons(watchlistId, symbolId, symbol, exchange, tradeMode, operatingMode = 'BUYER', strikePolicy = 'FLOAT_OFS', quantity = 1, selectedExpiry = null, optionsLeg = 'ATM') {
+  renderActionButtons(watchlistId, symbolId, symbol, exchange, tradeMode, operatingMode = 'BUYER', quantity = 1, selectedExpiry = null, optionsLeg = 'ATM') {
     // Disable buttons until all required settings are configured
     const isConfigured = this.isOptionsModeConfigured(symbolId);
 

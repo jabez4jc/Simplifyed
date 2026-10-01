@@ -17,7 +17,6 @@ class QuickOrderHandler {
 
     // Buyer/Writer options mode settings (for OPTIONS trade mode only)
     this.operatingModes = new Map(); // symbolId -> 'BUYER' | 'WRITER'
-    this.strikePolicies = new Map(); // symbolId -> 'FLOAT_OFS' | 'ANCHOR_OFS'
     this.stepLots = new Map(); // symbolId -> number (contracts per click)
     this.writerGuards = new Map(); // symbolId -> boolean (enable writer guard)
     this.optionPreviewTimers = new Map(); // symbolId -> interval id

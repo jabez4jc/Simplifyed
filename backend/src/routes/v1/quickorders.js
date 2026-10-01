@@ -91,7 +91,6 @@ function logAudit(req, action, metadata = {}) {
  *   "product": "MIS" | "CNC" | "NRML" (optional, defaults to MIS),
  *   "strategy": "quickorder" (optional),
  *   "operatingMode": "BUYER" | "WRITER" (optional - for OPTIONS mode),
- *   "strikePolicy": "FLOAT_OFS" | "ANCHOR_OFS" (optional - for OPTIONS mode),
  *   "stepLots": 1 (optional - for OPTIONS mode)
  * }
  */
@@ -201,7 +200,6 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
       strategy,
       expiry,
       operatingMode,
-      strikePolicy,
       stepLots,
       contract,
       request_id: requestId,
@@ -298,7 +296,6 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
       instanceId,
       expiry,
       operatingMode,
-      strikePolicy,
       stepLots,
     });
 
@@ -314,7 +311,6 @@ router.post('/', requirePermission('orders.place'), async (req, res, next) => {
       strategy: strategy || 'quickorder',
       expiry: expiry || null,
       operatingMode: operatingMode || 'BUYER',
-      strikePolicy: strikePolicy || 'FLOAT_OFS',
       stepLots: stepLots ? parseInt(stepLots, 10) : undefined,
       contract: contract ? { exchange: contract.exchange, symbol: contract.symbol } : null,
       triggerType: triggerType || 'Manual',

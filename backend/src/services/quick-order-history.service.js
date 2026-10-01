@@ -40,7 +40,6 @@ class QuickOrderHistoryService {
       expiry: orderParams.expiry ?? null,
       options_leg: orderParams.optionsLeg ?? symbol.options_strike_selection ?? null,
       operating_mode: orderParams.operatingMode ?? null,
-      strike_policy: orderParams.strikePolicy ?? null,
       step_lots: orderParams.stepLots ?? null,
       trigger_type: orderParams.triggerType ?? null,
     };

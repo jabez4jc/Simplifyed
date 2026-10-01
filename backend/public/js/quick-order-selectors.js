@@ -166,22 +166,6 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
     this.reloadExpansionContent(symbolId);
   }
 
-  /**
-   * Select strike policy (FLOAT_OFS or ANCHOR_OFS)
-   */
-  selectStrikePolicy(symbolId, policy) {
-    // debug: removed noisy log
-    this.strikePolicies.set(symbolId, policy);
-
-    // Clear anchored strikes if switching from ANCHOR_OFS to FLOAT_OFS
-    if (policy === 'FLOAT_OFS') {
-      // debug: removed noisy log
-      // TODO: Clear anchored strikes from database if needed
-    }
-
-    this.reloadExpansionContent(symbolId);
-  }
-
   selectProduct(symbolId, product) {
     const tradeMode = this.selectedTradeModes.get(symbolId) || 'EQUITY';
     const fno = tradeMode === 'FUTURES' || tradeMode === 'OPTIONS';

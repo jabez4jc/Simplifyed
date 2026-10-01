@@ -167,9 +167,6 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
       if (!this.operatingModes.has(symbolId)) {
         this.operatingModes.set(symbolId, 'BUYER');  // Default to Buyer mode
       }
-      if (!this.strikePolicies.has(symbolId)) {
-        this.strikePolicies.set(symbolId, 'FLOAT_OFS');  // Default to FLOAT_OFS
-      }
       if (!this.writerGuards.has(symbolId)) {
         this.writerGuards.set(symbolId, true);  // Default to writer guard enabled
       }
@@ -222,7 +219,6 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
         selectedProduct,
         // Buyer/Writer options mode settings
         operatingMode: this.operatingModes.get(symbolId),
-        strikePolicy: this.strikePolicies.get(symbolId),
         writerGuard: this.writerGuards.get(symbolId),
         isMcx,
       });

@@ -315,7 +315,7 @@ class StrategyBuilder {
 
   _renderLegRow(watchlistId, strategyId, leg) {
     const instrument = leg.option_type
-      ? `${leg.action} ${leg.option_type} ${leg.strike_offset || 'ATM'} (${leg.strike_policy || 'FLOAT_OFS'})`
+      ? `${leg.action} ${leg.option_type} ${leg.strike_offset || 'ATM'}`
       : `${leg.action} (Futures/Equity)`;
     const qty = leg.qty_type === 'MARGIN_BASED'
       ? `Margin ${leg.qty_value ?? 1} util`
