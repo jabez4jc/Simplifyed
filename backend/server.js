@@ -81,7 +81,6 @@ function stopBackgroundServices() {
 // Create Express app
 const app = express();
 const server = http.createServer(app);
-app.locals.startServices = startBackgroundServices;
 app.set('trust proxy', 1);
 
 /**
@@ -245,8 +244,12 @@ async function startServer() {
 
     // Apply a saved Setting at once (see settings-registry.js for the full list).
     settingsService.on('settings:changed', async (data) => {
-      if (data.category === 'rate_limits') await openalgoClient.reloadRateLimits();
-      if (data.category === 'openalgo') await config.loadFromDatabase();
+      try {
+        if (data.category === 'rate_limits') await openalgoClient.reloadRateLimits();
+        if (data.category === 'openalgo') await config.loadFromDatabase();
+      } catch (err) {
+        log.error('Failed to apply settings change', err, { category: data?.category });
+      }
     });
 
     // Test mode (authentication disabled) needs a user row to act as. Gated on test mode alone:
@@ -269,8 +272,6 @@ async function startServer() {
         log.info('Test user created');
       }
     }
-
-    // Do not start background services until user logs in (lazy start)
 
     // Establish readiness before the listener opens, so /api/v1/ready answers truthfully from
     // the first request rather than waiting for a human to log in.
@@ -300,7 +301,13 @@ async function startServer() {
     });
 
     // Start HTTP server
-    server.listen(config.port, () => {
+    server.listen(config.port, async () => {
+      // Started unconditionally on boot, not lazily on the first login: a restart with no
+      // browser open must not leave stop-loss/session-limit monitoring off while /webhook can
+      // still place orders. startBackgroundServices() is already race-safe and logs its own
+      // failure; a throw here becomes an unhandledRejection, handled below.
+      await startBackgroundServices();
+
       log.info('Server started', {
         port: config.port,
         env: config.env,
@@ -380,6 +387,15 @@ async function shutdown() {
 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
+
+process.on('unhandledRejection', (reason) => {
+  log.error('Unhandled promise rejection', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  log.error('Uncaught exception', err);
+  process.exit(1);
+});
 
 // Start server
 startServer();

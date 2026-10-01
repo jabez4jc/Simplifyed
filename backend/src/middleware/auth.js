@@ -87,15 +87,6 @@ export async function optionalAuth(req, res, next) {
         permissions: [],
       };
       req.isAuthenticated = () => true;
-      if (req.app?.locals?.startServices) {
-        // Fire-and-forget: these are long-running background loops (market data/auto-exit/order
-        // polling against real broker instances), not something this specific request's response
-        // needs to wait on. Awaiting it here meant the very first authenticated request after a
-        // server restart blocked on however long broker connection/startup took. The guard in
-        // startBackgroundServices() (server.js) is already race-safe for concurrent callers, and
-        // it logs its own failure internally, so just swallow the rejection here.
-        req.app.locals.startServices().catch(() => {});
-      }
       return next();
     }
 
@@ -111,10 +102,6 @@ export async function optionalAuth(req, res, next) {
           log.debug('User authenticated via local token', { userId: user.id, email: user.email });
           req.user = user;
           req.isAuthenticated = () => true;
-          if (req.app?.locals?.startServices) {
-            // Fire-and-forget - see the identical comment in the test-mode branch above.
-            req.app.locals.startServices().catch(() => {});
-          }
           return next();
         }
         log.warn('Token verified but user not found/created');
