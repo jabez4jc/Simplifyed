@@ -1129,7 +1129,6 @@ class QuickOrderService {
       strategy: orderPayload.strategy,
       repeatUntilClosed,
       ignoreSlippage: repeatUntilClosed,
-      skipRateLimit: true,
     });
 
     // Verify final position using live positionbook (fire-and-forget to avoid blocking response)
@@ -1488,7 +1487,6 @@ class QuickOrderService {
           strategy: orderDataToSend.strategy,
           repeatUntilClosed: this._isRepeatExitAction(action),
           ignoreSlippage: this._isRepeatExitAction(action),
-          skipRateLimit: true,
         });
 
         await this._syncOptionsState(
@@ -1765,7 +1763,6 @@ class QuickOrderService {
       strategy: orderDataToSend.strategy,
       repeatUntilClosed,
       ignoreSlippage: repeatUntilClosed,
-      skipRateLimit: true,
     });
 
     // Sync position to watchlist_options_state table
@@ -2112,7 +2109,6 @@ class QuickOrderService {
           strategy: orderPayload.strategy,
           repeatUntilClosed: true,
           ignoreSlippage: true,
-          skipRateLimit: true,
         });
 
         closeResults.push({
@@ -2370,7 +2366,6 @@ class QuickOrderService {
       strategy,
       repeatUntilClosed: false,
       ignoreSlippage: true,
-      skipRateLimit: true,
     });
     return { order_id: result?.orderid || null, status: result?.status || 'unknown' };
   }

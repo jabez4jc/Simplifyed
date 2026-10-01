@@ -37,6 +37,21 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Endpoints that count against the per-instance order rate (_throttle). Kept separate from the
+// retry logic's `isOrderPlacement` (placeorder/placesmartorder only), which must not change.
+const ORDER_RATE_ENDPOINTS = new Set(['placeorder', 'placesmartorder', 'basketorder', 'modifyorder']);
+
+// Explicit endpoint -> token-bucket kind. Order endpoints have no bucket: _throttle is the one
+// order limiter. Anything unlisted is 'background'.
+const ENDPOINT_BUCKET_KIND = {
+  positionbook: 'critical',
+  funds: 'critical',
+  tradebook: 'critical',
+  orderbook: 'critical',
+  quotes: 'rest_quotes',
+  multiquotes: 'rest_quotes',
+};
+
 const ERROR_LIMITS = {
   max404PerDay: 20,              // Max 404 errors per instance per reset interval
   maxInvalidApiPerDay: 10,       // Max invalid API key errors per reset interval
@@ -203,7 +218,6 @@ class OpenAlgoClient extends EventEmitter {
     // Rate-limit state
     this.instanceRate = new Map(); // key -> { rps:[], rpm:[], orders:[] }
     this.globalRpm = [];
-    this.globalOrders = [];
     this.currentTasks = new Map(); // instKey -> in-flight count, so one hung broker can't starve the rest
     // Fixed ceilings. Only the smart-order rate is a Setting (_loadRateLimitSettings).
     this.maxConcurrentTasks = 10;
@@ -446,7 +460,11 @@ class OpenAlgoClient extends EventEmitter {
       throw err;
     }
     const { host_url, api_key } = instance;
-    const { isCritical = false, skipRateLimit = false } = options;
+    const { isCritical = false } = options;
+    // Order endpoints always go through the per-instance order throttle. skipRateLimit is honoured
+    // for market-data reads only (quotes/multiquotes/optionchain), which must not queue behind it.
+    const isRateOrder = ORDER_RATE_ENDPOINTS.has(endpoint);
+    const skipRateLimit = options.skipRateLimit === true && !isRateOrder;
 
     if (!host_url || !api_key) {
       throw new OpenAlgoError('Instance host_url and api_key are required', endpoint);
@@ -527,12 +545,13 @@ class OpenAlgoClient extends EventEmitter {
         const startTime = Date.now();
         if (!skipRateLimit) {
           await this._ensureLimits();
-          this._ensureBackoffWindow(instKey, endpoint);
-          await this._throttle(instance, endpoint, isOrderPlacement);
+          // Orders are never blocked by the error backoff (exits depend on them).
+          if (!isRateOrder) this._ensureBackoffWindow(instKey, endpoint);
+          await this._throttle(instance, endpoint);
         }
         const response = skipRateLimit
           ? await this._makeRequest(url, method, payload, timeoutOverride)
-          : await this._executeWithConcurrency(instance, endpoint, method, url, payload, isOrderPlacement, timeoutOverride);
+          : await this._executeWithConcurrency(instance, endpoint, method, url, payload, isRateOrder, timeoutOverride);
         const duration = Date.now() - startTime;
 
         log.debug('OpenAlgo API Response', {
@@ -774,7 +793,7 @@ class OpenAlgoClient extends EventEmitter {
       // finally below always releases the slot acquired above - previously the throw happened
       // between acquiring the slot and entering any try/finally, so it leaked forever and, after
       // maxConcurrentTasks leaks, every call through the limiter spun in its while loop forever.
-      await this._waitForRateBucket(instKey, endpoint, isOrderPlacement);
+      await this._waitForRateBucket(instKey, endpoint);
 
       // Record timestamps for rate tracking
       const now = Date.now();
@@ -784,7 +803,6 @@ class OpenAlgoClient extends EventEmitter {
       this.globalRpm.push(now);
       if (isOrderPlacement) {
         state.orders.push(now);
-        this.globalOrders.push(now);
       }
 
       return await this._makeRequest(url, method, payload, timeoutOverride);
@@ -823,8 +841,8 @@ class OpenAlgoClient extends EventEmitter {
     this.currentTasks.set(instKey, Math.max(0, (this.currentTasks.get(instKey) || 0) - 1));
   }
 
-  async _waitForRateBucket(instKey, endpoint, isOrderPlacement = false) {
-    const bucketKind = this._bucketKindForEndpoint(endpoint, isOrderPlacement);
+  async _waitForRateBucket(instKey, endpoint) {
+    const bucketKind = this._bucketKindForEndpoint(endpoint);
     if (!bucketKind) return;
     const bucket = this._getBucket(instKey, bucketKind);
     let retries = 0;
@@ -839,12 +857,10 @@ class OpenAlgoClient extends EventEmitter {
     }
   }
 
-  _bucketKindForEndpoint(endpoint, isOrderPlacement) {
+  _bucketKindForEndpoint(endpoint) {
     const ep = (endpoint || '').toLowerCase();
-    if (isOrderPlacement || ep.includes('order')) return 'orders';
-    if (ep.includes('position') || ep.includes('fund') || ep.includes('tradebook') || ep.includes('orderbook')) return 'critical';
-    if (ep.includes('rest_quotes')) return 'rest_quotes';
-    return 'background';
+    if (ORDER_RATE_ENDPOINTS.has(ep)) return null; // _throttle is the order limiter
+    return ENDPOINT_BUCKET_KIND[ep] || 'background';
   }
 
   _getRateState(instKey) {
@@ -896,7 +912,6 @@ class OpenAlgoClient extends EventEmitter {
   _getBucket(instKey, kind) {
     if (!this.endpointBuckets.has(instKey)) {
       this.endpointBuckets.set(instKey, {
-        orders: this._makeBucket(this.ordersPerSecondLimit, 1000),
         critical: this._makeBucket(this.rpsLimitPerInstance, 1000),
         background: this._makeBucket(Math.max(1, Math.floor(this.rpsLimitPerInstance / 2)), 1000),
         rest_quotes: this._makeBucket(Math.max(1, Math.floor(this.rpsLimitPerInstance / 4)), 1000),
@@ -939,16 +954,14 @@ class OpenAlgoClient extends EventEmitter {
     return byName || null;
   }
 
-  async _throttle(instance, endpoint, isOrderPlacement) {
+  async _throttle(instance, endpoint) {
     const instKey = this._instanceKey(instance);
+    const isOrderPlacement = ORDER_RATE_ENDPOINTS.has((endpoint || '').toLowerCase());
     const state = this._getRateState(instKey);
     let waitedOnce = false;
 
-    // placesmartorder is capped at 2/sec by OpenAlgo, plain placeorder at 10/sec - a single
-    // shared limit here was applying the lenient figure to what is, in every call site this app
-    // has, exclusively smart-order traffic. Both endpoints still share one sliding window (the
-    // broker enforces its cap per API key, not per endpoint-shape), so this only needs to pick
-    // the RIGHT threshold for that window rather than tracking the endpoints separately.
+    // The order limit is PER INSTANCE (the broker caps per API key): one instance's burst must not
+    // hold back another's. placesmartorder uses the Setting (default 2/s), other order endpoints 10/s.
     const ordersLimit = (endpoint || '').toLowerCase() === 'placesmartorder'
       ? this.smartOrdersPerSecondLimit
       : this.ordersPerSecondLimit;
@@ -959,17 +972,15 @@ class OpenAlgoClient extends EventEmitter {
       this._prune(state.rpm, 60000, now);
       this._prune(state.orders, 1000, now);
       this._prune(this.globalRpm, 60000, now);
-      this._prune(this.globalOrders, 1000, now);
 
       const instRps = state.rps.length;
       const instRpm = state.rpm.length;
       const globalRpm = this.globalRpm.length;
       const instOrders = state.orders.length;
-      const globalOrders = this.globalOrders.length;
 
       const rpsOver = instRps >= this.rpsLimitPerInstance;
       const rpmOver = instRpm >= this.rpmLimitPerInstance;
-      const ordersOver = isOrderPlacement && (instOrders >= ordersLimit || globalOrders >= ordersLimit);
+      const ordersOver = isOrderPlacement && instOrders >= ordersLimit;
 
       if (!rpsOver && !rpmOver && !ordersOver) {
         return;
@@ -979,7 +990,6 @@ class OpenAlgoClient extends EventEmitter {
         rpsOver && state.rps[0] ? state.rps[0] + 1000 - now : Infinity,
         rpmOver && state.rpm[0] ? state.rpm[0] + 60000 - now : Infinity,
         ordersOver && state.orders[0] ? state.orders[0] + 1000 - now : Infinity,
-        ordersOver && this.globalOrders[0] ? this.globalOrders[0] + 1000 - now : Infinity,
       );
       const waitFor = Math.max(25, isFinite(nextExpiry) ? nextExpiry : 50);
 
@@ -991,7 +1001,6 @@ class OpenAlgoClient extends EventEmitter {
           instRpm,
           globalRpm,
           instOrders,
-          globalOrders,
           ordersLimit,
           waitFor,
         });
@@ -1075,7 +1084,6 @@ class OpenAlgoClient extends EventEmitter {
           rpm: rate.rpm.length,
           orders: rate.orders.length,
           globalRpm: this.globalRpm.length,
-          globalOrders: this.globalOrders.length,
         },
         errors: {
           count404: err.count404,
@@ -1108,7 +1116,6 @@ class OpenAlgoClient extends EventEmitter {
           rps: rpsLimit,
           rpm: rpmLimit,
           ordersPerSecond: ordersLimit,
-          ordersPerSecondPlain: this.ordersPerSecondLimit,
           maxConcurrent: this.maxConcurrentTasks,
         },
         usage: {

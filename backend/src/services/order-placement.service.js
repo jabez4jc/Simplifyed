@@ -23,7 +23,6 @@ class OrderPlacementService {
   constructor() {
     this.instanceQueues = new Map(); // instanceId -> queue
     this.instanceInFlight = new Set(); // instanceId
-    this.instanceRateLimiters = new Map(); // instanceId -> TokenBucket
     this.unknownKeySeed = 0;
   }
 
@@ -208,7 +207,6 @@ class OrderPlacementService {
     entry.started = true;
 
     try {
-      await this._applyRateLimit(instanceId);
       if (entry.context?.cancelOpenOrdersBeforePlacement === true) {
         await this._cancelOpenOrdersForSymbol(entry.instance, entry.payload, entry.context);
       }
@@ -227,9 +225,7 @@ class OrderPlacementService {
   async _performPlacement(instance, payload, context = {}) {
     let response;
     try {
-      response = await openalgoClient.placeSmartOrder(instance, payload, {
-        skipRateLimit: context?.skipRateLimit === true,
-      });
+      response = await openalgoClient.placeSmartOrder(instance, payload);
     } catch (error) {
       const statusCode = Number.isFinite(error?.statusCode) ? error.statusCode : null;
       const shouldRecover = statusCode !== null && statusCode >= 500;
@@ -372,18 +368,6 @@ class OrderPlacementService {
       this.instanceQueues.set(instanceId, []);
     }
     return this.instanceQueues.get(instanceId);
-  }
-
-  _getRateLimiter(instanceId) {
-    if (!this.instanceRateLimiters.has(instanceId)) {
-      this.instanceRateLimiters.set(instanceId, new TokenBucket(2, 2));
-    }
-    return this.instanceRateLimiters.get(instanceId);
-  }
-
-  async _applyRateLimit(instanceId) {
-    const limiter = this._getRateLimiter(instanceId);
-    await limiter.consume();
   }
 
   async _cancelOpenOrdersForSymbol(instance, payload, context = {}) {
@@ -597,36 +581,6 @@ class OrderPlacementService {
     const product = this._normalizeProduct(payload?.product);
     if (!exchange || !symbol) return null;
     return product ? `${exchange}|${symbol}|${product}` : `${exchange}|${symbol}`;
-  }
-}
-
-class TokenBucket {
-  constructor(rate, burst = rate) {
-    this.rate = rate;
-    this.capacity = burst;
-    this.tokens = burst;
-    this.lastRefill = Date.now();
-  }
-
-  _refill() {
-    const now = Date.now();
-    const elapsed = (now - this.lastRefill) / 1000;
-    this.tokens = Math.min(this.capacity, this.tokens + elapsed * this.rate);
-    this.lastRefill = now;
-  }
-
-  async consume() {
-    this._refill();
-    if (this.tokens >= 1) {
-      this.tokens -= 1;
-      return;
-    }
-
-    const needed = 1 - this.tokens;
-    const waitMs = (needed / this.rate) * 1000;
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
-    this._refill();
-    this.tokens = Math.max(0, this.tokens - 1);
   }
 }
 

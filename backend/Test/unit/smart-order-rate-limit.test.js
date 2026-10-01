@@ -24,7 +24,7 @@ test('defaults: smart orders capped tighter than plain orders', () => {
 });
 
 /**
- * `_throttle` is a pure GATE: it reads `state.orders` / `this.globalOrders` but never writes to
+ * `_throttle` is a pure GATE: it reads `state.orders` but never writes to
  * them - that bookkeeping happens in `_executeWithConcurrency`, a different function, once a
  * request actually goes out. So exercising the gate on its own means recording each "order
  * placed" the same way that function does, immediately after `_throttle` clears it.
@@ -33,7 +33,6 @@ function recordOrderSent(client) {
   const now = Date.now();
   const state = client._getRateState(client._instanceKey(instance));
   state.orders.push(now);
-  client.globalOrders.push(now);
 }
 
 test('a third placesmartorder call within the same second is actually throttled', async () => {
@@ -76,3 +75,38 @@ test('a non-order endpoint is never subject to the orders cap at all', async () 
   }
   assert.ok(Date.now() - start < 200, 'quote calls must not be gated by either order limit');
 }, 5000);
+
+test('the order limit is per instance: a burst on instance A never throttles instance B', async () => {
+  const client = new OpenAlgoClient();
+  const a = { id: 'inst-a', host_url: 'http://localhost:1', api_key: 'x' };
+  const b = { id: 'inst-b', host_url: 'http://localhost:2', api_key: 'x' };
+  const send = async (inst) => {
+    const start = Date.now();
+    await client._throttle(inst, 'placesmartorder');
+    client._getRateState(client._instanceKey(inst)).orders.push(Date.now());
+    return Date.now() - start;
+  };
+
+  await send(a);
+  await send(a); // A is now at its 2/s cap
+  assert.ok((await send(b)) < 200, 'instance B must not wait on instance A');
+  assert.ok((await send(b)) < 200, 'instance B second order must not wait either');
+}, 5000);
+
+test('basketorder and modifyorder count as orders; orderbook is critical, quotes are rest_quotes', () => {
+  const client = new OpenAlgoClient();
+  for (const ep of ['placeorder', 'placesmartorder', 'basketorder', 'modifyorder']) {
+    assert.strictEqual(client._bucketKindForEndpoint(ep), null, `${ep}: _throttle is its only limiter`);
+  }
+  assert.strictEqual(client._bucketKindForEndpoint('orderbook'), 'critical');
+  assert.strictEqual(client._bucketKindForEndpoint('positionbook'), 'critical');
+  assert.strictEqual(client._bucketKindForEndpoint('quotes'), 'rest_quotes');
+  assert.strictEqual(client._bucketKindForEndpoint('cancelorder'), 'background');
+});
+
+test('getInstanceMetrics reports per-instance order counts without touching removed global state', () => {
+  const client = new OpenAlgoClient();
+  client._getRateState('m1').orders.push(Date.now());
+  const [m] = client.getInstanceMetrics();
+  assert.strictEqual(m.rate.orders, 1);
+});

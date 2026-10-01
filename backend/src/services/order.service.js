@@ -290,7 +290,6 @@ class OrderService {
         strategy: orderData.strategy,
         repeatUntilClosed,
         ignoreSlippage: repeatUntilClosed,
-        skipRateLimit: true,
         skipRetry: callerChosePrice,
       });
 
