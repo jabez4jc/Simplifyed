@@ -53,6 +53,22 @@ import limitPriceService from './limit-price.service.js';
 
 const VALID_EXIT_MECHANISMS = ['POLLING', 'GTT'];
 
+// Position books lag fills (seen on Fyers), so a just-placed leg is never judged by the book.
+const ENTRY_SETTLE_MS = 60 * 1000;
+const DONE_ORDER_STATUSES = ['complete', 'completed', 'filled', 'cancelled', 'canceled', 'rejected'];
+
+/** The broker's non-zero position rows for one contract, every product. */
+function brokerRowsFor(book, symbol, exchange) {
+  const qty = (p) => Number(p.quantity ?? p.netqty ?? p.net_quantity ?? p.netQty ?? 0) || 0;
+  return (Array.isArray(book) ? book : [])
+    .filter((p) => String(p.symbol || p.tradingsymbol || '').toUpperCase() === String(symbol || '').toUpperCase()
+      && (!p.exchange || !exchange || String(p.exchange).toUpperCase() === String(exchange).toUpperCase()))
+    .map((p) => ({ product: String(p.product || '').toUpperCase(), quantity: qty(p) }))
+    .filter((p) => p.quantity !== 0);
+}
+
+const sumQty = (rows) => rows.reduce((total, r) => total + r.quantity, 0);
+
 const VALID_ENTRY_TRIGGERS = ['MANUAL', 'WEBHOOK'];
 const VALID_ACTIONS = ['BUY', 'SELL'];
 const VALID_OPTION_TYPES = ['CE', 'PE'];
@@ -239,8 +255,12 @@ class StrategyService {
     const values = [];
 
     if (updates.name !== undefined) {
+      const name = String(updates.name || '').trim();
+      if (!name) {
+        throw new ValidationError('name is required');
+      }
       fields.push('name = ?');
-      values.push((updates.name || '').trim());
+      values.push(name);
     }
     if (updates.is_active !== undefined) {
       fields.push('is_active = ?');
@@ -517,9 +537,15 @@ class StrategyService {
     }
     assertAnchorLive(anchorSymbol);
 
-    const instances = instanceId
-      ? [await this._getSingleActiveInstance(instanceId)]
-      : await this._getStrategyInstances(strategy);
+    // An instanceId override narrows the strategy's own targets; it never reaches an instance the
+    // strategy does not trade on, or one with order placement turned off.
+    let instances = await this._getStrategyInstances(strategy);
+    if (instanceId) {
+      instances = instances.filter((i) => i.id === Number(instanceId));
+      if (!instances.length) {
+        throw new ValidationError(`Instance ${instanceId} is not an active, order-enabled target of this strategy`);
+      }
+    }
 
     const executionId = `${strategy.broker_tag || `strategy-${strategyId}`}-${Date.now()}`;
     const strategyForExecution = { ...strategy, legs: legsToExecute };
@@ -572,9 +598,15 @@ class StrategyService {
       resolvedLegId = await this._resolveLegId(strategyId, { legId });
     }
 
-    const instances = instanceId
-      ? [await this._getSingleActiveInstance(instanceId)]
-      : await this._getStrategyInstances(strategy);
+    // Exit closes what the strategy opened, wherever the ledger says it is open - even on an
+    // instance since unscoped from the strategy or switched to order placement off.
+    const instances = await db.all(
+      `SELECT DISTINCT i.* FROM instances i
+       JOIN strategy_leg_executions sle ON sle.instance_id = i.id
+       WHERE sle.strategy_id = ? AND sle.entry_status = 'PLACED' AND sle.closed_at IS NULL
+         AND i.is_active = 1${instanceId ? ' AND i.id = ?' : ''}`,
+      instanceId ? [strategy.id, Number(instanceId)] : [strategy.id]
+    );
 
     const settled = await Promise.allSettled(
       instances.map((instance) => this._exitStrategyForInstance({ strategy, instance, legId: resolvedLegId, userId, source }))
@@ -618,28 +650,74 @@ class StrategyService {
 
     const legById = new Map(strategy.legs.map((leg) => [leg.id, leg]));
     const legOutcomes = [];
+    const tag = strategy.broker_tag || `strategy-${strategy.id}`;
+
+    // One close per contract and product, sized to what THIS strategy holds. A plain close
+    // squares off the whole symbol, every product - it also closed a manual position or another
+    // strategy's leg in the same contract. An unreadable book fails the exit (never "flat").
+    const book = await openalgoClient.getPositionBook(instance);
+    const groups = new Map();
+    for (const execRow of openExecutions) {
+      const key = `${execRow.resolved_exchange}|${execRow.resolved_symbol}|${String(execRow.product || '').toUpperCase()}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(execRow);
+    }
+    const closeOutcome = new Map(); // group key -> { closeResult } | { error }
+    for (const [key, rows] of groups) {
+      const first = rows[0];
+      const leg = legById.get(first.strategy_leg_id);
+      const product = String(first.product || '').toUpperCase();
+      const owned = rows.reduce((total, r) => {
+        const action = String(legById.get(r.strategy_leg_id)?.action || 'BUY').toUpperCase();
+        return total + (action === 'SELL' ? -1 : 1) * (Number(r.quantity) || 0);
+      }, 0);
+      const brokerRows = brokerRowsFor(book, first.resolved_symbol, first.resolved_exchange);
+      const sameProduct = brokerRows.filter((p) => !p.product || p.product === product);
+      // A broker that labels the product differently still holds the strategy's position.
+      const candidates = sameProduct.length ? sameProduct : brokerRows;
+      const held = sumQty(candidates);
+      try {
+        if (!held || Math.sign(held) !== Math.sign(owned)) {
+          // Nothing of this leg is left at the broker (auto-exited, or closed elsewhere).
+          closeOutcome.set(key, { closeResult: { closed_count: 0 } });
+        } else if (Math.abs(held) <= Math.abs(owned) && candidates.length === brokerRows.length) {
+          // The strategy is the only holder: the full close, chased until flat.
+          // The executed contract itself is what gets closed. An equity leg was sent as FUTURES
+          // and a futures leg without its type, so the close path re-resolved a future from the
+          // underlying through the broker - failing for stocks, and for futures whenever the
+          // broker's search did not return the contract.
+          const isFutureContract = /FUT$/i.test(first.resolved_symbol || '');
+          const tradeMode = leg?.option_type ? 'OPTIONS' : isFutureContract ? 'FUTURES' : 'EQUITY';
+          closeOutcome.set(key, {
+            closeResult: await quickOrderService.closePosition(
+              instance,
+              { symbol: first.resolved_symbol, exchange: first.resolved_exchange, symbol_type: tradeMode },
+              { product: first.product, tradeMode, strategy: tag }
+            ),
+          });
+        } else {
+          // Shared contract: exit only the strategy's own quantity, in its own product.
+          const row = sameProduct.length
+            ? { product, quantity: held }
+            : candidates.find((p) => Math.sign(p.quantity) === Math.sign(owned));
+          const part = await quickOrderService.exitPartOfPosition(
+            instance,
+            { symbol: first.resolved_symbol, exchange: first.resolved_exchange, product: row.product, quantity: row.quantity },
+            Math.min(Math.abs(row.quantity), Math.abs(owned)),
+            { strategy: tag }
+          );
+          closeOutcome.set(key, { closeResult: { closed_count: 1, details: [{ success: true, order_id: part.order_id }] } });
+        }
+      } catch (error) {
+        closeOutcome.set(key, { error });
+      }
+    }
 
     for (const execRow of openExecutions) {
-      const leg = legById.get(execRow.strategy_leg_id);
+      const key = `${execRow.resolved_exchange}|${execRow.resolved_symbol}|${String(execRow.product || '').toUpperCase()}`;
       try {
-        // The executed contract itself is what gets closed. An equity leg was sent as FUTURES
-        // and a futures leg without its type, so the close path re-resolved a future from the
-        // underlying through the broker - failing for stocks, and for futures whenever the
-        // broker's search did not return the contract.
-        const isFutureContract = /FUT$/i.test(execRow.resolved_symbol || '');
-        const closeResult = await quickOrderService.closePosition(
-          instance,
-          {
-            symbol: execRow.resolved_symbol,
-            exchange: execRow.resolved_exchange,
-            symbol_type: leg?.option_type ? 'OPTIONS' : isFutureContract ? 'FUTURES' : 'EQUITY',
-          },
-          {
-            product: execRow.product,
-            tradeMode: leg?.option_type ? 'OPTIONS' : isFutureContract ? 'FUTURES' : 'EQUITY',
-            strategy: strategy.broker_tag || `strategy-${strategy.id}`,
-          }
-        );
+        const { closeResult, error } = closeOutcome.get(key);
+        if (error) throw error;
         // closePosition -> _closePositions returns {message, closed_count, details:[{success,
         // symbol, order_id}]} (or {message:'No open positions to close', closed_count:0} when
         // the broker already shows it flat) - not a {success, results} shape.
@@ -950,6 +1028,56 @@ class StrategyService {
   }
 
   /**
+   * Leg ids with an open ledger row on this instance - the double-entry guard. The ledger is only
+   * closed by Exit or a pushed fill, so a leg auto-exited or closed by hand while the order stream
+   * was down stayed "open" forever, and every later ENTRY alert skipped it. A row older than
+   * ENTRY_SETTLE_MS is reconciled closed when the broker holds nothing in the leg's direction and
+   * its entry order is no longer working. If a book cannot be read, every row stays open: a
+   * skipped entry is safer than a duplicate one.
+   */
+  async _legsStillOpen(strategy, instance) {
+    const rows = await db.all(
+      `SELECT sle.*, sl.action AS leg_action FROM strategy_leg_executions sle
+       JOIN strategy_legs sl ON sl.id = sle.strategy_leg_id
+       WHERE sle.strategy_id = ? AND sle.instance_id = ? AND sle.entry_status = 'PLACED' AND sle.closed_at IS NULL`,
+      [strategy.id, instance.id]
+    );
+    const settled = rows.filter((r) => Date.now() - Date.parse(r.opened_at) > ENTRY_SETTLE_MS);
+    let stale = [];
+    if (settled.length) {
+      try {
+        const [book, orders] = await Promise.all([
+          openalgoClient.getPositionBook(instance),
+          openalgoClient.getOrderBook(instance),
+        ]);
+        const working = new Set(orders
+          .filter((o) => !DONE_ORDER_STATUSES.includes(String(o.order_status || o.status || '').toLowerCase()))
+          .map((o) => String(o.orderid)));
+        stale = settled.filter((r) => {
+          const held = sumQty(brokerRowsFor(book, r.resolved_symbol, r.resolved_exchange));
+          const holdsLeg = String(r.leg_action).toUpperCase() === 'SELL' ? held < 0 : held > 0;
+          return !holdsLeg && !working.has(String(r.entry_order_id));
+        });
+      } catch (error) {
+        log.warn('Strategy re-entry check could not read the books - open legs stay skipped', {
+          strategyId: strategy.id, instanceId: instance.id, error: error.message,
+        });
+      }
+    }
+    for (const r of stale) {
+      await db.run(
+        `UPDATE strategy_leg_executions SET exit_status = 'CLOSED', closed_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [new Date().toISOString(), r.id]
+      );
+      log.info('Strategy leg found closed at the broker - ledger reconciled', {
+        strategyId: strategy.id, legId: r.strategy_leg_id, instanceId: instance.id, symbol: r.resolved_symbol,
+      });
+    }
+    const staleIds = new Set(stale.map((r) => r.id));
+    return new Set(rows.filter((r) => !staleIds.has(r.id)).map((r) => r.strategy_leg_id));
+  }
+
+  /**
    * Resolve every leg, batch-place via basketorder, then apply the same per-leg side effects
    * (exit-config upsert, risk-event logging, order-history row) as the previous per-leg
    * placeQuickOrder path.
@@ -959,15 +1087,7 @@ class StrategyService {
     // orders if Execute (whole-strategy or single-leg) is called again while a leg is still
     // live, e.g. a repeated webhook fire or clicking Execute twice. allowScaleIn deliberately
     // opts out of this (see executeStrategy) so the user can knowingly add to a position instead.
-    const openLegIds = allowScaleIn
-      ? new Set()
-      : new Set(
-          (await db.all(
-            `SELECT strategy_leg_id FROM strategy_leg_executions
-             WHERE strategy_id = ? AND instance_id = ? AND entry_status = 'PLACED' AND closed_at IS NULL`,
-            [strategy.id, instance.id]
-          )).map((row) => row.strategy_leg_id)
-        );
+    const openLegIds = allowScaleIn ? new Set() : await this._legsStillOpen(strategy, instance);
     const skippedOutcomes = strategy.legs
       .filter((leg) => openLegIds.has(leg.id))
       .map((leg) => ({
@@ -1022,20 +1142,19 @@ class StrategyService {
     // Margin preview - batches all resolved legs into ONE calculateMargin call (the existing
     // /margin endpoint already supports up to 50 positions with hedging benefits; there is no
     // separate "basket margin" endpoint). Best-effort: a preview failure doesn't block execution.
-    let marginPreview = null;
-    try {
-      const positions = orderable.map((r) => ({
-        symbol: r.symbol,
-        exchange: r.exchange,
-        action: r.leg.action,
-        quantity: String(r.quantity), // Kotak's OpenAlgo rejects a number: "Not a valid string"
-        product: r.product,
-        pricetype: 'MARKET',
-      }));
-      marginPreview = await openalgoClient.calculateMargin(instance, positions);
-    } catch (error) {
+    // It runs alongside pricing and placement and is collected afterwards - awaited first, a
+    // failing preview (Kotak 500s, then a retry) delayed every entry by seconds.
+    const marginPreviewPending = openalgoClient.calculateMargin(instance, orderable.map((r) => ({
+      symbol: r.symbol,
+      exchange: r.exchange,
+      action: r.leg.action,
+      quantity: String(r.quantity), // Kotak's OpenAlgo rejects a number: "Not a valid string"
+      product: r.product,
+      pricetype: 'MARKET',
+    }))).catch((error) => {
       log.warn('Strategy margin preview failed', { strategyId: strategy.id, instanceId: instance.id, error: error.message });
-    }
+      return null;
+    });
 
     // Pricing phase - every leg goes out as a marketable LIMIT, not a MARKET order.
     //
@@ -1088,6 +1207,7 @@ class StrategyService {
       orders: basketOrders,
     });
     const basketResults = Array.isArray(basketResponse?.results) ? basketResponse.results : [];
+    const marginPreview = await marginPreviewPending;
 
     const legOutcomes = [];
     for (let i = 0; i < orderable.length; i++) {
@@ -1102,13 +1222,15 @@ class StrategyService {
       if (legSuccess) {
         // A broker GTT fires its exit as a MARKET order, which SEBI does not allow on Indian
         // exchanges - those legs use the app-managed exit, which closes with LIMIT orders.
-        if (r.leg.exit_mechanism === 'GTT' && isCryptoExchange(r.exchange)) {
-          await this._placeLegExitGtt({
+        // A GTT that could not be placed falls back to the app-managed exit - it used to leave
+        // the leg with no stop at all, with only a log line to say so.
+        const gttPlaced = r.leg.exit_mechanism === 'GTT' && isCryptoExchange(r.exchange)
+          && await this._placeLegExitGtt({
             strategy, leg: r.leg, instance, exchange: r.exchange, symbol: r.symbol,
             quantity: r.quantity, product: r.product, orderId: basketResult?.orderid,
             watchlistId: strategy.watchlist_id, anchorSymbol,
           });
-        } else {
+        if (!gttPlaced) {
           await this._upsertLegExitConfig({
             watchlistId: strategy.watchlist_id,
             exchange: r.exchange,
@@ -1285,26 +1407,25 @@ class StrategyService {
   /**
    * Place a broker-side GTT exit for a leg instead of upserting the polling-based exit config.
    * Needs the actual fill price (not the pre-fill quote) to compute accurate trigger prices, so
-   * this looks up the just-placed order's status first. Best-effort: on any failure this logs a
-   * warning and leaves the leg without an automated exit rather than failing the whole execution
-   * (the entry order has already gone through by this point) - the leg can be re-armed via a
-   * manual GTT placement or switched back to 'POLLING' and edited with target/stop config.
+   * this looks up the just-placed order's status first. Returns false when no GTT was placed;
+   * the caller then arms the app-managed (polling) exit instead, so the leg is never left
+   * unprotected (the entry order has already gone through by this point).
    */
   async _placeLegExitGtt({ strategy, leg, instance, exchange, symbol, quantity, product, orderId, watchlistId, anchorSymbol }) {
     if (!leg.target_points && !leg.stoploss_points) {
-      return; // nothing configured to protect with a GTT
+      return false; // no GTT levels - any trailing stop is app-managed
     }
     if (!orderId) {
-      log.warn('Skipping GTT exit - no order id from basket placement', { strategyId: strategy.id, legId: leg.id });
-      return;
+      log.warn('Skipping GTT exit - no order id from basket placement; using the app-managed exit', { strategyId: strategy.id, legId: leg.id });
+      return false;
     }
 
     try {
       const status = await openalgoClient.getOrderStatus(instance, { orderid: orderId, strategy: strategy.broker_tag || `strategy-${strategy.id}` });
       const entryPrice = parseFloatSafe(status?.average_price, null);
       if (!entryPrice || entryPrice <= 0) {
-        log.warn('Skipping GTT exit - could not resolve fill price', { strategyId: strategy.id, legId: leg.id, orderId });
-        return;
+        log.warn('Skipping GTT exit - could not resolve fill price; using the app-managed exit', { strategyId: strategy.id, legId: leg.id, orderId });
+        return false;
       }
 
       await gttService.placeExitGtt(instance, {
@@ -1322,8 +1443,10 @@ class StrategyService {
         symbolId: anchorSymbol.id,
         strategyLegId: leg.id,
       });
+      return true;
     } catch (error) {
-      log.warn('Failed to place GTT exit for strategy leg', { strategyId: strategy.id, legId: leg.id, error: error.message });
+      log.warn('Failed to place GTT exit for strategy leg - using the app-managed exit', { strategyId: strategy.id, legId: leg.id, error: error.message });
+      return false;
     }
   }
 
@@ -1350,7 +1473,8 @@ class StrategyService {
 
     const existing = await watchlistSymbolService.findSymbolByWatchlist(watchlistId, exchange, symbol);
     if (existing) {
-      await watchlistSymbolService.updateSymbol(existing.id, exitConfig);
+      // Exit switched the row off; a re-entry into the same contract switches it back on.
+      await watchlistSymbolService.updateSymbol(existing.id, { ...exitConfig, is_enabled: 1 });
       return;
     }
 

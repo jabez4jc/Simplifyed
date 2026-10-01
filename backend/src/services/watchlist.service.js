@@ -571,15 +571,22 @@ class WatchlistService {
     if (!this._isBroadcast(watchlist)) {
       throw new ValidationError('Watchlist is not broadcast-enabled');
     }
+    // Deactivating a broadcast watchlist is how alerts are switched off; they used to keep trading.
+    if (!watchlist.is_active) {
+      throw new ValidationError(`Watchlist "${watchlist.name}" is inactive - alert not placed`);
+    }
 
     const enriched = await this._hydrateWebhook(watchlist);
 
+    // Same target rule as quick orders and strategies: an instance with order placement turned
+    // off is never sent an order.
     const instances = await db.all(
       `SELECT i.*
        FROM instances i
        JOIN watchlist_instances wi ON i.id = wi.instance_id
        WHERE wi.watchlist_id = ?
-         AND i.is_active = 1`,
+         AND i.is_active = 1
+         AND i.order_placement_enabled = 1`,
       [enriched.id]
     );
 

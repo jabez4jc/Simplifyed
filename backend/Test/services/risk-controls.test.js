@@ -307,3 +307,24 @@ test('a ratchet is recorded as a risk event the operator can audit afterwards', 
   assert.strictEqual(events[1].event_type, 'STOP_RATCHET');
   assert.strictEqual(Number(events[1].new_value), 160);
 });
+
+test('a trail left by a position that vanished is not inherited by the next one', async () => {
+  // Some books drop a closed row instead of showing it at 0, so auto-exit never clears its trail.
+  const key = keyFor('TRAILSTALE');
+  const configEntry = direct({ trailing_stoploss_points_direct: 10 });
+  await riskControls.evaluateExit({ key, side: 'LONG', entryPrice: 100, currentPrice: 150, configEntry, symbol: 'RELIANCE' });
+  riskControls.trailingState.get(key).lastSeen = Date.now() - 10 * 60 * 1000; // unseen for 10 minutes
+
+  // A new long entered at 120: the old 140 stop would close it at once.
+  const fresh = await riskControls.evaluateExit({ key, side: 'LONG', entryPrice: 120, currentPrice: 121, configEntry, symbol: 'RELIANCE' });
+  assert.strictEqual(fresh.reason, null);
+  assert.strictEqual(riskControls.trailingState.get(key).stopPrice, 111);
+});
+
+test('a trail seen recently keeps its ratchet even if the average price moves (a scale-in)', async () => {
+  const key = keyFor('TRAILSCALE');
+  const configEntry = direct({ trailing_stoploss_points_direct: 10 });
+  await riskControls.evaluateExit({ key, side: 'LONG', entryPrice: 100, currentPrice: 150, configEntry, symbol: 'RELIANCE' });
+  await riskControls.evaluateExit({ key, side: 'LONG', entryPrice: 120, currentPrice: 145, configEntry, symbol: 'RELIANCE' });
+  assert.strictEqual(riskControls.trailingState.get(key).stopPrice, 140);
+});

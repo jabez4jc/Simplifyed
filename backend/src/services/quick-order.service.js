@@ -444,6 +444,16 @@ class QuickOrderService {
         throw new ValidationError('Order placement is disabled for this instance');
       }
 
+      // A symbol trades only on the instances mapped to its watchlist - naming another one
+      // used to send the order anyway.
+      const mapped = await db.get(
+        'SELECT 1 FROM watchlist_instances WHERE watchlist_id = ? AND instance_id = ?',
+        [watchlistId, instance.id]
+      );
+      if (!mapped) {
+        throw new ValidationError(`Instance "${instance.name}" is not mapped to this watchlist`);
+      }
+
       return [instance];
     }
   }
@@ -678,8 +688,11 @@ class QuickOrderService {
 
       // For close/exit orders, retry failed instances
       if (isCloseAction && broadcastTransaction.failureCount > 0) {
+        // Only definite failures are retried. An uncertain one (timeout, 5xx, outcome unknown)
+        // may have closed the position already; with the book lagging the fill, a re-sent
+        // exit sells again and leaves a short (seen live on Fyers and Kotak).
         const failedInstances = instances.filter(inst =>
-          results.find(r => r.instance_id === inst.id && !r.success)
+          results.find(r => r.instance_id === inst.id && !r.success && !r.uncertain)
         );
 
         if (failedInstances.length > 0) {
@@ -2131,7 +2144,10 @@ class QuickOrderService {
         `Could not close ${failures.length} of ${closeResults.length} position(s): `
         + failures.map((f) => `${f.symbol}: ${f.error}`).join('; ')
       );
-      err.statusCode = failures[0].statusCode;
+      // A failure with no HTTP status (timeout, network) or a 5xx may have closed the position:
+      // it stays uncertain (5xx) so nothing re-sends the exit blind.
+      const unknown = failures.find((f) => !Number.isFinite(f.statusCode) || f.statusCode >= 500);
+      err.statusCode = unknown ? (unknown.statusCode >= 500 ? unknown.statusCode : 504) : failures[0].statusCode;
       err.details = closeResults;
       throw err;
     }

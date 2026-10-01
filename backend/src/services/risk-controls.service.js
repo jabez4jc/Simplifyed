@@ -7,6 +7,9 @@ import { log } from '../core/logger.js';
 import db from '../core/database.js';
 import riskEventsService from './risk-events.service.js';
 
+// Auto-exit sees an open position every cycle (~5s); a trail unseen this long lost its position.
+const STALE_TRAIL_MS = 2 * 60 * 1000;
+
 class RiskControlsService {
   constructor() {
     this.trailingState = new Map();
@@ -59,8 +62,17 @@ class RiskControlsService {
     return { mode, reason };
   }
 
+  /**
+   * The trailing-state key for one position: its side AND product, so a reversal (long -> short)
+   * starts a fresh trail rather than inheriting a stop on the wrong side of the price, and a
+   * closed MIS row never wipes a live NRML trail. Built with _key so it persists and hydrates.
+   */
+  trailingKey(instanceId, exchange, symbol, side, product = '') {
+    return this._key(instanceId, exchange, symbol, product ? `${side}/${product}` : side);
+  }
+
   clearTrailingState(key) {
-    if (key) {
+    if (key && this.trailingState.has(key)) {
       this.trailingState.delete(key);
       this._deletePersistedState(key).catch(() => {});
     }
@@ -79,12 +91,22 @@ class RiskControlsService {
       ? currentPrice - entryPrice
       : entryPrice - currentPrice;
 
-    const state = this.trailingState.get(key) || {
+    const fresh = () => ({
       highest: currentPrice,
       lowest: currentPrice,
       activated: !activationPoints,
       stopPrice: null,
-    };
+      entryPrice,
+    });
+    let state = this.trailingState.get(key) || fresh();
+    // A trail not seen for a while whose entry price differs belongs to a position that closed
+    // without a zero row (or overnight) - a new position must not inherit its stop.
+    const unseen = state.lastSeen && Date.now() - state.lastSeen > STALE_TRAIL_MS;
+    if (unseen && state.entryPrice > 0 && Math.abs(state.entryPrice - entryPrice) > entryPrice * 1e-6) {
+      state = fresh();
+    }
+    state.entryPrice = state.entryPrice ?? entryPrice;
+    state.lastSeen = Date.now();
     state.highest = Math.max(state.highest, currentPrice);
     state.lowest = Math.min(state.lowest, currentPrice);
 
@@ -278,7 +300,8 @@ class RiskControlsService {
     // futures target/stop to the option and then tried to close it as a future.
     const normalizedSymbol = (symbol || '').toUpperCase();
     if (/\d(CE|PE)$/.test(normalizedSymbol)) return 'options';
-    if (/\dFUT$/.test(normalizedSymbol)) return 'futures';
+    // A dated future (NIFTY27OCT26FUT) or a crypto perpetual (BTCUSDFUT, ETHUSDTFUT).
+    if (/(\d|USDT?)FUT$/.test(normalizedSymbol)) return 'futures';
 
     const type = (entry?.symbol_type || '').toUpperCase();
     if (type === 'OPTIONS') return 'options';

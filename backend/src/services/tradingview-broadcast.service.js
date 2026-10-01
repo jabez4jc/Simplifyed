@@ -18,7 +18,7 @@ import { requiresLimitOrders } from '../utils/broker-type.util.js';
 import limitPriceService from './limit-price.service.js';
 import brokerUnitsService from './broker-units.service.js';
 import futuresRollService from './futures-roll.service.js';
-import openalgoClient, { assertLimitOnlyCompliance } from '../integrations/openalgo/client.js';
+import openalgoClient, { assertLimitOnlyCompliance, withoutExpiredContracts } from '../integrations/openalgo/client.js';
 
 // OpenAlgo v1 order constants (openalgo-docs api-documentation/v1/order-constants.md). The
 // exchange list is VALID_EXCHANGES in full; OpenAlgo 400s anything else, and the connected
@@ -228,6 +228,14 @@ class TradingviewBroadcastService {
       DEFAULT_PAYLOAD.disclosed_quantity
     );
 
+    // A priced order without its price went to every broker as a LIMIT at 0.
+    if (['LIMIT', 'SL'].includes(normalized.pricetype) && !(normalized.price > 0)) {
+      errors.push({ field: 'price', message: `price is required for ${normalized.pricetype} orders` });
+    }
+    if (['SL', 'SL-M'].includes(normalized.pricetype) && !(normalized.trigger_price > 0)) {
+      errors.push({ field: 'trigger_price', message: `trigger_price is required for ${normalized.pricetype} orders` });
+    }
+
     if (errors.length) {
       throw new ValidationError('Invalid TradingView payload', errors);
     }
@@ -249,6 +257,8 @@ class TradingviewBroadcastService {
       log.info('[TV Webhook] Continuous symbol resolved', { from: payload.symbol, to: contract });
       normalizedPayload = { ...payload, symbol: contract };
     }
+    // Broadcasts post straight to each instance, past the client's own expired-contract refusal.
+    withoutExpiredContracts('placesmartorder', normalizedPayload);
     const { targets, watchlist } = await this._resolveTargets({ watchlistId, watchlistSlug });
 
     if (!targets.length) {

@@ -175,3 +175,32 @@ test('if the order book cannot be read after a failed order, the order is NOT re
   );
   assert.strictEqual(sent.count, 1, 'an order with an unknown outcome must never be re-sent');
 });
+
+const LEGS = [
+  { symbol: 'NATURALGAS27OCT26FUT', exchange: 'MCX', action: 'BUY', product: 'NRML', quantity: 1250, pricetype: 'LIMIT', price: 299 },
+  { symbol: 'NATURALGAS27OCT26FUT', exchange: 'MCX', action: 'SELL', product: 'NRML', quantity: 2500, pricetype: 'LIMIT', price: 298 },
+];
+
+test('a strategy basket that times out is never re-sent; each leg is read from the order book', async () => {
+  // basketorder had no order-book check, so a timeout re-sent the whole basket and duplicated
+  // every leg that had landed.
+  const { client, sent } = timeoutThenSuccessClient({ orders: [
+    { orderid: 'LEG-1', ...LEGS[0], order_status: 'complete', timestamp: new Date().toISOString() },
+  ] });
+  client._awaitOrderInBook = ((orig) => (inst, data, since) => orig.call(client, inst, data, since, { checks: 1, delayMs: 1 }))(client._awaitOrderInBook);
+  const res = await client.request(instance, 'basketorder', { strategy: 's', orders: LEGS }, 'POST', { skipRateLimit: true, isCritical: true });
+  assert.strictEqual(sent.count, 1, 'a basket must never be sent twice');
+  assert.deepStrictEqual(res.results.map((r) => [r.status, r.orderid || null]), [['success', 'LEG-1'], ['error', null]]);
+  assert.match(res.results[1].message, /Not placed/);
+});
+
+test('a basket whose outcome cannot be read is refused as unknown, not re-sent', async () => {
+  const { client, sent } = timeoutThenSuccessClient(null);
+  client.getOrderBook = async () => { throw new Error('Request timeout after 15000ms'); };
+  client._awaitOrderInBook = ((orig) => (inst, data, since) => orig.call(client, inst, data, since, { checks: 1, delayMs: 1 }))(client._awaitOrderInBook);
+  await assert.rejects(
+    client.request(instance, 'basketorder', { strategy: 's', orders: LEGS }, 'POST', { skipRateLimit: true, isCritical: true }),
+    (err) => err.code === 'ORDER_OUTCOME_UNKNOWN'
+  );
+  assert.strictEqual(sent.count, 1);
+});

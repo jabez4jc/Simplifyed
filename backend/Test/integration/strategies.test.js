@@ -12,6 +12,8 @@ import {
 import { STATUS } from '../helpers/http.js';
 import db from '../../src/core/database.js';
 import strategyRoutes from '../../src/routes/v1/strategies.js';
+import quickOrderService from '../../src/services/quick-order.service.js';
+import openalgoClient from '../../src/integrations/openalgo/client.js';
 
 /**
  * Every step of a strategy through its real HTTP routes: create on a strategy-type watchlist,
@@ -226,4 +228,87 @@ test('delete: the strategy and its legs are gone; a second delete is a 404', asy
   assert.strictEqual((await del(`/api/v1/strategies/${s.id}`, admin)).status, STATUS.OK);
   assert.strictEqual((await db.get('SELECT COUNT(*) AS n FROM strategy_legs WHERE strategy_id = ?', [s.id])).n, 0);
   assert.strictEqual((await del(`/api/v1/strategies/${s.id}`, admin)).status, STATUS.NOT_FOUND);
+});
+
+// ---------------------------------------------------------------------------
+// The execution ledger against what the broker actually holds
+// ---------------------------------------------------------------------------
+
+/** A one-leg BUY 1 lot BTC strategy on the real crypto account. */
+async function oneLegStrategy() {
+  const { admin, wl, a } = await setup();
+  const { body: { data: s } } = await create(admin, wl);
+  await post(`/api/v1/strategies/${s.id}/legs`, admin).send({ action: 'BUY', qty_type: 'LOTS', qty_value: 1, product_type: 'NRML' });
+  return { admin, s, a };
+}
+const execute = (admin, s, body = {}) => post(`/api/v1/strategies/${s.id}/execute`, admin).send(body);
+const exitAll = (admin, s, body = {}) => post(`/api/v1/strategies/${s.id}/exit`, admin).send(body);
+const settle = (s) => db.run( // older than the 60s window in which a just-placed leg is trusted as open
+  "UPDATE strategy_leg_executions SET opened_at = ? WHERE strategy_id = ?", [new Date(Date.now() - 120000).toISOString(), s.id]);
+
+test('re-entry: a leg still held is skipped; one closed outside the strategy is entered again', async () => {
+  const { admin, s, a } = await oneLegStrategy();
+  const before = await netPosition(a, 'BTCUSDFUT');
+  assert.strictEqual((await execute(admin, s)).body.data.success, true);
+  assert.strictEqual(await waitForNet(a, 'BTCUSDFUT', before + 1), before + 1);
+
+  await settle(s);
+  const held = await execute(admin, s);
+  assert.ok(held.body.data.instances[0].legs.every((l) => l.skipped), 'still held at the broker - skipped');
+  assert.strictEqual(broker.countOf('basketorder'), 1);
+
+  // Closed outside the strategy (auto-exit, Positions page) while no order push was heard: the
+  // ledger still says open. It used to block every later entry.
+  await quickOrderService.closePosition(a, { symbol: 'BTCUSDFUT', exchange: 'CRYPTO' }, { tradeMode: 'EQUITY' });
+  assert.strictEqual(await waitForNet(a, 'BTCUSDFUT', before), before);
+  const again = await execute(admin, s);
+  assert.strictEqual(again.body.data.success, true, JSON.stringify(again.body.data));
+  assert.strictEqual(broker.countOf('basketorder'), 2, 'the leg is entered again');
+  assert.strictEqual(await waitForNet(a, 'BTCUSDFUT', before + 1), before + 1);
+  const rows = await db.all('SELECT closed_at FROM strategy_leg_executions WHERE strategy_id = ? ORDER BY id', [s.id]);
+  assert.ok(rows[0].closed_at && !rows[1].closed_at, 'the stale row is reconciled closed; the new one is open');
+
+  assert.strictEqual((await exitAll(admin, s)).body.data.success, true);
+  assert.strictEqual(await waitForNet(a, 'BTCUSDFUT', before), before);
+});
+
+test('exit: only the strategy\'s own quantity is closed when the contract is also held outside it', async () => {
+  const { admin, s, a } = await oneLegStrategy();
+  const before = await netPosition(a, 'BTCUSDFUT');
+  assert.strictEqual((await execute(admin, s)).body.data.success, true);
+  assert.strictEqual(await waitForNet(a, 'BTCUSDFUT', before + 1), before + 1);
+  const { product } = await db.get('SELECT product FROM strategy_leg_executions WHERE strategy_id = ?', [s.id]);
+
+  // A manual lot in the same contract and product.
+  await openalgoClient.placeSmartOrder(a, {
+    strategy: 'manual', symbol: 'BTCUSDFUT', exchange: 'CRYPTO', action: 'BUY', quantity: 1,
+    position_size: before + 2, product, pricetype: 'MARKET', price: 0,
+  });
+  assert.strictEqual(await waitForNet(a, 'BTCUSDFUT', before + 2), before + 2);
+
+  const exit = await exitAll(admin, s);
+  assert.strictEqual(exit.body.data.success, true, JSON.stringify(exit.body.data));
+  assert.strictEqual(await waitForNet(a, 'BTCUSDFUT', before + 1), before + 1, 'the manual lot stays open');
+});
+
+test('exit: a leg is still closed after its instance is switched to order placement off', async () => {
+  const { admin, s, a } = await oneLegStrategy();
+  const before = await netPosition(a, 'BTCUSDFUT');
+  assert.strictEqual((await execute(admin, s)).body.data.success, true);
+  assert.strictEqual(await waitForNet(a, 'BTCUSDFUT', before + 1), before + 1);
+
+  await db.run('UPDATE instances SET order_placement_enabled = 0 WHERE id = ?', [a.id]);
+  const exit = await exitAll(admin, s);
+  assert.strictEqual(exit.status, STATUS.OK, JSON.stringify(exit.body));
+  assert.deepStrictEqual(exit.body.data.instances.map((i) => [i.instanceId, i.success]), [[a.id, true]]);
+  assert.strictEqual(await waitForNet(a, 'BTCUSDFUT', before), before, 'exit follows the ledger, not the current scope');
+});
+
+test('execute: an instanceId outside the strategy\'s targets is refused; a rename to blank is refused', async () => {
+  const { admin, s } = await oneLegStrategy();
+  const stranger = await makeInstance({ name: 'Not a target' });
+  const res = await execute(admin, s, { instanceId: stranger.id });
+  assert.strictEqual(res.status, STATUS.VALIDATION, JSON.stringify(res.body));
+  assert.strictEqual(broker.countOf('basketorder'), 0);
+  assert.strictEqual((await put(`/api/v1/strategies/${s.id}`, admin).send({ name: '  ' })).status, STATUS.VALIDATION);
 });

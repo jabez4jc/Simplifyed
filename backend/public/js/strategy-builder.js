@@ -1050,11 +1050,14 @@ class StrategyBuilder {
       const data = res?.data;
       const ok = data?.success;
       const instanceSummaries = (data?.instances || []).map((inst) => {
-        const legOk = (inst.legs || []).filter((l) => l.success).length;
-        const legTotal = (inst.legs || []).length;
+        // A skipped leg (already open) placed nothing - it must not read as an order sent.
+        const legs = inst.legs || [];
+        const placed = legs.filter((l) => l.success && !l.skipped).length;
+        const skipped = legs.filter((l) => l.skipped).length;
         const margin = inst.marginPreview?.total_margin_required;
         const marginText = margin != null ? ` (margin: ${margin})` : '';
-        return `${inst.instanceName}: ${legOk}/${legTotal} legs${marginText}`;
+        const skippedText = skipped ? `, ${skipped} already open` : '';
+        return `${inst.instanceName}: ${placed}/${legs.length} legs placed${skippedText}${marginText}`;
       });
       Utils.showToast(
         (ok ? 'Strategy executed: ' : 'Strategy executed with failures: ') + instanceSummaries.join(' | '),
@@ -1075,16 +1078,6 @@ class StrategyBuilder {
       Utils.showToast('Exiting strategy...', 'info');
       return this.submitExit(strategyId, watchlistId);
     }
-    let instances, isExplicit;
-    try {
-      ({ instances, isExplicit } = await this._resolveEffectiveInstances(strategyId, watchlistId));
-    } catch (error) {
-      Utils.showToast('Failed to load instances', 'error');
-      return;
-    }
-
-    const instanceList = instances.map((i) => `<li>${Utils.escapeHTML(i.name)}</li>`).join('');
-    const scopeNote = isExplicit ? '<strong>this strategy\'s own</strong>' : 'all';
 
     const modal = document.createElement('div');
     modal.className = 'modal-overlay strategy-modal';
@@ -1092,8 +1085,7 @@ class StrategyBuilder {
       <div class="modal-content" style="max-width: 420px;">
         <div class="modal-header"><h3>Exit Strategy</h3></div>
         <div class="modal-body">
-          <p class="text-neutral-600 text-sm">This closes every still-open leg of this strategy across ${scopeNote} <strong>${instances.length} instance(s)</strong>:</p>
-          <ul style="margin: var(--space-2) 0; padding-left: var(--space-5);">${instanceList}</ul>
+          <p class="text-neutral-600 text-sm">This closes every still-open leg of this strategy, on every instance it opened one on - only the strategy's own quantity.</p>
           <p class="text-neutral-600 text-sm">Legs with no open position are skipped.</p>
         </div>
         <div class="modal-footer">
@@ -1211,16 +1203,6 @@ class StrategyBuilder {
       Utils.showToast('Exiting leg...', 'info');
       return this.submitExitLeg(legId, strategyId, watchlistId);
     }
-    let instances, isExplicit;
-    try {
-      ({ instances, isExplicit } = await this._resolveEffectiveInstances(strategyId, watchlistId));
-    } catch (error) {
-      Utils.showToast('Failed to load instances', 'error');
-      return;
-    }
-
-    const instanceList = instances.map((i) => `<li>${Utils.escapeHTML(i.name)}</li>`).join('');
-    const scopeNote = isExplicit ? '<strong>this strategy\'s own</strong>' : 'all';
 
     const modal = document.createElement('div');
     modal.className = 'modal-overlay strategy-modal';
@@ -1228,13 +1210,12 @@ class StrategyBuilder {
       <div class="modal-content" style="max-width: 420px;">
         <div class="modal-header"><h3>Exit Leg</h3></div>
         <div class="modal-body">
-          <p class="text-neutral-600 text-sm">This closes just this leg's open position across ${scopeNote} <strong>${instances.length} instance(s)</strong>:</p>
-          <ul style="margin: var(--space-2) 0; padding-left: var(--space-5);">${instanceList}</ul>
+          <p class="text-neutral-600 text-sm">This closes just this leg's open position, on every instance it was entered on - only the strategy's own quantity.</p>
           <p class="text-neutral-600 text-sm">Instances with no open position for this leg are skipped.</p>
         </div>
         <div class="modal-footer">
           <button class="btn btn-neutral btn-outline" onclick="strategyBuilder.closeModal()">Cancel</button>
-          <button class="btn btn-sell" onclick="strategyBuilder.submitExitLeg(${legId}, ${strategyId}, ${watchlistId})">Exit Leg on All ${instances.length}</button>
+          <button class="btn btn-sell" onclick="strategyBuilder.submitExitLeg(${legId}, ${strategyId}, ${watchlistId})">Exit Leg</button>
         </div>
       </div>
     `;

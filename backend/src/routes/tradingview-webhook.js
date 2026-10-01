@@ -11,11 +11,12 @@ router.use(express.text({ type: '*/*', limit: '1mb' }));
 router.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 router.post('/broadcast/:slug?', async (req, res, next) => {
+  let parsedBody = null;
   try {
     const tokenHeader = req.get('X-Webhook-Token') || req.query.token || req.query.t || null;
     tradingviewBroadcastService.assertAuthorized(tokenHeader);
 
-    const parsedBody = tradingviewBroadcastService.parseRequestBody(req);
+    parsedBody = tradingviewBroadcastService.parseRequestBody(req);
     if (!parsedBody) {
       throw new ValidationError('Request body must be valid JSON');
     }
@@ -30,6 +31,9 @@ router.post('/broadcast/:slug?', async (req, res, next) => {
       if (strategy) {
         const instanceIdRaw = req.query.instanceId || parsedBody?.instance_id;
         const instanceId = instanceIdRaw ? parseInt(instanceIdRaw, 10) : null;
+        if (instanceIdRaw && !(instanceId > 0)) {
+          throw new ValidationError('instanceId must be a positive integer');
+        }
         // action defaults to ENTRY (executeStrategy) for backward compatibility with existing
         // webhook configs that never sent an action field - EXIT/EXIT_ALL closes every leg that's
         // still open instead, symmetric with the EXIT/EXIT_ALL actions regular (non-strategy)
@@ -121,7 +125,8 @@ router.post('/broadcast/:slug?', async (req, res, next) => {
 
     res.status(result.ok ? 200 : 502).json(responsePayload);
   } catch (error) {
-    const requestId = req.get('X-Request-Id') || req.body?.request_id || null;
+    // TradingView posts text/plain, so the request id is in the parsed body, not req.body.
+    const requestId = req.get('X-Request-Id') || parsedBody?.request_id || null;
     if (requestId && typeof requestId === 'string' && requestId.trim()) {
       await idempotencyService.complete({
         requestId: requestId.trim(),

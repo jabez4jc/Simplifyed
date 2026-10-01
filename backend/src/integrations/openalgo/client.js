@@ -641,6 +641,11 @@ class OpenAlgoClient extends EventEmitter {
         // lagged, so the position-targeted retry saw the position open and SOLD AGAIN - a short
         // where there should have been flat. Look for the order in the book first; only retry if
         // it never appears. A 429 is a definite "not placed" and retries straight away.
+        // A basket is never re-sent at all: any of its legs may have landed, and a re-send would
+        // duplicate every one that did. Each leg's outcome is read from the book instead.
+        if (endpoint === 'basketorder' && error.statusCode !== 429) {
+          return this._basketOutcomeFromBook(instance, data, requestStartedAt, error);
+        }
         if (isOrderPlacement && attempt < maxRetries && error.statusCode !== 429) {
           const landed = await this._awaitOrderInBook(instance, data, requestStartedAt);
           if (landed) {
@@ -2739,6 +2744,26 @@ class OpenAlgoClient extends EventEmitter {
     );
     err.code = 'ORDER_OUTCOME_UNKNOWN';
     throw err;
+  }
+
+  /**
+   * The outcome of a basket whose request failed (timeout, network, 5xx), leg by leg from the
+   * order book, in placeBasketOrder's response shape. Throws ORDER_OUTCOME_UNKNOWN when the book
+   * cannot be read - never re-sends.
+   */
+  async _basketOutcomeFromBook(instance, data, since, error) {
+    const results = [];
+    for (const order of data?.orders || []) {
+      const orderid = await this._awaitOrderInBook(instance, order, since);
+      results.push(orderid
+        ? { symbol: order.symbol, status: 'success', orderid }
+        : { symbol: order.symbol, status: 'error', message: `Not placed - the basket request failed (${error.message})` });
+    }
+    const placed = results.filter((r) => r.status === 'success').length;
+    log.warn('Basket request failed - leg outcomes read from the order book, nothing re-sent', {
+      instance_name: instance.name, legs: results.length, placed, error: error.message,
+    });
+    return { status: placed ? 'success' : 'error', results, message: `Basket request failed (${error.message}); ${placed} of ${results.length} leg(s) found in the order book` };
   }
 
   async _findOrderIdFromOrderBook(instance, orderData, { since = null, rethrow = false } = {}) {

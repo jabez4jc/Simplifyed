@@ -133,11 +133,15 @@ class AutoExitService {
     // confirmed and the exit never fired - and trailing stops were wiped the same way.
     const positionProduct = String(position.product || position.product_type || position.producttype || '').toUpperCase();
     const key = this._getTrackingKey(instance.id, positionSymbol, positionExchange, positionProduct);
+    // The trail is keyed by side as well: a reversal must start a fresh one. This key also
+    // persists - the colon-separated tracking key never did, so a restart reset every trail.
+    const trailKey = (s) => riskControlsService.trailingKey(instance.id, positionExchange, positionSymbol, s, positionProduct);
 
     if (positionQty === 0) {
       this.pendingExits.delete(key);
       this.exitConfirmations.delete(key);
-      riskControlsService.clearTrailingState(key);
+      riskControlsService.clearTrailingState(trailKey('LONG'));
+      riskControlsService.clearTrailingState(trailKey('SHORT'));
       marketDataFeedService.clearFallbackEntryPrice(instance.id, positionExchange, positionSymbol);
       return;
     }
@@ -242,8 +246,9 @@ class AutoExitService {
       return;
     }
 
+    riskControlsService.clearTrailingState(trailKey(side === 'LONG' ? 'SHORT' : 'LONG'));
     const evaluation = await riskControlsService.evaluateExit({
-      key,
+      key: trailKey(side),
       side,
       currentPrice,
       entryPrice,
@@ -296,7 +301,7 @@ class AutoExitService {
           symbolId: configEntry.id,
           exchange: positionExchange,
           symbol: positionSymbol,
-          eventType: exitReason === 'TARGET_MET' ? 'TARGET_HIT' : 'STOP_HIT',
+          eventType: { TARGET_MET: 'TARGET_HIT', TSL_HIT: 'TRAIL_HIT' }[exitReason] || 'STOP_HIT',
           metadata: { reason: exitReason, entryPrice, currentPrice, side },
         }).catch(() => {});
       } else {
@@ -613,10 +618,14 @@ class AutoExitService {
       return lookup.get(directKey)?.[0] || null;
     }
 
+    // By underlying, only a row that has an exit for THIS position's mode: the first prefix
+    // match used to win, so a strategy's options-only leg row shadowed the watchlist row that
+    // carried the futures stop, and the stop never ran.
     for (const rows of lookup.values()) {
       for (const row of rows) {
         const normalizedUnderlying = this._normalizeSymbol(row.underlying_symbol || row.symbol);
-        if (normalizedUnderlying && normalizedSymbol.startsWith(normalizedUnderlying)) {
+        if (normalizedUnderlying && normalizedSymbol.startsWith(normalizedUnderlying)
+          && riskControlsService._getThresholds(row, riskControlsService._determineMode(row, normalizedSymbol), 1)) {
           return row;
         }
       }

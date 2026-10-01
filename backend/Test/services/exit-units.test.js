@@ -106,3 +106,52 @@ test('a strategy leg in PERCENT writes its unit onto the auto-exit row it create
   assert.strictEqual(row.exit_unit_options, 'PERCENT');
   assert.strictEqual(row.target_points_options, 20);
 });
+
+test('a crypto GTT leg exit that cannot be placed reports it, so the app-managed exit is armed instead', async () => {
+  // It used to log a warning and leave the leg with no stop at all.
+  const { default: strategyService } = await import('../../src/services/strategy.service.js');
+  const { default: openalgoClient } = await import('../../src/integrations/openalgo/client.js');
+  const { default: gttService } = await import('../../src/services/gtt.service.js');
+  const original = { status: openalgoClient.getOrderStatus, place: gttService.placeExitGtt };
+  try {
+    const args = {
+      strategy: { id: 1, broker_tag: 's' }, leg: { id: 1, action: 'BUY', target_points: 100, stoploss_points: 100, exit_unit: 'POINTS' },
+      instance: { id: 1 }, exchange: 'CRYPTO', symbol: 'BTCUSDFUT', quantity: 1, product: 'NRML', orderId: 'X', watchlistId: 1, anchorSymbol: { id: 1 },
+    };
+    openalgoClient.getOrderStatus = async () => ({ average_price: 100000 });
+    gttService.placeExitGtt = async () => { throw new Error('GTT not supported'); };
+    assert.strictEqual(await strategyService._placeLegExitGtt(args), false, 'broker refused the GTT');
+    assert.strictEqual(await strategyService._placeLegExitGtt({ ...args, orderId: null }), false, 'no order id');
+    gttService.placeExitGtt = async () => ({ triggerId: 'T1' });
+    assert.strictEqual(await strategyService._placeLegExitGtt(args), true, 'placed');
+  } finally {
+    openalgoClient.getOrderStatus = original.status;
+    gttService.placeExitGtt = original.place;
+  }
+});
+
+test("GTT exit legs: triggers ordered by price (sl < tg) with each OCO leg's own limit, long and short", async () => {
+  // Every OCO was refused - "stoploss: Required for OCO (stoploss leg limit)" - and a short's
+  // stop was sent as the lower trigger.
+  const { default: gttService } = await import('../../src/services/gtt.service.js');
+  const { default: openalgoClient } = await import('../../src/integrations/openalgo/client.js');
+  const original = openalgoClient.placeGttOrder;
+  const { makeInstance } = await import('../helpers/fixtures.js');
+  const inst = await makeInstance();
+  const sent = [];
+  openalgoClient.placeGttOrder = async (inst, payload) => { sent.push(payload); return { status: 'success', trigger_id: `T${sent.length}` }; };
+  try {
+    const base = { exchange: 'CRYPTO', symbol: 'BTCUSDFUT', product: 'NRML', quantity: 1, entryPrice: 100000 };
+    await gttService.placeExitGtt(inst, { ...base, action: 'BUY', stoplossPoints: 500, targetPoints: 1000 });
+    await gttService.placeExitGtt(inst, { ...base, action: 'SELL', stoplossPoints: 500, targetPoints: 1000 });
+    await gttService.placeExitGtt(inst, { ...base, action: 'SELL', stoplossPoints: 500 });
+    const [long, short, shortStop] = sent;
+    assert.deepStrictEqual([long.action, long.triggerprice_sl, long.triggerprice_tg], ['SELL', 99500, 101000]);
+    assert.deepStrictEqual([long.stoploss, long.target], [99002.5, 100495], 'a SELL leg limit sits below its trigger');
+    assert.deepStrictEqual([short.action, short.triggerprice_sl, short.triggerprice_tg], ['BUY', 99000, 100500], "the short's stop is the upper trigger");
+    assert.deepStrictEqual([short.stoploss, short.target], [99495, 101002.5], 'a BUY leg limit sits above its trigger');
+    assert.deepStrictEqual([shortStop.trigger_type, shortStop.triggerprice_sl, shortStop.triggerprice_tg], ['SINGLE', 0, 100500]);
+  } finally {
+    openalgoClient.placeGttOrder = original;
+  }
+});

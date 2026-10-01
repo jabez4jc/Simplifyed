@@ -10,6 +10,8 @@ import { ValidationError } from '../core/errors.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 
 const GTT_UNSUPPORTED_PRODUCTS = ['MIS'];
+// Each OCO leg's limit, marketable past its trigger: an exit must fill once triggered.
+const GTT_LEG_LIMIT_PCT = 0.005;
 
 class GttService {
   /**
@@ -50,14 +52,21 @@ class GttService {
       price: 0,
     };
 
+    // OpenAlgo names the legs by PRICE, not purpose: triggerprice_sl is the lower trigger and
+    // triggerprice_tg the upper (OCO requires sl < tg). Exiting a short, the stop is the upper
+    // one. An OCO also needs each leg's own limit (stoploss / target, > 0): sent null, every OCO
+    // was refused ("Required for OCO") and the leg was left with no exit.
+    const legLimit = (trigger) => Number((trigger * (exitAction === 'SELL' ? 1 - GTT_LEG_LIMIT_PCT : 1 + GTT_LEG_LIMIT_PCT)).toFixed(2));
+    const [lower, upper] = [stoplossPrice, targetPrice].filter((p) => p != null).sort((a, b) => a - b)
+      .reduce((acc, p) => (p < params.entryPrice ? [p, acc[1]] : [acc[0], p]), [null, null]);
+    payload.triggerprice_sl = lower ?? 0;
+    payload.triggerprice_tg = upper ?? 0;
     if (isOco) {
-      payload.triggerprice_sl = stoplossPrice;
-      payload.triggerprice_tg = targetPrice;
+      payload.stoploss = legLimit(lower);
+      payload.target = legLimit(upper);
+    } else {
       payload.stoploss = null;
       payload.target = null;
-    } else {
-      payload.triggerprice_sl = stoplossPrice ?? 0;
-      payload.triggerprice_tg = targetPrice ?? 0;
     }
 
     const response = await openalgoClient.placeGttOrder(instance, payload);

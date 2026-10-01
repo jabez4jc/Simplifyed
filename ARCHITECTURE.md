@@ -436,6 +436,7 @@ Close flow (EXIT, EXIT_ALL, CLOSE_ALL_CE/PE):
 Close/exit retry (broadcast):
 - If some instances fail close/exit, the system retries with exponential backoff.
 - Each retry cancels open orders for the instance/strategy before re-closing.
+- Only definite failures are retried. An uncertain one (timeout, network, 5xx, `ORDER_OUTCOME_UNKNOWN`) may already have closed the position, and a re-sent exit against a lagging position book sells again.
 
 #### 7.9.5 Retry Logic (LIMIT Orders)
 
@@ -498,7 +499,8 @@ Key options features implemented in `QuickOrderService`:
 
 ### 7.8 TradingView Broadcast
 - TradingView webhook payloads are validated and normalized.
-- Broadcast targets are resolved from watchlist assignments.
+- Broadcast targets are resolved from watchlist assignments: active instances with order placement on. An inactive watchlist refuses the alert.
+- LIMIT/SL alerts need a price, SL/SL-M a trigger price, and expired contracts are refused before any target is sent anything.
 - Orders are placed per target instance with rate-limiting buckets.
 
 ### 7.10 Multi-Leg Strategies & GTT (`strategy.service.js`)
@@ -507,6 +509,10 @@ A **strategy** is a named group of legs (e.g. sell ATM CE + sell ATM PE) scoped 
 
 - **Execution** (`executeStrategy`) resolves each leg's symbol/strike (once per broadcast for consistency, or per-instance for FLOAT_OFS reduce), then sends every leg for an instance in one `placeBasketOrder` call. Indian legs are marketable LIMIT orders priced from depth/quotes (SEBI); crypto legs go MARKET when the broker allows it (Settings > Market orders), since a LIMIT off the last quote rested unfilled - and was cancelled - whenever the price moved past it.
 - **Exit tracking**: rather than a bespoke exit engine, each leg's resolved trading symbol gets a `watchlist_symbols` row carrying that leg's own target/stoploss/trailing config, so exits ride the existing `AutoExitService`/`RiskControlsService` polling loop used for regular watchlist symbols.
+- **Basket safety**: a basket whose request fails with an unknown outcome is never re-sent. Each leg's outcome is read from the order book (`_basketOutcomeFromBook`); an unreadable book is `ORDER_OUTCOME_UNKNOWN`.
+- **Targets**: an `instanceId` override must be one of the strategy's own active, order-enabled targets. Exit targets every active instance the ledger shows open legs on, whatever the current scope.
+- **Double-entry guard**: a leg with an open ledger row is skipped. A row older than 60s is reconciled closed when the broker holds nothing in the leg's direction and its entry order is no longer working, so a leg closed by auto-exit or by hand is entered again by the next alert.
+- **Exit sizing**: each contract and product is closed for the strategy's own quantity. A full close (chased until flat) is used only when the strategy is the sole holder; otherwise `exitPartOfPosition` exits just its share.
 - **Status**: `GET /:id/status` (`getExecutionStatus`) aggregates `strategy_leg_executions` across instances for a strategy.
 - **Risk events**: target/stop/trailing hits during strategy or watchlist-symbol monitoring are recorded to `risk_events`.
 

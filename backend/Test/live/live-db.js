@@ -1,5 +1,5 @@
-import { copyFileSync, existsSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { existsSync, statSync, utimesSync, writeFileSync } from 'fs';
+import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import sqlite3 from 'sqlite3';
 
@@ -30,8 +30,11 @@ const all = (conn, sql) => new Promise((resolve, reject) => conn.all(sql, (e, ro
 
 /** Point DATABASE_PATH at the live database, creating and refreshing it first. */
 export async function useLiveDatabase() {
-  // An explicit DATABASE_PATH wins - same override the suites always had.
-  if (process.env.DATABASE_PATH) return;
+  // An explicit DATABASE_PATH wins - same override the suites always had - unless it is the
+  // production database. .env sets exactly that, and dotenv has loaded it by the time this runs
+  // (importing the app loads config), so the check used to send every live suite to
+  // simplifyed.db: its rows in the operator's data, and seen by the running server's auto-exit.
+  if (process.env.DATABASE_PATH && resolve(ROOT, process.env.DATABASE_PATH) !== REAL) return;
 
   const conn = await open(LIVE);
   try {
@@ -41,9 +44,16 @@ export async function useLiveDatabase() {
 
     if (fresh) {
       // Every table, schema included, as of now.
-      const tables = await all(conn, "SELECT name, sql FROM real.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'");
+      const all_ = await all(conn, "SELECT name, sql FROM real.sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'");
+      // A virtual table (the instruments FTS5 index) creates its own shadow tables: copying
+      // those too failed the whole copy. Skip them, and rebuild the index from its content after.
+      const virtual = all_.filter((t) => /^CREATE VIRTUAL TABLE/i.test(t.sql)).map((t) => t.name);
+      const tables = all_.filter((t) => !virtual.some((v) => t.name.startsWith(`${v}_`)));
       for (const t of tables) await exec(conn, t.sql);
-      for (const t of tables) await exec(conn, `INSERT INTO main."${t.name}" SELECT * FROM real."${t.name}"`);
+      for (const t of tables.filter((x) => !virtual.includes(x.name))) {
+        await exec(conn, `INSERT INTO main."${t.name}" SELECT * FROM real."${t.name}"`);
+      }
+      for (const v of virtual) await exec(conn, `INSERT INTO main."${v}"("${v}") VALUES('rebuild')`).catch(() => {});
       const rest = await all(conn, "SELECT sql FROM real.sqlite_master WHERE type IN ('index', 'trigger') AND sql IS NOT NULL");
       for (const r of rest) await exec(conn, r.sql).catch(() => {});
     } else {

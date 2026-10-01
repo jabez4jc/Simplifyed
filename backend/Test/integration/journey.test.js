@@ -238,3 +238,18 @@ test('an exit that cannot reach the positions is reported as FAILED, never as "C
   assert.strictEqual(result?.success, false, `an exit that could not run must not report success: ${JSON.stringify(res.body).slice(0, 400)}`);
   assert.ok(result?.error, 'and it says why');
 });
+
+test('a quick order naming an instance not mapped to the symbol\'s watchlist is refused and sends nothing', async () => {
+  const admin = await asAdmin();
+  await copyRealInstruments("exchange = 'CRYPTO' AND symbol = 'BTCUSDFUT'");
+  const { row } = await addInstance(admin, CRYPTO);
+  const wl = await call('post', '/api/v1/watchlists', admin).send({ name: 'Unmapped' });
+  const btc = await call('post', `/api/v1/watchlists/${wl.body.data.id}/symbols`, admin)
+    .send({ exchange: 'CRYPTO', symbol: 'BTCUSDFUT', symbol_type: 'FUTURES', lot_size: 1, tradable_futures: true });
+
+  const res = await call('post', '/api/v1/quickorders', admin)
+    .send({ symbolId: btc.body.data.id, action: 'BUY', tradeMode: 'FUTURES', quantity: 1, product: 'NRML', instanceId: row.id });
+  assert.strictEqual(res.status, STATUS.VALIDATION, JSON.stringify(res.body).slice(0, 300));
+  assert.match(res.body.message, /not mapped/);
+  assert.strictEqual(broker.orders().length, 0);
+});
