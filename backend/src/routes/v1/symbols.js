@@ -111,6 +111,10 @@ router.post('/quotes', async (req, res, next) => {
       throw new ValidationError('symbols array is required');
     }
 
+    // Whoever asks for a contract (the chart's option panes and future) gets it on the WS stream
+    // from here on, so the client can stop polling it; a no-op until a connection exists.
+    for (const s of symbols) marketDataFeedService.ensureSymbolSubscribed(s?.exchange, s?.symbol);
+
     const ttlMs = 2000;
     const { cached, missing } = marketDataFeedService.getCachedQuotesForSymbols(symbols, { ttlMs });
     let liveQuotes = [];

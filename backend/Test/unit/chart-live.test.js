@@ -247,3 +247,39 @@ test('nothing is applied before the chart exists', () => {
   a.chartState = null;
   assert.strictEqual(a.applyChartQuote(tick(100, BASE)), false);
 });
+
+// H17: option panes and the future ride the WS stream; only a contract with no recent tick is polled.
+function companionApp() {
+  const { a } = app();
+  a.isWsStreamingActive = () => true;
+  a.tradesFutureOfIndex = () => false;
+  a.optionPanes = {
+    ce: { contract: { exchange: 'NFO', symbol: 'NIFTY29DEC2625000CE' }, series: { update() {} }, candles: [] },
+  };
+  a.paneTimeframe = () => '5m';
+  a.alignFollowers = () => {};
+  a.markDataReceived = () => {};
+  a.quoteAgeMs = () => null;
+  return { a };
+}
+
+test('a streamed tick for a pane contract is applied and stops its polling', async () => {
+  const { a } = companionApp();
+  const applied = [];
+  a.applyPaneQuote = (key, quote) => applied.push([key, quote.ltp]);
+
+  a.applyChartCompanionQuote({ exchange: 'NFO', symbol: 'NIFTY29DEC2625000CE', ltp: 101 });
+  assert.deepStrictEqual(applied, [['ce', 101]]);
+  assert.strictEqual(a._companionStreaming(a.optionPanes.ce.contract), true);
+
+  // A pane with a live stream is not polled. The sandbox's `api` is empty, so a poll attempt
+  // would throw on api.getQuotes - resolving at all means no request was made.
+  await a.pollOptionPaneQuotes();
+});
+
+test('a pane contract with no WS tick is still polled, and unrelated ticks are ignored', async () => {
+  const { a } = companionApp();
+  a._companionTickAt = new Map();
+  a.applyChartCompanionQuote({ exchange: 'NFO', symbol: 'OTHER', ltp: 5 });
+  assert.strictEqual(a._companionStreaming(a.optionPanes.ce.contract), false);
+});

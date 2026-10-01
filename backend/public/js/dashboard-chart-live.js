@@ -6,10 +6,11 @@
  * No refetch and no re-render - `series.update()` mutates the last bar in place, which is what
  * keeps the price moving without the chart flickering or losing your zoom.
  *
- * The CE/PE option panes update too, by polling their contracts' quotes every CHART_POLL_MS
- * (POST /symbols/quotes, which quotes any contract through the feed): the stream carries the
- * watchlists' symbols, and the resolved contracts are not among them. They used to stay frozen on
- * the history fetched when the panes opened, drifting behind the underlying.
+ * The CE/PE option panes and the future update too. Their contracts are not watchlist symbols, so
+ * the first POST /symbols/quotes for them also subscribes them on the WS stream; from then on their
+ * ticks arrive with the underlying's (applyChartCompanionQuote). Only a contract that has had no
+ * WS tick for CHART_STALE_MS is polled, every CHART_POLL_MS. They used to stay frozen on the
+ * history fetched when the panes opened, drifting behind the underlying.
  */
 /**
  * Bar length in seconds for any timeframe the picker offers ('5s', '3m', '4h', 'D'). A lookup
@@ -81,6 +82,7 @@ Object.assign(DashboardApp.prototype, {
     // polls immediately, rather than trusting a stale timestamp left over from whatever symbol
     // was on screen before.
     this.lastChartTickAt = 0;
+    this._companionTickAt = new Map();
     this.chartPollInterval = setInterval(() => {
       if (this.currentView !== 'chart') return;
       this.pollOptionPaneQuotes().catch(() => { /* transient; the next tick retries */ });
@@ -111,6 +113,7 @@ Object.assign(DashboardApp.prototype, {
   async pollFutureQuote() {
     if (!this.tradesFutureOfIndex()) return;
     const fut = this.chartFuture;
+    if (this._companionStreaming(fut)) return;
     // Asked of one of this chart's own order instances: the shared feed skips a closed market,
     // and a level picked after the close still needs the future's last price to convert.
     const via = this.chartTradeInfo?.instances?.[0]?.id;
@@ -118,6 +121,13 @@ Object.assign(DashboardApp.prototype, {
     if (this.chartFuture !== fut) return; // switched symbol meanwhile
     const quote = (res.data || []).find((q) => this.buildWatchlistSymbolKey(q.exchange, q.symbol)
       === this.buildWatchlistSymbolKey(fut.exchange, fut.symbol));
+    this.applyFutureQuote(quote);
+  },
+
+  /** The future's price into the basis the chart's lines convert by (from a poll or a WS tick). */
+  applyFutureQuote(quote) {
+    const fut = this.chartFuture;
+    if (!fut) return;
     const ltp = Number(quote?.ltp);
     if (!Number.isFinite(ltp) || ltp <= 0 || isSentinel(ltp)) return;
     const age = this.quoteAgeMs(quote);
@@ -134,7 +144,8 @@ Object.assign(DashboardApp.prototype, {
 
   /** One quote request for both option panes; each price folds into its own pane's last bar. */
   async pollOptionPaneQuotes() {
-    const panes = Object.entries(this.optionPanes || {}).filter(([, p]) => p?.contract && p.series);
+    const panes = Object.entries(this.optionPanes || {})
+      .filter(([, p]) => p?.contract && p.series && !this._companionStreaming(p.contract));
     if (!panes.length) return;
     const res = await api.getQuotes(panes.map(([, p]) => ({ exchange: p.contract.exchange, symbol: p.contract.symbol })));
     for (const quote of res.data || []) {
@@ -144,6 +155,28 @@ Object.assign(DashboardApp.prototype, {
         if (same) this.applyPaneQuote(key, quote);
       }
     }
+  },
+
+  /** True while a WS tick for this contract has landed within CHART_STALE_MS - no need to poll it. */
+  _companionStreaming(contract) {
+    if (!contract || !this.isWsStreamingActive()) return false;
+    const at = this._companionTickAt?.get(this.buildWatchlistSymbolKey(contract.exchange, contract.symbol)) || 0;
+    return Date.now() - at < CHART_STALE_MS;
+  },
+
+  /** A streamed quote for one of the option panes' contracts or the future, if it is one. */
+  applyChartCompanionQuote(quote) {
+    if (!quote) return;
+    const key = this.buildWatchlistSymbolKey(quote.exchange, quote.symbol);
+    const fut = this.tradesFutureOfIndex() ? this.chartFuture : null;
+    const paneKeys = Object.entries(this.optionPanes || {}).filter(([, p]) => p?.contract && p.series
+      && this.buildWatchlistSymbolKey(p.contract.exchange, p.contract.symbol) === key).map(([k]) => k);
+    const isFuture = fut && this.buildWatchlistSymbolKey(fut.exchange, fut.symbol) === key;
+    if (!paneKeys.length && !isFuture) return;
+    this._companionTickAt = this._companionTickAt || new Map();
+    this._companionTickAt.set(key, Date.now());
+    for (const k of paneKeys) this.applyPaneQuote(k, quote);
+    if (isFuture) this.applyFutureQuote(quote);
   },
 
   applyPaneQuote(key, quote) {

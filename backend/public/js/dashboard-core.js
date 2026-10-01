@@ -670,7 +670,10 @@ class DashboardApp {
           // caches are kept warm at the same time so switching back is not a cold start.
           const quotes = Array.isArray(msg.payload?.data) ? msg.payload.data : [];
           const ts = Date.now();
-          for (const quote of quotes) this.applyChartQuote(this.hydrateQuoteWithLtp(quote, ts), true);
+          for (const quote of quotes) {
+            this.applyChartQuote(this.hydrateQuoteWithLtp(quote, ts), true);
+            this.applyChartCompanionQuote(quote);
+          }
         } else {
           this.wsRefreshWatchlists();
         }
