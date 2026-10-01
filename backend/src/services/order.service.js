@@ -7,6 +7,7 @@ import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import orderPlacementService from './order-placement.service.js';
+import { getLivePosition } from '../utils/order-helpers.js';
 import orderPayloadFactory from './order-payload.factory.js';
 import orderRepository from './order-repository.js';
 import telegramService from './telegram.service.js';
@@ -160,8 +161,11 @@ class OrderService {
       // see the dispatch below - so it needs no position read.
       const resting = ['LIMIT', 'SL', 'SL-M'].includes(normalized.pricetype)
         && (normalized.price > 0 || normalized.trigger_price > 0);
+      // Read once; the repeat-to-target check further down reuses it instead of a second positionbook call.
+      let liveHeld;
       if (ownTarget && !resting) {
-        const held = await this._getLivePosition(instance, normalized);
+        const held = await getLivePosition(instance, normalized);
+        liveHeld = held;
         if (held === null) {
           throw new ValidationError(`Could not read ${instance.name}'s position for ${normalized.symbol} - order not sent`);
         }
@@ -241,7 +245,7 @@ class OrderService {
       finalOrderType = normalized.pricetype;
       finalOrderPrice = normalized.price;
 
-      const currentPosition = callerChosePrice ? null : await this._getLivePosition(instance, normalized);
+      const currentPosition = callerChosePrice ? null : (liveHeld !== undefined ? liveHeld : await getLivePosition(instance, normalized));
       // A resting order at a price the operator chose must REST. The retry service exists to
       // chase fill-now LIMIT orders: it cancels an unfilled one and re-places it nearer the
       // market, which turned a chart "Buy Limit @ X" below the market into a fill at market (or
@@ -395,59 +399,6 @@ class OrderService {
 
       throw error;
     }
-  }
-
-  async _getLivePosition(instance, params) {
-    if (!instance?.id || !params?.symbol || !params?.exchange) return null;
-    let positions = [];
-    try {
-      positions = await openalgoClient.getPositionBook(instance);
-    } catch (error) {
-      log.warn('Live positionbook fetch failed', {
-        instance_id: instance.id,
-        error: error.message,
-      });
-      return null;
-    }
-    if (!Array.isArray(positions) || positions.length === 0) return null;
-
-    const targetSymbol = this._normalizeSymbol(params.symbol);
-    const targetExchange = this._normalizeExchange(params.exchange);
-    const targetProduct = this._normalizeProduct(params.product);
-
-    for (const position of positions) {
-      const symbol = this._normalizeSymbol(
-        position.symbol || position.tradingsymbol || position.trading_symbol
-      );
-      const exchange = this._normalizeExchange(position.exchange || position.exch || position.brexchange);
-      const product = this._normalizeProduct(position.product || position.producttype);
-      if (symbol !== targetSymbol || exchange !== targetExchange) {
-        continue;
-      }
-      if (targetProduct && product && product !== targetProduct) {
-        continue;
-      }
-      return this._extractPositionQty(position);
-    }
-
-    return 0;
-  }
-
-  _extractPositionQty(position) {
-    const candidates = [
-      position.quantity,
-      position.netqty,
-      position.net_quantity,
-      position.net,
-      position.netQty,
-    ];
-    for (const value of candidates) {
-      const num = typeof value === 'string' ? parseFloat(value) : value;
-      if (Number.isFinite(num)) {
-        return num;
-      }
-    }
-    return 0;
   }
 
   _shouldRepeatToTarget(currentPosition, targetPosition) {

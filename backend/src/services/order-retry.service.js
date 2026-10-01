@@ -2,6 +2,7 @@ import { log } from '../core/logger.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import orderPlacementService from './order-placement.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
+import { getLivePosition } from '../utils/order-helpers.js';
 import openalgoWsService from './openalgo-ws.service.js';
 import { extractLtp } from '../utils/price-extraction.js';
 import { normalizeSymbolKey, normalizeExchange, normalizeProduct } from '../utils/symbol-parsing.util.js';
@@ -161,7 +162,7 @@ class OrderRetryService {
     const targetPosition = this._parseNumber(payload?.position_size);
     const currentPosition = targetPosition === null
       ? null
-      : await this._getLivePosition(instance, payload);
+      : await getLivePosition(instance, payload);
     const pendingQty = this._sumOpenOrders(orders, payload);
     const remainingNeeded = targetPosition === null || currentPosition === null
       ? null
@@ -751,7 +752,7 @@ class OrderRetryService {
       return { repeatUntilClosed: false, ignoreSlippage: false };
     }
 
-    const currentPosition = await this._getLivePosition(instance, payload);
+    const currentPosition = await getLivePosition(instance, payload);
     if (currentPosition === null) {
       return { repeatUntilClosed: false, ignoreSlippage: false };
     }
@@ -766,7 +767,7 @@ class OrderRetryService {
   async _positionMatchesTarget(instance, payload) {
     const targetPosition = this._parseNumber(payload?.position_size);
     if (targetPosition === null) return false;
-    const currentPosition = await this._getLivePosition(instance, payload);
+    const currentPosition = await getLivePosition(instance, payload);
     if (currentPosition === null) return false;
     return currentPosition === targetPosition;
   }
@@ -777,59 +778,6 @@ class OrderRetryService {
     if (targetPosition === 0) return true;
     if (Math.sign(currentPosition) !== Math.sign(targetPosition)) return true;
     return Math.abs(targetPosition) < Math.abs(currentPosition);
-  }
-
-  async _getLivePosition(instance, payload) {
-    if (!instance?.id || !payload?.symbol || !payload?.exchange) return null;
-    let positions = [];
-    try {
-      positions = await openalgoClient.getPositionBook(instance);
-    } catch (error) {
-      log.warn('Live positionbook fetch failed', {
-        instance_id: instance.id,
-        error: error.message,
-      });
-      return null;
-    }
-    if (!Array.isArray(positions) || positions.length === 0) return null;
-
-    const targetSymbol = this._normalizeSymbol(payload.symbol);
-    const targetExchange = this._normalizeExchange(payload.exchange);
-    const targetProduct = this._normalizeProduct(payload.product);
-
-    for (const position of positions) {
-      const symbol = this._normalizeSymbol(
-        position.symbol || position.tradingsymbol || position.trading_symbol
-      );
-      const exchange = this._normalizeExchange(position.exchange || position.exch || position.brexchange);
-      const product = this._normalizeProduct(position.product || position.producttype);
-      if (symbol !== targetSymbol || exchange !== targetExchange) {
-        continue;
-      }
-      if (targetProduct && product && product !== targetProduct) {
-        continue;
-      }
-      return this._extractPositionQty(position);
-    }
-
-    return 0;
-  }
-
-  _extractPositionQty(position) {
-    const candidates = [
-      position.quantity,
-      position.netqty,
-      position.net_quantity,
-      position.net,
-      position.netQty,
-    ];
-    for (const value of candidates) {
-      const num = typeof value === 'string' ? parseFloat(value) : value;
-      if (Number.isFinite(num)) {
-        return num;
-      }
-    }
-    return 0;
   }
 
   _normalizeSymbol(symbol) {
