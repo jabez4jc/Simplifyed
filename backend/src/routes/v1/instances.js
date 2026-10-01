@@ -8,7 +8,7 @@ import instanceService from '../../services/instance.service.js';
 import pollingService from '../../services/polling.service.js';
 import marketDataInstanceService from '../../services/market-data-instance.service.js';
 import { log } from '../../core/logger.js';
-import { ValidationError, ForbiddenError } from '../../core/errors.js';
+import { ValidationError } from '../../core/errors.js';
 import {
   parseBooleanSafe,
   maskApiKey,
@@ -34,9 +34,8 @@ const upload = multer({
 // All instance routes require authentication
 router.use(requireAuth);
 
-function hasPermission(req, key) {
-  return Array.isArray(req.user?.permissions) && req.user.permissions.includes(key);
-}
+// Never importable: identity/timestamps, and broker-verified state that only the toggle/health check may set.
+const CSV_IMPORT_DENY = new Set(['id', 'created_at', 'last_updated', 'is_analyzer_mode', 'health_status']);
 
 function logAudit(req, action, metadata = {}) {
   if (!req.user) return;
@@ -141,23 +140,18 @@ router.post('/', requirePermission('instances.add'), async (req, res, next) => {
  * PUT /api/v1/instances/:id
  * Update instance
  */
-router.put('/:id', async (req, res, next) => {
+router.put('/:id', requirePermission('instances.edit'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
-    // Determine if this is only a mode toggle (allowed for monitors)
-    const keys = Object.keys(req.body || {});
-    const modeOnly = keys.length === 1 && keys[0] === 'is_analyzer_mode';
-
-    if (modeOnly && !hasPermission(req, 'instances.toggle_mode')) {
-      return next(new ForbiddenError('Insufficient permissions'));
-    }
-    if (!modeOnly && !hasPermission(req, 'instances.edit')) {
-      return next(new ForbiddenError('Insufficient permissions'));
+    // The local flag must never change without the broker toggle + Safe-Switch (closes positions).
+    if (req.body && ('is_analyzer_mode' in req.body || 'health_status' in req.body)) {
+      throw new ValidationError(
+        'is_analyzer_mode and health_status cannot be set here; use POST /instances/:id/analyzer/toggle'
+      );
     }
 
     const instance = await instanceService.updateInstance(id, req.body);
-    const action = modeOnly ? 'instances.toggle_mode' : 'instances.update';
-    logAudit(req, action, { id, body: req.body });
+    logAudit(req, 'instances.update', { id, body: req.body });
 
     res.json({
       status: 'success',
@@ -251,17 +245,10 @@ router.post('/bulk-update', async (req, res, next) => {
       throw new ValidationError('instance_ids must be a non-empty array');
     }
 
-    // Same permission split as PUT /:id: toggling only analyzer mode is allowed for monitors,
-    // but is_active/multiplier changes require the full edit permission. This route previously
-    // had no permission check at all, letting any authenticated user bypass instances.edit.
+    // Mode-only toggles are allowed for monitors (instances.toggle_mode); anything else needs edit.
     const changesOnlyMode =
       is_active === undefined && multiplier === undefined && is_analyzer_mode !== undefined;
-    if (changesOnlyMode && !hasPermission(req, 'instances.toggle_mode')) {
-      return next(new ForbiddenError('Insufficient permissions'));
-    }
-    if (!changesOnlyMode && !hasPermission(req, 'instances.edit')) {
-      return next(new ForbiddenError('Insufficient permissions'));
-    }
+    requirePermission(changesOnlyMode ? 'instances.toggle_mode' : 'instances.edit')(req, res, () => {});
 
     // At least one field must be provided
     if (is_active === undefined && is_analyzer_mode === undefined && multiplier === undefined) {
@@ -457,7 +444,7 @@ router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res,
 
     const columns = await db.all("PRAGMA table_info('instances')");
     const allowed = new Set(columns.map((c) => c.name));
-    const importable = records.headers.filter((h) => allowed.has(h) && h !== 'id' && h !== 'created_at' && h !== 'last_updated');
+    const importable = records.headers.filter((h) => allowed.has(h) && !CSV_IMPORT_DENY.has(h));
     const headerIndex = new Map(records.headers.map((h, i) => [h, i]));
 
     let inserted = 0;

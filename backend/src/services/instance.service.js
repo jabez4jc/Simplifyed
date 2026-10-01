@@ -314,7 +314,7 @@ class InstanceService {
   /**
    * Bulk update instances
    * @param {number[]} instanceIds - Array of instance IDs
-   * @param {Object} updates - Fields to update (is_active, is_analyzer_mode)
+   * @param {Object} updates - Fields to update (is_active, multiplier)
    * @returns {Promise<Object>} - Result with count of updated instances
    */
   async bulkUpdateInstances(instanceIds, updates) {
@@ -330,11 +330,6 @@ class InstanceService {
       if (updates.is_active !== undefined) {
         setClauses.push('is_active = ?');
         params.push(updates.is_active ? 1 : 0);
-      }
-
-      if (updates.is_analyzer_mode !== undefined) {
-        setClauses.push('is_analyzer_mode = ?');
-        params.push(updates.is_analyzer_mode ? 1 : 0);
       }
 
       if (updates.multiplier !== undefined) {

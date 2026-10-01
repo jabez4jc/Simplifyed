@@ -136,10 +136,6 @@ export function normalizeInstanceData(data, isUpdate = false) {
     normalized.is_active = parseBooleanSafe(data.is_active, true);
   }
 
-  if (data.is_analyzer_mode !== undefined) {
-    normalized.is_analyzer_mode = parseBooleanSafe(data.is_analyzer_mode, false);
-  }
-
   if (data.order_placement_enabled !== undefined) {
     normalized.order_placement_enabled = parseBooleanSafe(data.order_placement_enabled, true);
   }
