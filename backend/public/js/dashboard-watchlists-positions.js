@@ -413,7 +413,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           broker_avg: 'BROKER',
           fallback_cache: 'FALLBACK (ORDER)',
           positionbook_fallback: 'POSITIONBOOK Fallback',
-          median_ltp: 'Median LTP',
         };
         return map[base] || base.replace(/_/g, ' ').toUpperCase();
       })();

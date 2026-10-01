@@ -12,7 +12,7 @@ import quickOrderService from './quick-order.service.js';
 import riskControlsService from './risk-controls.service.js';
 import riskEventsService from './risk-events.service.js';
 import { extractLtp, extractAveragePrice } from '../utils/price-extraction.js';
-import { normalizeTradebookEntry } from '../utils/tradebook-utils.js';
+import { prepareTradebook, entryPriceFromTrades } from '../utils/tradebook-utils.js';
 import marketCalendarService from './market-calendar.service.js';
 import { isCryptoExchange } from '../utils/broker-type.util.js';
 import { normalizeSymbolKey, normalizeExchange } from '../utils/symbol-parsing.util.js';
@@ -112,7 +112,7 @@ class AutoExitService {
     if (!positions.length) return;
 
     const tradebookSnapshot = await marketDataFeedService.getTradebookSnapshot(instance.id);
-    const normalizedTradebook = this._prepareTradebookSnapshot(tradebookSnapshot?.data);
+    const normalizedTradebook = prepareTradebook(tradebookSnapshot?.data);
 
     for (const position of positions) {
       await this._evaluatePosition(instance, position, configLookup, normalizedTradebook);
@@ -188,7 +188,7 @@ class AutoExitService {
       entryPriceSource = 'position_avg';
     }
     if (!entryPrice) {
-      entryPrice = this._resolveEntryPriceFromTrades(
+      entryPrice = entryPriceFromTrades(
         tradebook,
         positionSymbol,
         positionExchange,
@@ -431,94 +431,6 @@ class AutoExitService {
     }
 
     return true;
-  }
-
-  _prepareTradebookSnapshot(trades = []) {
-    if (!Array.isArray(trades) || trades.length === 0) {
-      return [];
-    }
-
-    return trades
-      .map(normalizeTradebookEntry)
-      .filter(trade =>
-        trade.symbol &&
-        trade.exchange &&
-        trade.quantity > 0 &&
-        (trade.action === 'BUY' || trade.action === 'SELL')
-      );
-  }
-
-  _resolveEntryPriceFromTrades(trades, symbol, exchange, side, positionQuantity) {
-    if (!Array.isArray(trades) || trades.length === 0) {
-      return null;
-    }
-    const normalizedSymbol = this._normalizeSymbol(symbol);
-    const normalizedExchange = this._normalizeExchange(exchange);
-    const targetQuantity = Math.abs(positionQuantity);
-    if (!normalizedSymbol || !normalizedExchange || targetQuantity <= 0) {
-      return null;
-    }
-
-    const relevantTrades = trades.filter(trade =>
-      this._normalizeSymbol(trade.symbol) === normalizedSymbol &&
-      this._normalizeExchange(trade.exchange) === normalizedExchange
-    );
-    if (!relevantTrades.length) {
-      return null;
-    }
-
-    const sortedTrades = [...relevantTrades].sort(
-      (a, b) => (a.timestamp_epoch ?? 0) - (b.timestamp_epoch ?? 0)
-    );
-    const openAction = side === 'LONG' ? 'BUY' : 'SELL';
-    const closeAction = side === 'LONG' ? 'SELL' : 'BUY';
-
-    const openTrades = sortedTrades
-      .filter(entry => entry.action === openAction)
-      .map(entry => ({ ...entry, remaining: entry.quantity }));
-
-    const closeTrades = sortedTrades.filter(entry => entry.action === closeAction);
-
-    let closeIndex = 0;
-    for (const closeTrade of closeTrades) {
-      let remainingClose = closeTrade.quantity;
-      while (remainingClose > 0 && closeIndex < openTrades.length) {
-        const openEntry = openTrades[closeIndex];
-        if (openEntry.remaining <= 0) {
-          closeIndex += 1;
-          continue;
-        }
-        const deduction = Math.min(openEntry.remaining, remainingClose);
-        openEntry.remaining -= deduction;
-        remainingClose -= deduction;
-        if (openEntry.remaining <= 0) {
-          closeIndex += 1;
-        }
-      }
-      if (remainingClose > 0) {
-        break;
-      }
-    }
-
-    // Layer 1: FIFO average of the still-open entry-side trades (a 0 price is never real).
-    let totalQuantity = 0;
-    let totalCost = 0;
-    for (const openEntry of openTrades) {
-      const remaining = openEntry.remaining ?? 0;
-      const price = openEntry.average_price;
-      if (remaining <= 0 || !(price > 0)) continue;
-      totalQuantity += remaining;
-      totalCost += remaining * price;
-    }
-    if (totalQuantity > 0) {
-      return totalCost / totalQuantity;
-    }
-
-    // Layer 2: last valid entry-side trade price
-    const lastValid = [...openTrades].reverse().find((t) => t.average_price > 0);
-    if (lastValid) return lastValid.average_price;
-
-    return null;
   }
 
   async _resolveCurrentPrice(position, rawExchange, rawSymbol, instanceId) {

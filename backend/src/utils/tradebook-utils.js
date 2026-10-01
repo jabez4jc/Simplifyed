@@ -4,6 +4,7 @@
  */
 
 import { toISTISOString } from './time.js';
+import { normalizeSymbolKey, normalizeExchange } from './symbol-parsing.util.js';
 
 function parseTradeTimestamp(raw) {
   if (!raw) return null;
@@ -67,4 +68,61 @@ export function normalizeTradebookEntry(trade = {}) {
     timestamp_epoch: timestampEpoch,
     metadata: trade,
   };
+}
+
+/** Normalised tradebook rows that can price an entry (symbol, exchange, qty and a BUY/SELL side). */
+export function prepareTradebook(trades = []) {
+  if (!Array.isArray(trades) || trades.length === 0) return [];
+  return trades
+    .map(normalizeTradebookEntry)
+    .filter((trade) => trade.symbol && trade.exchange && trade.quantity > 0
+      && (trade.action === 'BUY' || trade.action === 'SELL'));
+}
+
+/**
+ * Entry price of an open position from the tradebook: the FIFO average of the entry-side trades
+ * (BUY for LONG, SELL for SHORT) not yet closed by opposite trades. The ONE definition - auto-exit
+ * acts on it and the chart draws its levels from it, so they cannot disagree. `trades` comes from
+ * prepareTradebook. Null when the tradebook has no valid entry-side trade (a 0 price is never real).
+ */
+export function entryPriceFromTrades(trades, symbol, exchange, side, positionQuantity) {
+  if (!Array.isArray(trades) || trades.length === 0) return null;
+  const targetSymbol = normalizeSymbolKey(symbol);
+  const targetExchange = normalizeExchange(exchange);
+  if (!targetSymbol || !targetExchange || Math.abs(positionQuantity) <= 0) return null;
+
+  const relevant = trades.filter((t) => normalizeSymbolKey(t.symbol) === targetSymbol
+    && normalizeExchange(t.exchange) === targetExchange);
+  if (!relevant.length) return null;
+
+  const sorted = [...relevant].sort((a, b) => (a.timestamp_epoch ?? 0) - (b.timestamp_epoch ?? 0));
+  const openAction = side === 'LONG' ? 'BUY' : 'SELL';
+  const closeAction = side === 'LONG' ? 'SELL' : 'BUY';
+  const openTrades = sorted.filter((t) => t.action === openAction).map((t) => ({ ...t, remaining: t.quantity }));
+
+  let closeIndex = 0;
+  for (const closeTrade of sorted.filter((t) => t.action === closeAction)) {
+    let remainingClose = closeTrade.quantity;
+    while (remainingClose > 0 && closeIndex < openTrades.length) {
+      const open = openTrades[closeIndex];
+      if (open.remaining <= 0) { closeIndex += 1; continue; }
+      const deduction = Math.min(open.remaining, remainingClose);
+      open.remaining -= deduction;
+      remainingClose -= deduction;
+      if (open.remaining <= 0) closeIndex += 1;
+    }
+    if (remainingClose > 0) break;
+  }
+
+  let qty = 0;
+  let cost = 0;
+  for (const open of openTrades) {
+    if (open.remaining <= 0 || !(open.average_price > 0)) continue;
+    qty += open.remaining;
+    cost += open.remaining * open.average_price;
+  }
+  if (qty > 0) return cost / qty;
+
+  const lastValid = [...openTrades].reverse().find((t) => t.average_price > 0);
+  return lastValid ? lastValid.average_price : null;
 }

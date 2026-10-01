@@ -12,8 +12,8 @@ import { log } from '../core/logger.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
-import { extractLtp } from '../utils/price-extraction.js';
-import { normalizeTradebookEntry } from '../utils/tradebook-utils.js';
+import { extractLtp, extractAveragePrice } from '../utils/price-extraction.js';
+import { prepareTradebook, entryPriceFromTrades } from '../utils/tradebook-utils.js';
 
 class PositionsService {
   /**
@@ -99,34 +99,6 @@ class PositionsService {
         }
       });
 
-      // Cross-instance median LTP fallback for missing entry_price per symbol/exchange
-      const ltpBySymbol = new Map();
-      result.instances.forEach(inst => {
-        (inst.positions || []).forEach(pos => {
-          const entry = pos.entry_price;
-          const ltp = extractLtp(pos);
-          const key = this._symbolKey(pos);
-          if (entry && entry > 0 && ltp && ltp > 0 && key) {
-            if (!ltpBySymbol.has(key)) ltpBySymbol.set(key, []);
-            ltpBySymbol.get(key).push(ltp);
-          }
-        });
-      });
-
-      result.instances = result.instances.map(inst => ({
-        ...inst,
-        positions: (inst.positions || []).map(pos => {
-          if (pos.entry_price && pos.entry_price > 0) return pos;
-          const key = this._symbolKey(pos);
-          const ltps = key ? ltpBySymbol.get(key) : null;
-          if (ltps && ltps.length > 0) {
-            const medianLtp = this._median(ltps);
-            return { ...pos, entry_price: medianLtp, entry_price_source: 'median_ltp' };
-          }
-          return pos;
-        }),
-      }));
-
       return result;
     } catch (error) {
       log.error('Failed to get all positions', error);
@@ -147,24 +119,26 @@ class PositionsService {
     return parseIntSafe(rawQty, 0);
   }
 
-  _resolveEntryPrice(pos, instanceId, sources = {}) {
+  /**
+   * Same ladder auto-exit uses, so the chart draws targets/stops where auto-exit will act:
+   * broker average price, then the FIFO entry-side tradebook average, then the price captured at
+   * order placement, else null. No cross-instance or last-order guesses.
+   */
+  _resolveEntryPrice(pos, instanceId, tradebook = []) {
     const exchange = pos.exchange || pos.exch || pos.brexchange;
     const symbol = pos.symbol || pos.tradingsymbol || pos.trading_symbol;
-    const product = pos.product || pos.producttype || pos.product_type;
-    const key = this._symbolKeyWithProduct(exchange, symbol, product);
-    const basicKey = this._symbolKey(pos);
 
-    const tradeAvg = sources.tradeAvgMap?.get(key) || sources.tradeAvgMap?.get(basicKey);
+    const avg = extractAveragePrice(pos);
+    if (avg && avg > 0) {
+      return { price: avg, source: 'broker_avg', capturedAt: null };
+    }
+
+    const qty = this._getPositionQuantity(pos);
+    const tradeAvg = entryPriceFromTrades(tradebook, symbol, exchange, qty > 0 ? 'LONG' : 'SHORT', qty);
     if (tradeAvg && tradeAvg > 0) {
       return { price: tradeAvg, source: 'tradebook_avg', capturedAt: null };
     }
 
-    const orderPrice = sources.orderPriceMap?.get(key) || sources.orderPriceMap?.get(basicKey);
-    if (orderPrice && orderPrice > 0) {
-      return { price: orderPrice, source: 'limit_price', capturedAt: null };
-    }
-
-    // Fallback captured at order placement (best-effort LTP at submit time)
     const fallback = marketDataFeedService.getFallbackEntryPrice(instanceId, exchange, symbol);
     if (fallback?.price && fallback.price > 0) {
       return {
@@ -175,107 +149,6 @@ class PositionsService {
     }
 
     return { price: null, source: null, capturedAt: null };
-  }
-
-  _median(values = []) {
-    if (!values.length) return null;
-    const sorted = [...values].sort((a, b) => a - b);
-    const mid = Math.floor(sorted.length / 2);
-    return sorted.length % 2 === 0
-      ? (sorted[mid - 1] + sorted[mid]) / 2
-      : sorted[mid];
-  }
-
-  _symbolKey(pos) {
-    const exchange = (pos.exchange || pos.exch || pos.brexchange || '').replace(/\s+/g, '').toUpperCase();
-    const symbol = (pos.symbol || pos.tradingsymbol || pos.trading_symbol || '').replace(/\s+/g, '').toUpperCase();
-    if (!exchange || !symbol) return null;
-    return `${exchange}|${symbol}`;
-  }
-
-  _symbolKeyWithProduct(exchange, symbol, product) {
-    const exch = (exchange || '').replace(/\s+/g, '').toUpperCase();
-    const sym = (symbol || '').replace(/\s+/g, '').toUpperCase();
-    const prod = (product || '').replace(/\s+/g, '').toUpperCase();
-    if (!exch || !sym) return null;
-    return prod ? `${exch}|${sym}|${prod}` : `${exch}|${sym}`;
-  }
-
-  async _buildTradeAvgMap(instanceId, positions = []) {
-    const map = new Map();
-    const symbols = new Set(
-      positions.map(pos => this._symbolKey(pos)).filter(Boolean)
-    );
-    if (!symbols.size) return map;
-
-    try {
-      let snapshot = marketDataFeedService.getTradebookSnapshotCached(instanceId);
-      if (!snapshot) {
-        snapshot = await marketDataFeedService.getTradebookSnapshot(instanceId, { force: true });
-      }
-      const tradesRaw = Array.isArray(snapshot?.data) ? snapshot.data : [];
-      if (!tradesRaw.length) return map;
-
-      const totals = new Map();
-      tradesRaw.map(normalizeTradebookEntry).forEach((trade) => {
-        const product = trade.metadata?.product || trade.metadata?.product_type || null;
-        const key = this._symbolKeyWithProduct(trade.exchange, trade.symbol, product);
-        const basicKey = this._symbolKey({ exchange: trade.exchange, symbol: trade.symbol });
-        const targetKey = symbols.has(key) ? key : (symbols.has(basicKey) ? basicKey : null);
-        if (!targetKey) return;
-        if (!trade.average_price || trade.average_price <= 0 || !trade.quantity) return;
-        const entry = totals.get(targetKey) || { qty: 0, value: 0 };
-        entry.qty += trade.quantity;
-        entry.value += trade.average_price * trade.quantity;
-        totals.set(targetKey, entry);
-      });
-
-      totals.forEach((entry, key) => {
-        if (entry.qty > 0) {
-          map.set(key, entry.value / entry.qty);
-        }
-      });
-    } catch (error) {
-      log.warn('Tradebook average price lookup failed', { instance_id: instanceId, error: error.message });
-    }
-
-    return map;
-  }
-
-  async _buildOrderPriceMap(instanceId, positions = []) {
-    const map = new Map();
-    const symbols = [...new Set(
-      positions.map(pos => (pos.symbol || pos.tradingsymbol || pos.trading_symbol || '').trim()).filter(Boolean)
-    )];
-    if (!symbols.length) return map;
-
-    const placeholders = symbols.map(() => '?').join(', ');
-    try {
-      const rows = await db.all(
-        `SELECT symbol, exchange, product_type, price, status, placed_at
-         FROM watchlist_orders
-         WHERE instance_id = ?
-           AND symbol IN (${placeholders})
-           AND price IS NOT NULL
-         ORDER BY placed_at DESC`,
-        [instanceId, ...symbols]
-      );
-
-      for (const row of rows) {
-        const key = this._symbolKeyWithProduct(row.exchange, row.symbol, row.product_type);
-        if (!key || map.has(key)) continue;
-        if (!row.price || row.price <= 0) continue;
-        map.set(key, row.price);
-        const basicKey = this._symbolKey({ exchange: row.exchange, symbol: row.symbol });
-        if (basicKey && !map.has(basicKey)) {
-          map.set(basicKey, row.price);
-        }
-      }
-    } catch (error) {
-      log.warn('Order price lookup failed', { instance_id: instanceId, error: error.message });
-    }
-
-    return map;
   }
 
   _resolveLtp(pos) {
@@ -341,13 +214,13 @@ class PositionsService {
         });
       }
 
-      const tradeAvgMap = await this._buildTradeAvgMap(instance.id, filteredPositions);
-      const orderPriceMap = await this._buildOrderPriceMap(instance.id, filteredPositions);
+      // The feed's cached tradebook only: a position read must never trigger a broker fetch.
+      const tradebook = prepareTradebook(marketDataFeedService.getTradebookSnapshotCached(instance.id)?.data);
 
-      // Enrich positions with derived entry price (tradebook or limit price) and resolved LTP
+      // Enrich positions with derived entry price (broker average or tradebook) and resolved LTP
       const enrichedPositions = filteredPositions.map(pos => {
         const { price: entryPrice, source: entryPriceSource, capturedAt: entryCapturedAt } =
-          this._resolveEntryPrice(pos, instance.id, { tradeAvgMap, orderPriceMap });
+          this._resolveEntryPrice(pos, instance.id, tradebook);
         const ltpResolved = this._resolveLtp(pos);
         const qty = this._getPositionQuantity(pos);
         const derivedPnl =
