@@ -7,10 +7,10 @@ import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
-import { calculateTradebookPnL, calculateTradeChargesOpenAlgo } from '../utils/trade-pnl.js';
-import { normalizeTradebookEntry } from '../utils/tradebook-utils.js';
+import { calculateTradebookPnL, computeSessionPnl } from '../utils/trade-pnl.js';
 import settingsService from './settings.service.js';
 import { buildBrokerageMap, resolveBrokerageValue } from '../utils/brokerage.js';
+import { settingDefault } from '../config/settings-registry.js';
 
 class DashboardService {
   /**
@@ -175,45 +175,15 @@ class DashboardService {
       let unrealizedPnL = 0;
       let totalPnL;
       if (positions) {
-        for (const position of positions) {
-          const qty = parseFloatSafe(
-            position.quantity ?? position.netqty ?? position.net_quantity ?? position.netQty ?? position.net,
-            0
-          );
-          const pnl = parseFloatSafe(
-            position.pnl ?? position.unrealised_pnl ?? position.unrealisedPnl ?? position.mtm,
-            0
-          );
-          if (qty === 0) {
-            realizedPnL += pnl;
-          } else {
-            unrealizedPnL += pnl;
-          }
-        }
-
-        if (hasTradebook) {
-          const brokerageValue = resolveBrokerageValue(
-            instance.broker,
-            brokerageConfig?.brokerageMap || {},
-            brokerageConfig?.defaultBrokerage ?? 20
-          );
-          let chargesTotal = 0;
-          for (const trade of tradebook) {
-            const normalized = normalizeTradebookEntry(trade);
-            const side = (normalized.action || '').toUpperCase();
-            const tradeValue = Math.abs(parseFloatSafe(normalized.trade_value, 0));
-            if ((side !== 'BUY' && side !== 'SELL') || !tradeValue) continue;
-            chargesTotal += calculateTradeChargesOpenAlgo(tradeValue, {
-              exchange: normalized.exchange,
-              symbol: normalized.symbol,
-              side,
-              brokerage: brokerageValue,
-            }).total_cost;
-          }
-          realizedPnL = Number((realizedPnL - chargesTotal).toFixed(2));
-        }
-
-        totalPnL = Number((realizedPnL + unrealizedPnL).toFixed(2));
+        const brokerageValue = resolveBrokerageValue(
+          instance.broker,
+          brokerageConfig?.brokerageMap || {},
+          brokerageConfig?.defaultBrokerage ?? Number(settingDefault('brokerage.default'))
+        );
+        const sessionPnl = computeSessionPnl(positions, tradebook, brokerageValue);
+        realizedPnL = sessionPnl.realized_pnl;
+        unrealizedPnL = sessionPnl.unrealized_pnl;
+        totalPnL = sessionPnl.total_pnl;
       } else {
         // Position cache never warmed for this instance (e.g. just added, or feed unhealthy) -
         // fall back to the last value persisted on the instance row rather than showing 0.
@@ -287,13 +257,15 @@ class DashboardService {
 
       return {
         brokerageMap: buildBrokerageMap(byBroker?.value),
-        defaultBrokerage: Number.isFinite(defaultBrokerage?.value) ? defaultBrokerage.value : 20,
+        defaultBrokerage: Number.isFinite(defaultBrokerage?.value)
+          ? defaultBrokerage.value
+          : Number(settingDefault('brokerage.default')),
       };
     } catch (error) {
       log.warn('Failed to load brokerage config, falling back to defaults', { error: error.message });
       return {
         brokerageMap: {},
-        defaultBrokerage: 20,
+        defaultBrokerage: Number(settingDefault('brokerage.default')),
       };
     }
   }

@@ -145,6 +145,64 @@ export function calculateTradebookPnL(trades = [], options = {}) {
   };
 }
 
+/**
+ * The one definition of "session P&L": broker MTM per position (realized for a flat row,
+ * unrealized for an open one) minus today's trade charges. An open position used to be counted
+ * via the tradebook reconstruction instead (buy/sell value netted straight from trades), which
+ * priced an untouched open BUY as its full notional loss - tripping SESSION_MAX_LOSS and closing
+ * every position - and an open SHORT as a notional profit big enough to trip SESSION_TARGET.
+ * Charges don't need FIFO/position matching the way P&L does (every trade costs the moment it
+ * executes, whether it opens or closes a position), so they are summed straight from today's
+ * tradebook and netted against the realized side; unrealized stays gross MTM since a still-open
+ * position's eventual exit cost isn't known yet.
+ * @param {Array} positions - live positionbook rows (broker's own pnl/mtm field, qty 0 = realized)
+ * @param {Array} tradebook - today's trades, for charges only
+ * @param {number} brokerageValue - per-trade brokerage for this instance's broker
+ */
+export function computeSessionPnl(positions = [], tradebook = [], brokerageValue = 0) {
+  let realizedPnl = 0;
+  let unrealizedPnl = 0;
+
+  for (const position of Array.isArray(positions) ? positions : []) {
+    const qty = parseFloatSafe(
+      position.quantity ?? position.netqty ?? position.net_quantity ?? position.netQty ?? position.net,
+      0
+    );
+    const pnl = parseFloatSafe(
+      position.pnl ?? position.unrealised_pnl ?? position.unrealisedPnl ?? position.mtm,
+      0
+    );
+    if (qty === 0) {
+      realizedPnl += pnl;
+    } else {
+      unrealizedPnl += pnl;
+    }
+  }
+
+  let chargesTotal = 0;
+  for (const trade of Array.isArray(tradebook) ? tradebook : []) {
+    const normalized = normalizeTradebookEntry(trade);
+    const side = String(normalized.action || '').toUpperCase();
+    const tradeValue = Math.abs(parseFloatSafe(normalized.trade_value, 0));
+    if ((side !== 'BUY' && side !== 'SELL') || !tradeValue) continue;
+    chargesTotal += calculateTradeChargesOpenAlgo(tradeValue, {
+      exchange: normalized.exchange,
+      symbol: normalized.symbol,
+      side,
+      brokerage: brokerageValue,
+    }).total_cost;
+  }
+
+  const realized = Number((realizedPnl - chargesTotal).toFixed(2));
+  const unrealized = Number(unrealizedPnl.toFixed(2));
+
+  return {
+    realized_pnl: realized,
+    unrealized_pnl: unrealized,
+    total_pnl: Number((realized + unrealized).toFixed(2)),
+  };
+}
+
 export function calculateTradebookPnLForAppExits(trades = [], options = {}) {
   const {
     exchangeFallback = '',

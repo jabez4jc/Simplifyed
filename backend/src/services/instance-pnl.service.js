@@ -14,9 +14,10 @@ import { log } from '../core/logger.js';
 import settingsService from './settings.service.js';
 import instanceService from './instance.service.js';
 import instanceAnalyzerService from './instance-analyzer.service.js';
-import { calculateTradebookPnL, calculateTradebookPnLForAppExits } from '../utils/trade-pnl.js';
+import { calculateTradebookPnLForAppExits, computeSessionPnl } from '../utils/trade-pnl.js';
 import { buildBrokerageMap, resolveBrokerageValue } from '../utils/brokerage.js';
 import { nowInIST, formatDateIST, computeSessionState } from '../utils/instance-session.util.js';
+import { settingDefault } from '../config/settings-registry.js';
 
 class InstancePnlService {
   async _getAppOrderIdsForDate(instanceId, dateKey) {
@@ -115,22 +116,26 @@ class InstancePnlService {
 
         const funds = marketDataFeedService.getFundsSnapshot(id)?.data || {};
         const tradebook = tradeSnap?.data || [];
+        const positionSnapshot = marketDataFeedService.getPositionSnapshot(id);
+        const positions = Array.isArray(positionSnapshot?.data) ? positionSnapshot.data : [];
 
-        // Calculate P&L using tradebook values minus charges
+        // Session P&L is the broker's own per-position MTM (realized + unrealized) minus today's
+        // charges - NOT a tradebook buy/sell-value reconstruction. That reconstruction priced an
+        // untouched open BUY as its full notional loss (tripping SESSION_MAX_LOSS and closing
+        // every position) and an open SHORT as a notional profit big enough to trip
+        // SESSION_TARGET. See computeSessionPnl.
         const currentBalance = parseFloat(funds.availablecash || 0);
         const brokerageSetting = await settingsService.getSetting('brokerage.by_broker').catch(() => null);
         const defaultBrokerageSetting = await settingsService.getSetting('brokerage.default').catch(() => null);
         const brokerageMap = buildBrokerageMap(brokerageSetting?.value);
         const defaultBrokerage = Number.isFinite(defaultBrokerageSetting?.value)
           ? defaultBrokerageSetting.value
-          : 20;
+          : Number(settingDefault('brokerage.default'));
         const brokerageValue = resolveBrokerageValue(instance.broker, brokerageMap, defaultBrokerage);
-        const tradePnl = calculateTradebookPnL(Array.isArray(tradebook) ? tradebook : [], {
-          brokerageValue,
-        });
-        const totalPnl = Number(tradePnl.net_pnl.toFixed(2));
-        const realizedPnl = 0;
-        const unrealizedPnl = 0;
+        const pnlBreakdown = computeSessionPnl(positions, Array.isArray(tradebook) ? tradebook : [], brokerageValue);
+        const totalPnl = pnlBreakdown.total_pnl;
+        const realizedPnl = pnlBreakdown.realized_pnl;
+        const unrealizedPnl = pnlBreakdown.unrealized_pnl;
 
         // Session-aware tracking (IST)
         const istNow = nowInIST();
