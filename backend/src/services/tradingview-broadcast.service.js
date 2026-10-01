@@ -3,22 +3,14 @@ import config from '../core/config.js';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { UnauthorizedError, ValidationError } from '../core/errors.js';
-import { maskApiKey, parseIntSafe, timingSafeEqualStr } from '../utils/sanitizers.js';
-import { extractLtp } from '../utils/price-extraction.js';
+import { timingSafeEqualStr } from '../utils/sanitizers.js';
 import watchlistService from './watchlist.service.js';
 import watchlistSymbolService from './watchlist-symbol.service.js';
-import marketDataFeedService from './market-data-feed.service.js';
-import instrumentsService from './instruments.service.js';
-import pnlSnapshotService from './pnl-snapshot.service.js';
-import orderRetryService from './order-retry.service.js';
+import orderService from './order.service.js';
 import instanceService from './instance.service.js';
-import brokerCapabilitiesService from './broker-capabilities.service.js';
 import marginSizingService from './margin-sizing.service.js';
-import { requiresLimitOrders } from '../utils/broker-type.util.js';
-import limitPriceService from './limit-price.service.js';
-import brokerUnitsService from './broker-units.service.js';
 import futuresRollService from './futures-roll.service.js';
-import openalgoClient, { assertLimitOnlyCompliance, withoutExpiredContracts } from '../integrations/openalgo/client.js';
+import { withoutExpiredContracts } from '../integrations/openalgo/client.js';
 
 // OpenAlgo v1 order constants (openalgo-docs api-documentation/v1/order-constants.md). The
 // exchange list is VALID_EXCHANGES in full; OpenAlgo 400s anything else, and the connected
@@ -43,8 +35,6 @@ const DEFAULT_PAYLOAD = {
 
 const FORM_JSON_FIELDS = ['payload', 'data', 'json', 'message'];
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
 const tryParseJson = (value) => {
   if (typeof value !== 'string') return null;
   try {
@@ -54,45 +44,7 @@ const tryParseJson = (value) => {
   }
 };
 
-class TokenBucket {
-  constructor(rate, burst = rate) {
-    this.rate = rate;
-    this.capacity = burst;
-    this.tokens = burst;
-    this.lastRefill = Date.now();
-  }
-
-  _refill() {
-    const now = Date.now();
-    const elapsed = (now - this.lastRefill) / 1000;
-    this.tokens = Math.min(this.capacity, this.tokens + elapsed * this.rate);
-    this.lastRefill = now;
-  }
-
-  async consume() {
-    this._refill();
-    if (this.tokens >= 1) {
-      this.tokens -= 1;
-      return;
-    }
-
-    const needed = 1 - this.tokens;
-    const waitMs = (needed / this.rate) * 1000;
-    await sleep(waitMs);
-    this._refill();
-    this.tokens = Math.max(0, this.tokens - 1);
-  }
-}
-
 class TradingviewBroadcastService {
-  constructor() {
-    this.timeoutMs = Number(config.webhooks?.tradingviewBroadcast?.timeoutMs || 3000);
-    this.retries = Number(config.webhooks?.tradingviewBroadcast?.retries ?? 2);
-    this.retryDelayMs = Number(config.webhooks?.tradingviewBroadcast?.retryDelayMs ?? 250);
-    this.defaultRps = Number(config.webhooks?.tradingviewBroadcast?.defaultRps || 0);
-    this.tokenBuckets = new Map();
-  }
-
   async _resolveTargets({ watchlistId = null, watchlistSlug = null } = {}) {
     if (watchlistId || watchlistSlug) {
       const { targets, watchlist } = await watchlistService.getBroadcastTargets({
@@ -105,20 +57,8 @@ class TradingviewBroadcastService {
     throw new ValidationError('Broadcast watchlist id or slug is required');
   }
 
-  _getBucket(targetKey, rateLimit) {
-    if (!rateLimit) return null;
-    if (!this.tokenBuckets.has(targetKey)) {
-      this.tokenBuckets.set(targetKey, new TokenBucket(rateLimit, rateLimit));
-    }
-    return this.tokenBuckets.get(targetKey);
-  }
-
   assertAuthorized(token) {
-    // Fallback to env in case config load missed the value
-    const expected =
-      config.webhooks?.tradingviewBroadcast?.token ||
-      process.env.WEBHOOK_TOKEN ||
-      '';
+    const expected = config.webhooks?.tradingviewBroadcast?.token || '';
 
     if (!expected) {
       throw new UnauthorizedError('Webhook token is not configured');
@@ -278,23 +218,17 @@ class TradingviewBroadcastService {
 
     const results = await Promise.allSettled(
       targets.map(async (target) => {
-        const rawMultiplier = parseIntSafe(target.multiplier, 1);
-        const instanceMultiplier = Math.min(Math.max(rawMultiplier, 1), 999);
-        const payloadToSend = await this._ensureLimitPricing(normalizedPayload, watchlist, target);
-        let quantity = payloadToSend.quantity * instanceMultiplier;
+        let quantity = normalizedPayload.quantity;
 
         // Sentinel: quantity === 0 on a MARGIN_BASED watchlist symbol means "size from margin"
         // for this specific target instance, instead of a fixed TradingView-supplied quantity.
-        if (payloadToSend.quantity === 0 && watchlist?.id && target?.instance_id) {
-          quantity = await this._resolveMarginBasedWebhookQuantity(payloadToSend, watchlist, target) ?? quantity;
+        if (quantity === 0 && watchlist?.id && target?.instance_id) {
+          quantity = await this._resolveMarginBasedWebhookQuantity(normalizedPayload, watchlist, target) ?? quantity;
         }
 
-        const targetPayload = {
-          ...payloadToSend,
-          quantity,
-          position_size: payloadToSend.position_size * instanceMultiplier,
-        };
-        return this._dispatchToTarget(target, targetPayload, instanceMultiplier, watchlist);
+        // Per-instance multiplier is applied once, inside order.service.placeOrder (same as
+        // every other order path) - not here too, which would double it.
+        return this._dispatchToTarget(target, { ...normalizedPayload, quantity }, watchlist);
       })
     );
 
@@ -315,22 +249,6 @@ class TradingviewBroadcastService {
     const message = okCount
       ? `Broadcast delivered to ${okCount}/${summary.length} target(s)`
       : 'All downstream requests failed';
-
-    const actionSide = normalizedPayload.action === 'BUY' ? 'BUY' : 'SELL';
-    const signalCounts = actionSide === 'BUY'
-      ? { webhook_buy_signals: 1 }
-      : { webhook_sell_signals: 1 };
-    const countUpdates = summary
-      .map((result, idx) => {
-        if (!result.ok) return null;
-        const target = targets[idx];
-        if (!target?.instance_id || target.is_analyzer_mode) return null;
-        return pnlSnapshotService.incrementSignalCounts(target.instance_id, signalCounts);
-      })
-      .filter(Boolean);
-    if (countUpdates.length) {
-      Promise.allSettled(countUpdates).catch(() => {});
-    }
 
     // Record counters for broadcast watchlists
     if (watchlist?.id) {
@@ -361,184 +279,55 @@ class TradingviewBroadcastService {
     };
   }
 
-  async _ensureLimitPricing(payload, watchlist = null, target = null) {
-    if (!payload || payload.pricetype !== 'MARKET') {
-      return payload;
+  /**
+   * Dispatch one target through order.service.placeOrder - the same path and the same
+   * watchlist_orders recording every other order source uses. This used to POST
+   * placesmartorder straight to OpenAlgo over HTTP, bypassing openalgoClient entirely: no
+   * circuit breaker, no rate limit, no ORDER_OUTCOME_UNKNOWN handling (so a timeout re-sent the
+   * order instead of checking the broker's book first), no SEBI SL-M->SL conversion, no
+   * broker-unit conversion, and no watchlist_orders row, so a broadcast order never showed up in
+   * order history or on the chart. placeOrder also prices a MARKET order through
+   * limit-price.service when the broker doesn't support MARKET, replacing this service's own
+   * second, divergent LTP+buffer pricing.
+   */
+  async _dispatchToTarget(target, payload, watchlist = null) {
+    if (!target.instance_id) {
+      return { ok: false, status: null, error: 'Target has no instance configured', attempts: 0, durationMs: null };
     }
 
-    let broker = target?.broker || null;
-    let targetInstance = null;
-    if (target?.instance_id) {
-      try {
-        targetInstance = await instanceService.getInstanceById(target.instance_id);
-        broker = broker || targetInstance?.broker || null;
-      } catch {
-        targetInstance = null;
-      }
-    }
-
-    const supportsMarketOrders = await brokerCapabilitiesService.supportsMarketOrders(broker, payload.exchange);
-    if (supportsMarketOrders) {
-      return {
-        ...payload,
-        price: 0,
-      };
-    }
-
-    const exchange = payload.exchange;
-    const symbol = payload.symbol;
-    const action = payload.action;
-    const bufferPct = this._resolveBufferPct(payload.strategy, watchlist);
-    // A broadcast is a fill-now signal. With no usable LTP, crypto may go as MARKET, but an
-    // Indian exchange refuses this target (SEBI limit-only) - see _marketOrRefuse.
-    let ltpResult = null;
+    const start = Date.now();
     try {
-      ltpResult = await marketDataFeedService.fetchLtpForSymbol(exchange, symbol, {
-        orderCritical: true,
+      const order = await orderService.placeOrder({
+        instanceId: target.instance_id,
+        watchlistId: watchlist?.id || null,
+        exchange: payload.exchange,
+        symbol: payload.symbol,
+        action: payload.action,
+        quantity: payload.quantity,
+        position_size: payload.position_size,
+        product: payload.product,
+        pricetype: payload.pricetype,
+        price: payload.price,
+        trigger_price: payload.trigger_price,
+        source: 'webhook',
+        correlation_id: payload.strategy || null,
       });
-    } catch (quoteError) {
-      log.warn('Feed LTP lookup failed for broadcast', { exchange, symbol, error: quoteError.message });
-    }
-    const ltp = ltpResult?.ltp || extractLtp(ltpResult?.quote)
-      || await limitPriceService.instanceLtp(targetInstance, exchange, symbol);
-
-    if (!ltp || ltp <= 0) {
-      return this._marketOrRefuse(payload, 'no LTP');
-    }
-
-    const buffer = ltp * (bufferPct / 100);
-    const side = this._isBuyAction(action) ? 'BUY' : 'SELL';
-    const rawPrice = side === 'BUY' ? ltp + buffer : ltp - buffer;
-    if (!Number.isFinite(rawPrice) || rawPrice <= 0) {
-      return this._marketOrRefuse(payload, `computed price ${rawPrice} invalid`);
-    }
-
-    const tickSize = await this._resolveTickSize(exchange, symbol);
-    const price = this._roundToTick(rawPrice, tickSize, side);
-
-    return {
-      ...payload,
-      pricetype: 'LIMIT',
-      price,
-    };
-  }
-
-  /** Crypto: send MARKET. Indian exchanges: throw, which fails only this broadcast target. */
-  _marketOrRefuse(payload, reason) {
-    if (requiresLimitOrders(payload.exchange)) {
-      log.error('Broadcast target refused - no limit price (SEBI limit-only)', {
-        exchange: payload.exchange, symbol: payload.symbol, reason,
-      });
-      throw new ValidationError(`No limit price for ${payload.exchange}:${payload.symbol} (${reason}) - MARKET not allowed`);
-    }
-    log.warn('Broadcast sending MARKET', { exchange: payload.exchange, symbol: payload.symbol, reason });
-    return { ...payload, pricetype: 'MARKET', price: 0 };
-  }
-
-  _resolveBufferPct(strategy, watchlist) {
-    const watchlistPct = watchlist?.limit_buffer_pct;
-    if (Number.isFinite(watchlistPct) && watchlistPct >= 0) {
-      return watchlistPct;
-    }
-
-    const map = config.webhooks?.tradingviewBroadcast?.bufferPctByStrategy || {};
-    if (strategy && map && Object.prototype.hasOwnProperty.call(map, strategy)) {
-      const pct = parseFloat(map[strategy]);
-      if (Number.isFinite(pct) && pct >= 0) {
-        return pct;
-      }
-    }
-
-    const fallback = config.webhooks?.tradingviewBroadcast?.bufferPctDefault;
-    if (Number.isFinite(fallback) && fallback >= 0) {
-      return fallback;
-    }
-    return 0.5;
-  }
-
-  _isBuyAction(action) {
-    const normalized = (action || '').toUpperCase();
-    return ['BUY', 'COVER'].includes(normalized);
-  }
-
-  async _resolveTickSize(exchange, symbol) {
-    try {
-      const instrument = await instrumentsService.getInstrument(symbol, exchange);
-      const tick = instrument?.tick_size || instrument?.tickSize;
-      return Number.isFinite(tick) && tick > 0 ? tick : null;
-    } catch {
-      return null;
-    }
-  }
-
-  _roundToTick(price, tickSize, side) {
-    const tick = typeof tickSize === 'string' ? parseFloat(tickSize) : tickSize;
-    if (!Number.isFinite(tick) || tick <= 0) {
-      return Number(price.toFixed(2));
-    }
-
-    const ticks = price / tick;
-    const roundedTicks = side === 'BUY'
-      ? Math.ceil(ticks - 1e-9)
-      : Math.floor(ticks + 1e-9);
-    const rounded = roundedTicks * tick;
-    return Number(rounded.toFixed(this._countDecimals(tick)));
-  }
-
-  _countDecimals(value) {
-    const text = value.toString();
-    const idx = text.indexOf('.');
-    return idx === -1 ? 0 : Math.min(6, text.length - idx - 1);
-  }
-
-  async _dispatchToTarget(target, payload, instanceMultiplier = 1, watchlist = null) {
-    const rateLimit = target.rateLimit ?? (this.defaultRps > 0 ? this.defaultRps : null);
-    const bucket = this._getBucket(target.key, rateLimit);
-    if (bucket) {
-      await bucket.consume();
-    }
-
-    // Broadcasts post straight to OpenAlgo, not through openalgoClient.request, so the same two
-    // boundary rules are applied here: SEBI limit-only, and the target broker's lot units.
-    assertLimitOnlyCompliance('placesmartorder', payload);
-    let wirePayload = payload;
-    if (target.instance_id) {
-      const instance = await instanceService.getInstanceById(target.instance_id);
-      wirePayload = await brokerUnitsService.toBroker(instance, 'placesmartorder', payload, openalgoClient);
-    }
-    const body = JSON.stringify({
-      ...wirePayload,
-      apikey: target.apikey,
-    });
-
-    const response = await this._postWithRetries(target, body);
-
-    if (response.ok) {
+      const durationMs = Date.now() - start;
       log.info('[TV Webhook] Downstream success', {
         target: target.name,
-        instance_multiplier: instanceMultiplier,
-        status: response.status,
-        duration_ms: response.durationMs,
+        order_id: order.order_id,
+        status: order.status,
+        duration_ms: durationMs,
       });
-
-      await this._scheduleRetryForTarget({
-        target,
-        payload,
-        response,
-        watchlist,
-      });
-    } else {
+      return { ok: true, status: 200, attempts: 1, durationMs, data: { orderid: order.order_id, status: order.status } };
+    } catch (error) {
+      const durationMs = Date.now() - start;
       log.warn('[TV Webhook] Downstream failure', {
         target: target.name,
-        instance_multiplier: instanceMultiplier,
-        status: response.status,
-        error: response.error,
-        attempts: response.attempts,
-        apikey: maskApiKey(target.apikey),
+        error: error.message,
       });
+      return { ok: false, status: error.statusCode || null, error: error.message, attempts: 1, durationMs };
     }
-
-    return response;
   }
 
   async _resolveMarginBasedWebhookQuantity(payload, watchlist, target) {
@@ -577,142 +366,6 @@ class TradingviewBroadcastService {
       });
       return null;
     }
-  }
-
-  async _scheduleRetryForTarget({ target, payload, response, watchlist }) {
-    if (!response?.ok || !response?.data) return;
-    if ((payload.pricetype || '').toUpperCase() !== 'LIMIT') return;
-    if (!target?.instance_id) return;
-
-    const orderId = response.data?.orderid || response.data?.order_id;
-    if (!orderId) return;
-
-    let instance;
-    try {
-      instance = await instanceService.getInstanceById(target.instance_id);
-    } catch (error) {
-      log.warn('[TV Webhook] Retry scheduling skipped - instance missing', {
-        instance_id: target.instance_id,
-        error: error.message,
-      });
-      return;
-    }
-
-    let bufferPoints = null;
-    let bufferPct = Number.isFinite(watchlist?.limit_buffer_pct)
-      ? watchlist.limit_buffer_pct
-      : null;
-    let tickSize = null;
-    if (watchlist?.id) {
-      const symbolRow = await watchlistSymbolService.findSymbolByWatchlist(
-        watchlist.id,
-        payload.exchange,
-        payload.symbol
-      );
-      if (symbolRow) {
-        bufferPoints = Number.isFinite(symbolRow.limit_buffer_points)
-          ? symbolRow.limit_buffer_points
-          : null;
-        if (Number.isFinite(bufferPoints)) {
-          bufferPct = null;
-        }
-        tickSize = Number.isFinite(symbolRow.tick_size) ? symbolRow.tick_size : null;
-      }
-    }
-
-    if (!Number.isFinite(tickSize) || tickSize <= 0) {
-      tickSize = await this._resolveTickSize(payload.exchange, payload.symbol);
-    }
-
-    orderRetryService.scheduleRetry({
-      instance,
-      payload,
-      orderId,
-      initialLimitPrice: payload.price,
-      bufferPoints: Number.isFinite(bufferPoints) ? bufferPoints : 0,
-      bufferPct,
-      tickSize,
-      strategy: payload.strategy || null,
-      context: {
-        request_type: 'TRADINGVIEW',
-      },
-    });
-  }
-
-  async _postWithRetries(target, body) {
-    let attempt = 0;
-    let lastError = null;
-
-    while (attempt <= this.retries) {
-      attempt += 1;
-      const start = Date.now();
-
-      try {
-        const { ok, status, data } = await this._postJson(target.endpoint, body);
-        const durationMs = Date.now() - start;
-
-        if (ok) {
-          return { ok: true, status, attempts: attempt, durationMs, data };
-        }
-
-        if (status >= 400 && status < 500) {
-          return {
-            ok: false,
-            status,
-            // The broker's own reason ("MIS orders cannot be placed after square-off time"),
-            // not just the status - an alert that failed must say why.
-            error: data?.message ? `HTTP ${status}: ${typeof data.message === 'string' ? data.message : JSON.stringify(data.message)}` : `HTTP ${status}`,
-            attempts: attempt,
-            durationMs,
-          };
-        }
-
-        lastError = new Error(`HTTP ${status}`);
-      } catch (err) {
-        lastError = err.name === 'AbortError' ? new Error('Request timed out') : err;
-      }
-
-      if (attempt > this.retries) {
-        break;
-      }
-
-      await sleep(this._retryDelay());
-    }
-
-    return {
-      ok: false,
-      status: null,
-      error: lastError?.message || 'Request failed',
-      attempts: attempt,
-      durationMs: null,
-    };
-  }
-
-  async _postJson(url, body) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
-
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body,
-        signal: controller.signal,
-      });
-      // Consume quietly to free resources
-      const { status, ok } = res;
-      const text = await res.text().catch(() => '');
-      const data = text ? tryParseJson(text) : null;
-      return { status, ok, data };
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  _retryDelay() {
-    const base = this.retryDelayMs || 200;
-    const jitter = Math.floor(Math.random() * base);
-    return base + jitter;
   }
 
   _requireString(value, field, errors, uppercase = false) {

@@ -340,10 +340,11 @@ class OrderService {
       }
 
       if (!instance.is_analyzer_mode) {
-        const manualCounts = normalized.action === 'BUY'
-          ? { manual_buy_signals: 1 }
-          : { manual_sell_signals: 1 };
-        pnlSnapshotService.incrementSignalCounts(instance.id, manualCounts).catch(() => {});
+        const isWebhook = source === 'webhook';
+        const signalCounts = normalized.action === 'BUY'
+          ? (isWebhook ? { webhook_buy_signals: 1 } : { manual_buy_signals: 1 })
+          : (isWebhook ? { webhook_sell_signals: 1 } : { manual_sell_signals: 1 });
+        pnlSnapshotService.incrementSignalCounts(instance.id, signalCounts).catch(() => {});
       }
 
       // Fire-and-forget Telegram notification for manual/direct orders

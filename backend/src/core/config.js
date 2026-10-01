@@ -23,24 +23,6 @@ const __dirname = dirname(__filename);
 // Load environment variables
 loadEnv({ path: join(__dirname, '../../.env') });
 
-function parseStrategyBufferConfig(rawValue) {
-  if (!rawValue) return {};
-  try {
-    const parsed = typeof rawValue === 'string' ? JSON.parse(rawValue) : rawValue;
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    return Object.entries(parsed).reduce((acc, [key, value]) => {
-      const pct = parseFloat(value);
-      if (Number.isFinite(pct) && pct >= 0) {
-        acc[String(key)] = pct;
-      }
-      return acc;
-    }, {});
-  } catch (err) {
-    log.warn('Invalid TRADINGVIEW_BUFFER_BY_STRATEGY JSON, ignoring', { error: err.message });
-    return {};
-  }
-}
-
 /**
  * Get environment variable with validation (legacy support)
  */
@@ -67,21 +49,6 @@ function getEnvInt(key, defaultValue) {
   const parsed = parseInt(value, 10);
   if (isNaN(parsed)) {
     throw new Error(`Environment variable ${key} must be a valid integer`);
-  }
-
-  return parsed;
-}
-
-/**
- * Parse float from environment (legacy support)
- */
-function getEnvFloat(key, defaultValue) {
-  const value = process.env[key];
-  if (!value) return defaultValue;
-
-  const parsed = parseFloat(value);
-  if (!Number.isFinite(parsed)) {
-    throw new Error(`Environment variable ${key} must be a valid number`);
   }
 
   return parsed;
@@ -206,12 +173,6 @@ class Config {
     this.webhooks = {
       tradingviewBroadcast: {
         token: getEnv('WEBHOOK_TOKEN', ''),
-        timeoutMs: getEnvInt('TRADINGVIEW_BROADCAST_TIMEOUT_MS', 3000),
-        retries: getEnvInt('TRADINGVIEW_BROADCAST_RETRIES', 2),
-        retryDelayMs: getEnvInt('TRADINGVIEW_BROADCAST_RETRY_DELAY_MS', 250),
-        defaultRps: getEnvInt('TRADINGVIEW_BROADCAST_DEFAULT_RPS', 2),
-        bufferPctDefault: getEnvFloat('TRADINGVIEW_BUFFER_PCT_DEFAULT', 0.5),
-        bufferPctByStrategy: parseStrategyBufferConfig(getEnv('TRADINGVIEW_BUFFER_BY_STRATEGY', '{}')),
       },
     };
   }

@@ -596,16 +596,8 @@ class WatchlistService {
         const apikey = typeof instance.api_key === 'string' ? instance.api_key.trim() : '';
         if (!url || !apikey) return null;
         return {
-          key: `wl-${enriched.id}-inst-${instance.id}`,
           name: instance.name || url,
-          url,
-          endpoint: `${url.replace(/\/+$/, '')}/api/v1/placesmartorder`,
-          apikey,
-          rateLimit: null,
           instance_id: instance.id,
-          broker: instance.broker,
-          is_analyzer_mode: instance.is_analyzer_mode,
-          multiplier: instance.multiplier,
         };
       })
       .filter(Boolean);
@@ -664,17 +656,6 @@ class WatchlistService {
     // Description
     if (data.description !== undefined) {
       normalized.description = sanitizeString(data.description) || null;
-    }
-
-    if (data.limit_buffer_pct !== undefined) {
-      const parsed = parseFloat(String(data.limit_buffer_pct));
-      if (!Number.isNaN(parsed) && parsed >= 0) {
-        normalized.limit_buffer_pct = parsed;
-      } else if (data.limit_buffer_pct === null || data.limit_buffer_pct === '') {
-        normalized.limit_buffer_pct = null;
-      } else {
-        errors.push({ field: 'limit_buffer_pct', message: 'limit_buffer_pct must be a non-negative number' });
-      }
     }
 
     // Is Active

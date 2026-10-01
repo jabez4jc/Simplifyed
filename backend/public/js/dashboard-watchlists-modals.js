@@ -56,13 +56,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
               </div>
 
               <div class="form-group">
-                <label class="form-label">TradingView buffer (%)</label>
-                <input type="number" name="limit_buffer_pct" class="form-input" step="0.01" min="0"
-                       value="${watchlist.limit_buffer_pct ?? ''}">
-                <p class="text-xs text-neutral-500 mt-1">Used only for TradingView MARKET alerts on this watchlist.</p>
-              </div>
-
-              <div class="form-group">
                 <label class="form-label">
                   <input type="checkbox" name="is_active"
                          ${watchlist.is_active ? 'checked' : ''}>
@@ -129,9 +122,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     // Convert checkbox to boolean
     data.is_active = form.querySelector('input[name="is_active"]').checked;
     data.type = form.querySelector('input[name="type"]:checked')?.value || 'standard';
-    if (data.limit_buffer_pct === '') {
-      data.limit_buffer_pct = null;
-    }
 
     try {
       await api.updateWatchlist(watchlistId, data);

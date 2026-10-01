@@ -194,10 +194,6 @@ if [[ -f "$ENV_FILE" && -f "$ENV_EXAMPLE" ]]; then
                         <(grep -o '^[A-Za-z0-9_]\+=' "$ENV_EXAMPLE" | sed 's/=.*//' | sort -u))
   if [[ -n "$missing_keys" ]]; then
     optional_env_keys=(
-      TRADINGVIEW_BROADCAST_DEFAULT_RPS
-      TRADINGVIEW_BROADCAST_RETRIES
-      TRADINGVIEW_BROADCAST_RETRY_DELAY_MS
-      TRADINGVIEW_BROADCAST_TIMEOUT_MS
       WEBHOOK_TOKEN
       SETTINGS_CACHE_DURATION_MS
       WS_GATEWAY_ENABLED

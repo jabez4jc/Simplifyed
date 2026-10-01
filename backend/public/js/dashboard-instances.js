@@ -594,11 +594,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
               <textarea name="description" class="form-input" rows="3"></textarea>
             </div>
 
-            <div class="form-group">
-              <label class="form-label">TradingView buffer (%)</label>
-              <input type="number" name="limit_buffer_pct" class="form-input" step="0.01" min="0" placeholder="e.g., 0.5">
-              <p class="text-xs text-neutral-500 mt-1">Used only for TradingView MARKET alerts on this watchlist.</p>
-            </div>
           </form>
         </div>
         <div class="modal-footer">
@@ -623,9 +618,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     const formData = new FormData(form);
     const data = Object.fromEntries(formData.entries());
     data.type = data.type || 'standard';
-    if (data.limit_buffer_pct === '') {
-      delete data.limit_buffer_pct;
-    }
 
     try {
       await api.createWatchlist(data);
