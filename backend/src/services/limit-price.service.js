@@ -133,18 +133,24 @@ class LimitPriceService {
     let priceSource = null;
     let spreadPct = null;
 
+    // The spread guard applies to ANY bid/ask pair - from depth or from the quote - not only to
+    // the depth path, otherwise a quote carrying an LTP skipped it. Exits pass bypassSpreadCheck.
+    if (!forceLtp && bid && ask) {
+      const mid = (ask + bid) / 2;
+      if (mid > 0) {
+        spreadPct = (ask - bid) / mid;
+      }
+      if (!bypassSpreadCheck && spreadPct !== null && spreadPct > maxSpreadPct) {
+        const err = new ValidationError(`Bid/ask spread too wide for ${normalizedExchange}:${normalizedSymbol}`);
+        err.code = 'SPREAD_TOO_WIDE';
+        throw err;
+      }
+    }
+
     if (ltp && ltp > 0) {
       basePrice = ltp;
       priceSource = 'ltp';
     } else if (!forceLtp && bid && ask) {
-      const spread = ask - bid;
-      const mid = (ask + bid) / 2;
-      if (mid > 0) {
-        spreadPct = spread / mid;
-      }
-      if (!bypassSpreadCheck && spreadPct !== null && spreadPct > maxSpreadPct) {
-        throw new ValidationError(`Bid/ask spread too wide for ${normalizedExchange}:${normalizedSymbol}`);
-      }
       basePrice = normalizedSide === 'BUY' ? ask : bid;
       priceSource = normalizedSide === 'BUY' ? 'ask' : 'bid';
     } else {
@@ -291,6 +297,10 @@ class LimitPriceService {
       const { price } = await this.resolveLimitPrice(options);
       return { pricetype: 'LIMIT', price };
     } catch (strictError) {
+      // A spread wider than the Setting refuses the order. Only exits (which pass
+      // bypassSpreadCheck, so never reach this) may relax; relaxing here priced the order off the
+      // LTP and sent it anyway, making the Setting a no-op.
+      if (strictError.code === 'SPREAD_TOO_WIDE') throw strictError;
       let failure = strictError;
       // Retry once on a relaxed quote before conceding MARKET. MARKET is the expensive outcome
       // here, not the safe one: the broker/OpenAlgo converts it to a LIMIT with a far wider

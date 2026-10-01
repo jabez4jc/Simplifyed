@@ -137,3 +137,29 @@ describe('SL-M becomes a stop-loss limit on Indian exchanges', () => {
     );
   });
 });
+
+describe('Maximum bid/ask spread is enforced for entries, never for exits', () => {
+  afterEach(() => mock.restoreAll());
+  const wide = { exchange: 'NFO', symbol: 'NIFTY06OCT2628000CE', side: 'BUY', tickSize: 0.05 };
+
+  test('an entry on a too-wide spread is refused, not relaxed onto the LTP', async () => {
+    stubDepth(100, 110, '0.05');
+    await assert.rejects(() => limitPriceService.resolveMarketablePricing(wide), (e) => e.code === 'SPREAD_TOO_WIDE');
+  });
+
+  test('an exit (bypassSpreadCheck) on the same spread still gets a price', async () => {
+    stubDepth(100, 110, '0.05');
+    const pricing = await limitPriceService.resolveMarketablePricing({ ...wide, bypassSpreadCheck: true });
+    assert.equal(pricing.pricetype, 'LIMIT');
+    assert.ok(pricing.price >= 110);
+  });
+
+  test('the spread is also checked when bid/ask come from a quote that carries an LTP', async () => {
+    mock.method(settingsService, 'getSetting', async () => ({ rawValue: '0.05' }));
+    mock.method(marketDataFeedService, 'fetchDepthForSymbol', async () => null);
+    mock.method(limitPriceService, '_getFreshQuote', async () => ({
+      quote: { ltp: 105, bid: 100, ask: 110 }, fetchedAt: Date.now(),
+    }));
+    await assert.rejects(() => limitPriceService.resolveLimitPrice(wide), (e) => e.code === 'SPREAD_TOO_WIDE');
+  });
+});
