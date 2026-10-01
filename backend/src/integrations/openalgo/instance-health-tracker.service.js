@@ -113,6 +113,16 @@ class InstanceHealthTrackerService {
     return remaining > 0 ? remaining : 0;
   }
 
+  /** Instances whose circuit is open right now, for telemetry. */
+  getOpenCircuits() {
+    const open = [];
+    for (const [instanceId, health] of this.instanceHealth) {
+      const resumeInMs = this.getInstanceCooldownRemaining(instanceId);
+      if (resumeInMs > 0) open.push({ instanceId, resumeInMs, lastError: health.lastError || null });
+    }
+    return open;
+  }
+
   /**
    * Record an instance failure and potentially put it in cooldown
    *

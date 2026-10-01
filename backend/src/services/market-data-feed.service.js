@@ -23,9 +23,7 @@ import { log } from '../core/logger.js';
 import db from '../core/database.js';
 import { extractAveragePrice, extractLtp } from '../utils/price-extraction.js';
 import openalgoWsService from './openalgo-ws.service.js';
-import { backoffMs } from '../integrations/openalgo/instance-health-tracker.service.js';
 import marketCalendarService from './market-calendar.service.js';
-import marketDataCircuitBreakerService from './market-data-circuit-breaker.service.js';
 
 const DEFAULT_QUOTE_INTERVAL = 5000;               // 5 seconds for quote refresh (WS primary; REST uses TTL)
 const DEFAULT_QUOTE_TTL_IDLE_MS = 15000;
@@ -116,8 +114,6 @@ class MarketDataFeedService extends EventEmitter {
     this.quoteIntervalMs = DEFAULT_QUOTE_INTERVAL;
     this.multiQuoteCooldownIdleMs = MULTI_QUOTE_COOLDOWN_IDLE_MS;
     this.multiQuoteCooldownActiveMs = MULTI_QUOTE_COOLDOWN_ACTIVE_MS;
-    this.healthPingHealthyMs = config.instanceHealth?.pingHealthyIntervalMs || 5 * 60 * 1000;
-    this.healthPingUnhealthyMs = config.instanceHealth?.pingUnhealthyIntervalMs || 3 * 60 * 1000;
     this.orderbookCache = new Map();
     this.orderbookRefreshTimestamps = new Map();
     this.tradebookCache = new Map();
@@ -144,8 +140,6 @@ class MarketDataFeedService extends EventEmitter {
     // Track whether there are open positions for dynamic refresh interval
     this.hasOpenPositions = false;
     this.openPositionInstances = new Set();
-    this.instanceHealth = new Map(); // id -> { healthy: boolean, lastPing: number, nextPing: number, notified: boolean }
-    this.healthPingIntervalHandle = null;
     this.positionIntervalHandle = null;
   }
 
@@ -210,8 +204,6 @@ class MarketDataFeedService extends EventEmitter {
     this._startDynamicPositionRefresh(FEED_STAGGER_MS);
     // Funds interval (already slow)
     this.intervals.push(setInterval(() => this.refreshFunds(), this.fundsIntervalMs));
-    // Health pings (5m healthy, 3m unhealthy with retry cap)
-    this.healthPingIntervalHandle = setInterval(() => this._pingInstancesHeartbeat(), 30000);
 
     log.info('MarketDataFeedService started', {
       quoteInterval: this.quoteIntervalMs,
@@ -228,10 +220,6 @@ class MarketDataFeedService extends EventEmitter {
     if (this.positionIntervalHandle) {
       clearInterval(this.positionIntervalHandle);
       this.positionIntervalHandle = null;
-    }
-    if (this.healthPingIntervalHandle) {
-      clearInterval(this.healthPingIntervalHandle);
-      this.healthPingIntervalHandle = null;
     }
     this.multiQuoteTimestamps.clear();
     this.isRunning = false;
@@ -255,9 +243,6 @@ class MarketDataFeedService extends EventEmitter {
     this.multiQuoteCooldownIdleMs = md.multiquoteCooldownIdleMs || MULTI_QUOTE_COOLDOWN_IDLE_MS;
     this.multiQuoteCooldownActiveMs = md.multiquoteCooldownActiveMs || MULTI_QUOTE_COOLDOWN_ACTIVE_MS;
 
-    this.healthPingHealthyMs = cfg.instanceHealth?.pingHealthyIntervalMs || 5 * 60 * 1000;
-    this.healthPingUnhealthyMs = cfg.instanceHealth?.pingUnhealthyIntervalMs || 3 * 60 * 1000;
-
     this.QUOTE_TTL_MS = Math.max(this.quoteTtlIdleMs, TTL_DISPLAY);
     this.QUOTE_TTL_ORDER_MS = TTL_ORDER_CRITICAL;
     this.FUNDS_TTL_MS = this.fundsIntervalMs;
@@ -273,12 +258,6 @@ class MarketDataFeedService extends EventEmitter {
 
     this.intervals.push(setInterval(() => this.refreshQuotes(), this.quoteIntervalMs));
     this.intervals.push(setInterval(() => this.refreshFunds(), this.fundsIntervalMs));
-
-    if (this.healthPingIntervalHandle) {
-      clearInterval(this.healthPingIntervalHandle);
-      this.healthPingIntervalHandle = null;
-    }
-    this.healthPingIntervalHandle = setInterval(() => this._pingInstancesHeartbeat(), 30000);
 
     this._startDynamicPositionRefresh(0);
   }
@@ -380,10 +359,6 @@ class MarketDataFeedService extends EventEmitter {
         const poolForFallback = supportPool.length > 0 ? supportPool.concat(regularPool) : marketDataInstances;
         for (const inst of poolForFallback) {
           if (this._isInstanceUnhealthy(inst.id)) continue;
-          const circuitKey = this._getCircuitKey(inst.id, 'quotes');
-          if (this._shouldSkipPolling(circuitKey)) {
-            continue;
-          }
           const maxRetries = 2;
           let lastError = null;
 
@@ -402,7 +377,6 @@ class MarketDataFeedService extends EventEmitter {
               collectedQuotes = collectedQuotes.concat(quotes);
               const resolvedKeys = new Set(quotes.map((q) => `${(q.exchange || '').toUpperCase()}|${(q.symbol || '').toUpperCase()}`));
               pendingSymbols = pendingSymbols.filter((s) => !resolvedKeys.has(`${(s.exchange || '').toUpperCase()}|${(s.symbol || '').toUpperCase()}`));
-              this._resetFailureState(circuitKey);
               break;
             } catch (error) {
               lastError = error;
@@ -415,7 +389,6 @@ class MarketDataFeedService extends EventEmitter {
 
           if (lastError) {
             log.warn('Failed multiquotes fallback', { instance: inst.name, error: lastError?.message });
-            this._recordFailure(circuitKey, lastError);
           }
 
           await this._sleep(Math.floor(Math.random() * FEED_STAGGER_MS) + FEED_STAGGER_MS);
@@ -990,10 +963,6 @@ class MarketDataFeedService extends EventEmitter {
       // (broker terminal, direct OpenAlgo, another process, opened while the server was down)
       // was never fetched - so auto-exit never saw it and its target/stop never fired. The
       // stateful TTL below already paces idle instances (30s) vs ones with open risk (8s).
-      const circuitKey = this._getCircuitKey(instanceId, 'positions');
-      if (this._shouldSkipPolling(circuitKey)) {
-        return false;
-      }
       const now = Date.now();
       const last = this.positionRefreshTimestamps.get(instanceId) || 0;
       const ttlMs = this._getStatefulTtlMs('positions', instanceId);
@@ -1006,12 +975,9 @@ class MarketDataFeedService extends EventEmitter {
       const positionBook = await openalgoClient.getPositionBook(instance);
       this._seedFallbackEntriesFromPositionBook(instanceId, positionBook);
       this.setPositionSnapshot(instanceId, positionBook);
-      this._resetFailureState(circuitKey);
       return true;
     } catch (error) {
       log.warn('Failed to refresh positions for instance', { instanceId, error: error.message });
-      const circuitKey = this._getCircuitKey(instanceId, 'positions');
-      this._recordFailure(circuitKey, error);
       return true;
     }
   }
@@ -1129,21 +1095,9 @@ class MarketDataFeedService extends EventEmitter {
 
       // Fetch live
       try {
-        const circuitKey = this._getCircuitKey(instanceId, 'positions');
-        if (this._shouldSkipPolling(circuitKey)) {
-          const cached = this.positionCache.get(instanceId);
-          // Only return success if we have valid cached data
-          if (cached?.data) {
-            return { instanceId, positions: cached.data, success: true, fromCache: true, skipped: true };
-          }
-          // No cache available and circuit is open - this is a failure
-          return { instanceId, positions: [], success: false, fromCache: false, skipped: true, error: 'Circuit breaker open, no cached data' };
-        }
-
         const positionBook = await openalgoClient.getPositionBook(instance);
         this.setPositionSnapshot(instanceId, positionBook);
         this.positionRefreshTimestamps.set(instanceId, now);
-        this._resetFailureState(circuitKey);
 
         return { instanceId, positions: positionBook, success: true, fromCache: false };
       } catch (error) {
@@ -1152,8 +1106,6 @@ class MarketDataFeedService extends EventEmitter {
           instanceName: instance.name,
           error: error.message,
         });
-        const circuitKey = this._getCircuitKey(instanceId, 'positions');
-        this._recordFailure(circuitKey, error);
 
         // Return cached data on failure if available, otherwise mark as failed
         const cached = this.positionCache.get(instanceId);
@@ -1267,10 +1219,6 @@ class MarketDataFeedService extends EventEmitter {
     }
 
     try {
-      const circuitKey = this._getCircuitKey(instanceId, 'funds');
-      if (this._shouldSkipPolling(circuitKey)) {
-        return false;
-      }
       const now = Date.now();
       const last = this.fundsRefreshTimestamps.get(instanceId) || 0;
       if (!force && now - last < this.FUNDS_TTL_MS) {
@@ -1281,12 +1229,9 @@ class MarketDataFeedService extends EventEmitter {
       const instance = await instanceService.getInstanceById(instanceId);
       const funds = await openalgoClient.getFunds(instance);
       this.setFundsSnapshot(instanceId, funds);
-      this._resetFailureState(circuitKey);
       return true;
     } catch (error) {
       log.warn('Failed to refresh funds for instance', { instanceId, error: error.message });
-      const circuitKey = this._getCircuitKey(instanceId, 'funds');
-      this._recordFailure(circuitKey, error);
       return true;
     }
   }
@@ -1459,102 +1404,12 @@ class MarketDataFeedService extends EventEmitter {
     return this.tradebookCache.get(instanceId) || null;
   }
 
-  _getCircuitKey(instanceId, feed) {
-    return marketDataCircuitBreakerService.getCircuitKey(instanceId, feed);
-  }
-
+  /**
+   * The client's instance-health-tracker is the one place that decides whether an instance may be
+   * called (circuit breaker, fed by every call including the health ping). The feed only asks.
+   */
   _isInstanceUnhealthy(instanceId) {
-    const state = this.instanceHealth.get(instanceId);
-    return state?.healthy === false || state?.requiresManualRefresh === true;
-  }
-
-  async _pingInstancesHeartbeat() {
-    try {
-      const instances = await instanceService.getAllInstances({ is_active: true });
-      const now = Date.now();
-      for (const inst of instances) {
-        const state = this.instanceHealth.get(inst.id) || {
-          healthy: true,
-          lastPing: 0,
-          nextPing: 0,
-          notified: false,
-          unhealthyAttempts: 0,
-          requiresManualRefresh: false,
-        };
-        // An unhealthy instance is pinged at a growing interval (see _markInstanceUnhealthy)
-        // rather than written off after N failures, so it rejoins on its own once it answers.
-        if (now >= state.nextPing) {
-          await this._maybePingInstance(inst);
-        }
-      }
-    } catch (error) {
-      log.warn('Health ping heartbeat failed', { error: error.message });
-    }
-  }
-
-  async _maybePingInstance(instance) {
-    const id = instance.id;
-    try {
-      await openalgoClient.ping(instance);
-      this._markInstanceHealthy(id);
-    } catch (error) {
-      this._markInstanceUnhealthy(id, error?.message);
-    }
-  }
-
-  _markInstanceHealthy(instanceId) {
-    this.instanceHealth.set(instanceId, {
-      healthy: true,
-      lastPing: Date.now(),
-      nextPing: Date.now() + this.healthPingHealthyMs,
-      notified: false,
-      unhealthyAttempts: 0,
-      requiresManualRefresh: false,
-      lastError: null,
-    });
-  }
-
-  async _markInstanceUnhealthy(instanceId, reason = null) {
-    const prev = this.instanceHealth.get(instanceId) || {};
-    const attempts = (prev.unhealthyAttempts || 0) + 1;
-    const nextPing = Date.now() + backoffMs(attempts, this.healthPingUnhealthyMs);
-    this.instanceHealth.set(instanceId, {
-      healthy: false,
-      lastPing: Date.now(),
-      nextPing,
-      notified: prev.notified || false,
-      unhealthyAttempts: attempts,
-      requiresManualRefresh: false,
-      lastError: reason || prev.lastError || null,
-    });
-
-    if (this.openPositionInstances.has(instanceId) && !prev.notified) {
-      try {
-        await db.run(
-          `INSERT INTO notifications (title, body, severity) VALUES (?, ?, ?)`,
-          ['Instance unhealthy', `Instance ${instanceId} became unhealthy while positions are open.`, 'error']
-        );
-        this.instanceHealth.set(instanceId, {
-          healthy: false,
-          lastPing: Date.now(),
-          nextPing,
-          notified: true,
-          unhealthyAttempts: attempts,
-          requiresManualRefresh: false,
-          lastError: reason || prev.lastError || null,
-        });
-      } catch (err) {
-        log.warn('Failed to notify unhealthy instance', { instanceId, error: err.message });
-      }
-    }
-  }
-
-  resetInstanceHealth(instanceId) {
-    this.instanceHealth.delete(instanceId);
-  }
-
-  getCircuitState(instanceId, feed) {
-    return marketDataCircuitBreakerService.getCircuitState(instanceId, feed);
+    return !openalgoClient.isInstanceHealthy(instanceId);
   }
 
   _chunkSymbols(symbols = [], chunkSize = 5) {
@@ -1583,11 +1438,6 @@ class MarketDataFeedService extends EventEmitter {
     const now = Date.now();
 
     for (const inst of instances) {
-      const circuitKey = this._getCircuitKey(inst.id, 'quotes');
-      if (this._shouldSkipPolling(circuitKey)) {
-        continue;
-      }
-
       const cooldown = this.hasOpenPositions ? this.multiQuoteCooldownActiveMs : this.multiQuoteCooldownIdleMs;
       const lastMultiAt = this.multiQuoteTimestamps.get(inst.id) || 0;
       if (now - lastMultiAt < cooldown) {
@@ -1629,7 +1479,6 @@ class MarketDataFeedService extends EventEmitter {
           sourceInstanceId = inst.id;
         }
 
-        this._resetFailureState(circuitKey);
         this.multiQuoteTimestamps.set(inst.id, Date.now());
 
         if (pendingSymbols.length === 0) {
@@ -1641,7 +1490,6 @@ class MarketDataFeedService extends EventEmitter {
           instance_name: inst.name,
           error: error.message,
         });
-        this._recordFailure(circuitKey, error);
       }
     }
 
@@ -1717,18 +1565,6 @@ class MarketDataFeedService extends EventEmitter {
       return active ? this.tradebookIntervalActiveMs : this.tradebookIntervalIdleMs;
     }
     return this.QUOTE_TTL_MS;
-  }
-
-  _shouldSkipPolling(key) {
-    return marketDataCircuitBreakerService.shouldSkipPolling(key);
-  }
-
-  _recordFailure(key, error) {
-    return marketDataCircuitBreakerService.recordFailure(key, error);
-  }
-
-  _resetFailureState(key) {
-    return marketDataCircuitBreakerService.resetFailureState(key);
   }
 
   /**
@@ -2231,6 +2067,12 @@ class MarketDataFeedService extends EventEmitter {
     return this.openPositionInstances.has(instanceId) || this.openOrderInstances.has(instanceId);
   }
 
+  _circuitState(instanceId) {
+    const status = openalgoClient.getInstanceHealthStatus(instanceId);
+    const resumeInMs = openalgoClient.getInstanceCooldownRemaining(instanceId);
+    return { open: resumeInMs > 0, resumeInMs: resumeInMs || null, lastError: status?.lastError || null };
+  }
+
   /**
    * Lightweight cache telemetry for monitoring endpoints
    * Returns freshness and circuit state per feed/instance without mutating state
@@ -2251,7 +2093,7 @@ class MarketDataFeedService extends EventEmitter {
       for (const [instanceId, snapshot] of cache.entries()) {
         const fetchedAt = snapshot?.fetchedAt || null;
         const ageMs = fetchedAt ? now - fetchedAt : null;
-        const circuit = this.getCircuitState(instanceId, name);
+        const circuit = this._circuitState(instanceId);
         entries.push({
           instanceId,
           feed: name,
@@ -2267,25 +2109,20 @@ class MarketDataFeedService extends EventEmitter {
       }
     }
 
-    // Ensure circuits without cache entries are still surfaced
-    for (const [key, state] of marketDataCircuitBreakerService.failureState.entries()) {
-      const [instanceId, feed] = key.split(':');
-      const alreadyRecorded = entries.some(
-        (e) => String(e.instanceId) === instanceId && e.feed === feed
-      );
-      if (alreadyRecorded) continue;
-      const resumeInMs = state.cooldownUntil ? Math.max(0, state.cooldownUntil - now) : null;
+    // Instances whose circuit is open but that have no cache entry are still surfaced
+    for (const open of openalgoClient.getOpenCircuits()) {
+      if (entries.some((e) => String(e.instanceId) === String(open.instanceId))) continue;
       entries.push({
-        instanceId: Number.isNaN(Number(instanceId)) ? instanceId : Number(instanceId),
-        feed,
+        instanceId: open.instanceId,
+        feed: 'instance',
         count: null,
         fetchedAt: null,
         ageMs: null,
         ttlMs: null,
         stale: null,
-        circuitOpen: resumeInMs !== null,
-        circuitResumeInMs: resumeInMs,
-        circuitLastError: state.lastErrorMessage || null,
+        circuitOpen: true,
+        circuitResumeInMs: open.resumeInMs,
+        circuitLastError: open.lastError,
       });
     }
 

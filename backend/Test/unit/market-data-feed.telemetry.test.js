@@ -1,7 +1,7 @@
 import assert from 'assert';
 import test from 'node:test';
 import marketDataFeedService from '../../src/services/market-data-feed.service.js';
-import marketDataCircuitBreakerService from '../../src/services/market-data-circuit-breaker.service.js';
+import openalgoClient from '../../src/integrations/openalgo/client.js';
 
 test('getCacheStatus marks stale quote cache entries', () => {
   const instanceId = 99999;
@@ -22,21 +22,27 @@ test('getCacheStatus marks stale quote cache entries', () => {
   marketDataFeedService.quoteCache.delete(instanceId);
 });
 
-test('getCacheStatus surfaces circuit-only state', () => {
-  // Circuit-breaker state lives in marketDataCircuitBreakerService, not on
-  // marketDataFeedService itself - getCacheStatus() reads it from there.
-  const key = '888:quotes';
-  marketDataCircuitBreakerService.failureState.set(key, {
-    cooldownUntil: Date.now() + 1000,
-    lastErrorMessage: 'test error',
-    failures: 1,
-  });
+test('getCacheStatus surfaces an open instance circuit that has no cache entry', () => {
+  // Circuit state lives in the client's instance-health-tracker; getCacheStatus only asks for it.
+  const id = 888;
+  openalgoClient.recordInstanceFailure(id, new Error('test error'), { isHtml: true });
 
   const status = marketDataFeedService.getCacheStatus();
-  const entry = status.entries.find((e) => String(e.instanceId) === '888' && e.feed === 'quotes');
+  const entry = status.entries.find((e) => String(e.instanceId) === String(id));
   assert.ok(entry, 'should include circuit-only entry');
   assert.equal(entry.circuitOpen, true);
+  assert.equal(entry.circuitLastError, 'test error');
 
-  // cleanup
-  marketDataCircuitBreakerService.failureState.delete(key);
+  openalgoClient.forceResetInstanceHealth(id);
+});
+
+test('the feed has no ping loop of its own; instance health is the client tracker\'s verdict', () => {
+  assert.equal(marketDataFeedService._pingInstancesHeartbeat, undefined);
+  assert.equal(marketDataFeedService.healthPingIntervalHandle, undefined);
+
+  const id = 889;
+  assert.equal(marketDataFeedService._isInstanceUnhealthy(id), false);
+  openalgoClient.recordInstanceFailure(id, new Error('down'), { isHtml: true });
+  assert.equal(marketDataFeedService._isInstanceUnhealthy(id), true);
+  openalgoClient.forceResetInstanceHealth(id);
 });

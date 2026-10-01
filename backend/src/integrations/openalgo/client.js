@@ -276,6 +276,10 @@ class OpenAlgoClient extends EventEmitter {
     return instanceHealthTrackerService.getInstanceCooldownRemaining(instanceId);
   }
 
+  getOpenCircuits() {
+    return instanceHealthTrackerService.getOpenCircuits();
+  }
+
   recordInstanceFailure(instanceId, error, options = {}) {
     return instanceHealthTrackerService.recordInstanceFailure(instanceId, error, options);
   }
