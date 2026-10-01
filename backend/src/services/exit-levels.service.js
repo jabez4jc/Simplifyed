@@ -163,8 +163,9 @@ class ExitLevelsService {
   async _isOpen(exchange) {
     const hit = this.openCache.get(exchange);
     if (hit && Date.now() - hit.at < OPEN_CACHE_MS) return hit.open;
-    // If the calendar cannot say, a FRESH price is the evidence the market is trading.
-    const open = await marketCalendarService.isExchangeOpen(exchange).catch(() => true);
+    // If the calendar cannot say (null/throw), evaluate anyway: a FRESH price is the evidence the
+    // market is trading, and a calendar outage must not switch every stop off.
+    const open = (await marketCalendarService.isExchangeOpen(exchange).catch(() => null)) !== false;
     this.openCache.set(exchange, { open, at: Date.now() });
     return open;
   }
@@ -435,16 +436,16 @@ class ExitLevelsService {
         if (!exitQty) continue;
         const symbol = upper(c.position.symbol || c.position.tradingsymbol);
         const exchange = upper(c.position.exchange || c.position.exch);
-        const tag = `${c.instance.id}|${exchange}|${symbol}`;
+        const tag = `${c.instance.id}|${exchange}|${symbol}|${upper(c.position.product)}`;
         const entry = { instance: c.instance.name, symbol, role: c.role, direction: c.direction, qty: exitQty };
         try {
           if (exitQty >= Math.abs(c.qty)) {
-            if (closed.has(tag)) continue; // one close already took every product row of it
+            if (closed.has(tag)) continue; // one close already took this product row
             closed.add(tag);
             await quickOrderService.closePosition(
               c.instance,
               { symbol, exchange },
-              { tradeMode: c.type === 'CE' || c.type === 'PE' ? 'OPTIONS' : c.type === 'FUT' ? 'FUTURES' : 'EQUITY', product: c.position.product, strategy: 'EXIT_LEVEL' }
+              { tradeMode: c.type === 'CE' || c.type === 'PE' ? 'OPTIONS' : c.type === 'FUT' ? 'FUTURES' : 'EQUITY', product: c.position.product, onlyProduct: true, strategy: 'EXIT_LEVEL' }
             );
           } else if (live.get(c.instance.id)?.fromCache) {
             // A partial size is computed from the quantity held - never from a cached book.

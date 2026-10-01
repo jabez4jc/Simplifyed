@@ -4,7 +4,7 @@
  */
 
 import { log } from '../core/logger.js';
-import config from '../core/config.js';
+import db from '../core/database.js';
 import instanceService from './instance.service.js';
 import watchlistService from './watchlist.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
@@ -19,6 +19,12 @@ import { normalizeSymbolKey, normalizeExchange } from '../utils/symbol-parsing.u
 import exitLevelsService from './exit-levels.service.js';
 import exitLossCapsService from './exit-loss-caps.service.js';
 
+const MONITOR_INTERVAL_MS = 5000;
+const PROVISIONAL_ENTRY_GRACE_MS = 20000;
+const PENDING_EXIT_COOLDOWN_MS = 30000;
+// A WS quote this young beats the positionbook LTP, which is 8-30s stale.
+const FRESH_WS_QUOTE_MS = 5000;
+
 const TRADE_MODE_MAP = {
   direct: 'EQUITY',
   futures: 'FUTURES',
@@ -32,15 +38,12 @@ class AutoExitService {
     this.isCycleRunning = false;
     this.pendingExits = new Map();
     this.exitConfirmations = new Map();
-    const autoExitCfg = config.autoExit || {};
-    this.monitorIntervalMs = autoExitCfg.monitorIntervalMs || 5000;
-    this.provisionalEntryGraceMs = autoExitCfg.provisionalEntryGraceMs ?? 20000;
-    this.pendingExitCooldownMs = autoExitCfg.pendingExitCooldownMs ?? 30000;
-    const baseWindow = autoExitCfg.confirmationWindowMs && autoExitCfg.confirmationWindowMs > 0
-      ? autoExitCfg.confirmationWindowMs
-      : Math.max(1500, this.monitorIntervalMs * 1.2);
+    this.monitorIntervalMs = MONITOR_INTERVAL_MS;
+    this.provisionalEntryGraceMs = PROVISIONAL_ENTRY_GRACE_MS;
+    this.pendingExitCooldownMs = PENDING_EXIT_COOLDOWN_MS;
+    this.warnedKeys = new Set(); // log a given skip reason once per position, not every cycle
     // Minimum dwell window before honouring an exit trigger (guards against single-tick spikes)
-    this.confirmationWindowMs = baseWindow;
+    this.confirmationWindowMs = Math.max(1500, this.monitorIntervalMs * 1.2);
   }
 
   async start() {
@@ -143,6 +146,7 @@ class AutoExitService {
       riskControlsService.clearTrailingState(trailKey('LONG'));
       riskControlsService.clearTrailingState(trailKey('SHORT'));
       marketDataFeedService.clearFallbackEntryPrice(instance.id, positionExchange, positionSymbol);
+      this.warnedKeys.delete(key);
       return;
     }
 
@@ -150,8 +154,9 @@ class AutoExitService {
     // exchange is rejected at best, and the prices it would be judged on are stale. This used to
     // be approximated by a fixed 03:00-08:00 IST pause, which left crypto (24/7) unprotected in
     // that window and Indian positions evaluated at every other closed hour. The calendar
-    // answers "closed" when it cannot be read, which is the safe way for this to fail.
-    if (!isCryptoExchange(positionExchange) && !(await marketCalendarService.isExchangeOpen(positionExchange))) {
+    // answers null when it cannot be read - then evaluate anyway: a calendar outage must not
+    // switch every Indian stop-loss off. Only a definite "closed" skips.
+    if (!isCryptoExchange(positionExchange) && (await marketCalendarService.isExchangeOpen(positionExchange)) === false) {
       return;
     }
 
@@ -188,8 +193,7 @@ class AutoExitService {
         positionSymbol,
         positionExchange,
         side,
-        Math.abs(positionQty),
-        instance?.name || instance?.broker || 'unknown'
+        Math.abs(positionQty)
       );
       if (entryPrice) {
         entryPriceSource = 'tradebook';
@@ -203,14 +207,6 @@ class AutoExitService {
         entryPrice = cachedEntry.price;
         entryPriceSource = `fallback_cache:${cachedEntry.source || 'unknown'}`;
         entryFallbackMeta = cachedEntry;
-      }
-    }
-
-    // Cross-instance fallback: median LTP from instances with valid entry prices
-    if (!entryPrice) {
-      entryPrice = await this._resolveCrossInstanceMedianLtp(positionSymbol, positionExchange);
-      if (entryPrice) {
-        entryPriceSource = 'cross_instance_median_ltp';
       }
     }
 
@@ -235,16 +231,21 @@ class AutoExitService {
     }
 
     if (!currentPrice || !entryPrice) {
-      log.error('Auto-exit skipped: unable to resolve price data', {
-        instance_id: instance.id,
-        symbol: positionSymbol,
-        exchange: positionExchange,
-        entry_source: entryPriceSource,
-        ltp_source: currentPriceSource,
-      });
-      // User notification could be hooked here if frontend channel is available
+      // No broker average price and no tradebook entry (or no price): skip, never guess. Once per
+      // position - this runs every cycle.
+      if (!this.warnedKeys.has(key)) {
+        this.warnedKeys.add(key);
+        log.warn('Auto-exit skipped: unable to resolve price data', {
+          instance_id: instance.id,
+          symbol: positionSymbol,
+          exchange: positionExchange,
+          entry_source: entryPriceSource,
+          ltp_source: currentPriceSource,
+        });
+      }
       return;
     }
+    this.warnedKeys.delete(key);
 
     riskControlsService.clearTrailingState(trailKey(side === 'LONG' ? 'SHORT' : 'LONG'));
     const evaluation = await riskControlsService.evaluateExit({
@@ -291,7 +292,7 @@ class AutoExitService {
         entry_source: entryPriceSource,
         ltp_source: currentPriceSource,
       });
-      const exitSuccess = await this._executeAutoExit(instance, position, mode, exitReason);
+      const exitSuccess = await this._executeAutoExit(instance, position, mode, exitReason, configEntry);
       if (exitSuccess) {
         this.pendingExits.set(key, Date.now());
         this.exitConfirmations.delete(key);
@@ -315,18 +316,41 @@ class AutoExitService {
     this.exitConfirmations.delete(key);
   }
 
-  async _executeAutoExit(instance, position, mode, reason = 'AUTO_EXIT') {
+  async _executeAutoExit(instance, position, mode, reason = 'AUTO_EXIT', configEntry = null) {
     const positionSymbol = position.symbol || position.tradingsymbol || position.trading_symbol;
     const positionExchange = position.exchange || position.exch || position.brexchange;
     const tradeMode = TRADE_MODE_MAP[mode] || 'FUTURES';
-    const product = position.product || position.product_type || 'MIS';
+    const product = position.product || position.product_type || position.producttype || 'MIS';
 
     try {
-      await quickOrderService.closePosition(
-        instance,
-        { symbol: positionSymbol, exchange: positionExchange },
-        { tradeMode, product, strategy: reason }
-      );
+      // A strategy leg's stop acts on what THE STRATEGY holds, never the whole symbol (another
+      // leg, strategy or a manual position may share the contract).
+      const owned = await this._strategyOwnedQty(instance.id, positionExchange, positionSymbol, product, configEntry?.watchlist_id);
+      const held = this._getPositionQuantity(position);
+      if (owned !== null && (owned === 0 || Math.sign(owned) !== Math.sign(held))) {
+        const k = `owned:${instance.id}:${positionExchange}:${positionSymbol}:${product}`;
+        if (!this.warnedKeys.has(k)) {
+          this.warnedKeys.add(k);
+          log.warn('Auto-exit skipped: the strategy ledger holds none of this position', {
+            instance_id: instance.id, symbol: positionSymbol, exchange: positionExchange, product,
+          });
+        }
+        return false;
+      }
+      if (owned !== null && Math.abs(owned) < Math.abs(held)) {
+        await quickOrderService.exitPartOfPosition(
+          instance,
+          { symbol: positionSymbol, exchange: positionExchange, product, quantity: held },
+          Math.abs(owned),
+          { strategy: reason }
+        );
+      } else {
+        await quickOrderService.closePosition(
+          instance,
+          { symbol: positionSymbol, exchange: positionExchange },
+          { tradeMode, product, onlyProduct: true, strategy: reason }
+        );
+      }
       log.info('Auto-exit triggered', {
         instance_id: instance.id,
         symbol: positionSymbol,
@@ -347,15 +371,39 @@ class AutoExitService {
     }
   }
 
+  /**
+   * Signed quantity the strategies owning this config row's watchlist still hold open in the
+   * ledger for this contract/product, or null when the row does not belong to a strategy.
+   */
+  async _strategyOwnedQty(instanceId, exchange, symbol, product, watchlistId) {
+    if (!watchlistId) return null;
+    const strategies = await db.all('SELECT id FROM strategies WHERE watchlist_id = ?', [watchlistId]);
+    if (!strategies.length) return null;
+    const rows = await db.all(
+      `SELECT sle.resolved_symbol, sle.resolved_exchange, sle.product, sle.quantity, sl.action
+       FROM strategy_leg_executions sle
+       JOIN strategy_legs sl ON sl.id = sle.strategy_leg_id
+       WHERE sle.instance_id = ? AND sle.entry_status = 'PLACED' AND sle.closed_at IS NULL
+         AND sle.strategy_id IN (${strategies.map(() => '?').join(',')})`,
+      [instanceId, ...strategies.map((r) => r.id)]
+    );
+    const sym = this._normalizeSymbol(symbol);
+    const exch = this._normalizeExchange(exchange);
+    const prod = String(product || '').toUpperCase();
+    return rows
+      .filter((r) => this._normalizeSymbol(r.resolved_symbol) === sym
+        && this._normalizeExchange(r.resolved_exchange) === exch
+        && String(r.product || '').toUpperCase() === prod)
+      .reduce((total, r) => total + (String(r.action).toUpperCase() === 'SELL' ? -1 : 1) * (Number(r.quantity) || 0), 0);
+  }
+
   _confirmExit(key, reason, context = {}) {
     const now = Date.now();
     const record = this.exitConfirmations.get(key);
     const baseWindow = this.confirmationWindowMs;
 
     // Fallback-derived entries need a longer dwell to avoid premature exits on bad seeds
-    const cautiousEntry =
-      (context.entryPriceSource || '').startsWith('fallback_cache') ||
-      context.entryPriceSource === 'cross_instance_median_ltp';
+    const cautiousEntry = (context.entryPriceSource || '').startsWith('fallback_cache');
     const requiredWindow = cautiousEntry ? baseWindow * 2 : baseWindow;
 
     if (!record || record.reason !== reason) {
@@ -400,7 +448,7 @@ class AutoExitService {
       );
   }
 
-  _resolveEntryPriceFromTrades(trades, symbol, exchange, side, positionQuantity, brokerName = 'unknown') {
+  _resolveEntryPriceFromTrades(trades, symbol, exchange, side, positionQuantity) {
     if (!Array.isArray(trades) || trades.length === 0) {
       return null;
     }
@@ -452,86 +500,44 @@ class AutoExitService {
       }
     }
 
-    // Layered fallback for entry price resolution
-    const dummyMap = {
-      'BROKER A': new Set([0, 100]),
-      'BROKER B': new Set([0]),
-      'BROKER C': new Set([]),
-    };
-    const brokerKey = (brokerName || '').toUpperCase();
-    const dummyValues = dummyMap[brokerKey] || dummyMap['BROKER A'];
-
-    // Layer 1: Enhanced FIFO ignoring dummy prices
+    // Layer 1: FIFO average of the still-open entry-side trades (a 0 price is never real).
     let totalQuantity = 0;
     let totalCost = 0;
     for (const openEntry of openTrades) {
       const remaining = openEntry.remaining ?? 0;
-      if (remaining <= 0) continue;
       const price = openEntry.average_price;
-      if (!price || dummyValues.has(price)) {
-        continue;
-      }
+      if (remaining <= 0 || !(price > 0)) continue;
       totalQuantity += remaining;
       totalCost += remaining * price;
     }
     if (totalQuantity > 0) {
-      const fifoPrice = totalCost / totalQuantity;
-      log.info('metrics.entry_price_fallback', {
-        broker: brokerKey || 'UNKNOWN',
-        layer: 'FIFO',
-        price: fifoPrice,
-        trades_considered: relevantTrades.length,
-      });
-      return fifoPrice;
+      return totalCost / totalQuantity;
     }
 
-    const validPrices = relevantTrades
-      .map(t => t.average_price)
-      .filter(p => p && !dummyValues.has(p))
-      .sort((a, b) => a - b);
+    // Layer 2: last valid entry-side trade price
+    const lastValid = [...openTrades].reverse().find((t) => t.average_price > 0);
+    if (lastValid) return lastValid.average_price;
 
-    // Layer 2: Median of valid prices
-    if (validPrices.length > 0) {
-      const mid = Math.floor(validPrices.length / 2);
-      const median = validPrices.length % 2 === 0
-        ? (validPrices[mid - 1] + validPrices[mid]) / 2
-        : validPrices[mid];
-      log.info('metrics.entry_price_fallback', {
-        broker: brokerKey || 'UNKNOWN',
-        layer: 'MEDIAN',
-        price: median,
-        trades_considered: relevantTrades.length,
-      });
-      return median;
-    }
-
-    // Layer 3: Last valid trade price
-    const lastValid = [...relevantTrades].reverse().find(t => t.average_price && !dummyValues.has(t.average_price));
-    if (lastValid?.average_price) {
-      log.info('metrics.entry_price_fallback', {
-        broker: brokerKey || 'UNKNOWN',
-        layer: 'LAST',
-        price: lastValid.average_price,
-        trades_considered: relevantTrades.length,
-      });
-      return lastValid.average_price;
-    }
-
-    log.error('Entry price resolution failed - invalid broker data', {
-      broker: brokerKey || 'UNKNOWN',
-      symbol: normalizedSymbol,
-      exchange: normalizedExchange,
-    });
     return null;
   }
 
   async _resolveCurrentPrice(position, rawExchange, rawSymbol, instanceId) {
+    // Freshest first: a young WS quote beats the positionbook LTP (8-30s old).
+    const { cached: wsFresh } = marketDataFeedService.getCachedQuoteEntriesForSymbols(
+      [{ exchange: rawExchange, symbol: rawSymbol }],
+      { ttlMs: FRESH_WS_QUOTE_MS }
+    );
+    const wsPrice = wsFresh?.length ? extractLtp(wsFresh[0].quote) : null;
+    if (wsPrice && wsPrice > 0) {
+      return { price: wsPrice, source: 'ws_quote' };
+    }
+
     let currentPrice = extractLtp(position);
     if (currentPrice && currentPrice > 0) {
       return { price: currentPrice, source: 'position_ltp' };
     }
 
-    // Try cached quotes first (order-critical TTL)
+    // Try cached quotes (order-critical TTL)
     const { cached } = marketDataFeedService.getCachedQuotesForSymbols(
       [{ exchange: rawExchange, symbol: rawSymbol }],
       { orderCritical: true }
@@ -539,11 +545,6 @@ class AutoExitService {
     if (cached?.length) {
       currentPrice = extractLtp(cached[0]);
       if (currentPrice && currentPrice > 0) {
-        log.debug('Auto-exit using cached quote LTP fallback', {
-          instance_id: instanceId,
-          exchange: rawExchange,
-          symbol: rawSymbol,
-        });
         return { price: currentPrice, source: 'cached_quote' };
       }
     }
@@ -556,11 +557,6 @@ class AutoExitService {
         { maxRounds: 2 }
       );
       if (ltpResult?.ltp && ltpResult.ltp > 0) {
-        log.debug('Auto-exit using live LTP fallback', {
-          instance_id: instanceId,
-          exchange: rawExchange,
-          symbol: rawSymbol,
-        });
         return { price: ltpResult.ltp, source: `live_fetch:${ltpResult.source || 'pool'}` };
       }
     } catch (err) {
@@ -573,40 +569,6 @@ class AutoExitService {
     }
 
     return { price: null, source: null };
-  }
-
-  async _resolveCrossInstanceMedianLtp(symbol, exchange) {
-    try {
-      const instances = await instanceService.getAllInstances({ is_active: true });
-      const ltps = [];
-      for (const inst of instances) {
-        const snapshot = marketDataFeedService.getPositionSnapshot(inst.id);
-        const positions = Array.isArray(snapshot?.data) ? snapshot.data : [];
-        if (!positions.length) continue;
-        const match = positions.find(p =>
-          this._normalizeSymbol(p.symbol || p.tradingsymbol || p.trading_symbol) === this._normalizeSymbol(symbol) &&
-          this._normalizeExchange(p.exchange || p.exch || p.brexchange) === this._normalizeExchange(exchange)
-        );
-        if (!match) continue;
-
-        const avgPrice = extractAveragePrice(match);
-        const cachedEntry = marketDataFeedService.getFallbackEntryPrice(inst.id, exchange, symbol);
-        const hasValidEntry = (avgPrice && avgPrice > 0) || (cachedEntry?.price && cachedEntry.price > 0);
-        if (!hasValidEntry) continue;
-
-        const ltp = extractLtp(match);
-        if (ltp && ltp > 0) {
-          ltps.push(ltp);
-        }
-      }
-
-      if (ltps.length === 0) return null;
-      const sorted = ltps.sort((a, b) => a - b);
-      const mid = Math.floor(sorted.length / 2);
-      return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-    } catch (err) {
-      return null;
-    }
   }
 
   _findConfig(symbol, exchange, lookup) {

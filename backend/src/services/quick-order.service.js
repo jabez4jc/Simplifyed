@@ -2044,13 +2044,14 @@ class QuickOrderService {
         targetExchange = derivativeExchange;
       }
 
-      // Every product: an EXIT closes the symbol. Filtered by the requested product, an EXIT
-      // sent as NRML found no MIS position and reported "No open positions to close".
+      // Every product: a manual EXIT closes the symbol. Filtered by the requested product, an EXIT
+      // sent as NRML found no MIS position and reported "No open positions to close". A risk exit
+      // (onlyProduct) was triggered by one product row, so it closes that row only.
       const positions = await this._getOpenPositionsForSymbol(
         instance,
         targetSymbol,
         targetExchange,
-        null
+        orderParams.onlyProduct ? product : null
       );
 
       positionsToClose = positions;
@@ -2316,6 +2317,8 @@ class QuickOrderService {
       product: params.product || 'MIS',
       strategy: params.strategy,
       expiry: params.expiry || null,
+      // Risk exits (auto-exit, exit levels) act on ONE product row; a manual EXIT closes the symbol.
+      onlyProduct: params.onlyProduct === true,
     };
 
     return this._closePositions(instance, symbolPayload, orderParams);

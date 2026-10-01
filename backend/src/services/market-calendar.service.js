@@ -159,6 +159,7 @@ class MarketCalendarService {
     return !!info;
   }
 
+  /** true/false, or null when today's timings could not be loaded (callers decide how to fail). */
   async isExchangeOpen(exchange, date = new Date(), via = null) {
     const ex = calendarExchange(exchange);
     if (!ex) return false;
@@ -181,7 +182,9 @@ class MarketCalendarService {
 
     const timings = await this.getMarketTimings(dateStr, via);
     if (!Array.isArray(timings) || timings.length === 0) {
-      return false;
+      // Loaded-but-empty is a real answer (weekend/holiday: closed). Never loaded at all is
+      // UNKNOWN - null, not false - so risk monitors can fail open instead of going blind.
+      return this.timingsCache.has(dateStr) ? false : null;
     }
 
     const entry = timings.find((t) => (t.exchange || '').toUpperCase() === ex);

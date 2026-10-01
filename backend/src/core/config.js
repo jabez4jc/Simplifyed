@@ -118,13 +118,6 @@ class Config {
       path: getEnv('WS_GATEWAY_PATH', '/stream'),
     };
 
-    this.autoExit = {
-      monitorIntervalMs: getEnvInt('AUTO_EXIT_MONITOR_INTERVAL_MS', 5000),
-      pendingExitCooldownMs: getEnvInt('AUTO_EXIT_PENDING_COOLDOWN_MS', 30000),
-      provisionalEntryGraceMs: getEnvInt('AUTO_EXIT_PROVISIONAL_ENTRY_GRACE_MS', 20000),
-      confirmationWindowMs: getEnvInt('AUTO_EXIT_CONFIRMATION_WINDOW_MS', 0),
-    };
-
     // "Idle" applies when no position is open, "active" while one is.
     this.marketDataFeed = {
       quoteTtlIdleMs: 12000,
