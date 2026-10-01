@@ -79,18 +79,21 @@ test('editing is gated on instances.edit specifically', async () => {
   assert.strictEqual(ok.status, 200);
 });
 
-test('a monitor may flip analyzer mode but may not edit anything else', async () => {
+test('PUT never changes the analyzer flag; the toggle route is the only way, and a monitor may use it', async () => {
   const inst = await makeInstance();
   const monitor = await asMonitor();
 
-  const modeOnly = await put(`/api/v1/instances/${inst.id}`, monitor).send({ is_analyzer_mode: true });
-  assert.strictEqual(modeOnly.status, 200, 'instances.toggle_mode covers a mode-only update');
+  // The local flag must not move without the broker toggle + Safe-Switch, so PUT refuses it (422)
+  // for anyone allowed to edit, and a monitor (no instances.edit) is refused outright (403).
+  const viaPut = await put(`/api/v1/instances/${inst.id}`, monitor).send({ is_analyzer_mode: true });
+  assert.strictEqual(viaPut.status, 403, 'a monitor holds instances.toggle_mode, not instances.edit');
 
-  const broader = await put(`/api/v1/instances/${inst.id}`, monitor).send({ is_analyzer_mode: true, name: 'Hijacked' });
-  assert.strictEqual(broader.status, 403, 'smuggling a second field past the mode-only path must fail');
+  const admin = await asAdmin();
+  const adminPut = await put(`/api/v1/instances/${inst.id}`, admin).send({ is_analyzer_mode: true });
+  assert.strictEqual(adminPut.status, 422, 'PUT points the client at /analyzer/toggle instead');
 
   const row = await db.get('SELECT name FROM instances WHERE id = ?', [inst.id]);
-  assert.strictEqual(row.name, inst.name, 'the refused update must not have partially applied');
+  assert.strictEqual(row.name, inst.name, 'a refused update must not partially apply');
 });
 
 test('bulk-update enforces the same permission split as a single edit', async () => {
