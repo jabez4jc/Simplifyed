@@ -3,9 +3,6 @@
  * Per-instance circuit-breaker/cooldown tracking (DNS/HTML errors get immediate cooldown
  * with a manual-refresh escalation; other errors get exponential-backoff auto-recovery).
  * Extracted from client.js.
- * NOTE: forceClearBackoff intentionally stayed in client.js - despite living physically
- * next to this cluster in the original file, it only ever touched errorCounters (rate-
- * limiter state), never instanceHealth, so it isn't actually part of this cluster.
  */
 
 import { log } from '../../core/logger.js';

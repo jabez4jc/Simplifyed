@@ -65,7 +65,6 @@ export async function realInstance(name, overrides = {}) {
     // truncate() restarts ids, so this row may inherit the circuit breaker an unreachable fixture
     // tripped under the same id earlier in the file.
     openalgoClient.forceResetInstanceHealth(row.id);
-    openalgoClient.forceClearBackoff(row.id);
   }
   const keys = Object.keys(overrides);
   if (keys.length) {

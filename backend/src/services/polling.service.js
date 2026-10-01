@@ -227,7 +227,6 @@ class PollingService {
       // Force reset instance health in circuit breaker
       // This clears any requiresManualRefresh flag and allows retries
       openalgoClient.forceResetInstanceHealth(instanceId);
-      openalgoClient.forceClearBackoff(instanceId);
       marketDataFeedService.resetInstanceHealth(instanceId);
       instanceService.resetHealthCheckState(instanceId);
 

@@ -92,7 +92,6 @@ async function cleanInstance(instance, symbols, log) {
   // A slow broker trips the circuit breaker, which would pause these very calls. Cleanup is
   // the one thing that must get through, so it clears the pause first.
   openalgoClient.forceResetInstanceHealth(instance.id);
-  openalgoClient.forceClearBackoff(instance.id);
   await assertAnalyzer(instance);
   const strategy = instance.strategy_tag || 'default';
 

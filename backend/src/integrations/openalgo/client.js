@@ -26,7 +26,6 @@ export function toBrokerExpiry(expiry) {
   return `${String(d.getUTCDate()).padStart(2, '0')}${EXPIRY_MONTHS[d.getUTCMonth()]}${String(d.getUTCFullYear()).slice(-2)}`;
 }
 import config from '../../core/config.js';
-import { toISTISOString } from '../../utils/time.js';
 import { maskApiKey } from '../../utils/sanitizers.js';
 import settingsService from '../../services/settings.service.js';
 
@@ -50,13 +49,6 @@ const ENDPOINT_BUCKET_KIND = {
   orderbook: 'critical',
   quotes: 'rest_quotes',
   multiquotes: 'rest_quotes',
-};
-
-const ERROR_LIMITS = {
-  max404PerDay: 20,              // Max 404 errors per instance per reset interval
-  maxInvalidApiPerDay: 10,       // Max invalid API key errors per reset interval
-  backoffMs: 5 * 60 * 1000,      // 5 minutes backoff when limits exceeded
-  resetIntervalMs: 30 * 60 * 1000, // Reset counters every 30 minutes
 };
 
 /**
@@ -232,7 +224,6 @@ class OpenAlgoClient extends EventEmitter {
     this.smartOrdersPerSecondLimit = 2;
     // Endpoint-specific token buckets (per instance)
     this.endpointBuckets = new Map(); // key: instKey -> { orders, critical, background, rest_quotes }
-    this.errorCounters = new Map(); // instKey -> { day, count404, countInvalid, backoffUntil }
     this.instanceMeta = new Map();
 
     // Rate limit settings cache - loaded once at startup, refreshed on settings change
@@ -295,18 +286,6 @@ class OpenAlgoClient extends EventEmitter {
 
   forceResetInstanceHealth(instanceId) {
     return instanceHealthTrackerService.forceResetInstanceHealth(instanceId);
-  }
-
-  /**
-   * Force clear error counters/backoff state for an instance
-   * Used after credentials are fixed so polling can resume immediately.
-   * @param {number|string} instanceId - Instance ID
-   */
-  forceClearBackoff(instanceId) {
-    if (this.errorCounters.has(instanceId)) {
-      this.errorCounters.delete(instanceId);
-      log.info('Instance backoff cleared manually', { instanceId });
-    }
   }
 
   /**
@@ -545,8 +524,6 @@ class OpenAlgoClient extends EventEmitter {
         const startTime = Date.now();
         if (!skipRateLimit) {
           await this._ensureLimits();
-          // Orders are never blocked by the error backoff (exits depend on them).
-          if (!isRateOrder) this._ensureBackoffWindow(instKey, endpoint);
           await this._throttle(instance, endpoint);
         }
         const response = skipRateLimit
@@ -591,7 +568,6 @@ class OpenAlgoClient extends EventEmitter {
         return response;
       } catch (error) {
         lastError = error;
-        this._recordError(instKey, error, endpoint);
 
         // An unreachable instance: open/extend its circuit. A background call gives up at once
         // rather than retrying a host that is down - those retries, multiplied across every
@@ -870,27 +846,6 @@ class OpenAlgoClient extends EventEmitter {
     return this.instanceRate.get(instKey);
   }
 
-  _getErrorState(instKey) {
-    const now = Date.now();
-    if (!this.errorCounters.has(instKey)) {
-      this.errorCounters.set(instKey, {
-        resetAt: now,
-        count404: 0,
-        countInvalid: 0,
-        backoffUntil: null,
-      });
-    }
-    const state = this.errorCounters.get(instKey);
-    // Reset counters every 30 minutes (instead of daily)
-    if (now - state.resetAt >= ERROR_LIMITS.resetIntervalMs) {
-      state.resetAt = now;
-      state.count404 = 0;
-      state.countInvalid = 0;
-      // Don't reset backoffUntil - let it expire naturally
-    }
-    return state;
-  }
-
   _persistMeta(instKey, instance) {
     this.instanceMeta.set(instKey, {
       id: instance.id || instance.instance_id,
@@ -1011,68 +966,9 @@ class OpenAlgoClient extends EventEmitter {
     }
   }
 
-  _ensureBackoffWindow(instKey, endpoint) {
-    const errState = this._getErrorState(instKey);
-    if (errState.backoffUntil && Date.now() < errState.backoffUntil) {
-      const waitMs = errState.backoffUntil - Date.now();
-      const message = `Instance ${instKey} is in backoff for ${Math.ceil(waitMs / 1000)}s due to error limits`;
-      const error = new OpenAlgoError(message, endpoint);
-      error.statusCode = 429;
-      throw error;
-    }
-  }
-
-  _recordError(instKey, error, endpoint) {
-    const errState = this._getErrorState(instKey);
-    const status = error.statusCode;
-    const message = error.message ? error.message.toLowerCase() : '';
-    const is404 = status === 404;
-    const isInvalid = status === 401 || status === 403 || message.includes('invalid apikey');
-
-    if (!is404 && !isInvalid) {
-      return;
-    }
-
-    if (is404) {
-      errState.count404 += 1;
-    }
-    if (isInvalid) {
-      errState.countInvalid += 1;
-    }
-
-    const warnNearLimit =
-      errState.count404 >= ERROR_LIMITS.max404PerDay - 2 ||
-      errState.countInvalid >= ERROR_LIMITS.maxInvalidApiPerDay - 1;
-
-    if (warnNearLimit) {
-      log.warn('Approaching OpenAlgo error thresholds', {
-        instKey,
-        endpoint,
-        count404: errState.count404,
-        countInvalid: errState.countInvalid,
-      });
-    }
-
-    const exceeded =
-      errState.count404 >= ERROR_LIMITS.max404PerDay ||
-      errState.countInvalid >= ERROR_LIMITS.maxInvalidApiPerDay;
-
-    if (exceeded) {
-      errState.backoffUntil = Date.now() + ERROR_LIMITS.backoffMs;
-      log.error('Error limits exceeded, entering backoff', {
-        instKey,
-        endpoint,
-        backoffUntil: toISTISOString(errState.backoffUntil),
-        count404: errState.count404,
-        countInvalid: errState.countInvalid,
-      });
-    }
-  }
-
   getInstanceMetrics() {
     const metrics = [];
     for (const [instKey, rate] of this.instanceRate.entries()) {
-      const err = this._getErrorState(instKey);
       const meta = this.instanceMeta.get(instKey) || {};
       metrics.push({
         key: instKey,
@@ -1084,11 +980,6 @@ class OpenAlgoClient extends EventEmitter {
           rpm: rate.rpm.length,
           orders: rate.orders.length,
           globalRpm: this.globalRpm.length,
-        },
-        errors: {
-          count404: err.count404,
-          countInvalid: err.countInvalid,
-          backoffUntil: err.backoffUntil,
         },
       });
     }

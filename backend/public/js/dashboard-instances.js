@@ -205,32 +205,11 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
 
   renderLimitBadge(metrics) {
     if (!metrics) return '<span class="text-neutral-400">-</span>';
-    const max404 = 20;
-    const maxInvalid = 10;
-    const { errors = {}, rate = {} } = metrics;
-    const backoffActive = errors.backoffUntil && Date.now() < errors.backoffUntil;
-    const near404 = errors.count404 >= max404 - 2;
-    const nearInvalid = errors.countInvalid >= maxInvalid - 1;
+    const { rate = {} } = metrics;
     const hotRate = rate.rps >= 4 || rate.orders >= 8 || rate.rpm >= 250 || rate.globalRpm >= 280;
-
-    let badgeClass = 'badge badge-success';
-    let label = 'OK';
-    const parts = [];
-    parts.push(`404s: ${errors.count404 ?? 0}/${max404}`);
-    parts.push(`Invalid: ${errors.countInvalid ?? 0}/${maxInvalid}`);
-    parts.push(`RPS: ${rate.rps ?? 0}/5`);
-    parts.push(`Orders/s: ${rate.orders ?? 0}/10`);
-
-    if (backoffActive) {
-      badgeClass = 'badge badge-error';
-      label = 'Backoff';
-    } else if (near404 || nearInvalid || hotRate) {
-      badgeClass = 'badge badge-warning';
-      label = 'Watch';
-    }
-
-    const title = parts.join(' • ');
-    return `<span class="${badgeClass}" title="${Utils.escapeHTML(title)}">${label}</span>`;
+    const title = `RPS: ${rate.rps ?? 0}/5 • Orders/s: ${rate.orders ?? 0}/10`;
+    const badgeClass = hotRate ? 'badge badge-warning' : 'badge badge-success';
+    return `<span class="${badgeClass}" title="${Utils.escapeHTML(title)}">${hotRate ? 'Watch' : 'OK'}</span>`;
   }
   /**
    * Show add instance modal
