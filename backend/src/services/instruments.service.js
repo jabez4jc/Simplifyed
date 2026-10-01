@@ -6,7 +6,6 @@
 
 import openalgoClient from '../integrations/openalgo/client.js';
 import instanceService from './instance.service.js';
-import marketDataInstanceService from './market-data-instance.service.js';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { ValidationError } from '../core/errors.js';
@@ -47,48 +46,54 @@ const SUPPORTED_EXCHANGES = [
 
 const CRYPTO_EXCHANGES = ['CRYPTO'];
 
-/**
- * Resolve which exchange segments to query for a given instance, based on its broker.
- * @param {Object} instance - Instance row (needs .broker)
- * @returns {string[]}
- */
-function getExchangesForInstance(instance) {
-  return isCryptoBroker(instance?.broker) ? CRYPTO_EXCHANGES : SUPPORTED_EXCHANGES;
+// A refresh is per segment: an Indian broker serves the Indian exchanges and a crypto broker
+// serves CRYPTO, so each segment is fetched from an instance that actually serves it. The segment
+// name is also what instruments_refresh_log.exchange holds for a completed refresh.
+const SEGMENTS = { INDIAN: SUPPORTED_EXCHANGES, CRYPTO: CRYPTO_EXCHANGES };
+const STALE_AFTER_HOURS = 24;
+const INSERT_BATCH = 75; // 75 rows * 12 bound values stays far under SQLite's variable limit
+const ROW_PLACEHOLDERS = '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)';
+
+/** -1, '', null and 0 all mean "no value" in the broker feeds. */
+const orNull = (value) => (!value || Number(value) === -1 ? null : value);
+
+function segmentForInstance(instance) {
+  return isCryptoBroker(instance?.broker) ? 'CRYPTO' : 'INDIAN';
 }
 
 class InstrumentsService {
   constructor() {
-    this.cryptoRefreshCron = null;
+    this.crons = [];
+    this.refreshing = new Map(); // segment -> in-flight refresh
   }
 
   /**
-   * Schedule a daily refresh of crypto instrument symbols at 17:31 IST. Delta Exchange rolls
-   * new daily/weekly options and expiries around this time - without a refresh, newly-listed
-   * contracts (e.g. a new day's options) are simply missing from the cache until someone
-   * manually re-syncs. Indian exchanges already get a daily refresh via the first-login
-   * middleware; crypto trades 24/7 on its own listing schedule so it needs its own trigger.
+   * Schedule the daily refreshes and the expiry purge, and refresh at boot if a segment is stale.
+   * Indian master contracts are republished before the open; crypto lists new dailies/weeklies
+   * around 17:30 IST. Nothing refreshes inside an HTTP request.
    */
-  startCryptoDailyRefresh() {
-    if (this.cryptoRefreshCron) return;
-    this.cryptoRefreshCron = cron.schedule('31 17 * * *', () => this._refreshCryptoInstruments(), {
-      timezone: 'Asia/Kolkata',
-    });
-    log.info('Crypto instruments daily refresh cron scheduled (17:31 IST)');
+  startScheduledRefresh() {
+    if (this.crons.length) return;
+    const at = (when, fn) => cron.schedule(when, fn, { timezone: 'Asia/Kolkata' });
+    const refresh = (segment) => () => this.refreshSegment(segment)
+      .catch((error) => log.error(`Daily ${segment} instruments refresh failed`, error));
+    const purge = () => this.purgeExpired().catch((error) => log.error('Expired instruments purge failed', error));
     // Expired contracts cease to exist: purge after crypto's 17:30 lapse (plus the sync buffer in
     // underlying.util.js) and just after midnight for Indian segments, which settle end of day.
-    this.expiryPurgeCrons = ['50 17 * * *', '5 0 * * *'].map((when) =>
-      cron.schedule(when, () => this.purgeExpired().catch((error) => log.error('Expired instruments purge failed', error)), {
-        timezone: 'Asia/Kolkata',
-      }));
-    this.purgeExpired().catch((error) => log.error('Expired instruments purge failed', error));
+    this.crons = [
+      at('30 8 * * *', refresh('INDIAN')),
+      at('31 17 * * *', refresh('CRYPTO')),
+      at('50 17 * * *', purge),
+      at('5 0 * * *', purge),
+    ];
+    log.info('Instruments refresh crons scheduled (Indian 08:30 IST, crypto 17:31 IST)');
+    purge();
+    this.refreshIfStale().catch((error) => log.error('Boot instruments refresh failed', error));
   }
 
-  stopCryptoDailyRefresh() {
-    (this.expiryPurgeCrons || []).forEach((job) => job.stop());
-    this.expiryPurgeCrons = [];
-    if (!this.cryptoRefreshCron) return;
-    this.cryptoRefreshCron.stop();
-    this.cryptoRefreshCron = null;
+  stopScheduledRefresh() {
+    this.crons.forEach((job) => job.stop());
+    this.crons = [];
   }
 
   /**
@@ -110,7 +115,10 @@ class InstrumentsService {
       await db.run('DELETE FROM instruments WHERE exchange = ? AND expiry = ?', [row.exchange, row.expiry]);
       removed += row.n;
     }
-    if (removed > 0) log.info('Purged expired contracts from the instruments cache', { count: removed });
+    if (removed > 0) {
+      await this._rebuildFts();
+      log.info('Purged expired contracts from the instruments cache', { count: removed });
+    }
     // Auto-roll rows move to their next contract first; only what could not roll is disabled.
     await futuresRollService.rollAll(now);
     await this.disableExpiredWatchlistSymbols(now);
@@ -135,88 +143,110 @@ class InstrumentsService {
     return expired.length;
   }
 
-  async _refreshCryptoInstruments() {
+  /**
+   * Whether a segment's cache must be refreshed: empty, never completed a refresh, or older than
+   * 24 hours. With no segment, any segment that an active instance serves counts (a crypto
+   * segment nobody trades is never "stale").
+   *
+   * @param {'INDIAN'|'CRYPTO'} [segment]
+   * @returns {Promise<boolean>}
+   */
+  async needsRefresh(segment = null) {
     try {
-      const instances = await instanceService.getAllInstances({ is_active: true });
-      const cryptoInstances = instances.filter((inst) => isCryptoBroker(inst.broker));
-      for (const inst of cryptoInstances) {
-        try {
-          const result = await this.fetchFromInstance(inst.id);
-          log.info('Daily crypto instruments refresh completed', {
-            instance_id: inst.id,
-            count: result.finalCount,
-          });
-        } catch (error) {
-          log.error('Daily crypto instruments refresh failed', error, { instance_id: inst.id });
-        }
+      const segments = segment ? [segment] : await this._segmentsInUse();
+      for (const seg of segments) {
+        if (await this._segmentStale(seg)) return true;
       }
+      return false;
     } catch (error) {
-      log.error('Daily crypto instruments refresh: failed to list instances', error);
+      log.error('Failed to check refresh status', error, { segment });
+      return true; // Err on the side of refreshing
+    }
+  }
+
+  async _segmentStale(segment) {
+    const exchanges = SEGMENTS[segment];
+    if (!exchanges) throw new ValidationError(`Unknown instruments segment: ${segment}`);
+
+    const { count } = await db.get(
+      `SELECT COUNT(*) AS count FROM instruments WHERE exchange IN (${exchanges.map(() => '?').join(', ')})`,
+      exchanges
+    );
+    if (count === 0) {
+      log.info('No instruments cached for segment, refresh needed', { segment });
+      return true;
+    }
+
+    const last = await db.get(
+      `SELECT refresh_completed_at FROM instruments_refresh_log
+       WHERE status = 'completed' AND exchange = ?
+       ORDER BY refresh_completed_at DESC LIMIT 1`,
+      [segment]
+    );
+    if (!last) {
+      log.info('No successful refresh found for segment, refresh needed', { segment });
+      return true;
+    }
+
+    const hours = (Date.now() - new Date(last.refresh_completed_at).getTime()) / (1000 * 60 * 60);
+    return hours > STALE_AFTER_HOURS;
+  }
+
+  async _segmentsInUse() {
+    const instances = await instanceService.getAllInstances({ is_active: true });
+    return Object.keys(SEGMENTS).filter((seg) => instances.some((inst) => segmentForInstance(inst) === seg));
+  }
+
+  isRefreshing() {
+    return this.refreshing.size > 0;
+  }
+
+  /** Boot-time catch-up: refresh each segment in use whose cache is stale. */
+  async refreshIfStale() {
+    for (const segment of await this._segmentsInUse()) {
+      if (!(await this._segmentStale(segment))) continue;
+      await this.refreshSegment(segment).catch((error) => log.error('Instruments refresh failed', error, { segment }));
     }
   }
 
   /**
-   * Check if instruments need to be refreshed
-   * Refresh is needed if:
-   * 1. No instruments exist in database
-   * 2. Last refresh was more than 24 hours ago
-   * 3. Last refresh failed
-   *
-   * @param {string} [exchange] - Optional exchange to check
-   * @returns {Promise<boolean>} - true if refresh is needed
+   * Refresh one segment from an instance that serves it (healthy ones first, falling through to
+   * the next if a fetch fails outright). Concurrent calls share one run.
    */
-  async needsRefresh(exchange = null) {
-    try {
-      // Check if we have any instruments at all
-      const countResult = await db.get(
-        'SELECT COUNT(*) as count FROM instruments' +
-        (exchange ? ' WHERE exchange = ?' : ''),
-        exchange ? [exchange] : []
-      );
-
-      if (countResult.count === 0) {
-        log.info('No instruments found in cache, refresh needed', { exchange });
-        return true;
-      }
-
-      // Check last refresh log
-      const lastRefresh = await db.get(
-        `SELECT * FROM instruments_refresh_log
-         WHERE status = 'completed'
-         ${exchange ? 'AND (exchange = ? OR exchange IS NULL)' : ''}
-         ORDER BY refresh_completed_at DESC
-         LIMIT 1`,
-        exchange ? [exchange] : []
-      );
-
-      if (!lastRefresh) {
-        log.info('No successful refresh found, refresh needed', { exchange });
-        return true;
-      }
-
-      // Check if last refresh was more than 24 hours ago
-      const lastRefreshTime = new Date(lastRefresh.refresh_completed_at).getTime();
-      const hoursSinceRefresh = (Date.now() - lastRefreshTime) / (1000 * 60 * 60);
-
-      if (hoursSinceRefresh > 24) {
-        log.info('Last refresh was more than 24 hours ago, refresh needed', {
-          exchange,
-          hoursSinceRefresh: hoursSinceRefresh.toFixed(2)
-        });
-        return true;
-      }
-
-      log.debug('Instruments cache is fresh', {
-        exchange,
-        hoursSinceRefresh: hoursSinceRefresh.toFixed(2),
-        instrumentCount: countResult.count
-      });
-
-      return false;
-    } catch (error) {
-      log.error('Failed to check refresh status', error, { exchange });
-      return true; // Err on the side of refreshing
+  async refreshSegment(segment) {
+    if (!SEGMENTS[segment]) throw new ValidationError(`Unknown instruments segment: ${segment}`);
+    if (!this.refreshing.has(segment)) {
+      const run = this._refreshSegment(segment).finally(() => this.refreshing.delete(segment));
+      this.refreshing.set(segment, run);
     }
+    return this.refreshing.get(segment);
+  }
+
+  async _refreshSegment(segment) {
+    // Test instances have no real instruments. Same isTestMode() as the auth middleware.
+    if (isTestMode()) {
+      log.info('Test mode: skipping instruments refresh', { segment });
+      return { success: true, skipped: true, reason: 'TEST_MODE' };
+    }
+
+    const instances = (await instanceService.getAllInstances({ is_active: true }))
+      .filter((inst) => segmentForInstance(inst) === segment)
+      .sort((a, b) => Number(b.health_status === 'healthy') - Number(a.health_status === 'healthy'));
+    if (instances.length === 0) {
+      log.debug('No active instance serves this instruments segment', { segment });
+      return { success: true, skipped: true, reason: 'NO_INSTANCE' };
+    }
+
+    let lastError;
+    for (const inst of instances) {
+      try {
+        return await this.fetchFromInstance(inst.id);
+      } catch (error) {
+        lastError = error;
+        log.warn('Instruments refresh failed on instance, trying the next', { segment, instance_id: inst.id, error: error.message });
+      }
+    }
+    throw lastError;
   }
 
   async _queryExpiriesByUnderlyingKey(underlyingKey, exchange, instrumentTypes = []) {
@@ -242,223 +272,6 @@ class InstrumentsService {
     }
 
     return db.all(query, params);
-  }
-
-  /**
-   * Refresh instruments from broker
-   * Fetches complete instrument list and stores in database
-   *
-   * @param {string} [exchange] - Optional exchange to refresh (null = all exchanges)
-   * @param {number} [instanceId] - Optional instance ID to use
-   * @returns {Promise<Object>} - Refresh result with count and status
-   */
-  async refreshInstruments(exchange = null, instanceId = null) {
-    const startTime = Date.now();
-    let refreshLogId = null;
-
-    // Skip refresh in test mode (test instances don't have valid instruments).
-    // Same isTestMode() as the auth middleware - config.testMode was a second, independent
-    // switch fed by a different env var, and has been removed.
-    if (isTestMode()) {
-      log.info('Test mode: Skipping instruments refresh', {
-        exchange: exchange || 'ALL'
-      });
-      return {
-        success: true,
-        count: 0,
-        duration_ms: 0,
-        skipped: true,
-        reason: 'TEST_MODE'
-      };
-    }
-
-    try {
-      // Get market data instance
-      const instance = await this._getMarketDataInstance(instanceId);
-
-      log.info('Starting instruments refresh', {
-        exchange: exchange || 'ALL',
-        instance_id: instance.id,
-        instance_name: instance.name
-      });
-
-      // Create refresh log entry
-      const logResult = await db.run(
-        `INSERT INTO instruments_refresh_log (
-          exchange, status, refresh_started_at
-        ) VALUES (?, 'in_progress', ?)`,
-        [exchange || null, toISTISOString()]
-      );
-
-      refreshLogId = logResult.lastID;
-
-      // Fetch instruments from OpenAlgo
-      // If no exchange specified, fetch from all supported exchanges
-      let instruments = [];
-
-      if (exchange) {
-        // Single exchange
-        instruments = await openalgoClient.getInstruments(instance, exchange);
-      } else {
-        // All exchanges for this instance's broker - fetch from each and combine
-        const exchanges = getExchangesForInstance(instance);
-        log.info('Fetching instruments from all exchanges', {
-          exchanges
-        });
-
-        for (const ex of exchanges) {
-          try {
-            const exInstruments = await openalgoClient.getInstruments(instance, ex);
-            if (exInstruments && exInstruments.length > 0) {
-              instruments.push(...exInstruments);
-              log.info(`Fetched instruments from ${ex}`, { count: exInstruments.length });
-            }
-          } catch (error) {
-            // Log error but continue with other exchanges
-            log.warn(`Failed to fetch instruments from ${ex}`, {
-              error: error.message
-            });
-          }
-        }
-      }
-
-      if (!instruments || instruments.length === 0) {
-        throw new Error('No instruments returned from broker');
-      }
-
-      log.info('Fetched instruments from broker', {
-        count: instruments.length,
-        exchange: exchange || 'ALL'
-      });
-
-      // Store instruments in database (in transaction for atomicity)
-      await db.transaction(async () => {
-        // Delete existing instruments for the exchange(s) being refreshed only -
-        // never wipe exchanges outside this instance's broker (e.g. a crypto instance
-        // refresh must not delete cached Indian broker instruments, and vice versa)
-        if (exchange) {
-          await db.run('DELETE FROM instruments WHERE exchange = ?', [exchange]);
-          log.debug('Cleared existing instruments for exchange', { exchange });
-        } else {
-          const exchanges = getExchangesForInstance(instance);
-          const placeholders = exchanges.map(() => '?').join(', ');
-          await db.run(`DELETE FROM instruments WHERE exchange IN (${placeholders})`, exchanges);
-          log.debug('Cleared existing instruments for exchanges', { exchanges });
-        }
-
-        // Batch insert instruments (SQLite max 999 parameters, each instrument has 12 fields)
-        const batchSize = 75; // 75 * 13 < 999 (including timestamps)
-        const batches = [];
-
-        for (let i = 0; i < instruments.length; i += batchSize) {
-          batches.push(instruments.slice(i, i + batchSize));
-        }
-
-        log.debug('Inserting instruments in batches', {
-          totalInstruments: instruments.length,
-          batchCount: batches.length,
-          batchSize
-        });
-
-        for (let i = 0; i < batches.length; i++) {
-          const batch = batches[i];
-
-          // Build VALUES clause with placeholders (11 fields + 2 timestamps)
-          const placeholders = batch
-            .map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)')
-            .join(', ');
-
-          // Flatten values for all instruments in batch
-          const values = batch.flatMap(inst => {
-            const normalizedInstrument = {
-              symbol: inst.symbol ? inst.symbol.toUpperCase() : null,
-              instrumenttype: inst.instrumenttype ? inst.instrumenttype.toUpperCase() : null,
-              name: inst.name ? inst.name.toUpperCase() : null,
-            };
-            const underlyingKey = this._deriveUnderlyingKey(normalizedInstrument);
-            return [
-              normalizedInstrument.symbol,
-              inst.brsymbol || null,
-              inst.name || null,
-              inst.exchange ? inst.exchange.toUpperCase() : null,
-              inst.brexchange || null,
-              inst.token || null,
-              inst.expiry || null,
-              inst.strike || null,
-              inst.lotsize || 1,
-              normalizedInstrument.instrumenttype,
-              underlyingKey,
-              inst.tick_size || null
-            ];
-          });
-
-          await db.run(
-            `INSERT OR REPLACE INTO instruments (
-              symbol, brsymbol, name, exchange, brexchange, token, expiry, strike,
-              lotsize, instrumenttype, underlying_key, tick_size, created_at, updated_at
-            ) VALUES ${placeholders}`,
-            values
-          );
-
-          // Log progress for large datasets
-          if (i % 10 === 0 || i === batches.length - 1) {
-            const progress = ((i + 1) / batches.length * 100).toFixed(1);
-            log.debug('Batch insert progress', {
-              batch: i + 1,
-              total: batches.length,
-              progress: `${progress}%`
-            });
-          }
-        }
-      });
-
-      await this.purgeExpired();
-      const duration = Date.now() - startTime;
-
-      // Update refresh log with success
-      await db.run(
-        `UPDATE instruments_refresh_log
-         SET status = 'completed',
-             instrument_count = ?,
-             refresh_completed_at = ?
-         WHERE id = ?`,
-        [instruments.length, toISTISOString(), refreshLogId]
-      );
-
-      log.info('Instruments refresh completed successfully', {
-        exchange: exchange || 'ALL',
-        count: instruments.length,
-        duration_ms: duration,
-        duration_sec: (duration / 1000).toFixed(2)
-      });
-
-      return {
-        success: true,
-        count: instruments.length,
-        exchange: exchange || 'ALL',
-        duration_ms: duration
-      };
-    } catch (error) {
-      const duration = Date.now() - startTime;
-
-      // Update refresh log with failure
-      if (refreshLogId) {
-        await db.run(
-          `UPDATE instruments_refresh_log
-           SET status = 'failed',
-               error_message = ?
-           WHERE id = ?`,
-          [error.message, refreshLogId]
-        ).catch(err => log.warn('Failed to update refresh log', err));
-      }
-
-      log.error('Instruments refresh failed', error, {
-        exchange: exchange || 'ALL',
-        duration_ms: duration
-      });
-
-      throw error;
-    }
   }
 
   /**
@@ -618,47 +431,24 @@ class InstrumentsService {
       // Get all options for this symbol and expiry
       const normalizedSymbol = String(symbol || '').toUpperCase();
 
-      // Try multiple expiry formats since DB might store different formats
-      const expiryFormats = this._getExpiryFormats(expiry);
+      // Stored as ISO (YYYY-MM-DD); callers may hand over DD-MMM-YY or DDMMMYY.
+      const expiryKey = this._normalizeExpiryDate(expiry) || String(expiry || '').trim().toUpperCase();
 
-      let options = [];
-      for (const expiryFormat of expiryFormats) {
+      let options = await db.all(
+        `SELECT * FROM instruments
+         WHERE underlying_key = ? AND expiry = ? AND exchange = ? AND strike IS NOT NULL
+         ORDER BY strike ASC`,
+        [normalizedSymbol, expiryKey, exchange]
+      );
+
+      // Fallback: symbol prefix match
+      if (!options || options.length === 0) {
         options = await db.all(
           `SELECT * FROM instruments
-           WHERE underlying_key = ? AND expiry = ? AND exchange = ? AND strike IS NOT NULL
+           WHERE symbol LIKE ? AND expiry = ? AND exchange = ? AND strike IS NOT NULL
            ORDER BY strike ASC`,
-          [normalizedSymbol, expiryFormat, exchange]
+          [`${normalizedSymbol}%`, expiryKey, exchange]
         );
-
-        if (options && options.length > 0) {
-          log.debug('Found options with expiry format', {
-            symbol: normalizedSymbol,
-            expiryFormat,
-            count: options.length
-          });
-          break;
-        }
-      }
-
-      // Fallback: try symbol LIKE match with multiple expiry formats
-      if (!options || options.length === 0) {
-        for (const expiryFormat of expiryFormats) {
-          options = await db.all(
-            `SELECT * FROM instruments
-             WHERE symbol LIKE ? AND expiry = ? AND exchange = ? AND strike IS NOT NULL
-             ORDER BY strike ASC`,
-            [`${normalizedSymbol}%`, expiryFormat, exchange]
-          );
-
-          if (options && options.length > 0) {
-            log.debug('Found options via symbol LIKE with expiry format', {
-              symbol: normalizedSymbol,
-              expiryFormat,
-              count: options.length
-            });
-            break;
-          }
-        }
       }
 
       // Separate CE and PE options
@@ -851,7 +641,7 @@ class InstrumentsService {
       return trimmed;
     }
 
-    const match = trimmed.match(/^(\d{2})-([A-Z]{3})-(\d{2})$/);
+    const match = trimmed.match(/^(\d{2})-?([A-Z]{3})-?(\d{2})$/);
     if (match) {
       const [, day, monthStr, year] = match;
       const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
@@ -916,101 +706,68 @@ class InstrumentsService {
   }
 
   /**
-   * Generate multiple expiry format variants to try when querying
-   * Different brokers store expiry in different formats
-   * @param {string} expiry - Input expiry date
-   * @returns {Array<string>} - Array of expiry formats to try
-   * @private
+   * Replace one exchange's instruments: delete its rows and bulk-insert the new ones in a single
+   * transaction, with expiry normalised to ISO (YYYY-MM-DD). The caller rebuilds the FTS index once
+   * after however many exchanges it loads (_rebuildFts) - the table is external-content, so it is
+   * never edited row by row.
+   *
+   * @param {string} exchange
+   * @param {Object[]} instruments - OpenAlgo-shaped rows (symbol, brsymbol, name, token, expiry, ...)
+   * @returns {Promise<number>} rows written
    */
-  _getExpiryFormats(expiry) {
-    if (!expiry) return [];
+  async replaceExchange(exchange, instruments) {
+    const ex = String(exchange || '').toUpperCase();
+    if (!ex) throw new ValidationError('exchange is required');
+    const rows = instruments.map((inst) => this._toRow(inst, ex)).filter(Boolean);
 
-    const formats = new Set();
-    const trimmed = String(expiry).trim().toUpperCase();
-    formats.add(trimmed);
-
-    const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-
-    // Try to parse ISO format (YYYY-MM-DD)
-    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-      const [year, month, day] = trimmed.split('-');
-      const monthName = months[parseInt(month, 10) - 1];
-      const shortYear = year.slice(-2);
-
-      // Add variants: DD-MMM-YY, DDMMMYY
-      formats.add(`${day}-${monthName}-${shortYear}`);
-      formats.add(`${day}${monthName}${shortYear}`);
-      formats.add(`${day}-${monthName}-${year}`);
-    }
-
-    // Try to parse DD-MMM-YY format
-    const ddMmmYyMatch = trimmed.match(/^(\d{2})-([A-Z]{3})-(\d{2})$/);
-    if (ddMmmYyMatch) {
-      const [, day, monthStr, shortYear] = ddMmmYyMatch;
-      const monthIndex = months.indexOf(monthStr);
-      if (monthIndex !== -1) {
-        const isoMonth = String(monthIndex + 1).padStart(2, '0');
-        const fullYear = `20${shortYear}`;
-
-        // Add variants: YYYY-MM-DD, DDMMMYY, DD-MMM-YYYY
-        formats.add(`${fullYear}-${isoMonth}-${day}`);
-        formats.add(`${day}${monthStr}${shortYear}`);
-        formats.add(`${day}-${monthStr}-${fullYear}`);
+    await db.transaction(async () => {
+      await db.run('DELETE FROM instruments WHERE exchange = ?', [ex]);
+      for (let i = 0; i < rows.length; i += INSERT_BATCH) {
+        const batch = rows.slice(i, i + INSERT_BATCH);
+        await db.run(
+          `INSERT OR REPLACE INTO instruments (
+            symbol, brsymbol, name, exchange, brexchange, token, expiry, strike,
+            lotsize, instrumenttype, underlying_key, tick_size, created_at, updated_at
+          ) VALUES ${batch.map(() => ROW_PLACEHOLDERS).join(', ')}`,
+          batch.flat()
+        );
       }
-    }
+    });
+    return rows.length;
+  }
 
-    // Try to parse DDMMMYY format (no dashes)
-    const ddMmmYyNoDash = trimmed.match(/^(\d{2})([A-Z]{3})(\d{2})$/);
-    if (ddMmmYyNoDash) {
-      const [, day, monthStr, shortYear] = ddMmmYyNoDash;
-      const monthIndex = months.indexOf(monthStr);
-      if (monthIndex !== -1) {
-        const isoMonth = String(monthIndex + 1).padStart(2, '0');
-        const fullYear = `20${shortYear}`;
+  /** One normalised instruments row (column order of replaceExchange's INSERT), or null without a symbol. */
+  _toRow(inst, exchange) {
+    const symbol = inst.symbol ? String(inst.symbol).toUpperCase() : null;
+    if (!symbol) return null;
+    const instrumenttype = inst.instrumenttype ? String(inst.instrumenttype).toUpperCase() : null;
+    const underlyingKey = this._deriveUnderlyingKey({ symbol, instrumenttype });
+    const expiry = this._deriveExpiryFromSymbol(symbol, instrumenttype) || this._normalizeExpiryDate(inst.expiry);
+    const lotsize = parseInt(orNull(inst.lotsize), 10);
 
-        // Add variants: YYYY-MM-DD, DD-MMM-YY
-        formats.add(`${fullYear}-${isoMonth}-${day}`);
-        formats.add(`${day}-${monthStr}-${shortYear}`);
-      }
-    }
+    return [
+      symbol,
+      inst.brsymbol || null,
+      inst.name || null,
+      exchange,
+      inst.brexchange || null,
+      inst.token || null,
+      expiry,
+      orNull(inst.strike),
+      Number.isFinite(lotsize) ? lotsize : 1,
+      instrumenttype,
+      underlyingKey,
+      orNull(inst.tick_size),
+    ];
+  }
 
-    return Array.from(formats);
+  /** Re-index the external-content FTS table from `instruments`; run after a bulk load or purge. */
+  async _rebuildFts() {
+    await db.run("INSERT INTO instruments_fts(instruments_fts) VALUES('rebuild')");
   }
 
   /**
-   * Instance to fetch instruments from: the one asked for, else the market-data pool, else any healthy one
-   * @private
-   */
-  async _getMarketDataInstance(instanceId) {
-    if (instanceId) {
-      const instance = await instanceService.getInstanceById(instanceId);
-      if (!instance) {
-        throw new ValidationError(`Instance with ID ${instanceId} not found`);
-      }
-      return instance;
-    }
-
-    // Prefer configured market data instance pool (supports multiquotes)
-    try {
-      const mdInstance = await marketDataInstanceService.getMarketDataInstance();
-      if (mdInstance) {
-        return mdInstance;
-      }
-    } catch (err) {
-      log.warn('Failed to get market data instance for instruments refresh, falling back', { error: err.message });
-    }
-
-    // Fallback: any healthy active instance
-    const instances = await instanceService.getAllInstances({ is_active: true });
-    const healthy = instances.filter(inst => inst.health_status === 'healthy');
-    if (healthy.length === 0) {
-      throw new ValidationError('No healthy instances available for instruments refresh');
-    }
-    return healthy[0];
-  }
-
-  /**
-   * Import instruments from CSV file
+   * Import instruments from CSV file. Replaces only the exchanges present in the file.
    *
    * @param {string} csvContent - CSV file content as string
    * @returns {Promise<Object>} - Import result with counts and stats
@@ -1021,129 +778,43 @@ class InstrumentsService {
     try {
       log.info('Starting CSV import');
 
-      // Parse CSV content
       const lines = csvContent.trim().split('\n');
-
       if (lines.length < 2) {
         throw new ValidationError('CSV file is empty or invalid');
       }
-
-      // Skip header
-      const header = lines.shift();
-      log.info('CSV header', { header });
+      lines.shift(); // header
 
       const totalRecords = lines.length;
-      let inserted = 0;
       let skipped = 0;
-      const BATCH_SIZE = 1000;
+      const byExchange = new Map();
 
-      // Clear existing instruments
-      log.info('Clearing existing instruments');
-      await db.run('DELETE FROM instruments');
-
-      // Process in batches
-      for (let i = 0; i < lines.length; i += BATCH_SIZE) {
-        const batch = lines.slice(i, i + BATCH_SIZE);
-        const values = [];
-        const placeholders = [];
-
-        for (const line of batch) {
-          if (!line.trim()) {
-            skipped++;
-            continue;
-          }
-
-          // Parse CSV line (handle quoted fields)
-          const fields = this._parseCsvLine(line);
-
-          if (fields.length < 12) {
-            log.warn('Skipping invalid CSV line', { line: line.substring(0, 50) });
-            skipped++;
-            continue;
-          }
-
-          const [
-            _id, symbol, brsymbol, name, exchange, brexchange,
-            token, expiry, strike, lotsize, instrumenttype, tick_size
-          ] = fields;
-
-          // Prepare values (convert empty strings to null)
-          const normalizedInstrument = {
-            symbol: symbol ? symbol.toUpperCase() : null,
-            instrumenttype: instrumenttype ? instrumenttype.toUpperCase() : null,
-            name: name ? name.toUpperCase() : null,
-          };
-          const underlyingKey = this._deriveUnderlyingKey(normalizedInstrument);
-
-          const shouldDeriveExpiry = underlyingKey &&
-            this._isDerivativeInstrumentType(normalizedInstrument.instrumenttype);
-          const derivedExpiry = shouldDeriveExpiry
-            ? this._deriveExpiryFromSymbol(
-                normalizedInstrument.symbol,
-                normalizedInstrument.instrumenttype
-              )
-            : null;
-          const rawExpiry = expiry ? expiry.trim() : '';
-          const normalizedInputExpiry = rawExpiry && rawExpiry !== '-1'
-            ? this._normalizeExpiryDate(rawExpiry)
-            : null;
-          const expiryValue = derivedExpiry || normalizedInputExpiry;
-
-          const value = [
-            normalizedInstrument.symbol,
-            brsymbol || null,
-            name || null,
-            exchange ? exchange.toUpperCase() : null,
-            brexchange || null,
-            token || null,
-            expiryValue,
-            strike === '-1' || strike === '' ? null : strike,
-            lotsize === '-1' || lotsize === '' ? 1 : parseInt(lotsize, 10),
-            normalizedInstrument.instrumenttype,
-            underlyingKey,
-            tick_size === '-1' || tick_size === '' ? null : tick_size
-          ];
-
-          values.push(...value);
-          placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime("now"), datetime("now"))');
+      for (const line of lines) {
+        const fields = line.trim() ? this._parseCsvLine(line) : [];
+        if (fields.length < 12) {
+          skipped++;
+          continue;
         }
-
-        if (placeholders.length > 0) {
-          // Insert batch
-          const sql = `
-            INSERT INTO instruments (
-              symbol, brsymbol, name, exchange, brexchange, token, expiry, strike,
-              lotsize, instrumenttype, underlying_key, tick_size, created_at, updated_at
-            ) VALUES ${placeholders.join(', ')}
-          `;
-
-          await db.run(sql, values);
-          inserted += placeholders.length;
-
-          log.info('CSV import batch processed', {
-            batch: Math.floor(i / BATCH_SIZE) + 1,
-            inserted,
-            progress: `${((i + batch.length) / lines.length * 100).toFixed(1)}%`
-          });
+        const [, symbol, brsymbol, name, exchange, brexchange, token, expiry, strike, lotsize, instrumenttype, tick_size] = fields;
+        const ex = (exchange || '').toUpperCase();
+        if (!ex) {
+          skipped++;
+          continue;
         }
+        if (!byExchange.has(ex)) byExchange.set(ex, []);
+        byExchange.get(ex).push({ symbol, brsymbol, name, brexchange, token, expiry, strike, lotsize, instrumenttype, tick_size });
       }
 
-      // Rebuild FTS table
-      log.info('Rebuilding FTS table');
-      await db.run('DELETE FROM instruments_fts');
-      await db.run(`
-        INSERT INTO instruments_fts(rowid, symbol, name)
-        SELECT id, symbol, name FROM instruments
-      `);
+      let inserted = 0;
+      for (const [ex, rows] of byExchange) {
+        inserted += await this.replaceExchange(ex, rows);
+        log.info('CSV import exchange replaced', { exchange: ex, rows: rows.length });
+      }
+      await this._rebuildFts();
 
       await this.purgeExpired();
       const duration = Date.now() - startTime;
 
-      // Get final count
-      const countResult = await db.get('SELECT COUNT(*) as count FROM instruments');
-      const finalCount = countResult.count;
-
-      // Update refresh log
+      const { count: finalCount } = await db.get('SELECT COUNT(*) as count FROM instruments');
       await db.run(`
         INSERT INTO instruments_refresh_log (
           exchange, status, instrument_count, refresh_started_at, refresh_completed_at
@@ -1280,220 +951,108 @@ class InstrumentsService {
   }
 
   /**
-   * Fetch instruments from an OpenAlgo instance for all exchanges
+   * Fetch instruments from an OpenAlgo instance for its broker's segment (Indian or crypto).
+   * Only that segment's exchanges are replaced, and an exchange only once its new list has
+   * arrived: a failed or empty download leaves the previous cache in place.
    *
    * @param {number} instanceId - Instance ID to fetch from
    * @returns {Promise<Object>} - Fetch result with counts and stats
    */
   async fetchFromInstance(instanceId, onProgress = null) {
     const startTime = Date.now();
+    let refreshLogId = null;
 
     try {
-      // Get instance details
       const instance = await instanceService.getInstanceById(instanceId);
       if (!instance) {
         throw new ValidationError(`Instance ${instanceId} not found`);
       }
 
-      log.info('Starting instruments fetch from instance', {
-        instanceId,
-        instance_name: instance.name
-      });
+      const segment = segmentForInstance(instance);
+      const exchanges = SEGMENTS[segment];
+      log.info('Starting instruments fetch from instance', { instanceId, instance_name: instance.name, segment });
+
+      const logResult = await db.run(
+        `INSERT INTO instruments_refresh_log (exchange, status, refresh_started_at) VALUES (?, 'in_progress', ?)`,
+        [segment, toISTISOString()]
+      );
+      refreshLogId = logResult.lastID;
 
       let totalInstruments = 0;
       const exchangeStats = {};
+      const progress = (status, message, currentExchange = null) => onProgress?.({
+        status,
+        message,
+        currentExchange,
+        completedExchanges: Object.keys(exchangeStats),
+        totalInstruments,
+      });
 
-      // Resolve which exchange segments belong to this instance's broker (Indian vs crypto).
-      // Only those are replaced - a crypto instance sync must not wipe cached Indian broker
-      // instruments (and an Indian broker sync must not wipe cached crypto instruments).
-      // An exchange is cleared only once its new list has arrived, so a failed download
-      // leaves the previous cache in place instead of an empty exchange.
-      const exchanges = getExchangesForInstance(instance);
-
-      // Fetch from each exchange
       for (const exchange of exchanges) {
         try {
-          log.info(`Fetching instruments for exchange: ${exchange}`);
+          progress('fetching', `Fetching ${exchange}...`, exchange);
+          const response = await openalgoClient.getInstruments(instance, exchange);
 
-          // Notify progress callback - starting exchange
-          if (onProgress) {
-            const completedExchanges = Object.keys(exchangeStats);
-            onProgress({
-              status: 'fetching',
-              message: `Fetching ${exchange}...`,
-              currentExchange: exchange,
-              completedExchanges,
-              totalInstruments
-            });
-          }
-
-          // Call OpenAlgo API
-          const response = await openalgoClient.getInstruments(
-            instance,
-            exchange
-          );
-
-          if (!response || !Array.isArray(response)) {
+          if (!Array.isArray(response) || response.length === 0) {
             log.warn(`No instruments returned for ${exchange}`);
             exchangeStats[exchange] = { count: 0, status: 'empty' };
             continue;
           }
 
-          await db.run('DELETE FROM instruments WHERE exchange = ?', [exchange]);
-
-          // Insert instruments in batches
-          const BATCH_SIZE = 70;
-          let inserted = 0;
-
-          for (let i = 0; i < response.length; i += BATCH_SIZE) {
-            const batch = response.slice(i, i + BATCH_SIZE);
-            const values = [];
-            const placeholders = [];
-
-            for (const instrument of batch) {
-              const normalizedInstrument = {
-                symbol: instrument.symbol ? instrument.symbol.toUpperCase() : null,
-                instrumenttype: instrument.instrumenttype ? instrument.instrumenttype.toUpperCase() : null,
-                name: instrument.name ? instrument.name.toUpperCase() : null,
-              };
-              const underlyingKey = this._deriveUnderlyingKey(normalizedInstrument);
-              const shouldDeriveExpiry = underlyingKey &&
-                this._isDerivativeInstrumentType(normalizedInstrument.instrumenttype);
-              const derivedExpiry = shouldDeriveExpiry
-                ? this._deriveExpiryFromSymbol(
-                    normalizedInstrument.symbol,
-                    normalizedInstrument.instrumenttype
-                  )
-                : null;
-              const expiryInput = instrument.expiry ? String(instrument.expiry).trim() : '';
-              const normalizedInputExpiry = expiryInput && expiryInput !== '-1'
-                ? this._normalizeExpiryDate(expiryInput)
-                : null;
-              const expiryValue = derivedExpiry || normalizedInputExpiry;
-
-              const value = [
-                normalizedInstrument.symbol,
-                instrument.brsymbol || null,
-                instrument.name || null,
-                (instrument.exchange || exchange || '').toUpperCase(),
-                instrument.brexchange || null,
-                instrument.token || null,
-                expiryValue,
-                instrument.strike === '-1' || !instrument.strike ? null : instrument.strike,
-                instrument.lotsize === '-1' || !instrument.lotsize ? 1 : parseInt(instrument.lotsize, 10),
-                normalizedInstrument.instrumenttype,
-                underlyingKey,
-                instrument.tick_size === '-1' || !instrument.tick_size ? null : instrument.tick_size
-              ];
-
-              values.push(...value);
-              placeholders.push('(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime("now"), datetime("now"))');
-            }
-
-            if (placeholders.length > 0) {
-              const sql = `
-                INSERT INTO instruments (
-                  symbol, brsymbol, name, exchange, brexchange, token, expiry, strike,
-                  lotsize, instrumenttype, underlying_key, tick_size, created_at, updated_at
-                ) VALUES ${placeholders.join(', ')}
-              `;
-
-              await db.run(sql, values);
-              inserted += placeholders.length;
-            }
-          }
-
+          const inserted = await this.replaceExchange(exchange, response);
           exchangeStats[exchange] = { count: inserted, status: 'success' };
           totalInstruments += inserted;
-
-          // Notify progress callback - exchange completed
-          if (onProgress) {
-            const completedExchanges = Object.keys(exchangeStats);
-            onProgress({
-              status: 'completed',
-              message: `Completed ${exchange} (${inserted.toLocaleString()} instruments)`,
-              currentExchange: exchange,
-              completedExchanges,
-              totalInstruments
-            });
-          }
-
+          progress('completed', `Completed ${exchange} (${inserted.toLocaleString()} instruments)`, exchange);
           log.info(`Fetched ${inserted} instruments from ${exchange}`);
         } catch (error) {
           log.error(`Failed to fetch instruments from ${exchange}`, error);
           exchangeStats[exchange] = { count: 0, status: 'error', error: error.message };
-
-          // Notify progress callback - exchange failed
-          if (onProgress) {
-            const completedExchanges = Object.keys(exchangeStats);
-            onProgress({
-              status: 'error',
-              message: `Failed ${exchange}: ${error.message}`,
-              currentExchange: exchange,
-              completedExchanges,
-              totalInstruments
-            });
-          }
+          progress('error', `Failed ${exchange}: ${error.message}`, exchange);
         }
       }
 
-      // Rebuild FTS table
-      log.info('Rebuilding FTS table');
-
-      // Notify progress callback - rebuilding FTS
-      if (onProgress) {
-        onProgress({
-          status: 'rebuilding',
-          message: 'Rebuilding search index...',
-          currentExchange: null,
-          completedExchanges: exchanges,
-          totalInstruments
-        });
+      if (totalInstruments === 0) {
+        throw new Error('No instruments returned from broker');
       }
 
-      await db.run('DELETE FROM instruments_fts');
-      await db.run(`
-        INSERT INTO instruments_fts(rowid, symbol, name)
-        SELECT id, symbol, name FROM instruments
-      `);
-
-      // Notify progress callback - completed
-      if (onProgress) {
-        onProgress({
-          status: 'completed',
-          message: 'All instruments fetched successfully!',
-          currentExchange: null,
-          completedExchanges: exchanges,
-          totalInstruments
-        });
-      }
-
+      progress('rebuilding', 'Rebuilding search index...');
+      await this._rebuildFts();
       await this.purgeExpired();
+
+      const failed = Object.entries(exchangeStats).filter(([, st]) => st.status === 'error');
+      const { count: finalCount } = await db.get(
+        `SELECT COUNT(*) AS count FROM instruments WHERE exchange IN (${exchanges.map(() => '?').join(', ')})`,
+        exchanges
+      );
+      // Only a clean run counts as the segment's refresh; a partial one is retried at the next trigger.
+      await db.run(
+        `UPDATE instruments_refresh_log
+         SET status = ?, instrument_count = ?, refresh_completed_at = ?, error_message = ?
+         WHERE id = ?`,
+        [failed.length ? 'failed' : 'completed', finalCount, toISTISOString(),
+          failed.length ? failed.map(([ex, st]) => `${ex}: ${st.error}`).join('; ') : null, refreshLogId]
+      );
+      progress('completed', 'All instruments fetched successfully!');
+
       const duration = Date.now() - startTime;
-
-      // Get final count
-      const countResult = await db.get('SELECT COUNT(*) as count FROM instruments');
-      const finalCount = countResult.count;
-
-      // Update refresh log
-      await db.run(`
-        INSERT INTO instruments_refresh_log (
-          exchange, status, instrument_count, refresh_started_at, refresh_completed_at
-        ) VALUES ('INSTANCE_FETCH', 'completed', ?, ?, ?)
-      `, [finalCount, toISTISOString(), toISTISOString()]);
-
       const result = {
         totalInstruments,
         finalCount,
         exchangeStats,
         duration: `${(duration / 1000).toFixed(2)}s`,
-        rate: `${(finalCount / (duration / 1000)).toFixed(0)} records/sec`
+        rate: `${(totalInstruments / (duration / 1000)).toFixed(0)} records/sec`
       };
 
       log.info('Instruments fetch from instance completed', result);
 
       return result;
     } catch (error) {
+      if (refreshLogId) {
+        await db.run(
+          `UPDATE instruments_refresh_log SET status = 'failed', error_message = ? WHERE id = ?`,
+          [error.message, refreshLogId]
+        ).catch((err) => log.warn('Failed to update refresh log', err));
+      }
       log.error('Instruments fetch from instance failed', error);
       throw error;
     }

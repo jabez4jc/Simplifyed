@@ -30,7 +30,6 @@ import { requireAuth, optionalAuth, verifyLocalToken } from './src/middleware/au
 import { errorHandler, notFoundHandler } from './src/middleware/error-handler.js';
 import { correlationId, requestLogger, bodyParserErrorHandler } from './src/middleware/request-logger.js';
 import { noStore } from './src/middleware/no-store.js';
-import { checkInstrumentsRefresh, evaluateStartupReadiness } from './src/middleware/instruments-refresh.middleware.js';
 import { auditLogger } from './src/middleware/audit-logger.js';
 
 // Routes
@@ -147,9 +146,6 @@ app.use(requestLogger);
 
 // Optional auth (sets req.user in test mode)
 app.use(optionalAuth);
-
-// Instruments refresh check (runs in background after authentication)
-app.use(checkInstrumentsRefresh);
 
 // API responses must never be cached - see middleware/no-store.js. Mounted on the API paths
 // only: express.static below still gets to cache the frontend assets, which is what it is for.
@@ -272,10 +268,6 @@ async function startServer() {
       }
     }
 
-    // Establish readiness before the listener opens, so /api/v1/ready answers truthfully from
-    // the first request rather than waiting for a human to log in.
-    await evaluateStartupReadiness();
-
     // Start WebSocket gateway (opt-in, authenticated with the login token)
     wsGatewayService.start(server, {
       enabled: config.wsGateway?.enabled,
@@ -337,8 +329,8 @@ async function startServer() {
       // Start instance health cron (every 3h from 08:00 IST)
       instanceHealthService.start();
 
-      // Start crypto instruments daily refresh cron (17:31 IST)
-      instrumentsService.startCryptoDailyRefresh();
+      // Instruments: daily refresh crons (Indian 08:30, crypto 17:31 IST) plus a boot catch-up if stale
+      instrumentsService.startScheduledRefresh();
     });
   } catch (error) {
     log.error('Failed to start server', error);
@@ -359,7 +351,7 @@ async function shutdown() {
   try {
     stopBackgroundServices();
     instanceHealthService.stop();
-    instrumentsService.stopCryptoDailyRefresh();
+    instrumentsService.stopScheduledRefresh();
     wsGatewayService.stop();
 
     // Close database

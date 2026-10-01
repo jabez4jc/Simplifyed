@@ -31,6 +31,8 @@ before(async () => {
       [symbol, name, exchange, type, expiry]
     );
   }
+  // instruments_fts is external-content and rebuilt after a bulk load, not kept by triggers.
+  await db.run("INSERT INTO instruments_fts(instruments_fts) VALUES('rebuild')");
 });
 
 const search = async (q, exchange) => (await symbolResolutionService.searchSymbols(q, exchange)).map((r) => r.symbol);
