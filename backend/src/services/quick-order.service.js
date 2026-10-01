@@ -797,21 +797,46 @@ class QuickOrderService {
     return results;
   }
 
+  // Cancels only the open orders for THIS close's own contract. cancelAllOrders is account-wide
+  // at the broker (the `strategy` param is a label only), so calling it here used to cancel every
+  // resting order on the account - including protective SL stops on unrelated symbols - whenever
+  // one close/exit retry ran. A contract row (set for a named-contract CLOSE) takes priority over
+  // the watchlist row's own symbol/exchange, which may describe an underlying rather than the
+  // actual traded leg.
   async _cancelAllOrdersForRetry(instance, symbol, orderParams) {
     if (!instance?.id) return;
-    const strategies = new Set();
-    if (orderParams?.strategy) strategies.add(orderParams.strategy);
-    if (symbol?.watchlist_name) strategies.add(symbol.watchlist_name);
-    if (instance?.strategy_tag) strategies.add(instance.strategy_tag);
-    if (strategies.size === 0) strategies.add('default');
+    const targetSymbolRaw = orderParams?.contractRow?.symbol || symbol?.symbol;
+    const targetExchangeRaw = orderParams?.contractRow?.exchange || symbol?.exchange;
+    if (!targetSymbolRaw || !targetExchangeRaw) return;
 
-    for (const tag of strategies) {
+    const targetSymbol = this._normalizeSymbolKey(targetSymbolRaw);
+    const targetExchange = this._normalizeExchange(targetExchangeRaw);
+    const targetProduct = this._normalizeProduct(orderParams?.product);
+    const openStatuses = new Set(['open', 'pending', 'trigger pending', 'trigger_pending', 'partial', 'partially filled', 'partially_filled']);
+
+    const snapshot = await marketDataFeedService.getOrderbookSnapshot(instance.id, { force: true });
+    const raw = snapshot?.data || [];
+    const orders = Array.isArray(raw) ? raw : raw.orders || raw.data || [];
+    const strategyTag = orderParams?.strategy || symbol?.watchlist_name || 'default';
+
+    for (const order of orders) {
+      const orderSymbol = this._normalizeSymbolKey(order.symbol || order.tradingsymbol || order.trading_symbol);
+      const orderExchange = this._normalizeExchange(order.exchange || order.exch || order.brexchange);
+      if (orderSymbol !== targetSymbol || orderExchange !== targetExchange) continue;
+      if (targetProduct) {
+        const orderProduct = this._normalizeProduct(order.product || order.producttype);
+        if (orderProduct && orderProduct !== targetProduct) continue;
+      }
+      const status = (order.order_status || order.status || '').toString().toLowerCase();
+      if (!openStatuses.has(status)) continue;
+      const id = order.orderid || order.order_id || order.id;
+      if (!id) continue;
       try {
-        await orderService.cancelAllOrders(instance.id, tag);
+        await openalgoClient.cancelOrder(instance, id, strategyTag);
       } catch (error) {
-        log.warn('Failed to cancel open orders before close/exit retry', {
+        log.warn('Failed to cancel open order before close/exit retry', {
           instance_id: instance.id,
-          strategy: tag,
+          order_id: id,
           error: error.message,
         });
       }

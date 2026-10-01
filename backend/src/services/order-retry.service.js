@@ -1,7 +1,6 @@
 import { log } from '../core/logger.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import orderPlacementService from './order-placement.service.js';
-import orderService from './order.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import openalgoWsService from './openalgo-ws.service.js';
 import { extractLtp } from '../utils/price-extraction.js';
@@ -316,7 +315,7 @@ class OrderRetryService {
       }
     }
 
-    await this._cancelAllForRetry(instance, payload, strategy);
+    await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
 
     let depthBasePrice = null;
     let depthPriceSource = null;
@@ -558,30 +557,6 @@ class OrderRetryService {
       order_id: orderId,
       status: normalizedStatus,
     });
-  }
-
-  async _cancelAllForRetry(instance, payload, strategy) {
-    if (!instance?.id) return;
-    const strategies = new Set();
-    if (strategy) strategies.add(strategy);
-    if (payload?.strategy) strategies.add(payload.strategy);
-    if (instance?.strategy_tag) strategies.add(instance.strategy_tag);
-    if (strategies.size === 0) strategies.add('default');
-
-    for (const tag of strategies) {
-      await this._cancelAll(instance.id, tag);
-    }
-  }
-
-  async _cancelAll(instanceId, strategy) {
-    try {
-      await orderService.cancelAllOrders(instanceId, strategy);
-    } catch (error) {
-      log.warn('Failed to cancel all orders before retry', {
-        instance_id: instanceId,
-        error: error.message,
-      });
-    }
   }
 
   /**

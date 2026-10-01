@@ -584,13 +584,11 @@ class OrderService {
 
       await openalgoClient.cancelAllOrders(instance, strategyTag);
 
-      // Update all pending orders
-      await db.run(
-        `UPDATE watchlist_orders
-         SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
-         WHERE instance_id = ? AND status IN ('pending', 'open')`,
-        [instanceId]
-      );
+      // Do not blanket-mark every local row cancelled: the broker only guarantees it accepted
+      // the account-wide cancel, not that every one of these specific orders was still open to
+      // cancel (one may have filled a moment earlier). Read the actual outcome back from the
+      // orderbook, the same reconciliation the regular poller runs.
+      setTimeout(() => this.syncOrderStatus(instanceId).catch(() => {}), 2000).unref?.();
 
       log.info('All orders cancelled', {
         instance_id: instanceId,
