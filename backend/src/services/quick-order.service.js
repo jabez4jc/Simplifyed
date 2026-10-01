@@ -44,9 +44,6 @@ import {
 
 class QuickOrderService {
   constructor() {
-    this.symbolResolutionCache = new Map();
-    this.symbolResolutionCacheTtl = 5 * 60 * 1000; // 5 minutes
-    this.symbolResolutionCacheMaxSize = 2000; // bounded cache
     this.optionPreviewQuoteCache = new Map(); // key: exch::symbol -> { ltp, changePercent, fetchedAt }
     this.optionPreviewQuoteTtlMs = 60000; // keep last-good preview quotes for 60s
     this.optionPreviewStaleMs = 15000; // mark UI as stale after 15s
@@ -2779,21 +2776,6 @@ class QuickOrderService {
     const quoteSymbol = this._getUnderlyingQuoteSymbol(symbol);
 
     const strikeOffset = userOptionsLeg || symbol.options_strike_selection || 'ATM';
-    const cacheKey = this._buildResolutionCacheKey(
-      symbol.id,
-      derivativeExchange,
-      optionType,
-      userExpiry || '',
-      strikeOffset
-    );
-
-    const now = Date.now();
-    const cached = this.symbolResolutionCache.get(cacheKey);
-    if (cached && now - cached.ts < this.symbolResolutionCacheTtl) {
-      log.debug('Using cached option resolution', { cacheKey });
-      return cached.value;
-    }
-
     await this._ensureQuoteAvailableForSymbol(instance, baseExchange, quoteSymbol);
 
     const [ltp, expiry] = await Promise.all([
@@ -2824,44 +2806,8 @@ class QuickOrderService {
       instance,
     });
 
-    const resolution = { underlying, expiry, optionSymbol };
-
-    // CRITICAL FIX: Clean up cache before adding new entry to prevent memory leak
-    this._cleanupSymbolResolutionCache();
-    this.symbolResolutionCache.set(cacheKey, { value: resolution, ts: now });
-
-    return resolution;
-  }
-
-  /**
-   * Clean up expired entries and enforce max cache size
-   * CRITICAL: Prevents memory leak from unbounded cache growth
-   * @private
-   */
-  _cleanupSymbolResolutionCache() {
-    const now = Date.now();
-
-    // First pass: Remove expired entries
-    for (const [key, entry] of this.symbolResolutionCache.entries()) {
-      if (now - entry.ts >= this.symbolResolutionCacheTtl) {
-        this.symbolResolutionCache.delete(key);
-      }
-    }
-
-    // Second pass: If still over limit, remove oldest entries
-    if (this.symbolResolutionCache.size >= this.symbolResolutionCacheMaxSize) {
-      const entries = Array.from(this.symbolResolutionCache.entries())
-        .sort((a, b) => a[1].ts - b[1].ts); // Sort by timestamp ascending (oldest first)
-
-      const toRemove = entries.slice(0, Math.floor(this.symbolResolutionCacheMaxSize * 0.1)); // Remove oldest 10%
-      toRemove.forEach(([key]) => this.symbolResolutionCache.delete(key));
-
-      log.debug('Symbol resolution cache cleanup performed', {
-        removed: toRemove.length,
-        currentSize: this.symbolResolutionCache.size,
-        maxSize: this.symbolResolutionCacheMaxSize
-      });
-    }
+    // Not cached: the strike follows the live LTP, so a stale entry trades the wrong strike (H10).
+    return { underlying, expiry, optionSymbol };
   }
 
   /**
@@ -3429,10 +3375,6 @@ class QuickOrderService {
       // No change (shouldn't happen in normal flow)
       throw new ValidationError('No position change - delta is zero');
     }
-  }
-
-  _buildResolutionCacheKey(symbolId, exchange, optionType, expiry, strikeOffset) {
-    return `${symbolId}::${exchange}::${optionType}::${expiry || 'AUTO'}::${strikeOffset || 'ATM'}`;
   }
 
   async _resolveExpiryForOption(instance, underlying, derivativeExchange, userExpiry) {

@@ -158,12 +158,6 @@ class FuturesRollService {
         underlying, row.id,
       ]
     );
-    // Option strikes for this row are cached by row id (5 min) and were picked off the old
-    // contract's price - drop them so the next resolution uses the new one.
-    const { default: quickOrderService } = await import('./quick-order.service.js');
-    for (const key of quickOrderService.symbolResolutionCache.keys()) {
-      if (key.startsWith(`${row.id}::`)) quickOrderService.symbolResolutionCache.delete(key);
-    }
     log.info('Futures row rolled', { exchange: row.exchange, symbol: contract.symbol, reason: `rolled from ${row.symbol}` });
     return { status: 'rolled', from: row.symbol, to: contract.symbol };
   }

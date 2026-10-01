@@ -127,12 +127,8 @@ test('a roll never moves a row off a live contract that is still held', async ()
     'an unreadable position book is not flat');
 
   futuresRollService._isHeld = async () => false;
-  quickOrderService.symbolResolutionCache.set(`${row.id}::MCX::CE::AUTO::ATM`, { ts: Date.now(), value: {} });
-  quickOrderService.symbolResolutionCache.set(`${row.id + 1000}::MCX::CE::AUTO::ATM`, { ts: Date.now(), value: {} });
   const result = await futuresRollService.rollRow(row, { now: NOW, earlyDays: 30 });
   assert.deepStrictEqual([result.status, result.to], ['rolled', 'CRUDEOIL18DEC26FUT']);
-  assert.ok(!quickOrderService.symbolResolutionCache.has(`${row.id}::MCX::CE::AUTO::ATM`), 'strikes picked off the old contract are dropped');
-  assert.ok(quickOrderService.symbolResolutionCache.has(`${row.id + 1000}::MCX::CE::AUTO::ATM`), 'other rows keep theirs');
 });
 
 test('a roll onto a contract that is already its own row is refused', async () => {
