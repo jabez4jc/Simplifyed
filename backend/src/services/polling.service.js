@@ -1,6 +1,6 @@
 /**
  * Polling Service
- * Orchestrates periodic updates for instances, P&L, market data, and health checks
+ * Orchestrates periodic updates for instances, P&L, order sync, and health checks
  */
 
 import { log } from '../core/logger.js';
@@ -52,6 +52,7 @@ class PollingService {
     this.instanceIntervalMs = config.polling.instanceInterval;
     this.healthCheckIntervalMs = config.polling.healthCheckInterval;
     this.lastOrderSyncAt = new Map(); // instanceId -> ms, for the sweep while the stream is live
+    this.polling = new Set(); // instance ids whose poll cycle is still running
     wireOrderStream(this);
   }
 
@@ -171,6 +172,12 @@ class PollingService {
    * @returns {Promise<Object>} - Updated instance data
    */
   async pollInstance(instanceId) {
+    // A slow broker must not stack cycles: overlapping ones could each trip the session limit
+    // and close all positions twice. The next tick picks the instance up once this one is done.
+    if (this.polling.has(instanceId)) {
+      return { skipped: true, reason: 'in_flight' };
+    }
+    this.polling.add(instanceId);
     try {
       const instance = await instanceService.getInstanceById(instanceId);
 
@@ -180,7 +187,7 @@ class PollingService {
       }
 
       // Skip unhealthy instances during regular polling to prevent log spam
-      // Health checks run separately every 5 minutes (see healthCheckInterval)
+      // Health checks run separately (see pollHealthChecks)
       if (instance.health_status === 'unhealthy') {
         return { skipped: true, reason: 'unhealthy' };
       }
@@ -190,7 +197,7 @@ class PollingService {
         return { skipped: true, reason: 'market_closed' };
       }
 
-      // Update analyzer status (15s cadence)
+      // Update analyzer status (itself cached for analyzerCheckIntervalMs)
       await instanceService.refreshAnalyzerStatus(instanceId);
 
       // Update P&L
@@ -209,6 +216,8 @@ class PollingService {
     } catch (error) {
       log.error('Failed to poll instance', error, { instance_id: instanceId });
       throw error;
+    } finally {
+      this.polling.delete(instanceId);
     }
   }
 
@@ -280,7 +289,8 @@ class PollingService {
 
   /**
    * Poll health checks for all instances
-   * This runs every 5 minutes
+   * Runs every healthCheckInterval (60s); each instance's own ping schedule (5 min while healthy,
+   * growing backoff while not) decides whether it is actually pinged on a given run
    */
   async pollHealthChecks() {
     try {

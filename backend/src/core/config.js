@@ -136,7 +136,7 @@ class Config {
     this.instanceHealth = {
       pingHealthyIntervalMs: 300000,
       pingUnhealthyIntervalMs: 180000, // first retry; doubles per failure up to 10 minutes
-      analyzerCheckIntervalMs: 15000,
+      analyzerCheckIntervalMs: 60000,
     };
 
     this.openalgo = {
