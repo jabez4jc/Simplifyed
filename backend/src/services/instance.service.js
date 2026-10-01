@@ -463,20 +463,6 @@ class InstanceService {
     });
   }
 
-  async getWebsocketCapableInstanceIds() {
-    try {
-      const rows = await db.all(`
-        SELECT id FROM instances
-        WHERE is_active = 1
-          AND use_ws_quotes = 1
-      `);
-      return rows.map((r) => r.id);
-    } catch (err) {
-      log.warn('Failed to resolve websocket-capable instances', { error: err.message });
-      return [];
-    }
-  }
-
 
 }
 

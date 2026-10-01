@@ -17,15 +17,13 @@ const PING_INTERVAL_MS = 30 * 1000;
 class WSGatewayService {
   constructor() {
     this.wss = null;
-    this.seq = 0;
     this.enabled = false;
     this.path = '/stream';
     this.tokenValidator = null;
-    this.instanceFilter = null;
     this._pingInterval = null;
   }
 
-  start(server, { enabled = false, path = '/stream', tokenValidator = null, instanceFilter = null } = {}) {
+  start(server, { enabled = false, path = '/stream', tokenValidator = null } = {}) {
     if (!enabled) {
       log.info('WS Gateway disabled (WS_GATEWAY_ENABLED=false)');
       return;
@@ -37,7 +35,6 @@ class WSGatewayService {
     this.enabled = true;
     this.path = path;
     this.tokenValidator = tokenValidator;
-    this.instanceFilter = instanceFilter;
     this.wss = new WebSocketServer({ server, path: this.path });
     this._wireEvents();
     this._startPingWatchdog();
@@ -76,7 +73,6 @@ class WSGatewayService {
         const url = new URL(req.url ?? '', 'http://localhost');
         const token = url.searchParams.get('token');
         const topicsParam = url.searchParams.get('topics');
-        const lastSeqParam = url.searchParams.get('last_seq');
 
         const allowed = this.tokenValidator ? await this.tokenValidator(token, req) : true;
         if (!allowed) {
@@ -85,13 +81,12 @@ class WSGatewayService {
         }
 
         const topics = new Set((topicsParam || '').split(',').filter(Boolean));
-        const clientMeta = { topics, lastSeq: lastSeqParam ? Number(lastSeqParam) : 0 };
-        ws.meta = clientMeta;
+        ws.meta = { topics };
         ws.isAlive = true;
         ws.on('pong', () => { ws.isAlive = true; });
 
         ws.on('error', () => {});
-        ws.send(JSON.stringify({ type: 'hello', seq: this._nextSeq() }));
+        ws.send(JSON.stringify({ type: 'hello' }));
       } catch (err) {
         log.warn('WS connection rejected', { error: err.message });
         ws.close(1011, 'internal error');
@@ -107,17 +102,12 @@ class WSGatewayService {
     openalgoWsService.on('order_update', (payload) => this.broadcast('order_update', payload));
   }
 
-  _nextSeq() {
-    this.seq += 1;
-    return this.seq;
-  }
-
+  // Every instance's events are forwarded: gating on use_ws_quotes (resolved once at boot) dropped
+  // positions/funds/order updates for any other instance and for any added later (H11).
   async broadcast(topic, payload) {
     if (!this.wss) return;
     try {
-      const filtered = await this._filterByInstance(payload);
-      if (!filtered) return;
-      const message = JSON.stringify({ topic, seq: this._nextSeq(), payload: filtered });
+      const message = JSON.stringify({ topic, payload });
       for (const client of this.wss.clients) {
         if (client.readyState === client.OPEN) {
           if (client.meta?.topics?.size && !client.meta.topics.has(topic)) {
@@ -128,20 +118,6 @@ class WSGatewayService {
       }
     } catch (err) {
       log.warn('WS broadcast failed', { error: err.message });
-    }
-  }
-
-  async _filterByInstance(payload) {
-    if (!this.instanceFilter) return payload;
-    try {
-      const allowed = await this.instanceFilter();
-      const ids = Array.isArray(allowed) ? new Set(allowed) : new Set();
-      if (payload?.instanceId && !ids.has(payload.instanceId)) return null;
-      if (payload?.instance_id && !ids.has(payload.instance_id)) return null;
-      return payload;
-    } catch (err) {
-      log.warn('WS instance filter failed', { error: err.message });
-      return null;
     }
   }
 }

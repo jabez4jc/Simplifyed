@@ -78,7 +78,6 @@ class DashboardApp {
     this.useWsGateway = this.loadWsPreference();
     this.ws = null;
     this.wsConnected = false;
-    this.wsLastSeq = 0;
     this.wsReconnectDelay = 500;
     this.wsReconnectTimer = null;
     // Recent order_update events (bounded ring buffer) + pending fuzzy-match waiters - see
@@ -608,7 +607,7 @@ class DashboardApp {
       // The gateway used to expect a session cookie instead, which nothing in this app ever
       // issues, so this connection was rejected every single time regardless of retries.
       const token = encodeURIComponent(localStorage.getItem('auth_token') || '');
-      const url = `${protocol}://${window.location.host}${this.wsGatewayPath}?topics=${this.wsTopics.join(',')}&last_seq=${this.wsLastSeq || 0}&token=${token}`;
+      const url = `${protocol}://${window.location.host}${this.wsGatewayPath}?topics=${this.wsTopics.join(',')}&token=${token}`;
       const ws = new WebSocket(url);
       this.ws = ws;
 
@@ -650,13 +649,6 @@ class DashboardApp {
 
   handleWsMessage(msg) {
     if (!msg) return;
-    if (typeof msg.seq === 'number') {
-      if (this.wsLastSeq > 0 && msg.seq > this.wsLastSeq + 1) {
-        this.triggerSnapshotResync();
-      }
-      this.wsLastSeq = Math.max(this.wsLastSeq, msg.seq);
-    }
-
     // The navbar pill answers one question - "is the feed alive" - and that has nothing to do
     // with which view happens to be open. It used to be marked from inside the watchlists-view
     // rendering path only (updateWatchlistQuoteMeta), on the theory that every quote funnelled

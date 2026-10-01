@@ -22,7 +22,6 @@ import settingsService from './src/services/settings.service.js';
 import instanceHealthService from './src/services/instance-health.service.js';
 import instrumentsService from './src/services/instruments.service.js';
 import wsGatewayService from './src/services/ws-gateway.service.js';
-import instanceService from './src/services/instance.service.js';
 import tradingviewWebhookRoutes from './src/routes/tradingview-webhook.js';
 import idempotencyService from './src/services/idempotency.service.js';
 
@@ -277,16 +276,6 @@ async function startServer() {
     // the first request rather than waiting for a human to log in.
     await evaluateStartupReadiness();
 
-    // Resolve WS-capable instances once at boot (safe fallback)
-    let websocketCapableInstanceIds = [];
-    if (config.wsGateway?.enabled) {
-      try {
-        websocketCapableInstanceIds = await instanceService.getWebsocketCapableInstanceIds();
-      } catch (err) {
-        log.warn('Failed to resolve websocket-capable instances', { error: err.message });
-      }
-    }
-
     // Start WebSocket gateway (opt-in, authenticated with the login token)
     wsGatewayService.start(server, {
       enabled: config.wsGateway?.enabled,
@@ -297,7 +286,6 @@ async function startServer() {
       // request already authenticates with; the browser cannot set a custom Authorization
       // header on a WebSocket upgrade, so the client sends it as a `token` query param instead.
       tokenValidator: async (token) => Boolean(verifyLocalToken(token)),
-      instanceFilter: () => websocketCapableInstanceIds,
     });
 
     // Start HTTP server
