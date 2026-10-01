@@ -11,7 +11,6 @@
  */
 
 import EventEmitter from 'events';
-import { createHash } from 'crypto';
 import instanceService from './instance.service.js';
 import { isCryptoBroker, isCryptoExchange } from '../utils/broker-type.util.js';
 import { isContractExpired } from '../utils/underlying.util.js';
@@ -127,9 +126,6 @@ class MarketDataFeedService extends EventEmitter {
     this.hasOpenOrders = false;
     // Fallback entry prices captured at order placement (key: instanceId|exchange|symbol)
     this.entryPriceCache = new Map();
-    // Track last persisted quote hashes to avoid noisy writes
-    this.quoteSnapshotHashes = new Map();
-    this.quoteSnapshotTableMissing = false;
 
     // Unified symbol quote cache (consolidated from separate SYMBOL_QUOTE_TTL_MS)
     // TTL is now configurable per-call via ttlMs parameter
@@ -164,9 +160,6 @@ class MarketDataFeedService extends EventEmitter {
     if (options.fundsInterval) {
       this.fundsIntervalMs = options.fundsInterval;
     }
-
-    // Warm in-memory cache from persisted snapshots before live refreshes
-    await this._hydrateQuoteSnapshotsFromDb();
 
     // Start WS quotes (best-effort; falls back to HTTP polling)
     await this._startWsQuotes();
@@ -482,8 +475,6 @@ class MarketDataFeedService extends EventEmitter {
       }
     });
     this.emit('quotes:update', { instanceId, data: snapshot.data });
-    // Persist snapshot asynchronously for warm restarts
-    this._persistQuoteSnapshot(instanceId, snapshot.data, snapshot.fetchedAt);
   }
 
   setDepthSnapshot(exchange, symbol, depth, options = {}) {
@@ -2238,95 +2229,6 @@ class MarketDataFeedService extends EventEmitter {
       return this.hasOpenPositions || this.hasOpenOrders;
     }
     return this.openPositionInstances.has(instanceId) || this.openOrderInstances.has(instanceId);
-  }
-
-  _hashPayload(payload) {
-    return createHash('sha256').update(payload || '').digest('hex');
-  }
-
-  async _persistQuoteSnapshot(instanceId, quotes = [], fetchedAt = Date.now()) {
-    try {
-      if (this.quoteSnapshotTableMissing) {
-        return;
-      }
-
-      const payload = JSON.stringify(quotes || []);
-      const hash = this._hashPayload(payload);
-      const last = this.quoteSnapshotHashes.get(instanceId);
-      if (last && last.hash === hash && last.fetchedAt === fetchedAt) {
-        return;
-      }
-
-      const exchangeCount = new Set(
-        (quotes || []).map((q) => (q.exchange || q.exch || '').toUpperCase()).filter(Boolean)
-      ).size;
-      const symbolCount = Array.isArray(quotes) ? quotes.length : 0;
-
-      await db.run(
-        `
-          INSERT INTO quote_snapshots (
-            instance_id, payload, hash, fetched_at, exchange_count, symbol_count, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-          ON CONFLICT(instance_id) DO UPDATE SET
-            payload=excluded.payload,
-            hash=excluded.hash,
-            fetched_at=excluded.fetched_at,
-            exchange_count=excluded.exchange_count,
-            symbol_count=excluded.symbol_count,
-            updated_at=CURRENT_TIMESTAMP
-        `,
-        [instanceId, payload, hash, fetchedAt, exchangeCount, symbolCount]
-      );
-
-      this.quoteSnapshotHashes.set(instanceId, { hash, fetchedAt });
-    } catch (error) {
-      if ((error?.message || '').includes('quote_snapshots')) {
-        this.quoteSnapshotTableMissing = true;
-      }
-      log.warn('Failed to persist quote snapshot', { instanceId, error: error.message });
-    }
-  }
-
-  async _hydrateQuoteSnapshotsFromDb() {
-    try {
-      if (this.quoteSnapshotTableMissing) {
-        return;
-      }
-      const rows = await db.all('SELECT instance_id, payload, fetched_at FROM quote_snapshots');
-      if (!rows?.length) {
-        return;
-      }
-
-      for (const row of rows) {
-        if (!row?.payload) continue;
-        try {
-          const parsed = JSON.parse(row.payload);
-          // A snapshot saved before mislabelled frames were dropped may still hold one.
-          const data = [];
-          for (const q of (Array.isArray(parsed) ? parsed : parsed?.data || [])) {
-            if (await this._frameIsForItsLabel(row.instance_id, q)) data.push(q);
-          }
-          const fetchedAt = row.fetched_at ? Number(row.fetched_at) : Date.now();
-          this.setQuoteSnapshot(row.instance_id, data, { fetchedAt, source: 'l2' });
-          this.quoteSnapshotHashes.set(row.instance_id, {
-            hash: this._hashPayload(row.payload),
-            fetchedAt,
-          });
-        } catch (error) {
-          log.warn('Failed to parse quote snapshot payload', {
-            instance_id: row.instance_id,
-            error: error.message,
-          });
-        }
-      }
-
-      log.info('Quote snapshots hydrated from database', { count: rows.length });
-    } catch (error) {
-      if ((error?.message || '').includes('quote_snapshots')) {
-        this.quoteSnapshotTableMissing = true;
-      }
-      log.warn('Failed to hydrate quote snapshots', { error: error.message });
-    }
   }
 
   /**

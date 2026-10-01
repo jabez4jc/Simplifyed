@@ -34,63 +34,39 @@ function isStale(snapshot, ttlMs) {
 }
 
 /**
- * GET /api/v1/snapshots/quotes
- * Optional filters: instanceId, exchange, symbols (comma-separated), refresh (default true)
+ * GET /api/v1/snapshots/quotes?exchange=NFO&symbols=A,B
+ * The feed's last quote per symbol, whatever instance or WebSocket delivered it. Cache only: a
+ * request never triggers a broker refresh - the feed's own polling and the WS stream keep it warm.
+ * `stale` compares each quote's age with the quote TTL, so a client does not chart an old price.
  */
-router.get('/quotes', async (req, res, next) => {
-  try {
-    const allowRefresh = req.query.refresh !== 'false';
-    const exchangeFilter = req.query.exchange ? String(req.query.exchange).toUpperCase() : null;
-    const symbolFilter = parseSymbols(req.query.symbols);
-    const instanceId = req.query.instanceId ? parseInstanceId(req.query.instanceId) : null;
-
-    // Determine which instances to return
-    const cacheStatus = marketDataFeedService.getCacheStatus();
-    const instanceIds = instanceId
-      ? [instanceId]
-      : cacheStatus.entries.filter((e) => e.feed === 'quotes').map((e) => e.instanceId);
-
-    const results = [];
-    let refreshed = false;
-
-    for (const id of instanceIds) {
-      let snapshot = marketDataFeedService.getQuoteSnapshot(id);
-      const ttlMs = marketDataFeedService.QUOTE_TTL_MS;
-      let stale = isStale(snapshot, ttlMs);
-
-      if ((stale || !snapshot) && allowRefresh) {
-        await marketDataFeedService.refreshQuotes({ force: true });
-        snapshot = marketDataFeedService.getQuoteSnapshot(id);
-        stale = isStale(snapshot, ttlMs);
-        refreshed = true;
-      }
-
-      let data = snapshot?.data || [];
-      if (exchangeFilter) {
-        data = data.filter((q) => (q.exchange || q.exch || '').toUpperCase() === exchangeFilter);
-      }
-      if (symbolFilter.length) {
-        const set = new Set(symbolFilter);
-        data = data.filter((q) => set.has((q.symbol || '').toUpperCase()));
-      }
-
-      results.push({
-        instance_id: id,
-        fetched_at: snapshot?.fetchedAt || null,
-        age_ms: snapshot?.fetchedAt ? Date.now() - snapshot.fetchedAt : null,
-        stale,
-        count: data.length,
-        quotes: data,
-      });
-    }
-
-    res.json({
-      status: 'success',
-      data: { refreshed, instances: results },
-    });
-  } catch (error) {
-    next(error);
+router.get('/quotes', (req, res) => {
+  const exchange = String(req.query.exchange || '').toUpperCase();
+  const symbols = parseSymbols(req.query.symbols);
+  if (!exchange || symbols.length === 0) {
+    throw new ValidationError('exchange and symbols are required');
   }
+
+  const { cached, missing } = marketDataFeedService.getCachedQuoteEntriesForSymbols(
+    symbols.map((symbol) => ({ exchange, symbol })),
+    { ttlMs: Infinity }
+  );
+  const now = Date.now();
+  const ttlMs = marketDataFeedService.QUOTE_TTL_MS;
+
+  res.json({
+    status: 'success',
+    data: {
+      quotes: cached.map(({ quote, fetchedAt }) => ({
+        exchange,
+        symbol: quote.symbol,
+        fetched_at: fetchedAt,
+        age_ms: now - fetchedAt,
+        stale: now - fetchedAt > ttlMs,
+        quote,
+      })),
+      missing: missing.map((m) => m.symbol),
+    },
+  });
 });
 
 /**

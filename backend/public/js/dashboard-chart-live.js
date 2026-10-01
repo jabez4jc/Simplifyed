@@ -213,27 +213,23 @@ Object.assign(DashboardApp.prototype, {
   async pollChartQuote() {
     const state = this.chartState;
     if (!state) return;
-    // No `refresh: false` here, deliberately. On the chart view nothing else pulls quotes, so
-    // asking for the cache-only snapshot returns the same LTP forever: the candles flat-line and
-    // every indicator flat-lines with them. The endpoint's default refreshes only when the
-    // snapshot is older than its TTL, which is the throttle that was wanted in the first place.
+    // Cache only: the server never refreshes from this request. The feed's own polling and the
+    // WS stream keep the symbol's quote warm; this just reads the latest one.
     const res = await api.getQuoteSnapshots({
       exchange: state.exchange,
       symbols: state.symbol,
     });
     const ts = Date.now();
     let sawStale = false;
-    for (const instance of res.data?.instances || []) {
-      // The endpoint already knows: it compares each snapshot against the quote TTL. Charting a
-      // snapshot it has flagged stale is how a January price ended up on a July candle.
-      if (instance.stale) { sawStale = instance.quotes?.length ? true : sawStale; continue; }
-      // A fresh snapshot IS the feed working, whichever view is open: the header pill reads
-      // "Stale" off this clock, and on the chart view nothing else was feeding it once the
-      // socket was not carrying this symbol.
-      if (instance.quotes?.length) this.markDataReceived(ts);
-      for (const quote of instance.quotes || []) {
-        if (this.applyChartQuote(this.hydrateQuoteWithLtp(quote, ts))) return;
-      }
+    for (const entry of res.data?.quotes || []) {
+      // The endpoint compares each quote's age with the quote TTL. Charting one it has flagged
+      // stale is how a January price ended up on a July candle.
+      if (entry.stale) { sawStale = true; continue; }
+      // A fresh quote IS the feed working, whichever view is open: the header pill reads "Stale"
+      // off this clock, and on the chart view nothing else was feeding it once the socket was not
+      // carrying this symbol.
+      this.markDataReceived(ts);
+      if (this.applyChartQuote(this.hydrateQuoteWithLtp(entry.quote, ts))) return;
     }
     if (sawStale) this.noteStaleQuote(MAX_QUOTE_AGE_MS);
   },

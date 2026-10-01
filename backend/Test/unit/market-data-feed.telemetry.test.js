@@ -6,8 +6,6 @@ import marketDataCircuitBreakerService from '../../src/services/market-data-circ
 test('getCacheStatus marks stale quote cache entries', () => {
   const instanceId = 99999;
   const ttl = marketDataFeedService.QUOTE_TTL_MS;
-  const previousFlag = marketDataFeedService.quoteSnapshotTableMissing;
-  marketDataFeedService.quoteSnapshotTableMissing = true; // avoid DB writes during test
 
   marketDataFeedService.setQuoteSnapshot(
     instanceId,
@@ -22,7 +20,6 @@ test('getCacheStatus marks stale quote cache entries', () => {
 
   // cleanup
   marketDataFeedService.quoteCache.delete(instanceId);
-  marketDataFeedService.quoteSnapshotTableMissing = previousFlag;
 });
 
 test('getCacheStatus surfaces circuit-only state', () => {

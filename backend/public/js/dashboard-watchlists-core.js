@@ -284,7 +284,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
 
   async resyncQuotesFromSnapshots() {
     try {
-      await api.getQuoteSnapshots({ refresh: true });
       const expandedIds = Array.from(this.expandedWatchlists || []);
       for (const wlId of expandedIds) {
         await this.updateWatchlistQuotes(wlId, { force: true });
