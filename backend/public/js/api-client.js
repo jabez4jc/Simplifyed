@@ -568,18 +568,12 @@ class APIClient {
     return this.request('/user', { baseURL: '/api' });
   }
 
-  async logout() {
+  logout() {
     try {
       localStorage.removeItem('auth_token');
     } catch (_) {
       // ignore localStorage errors (private mode, etc.)
     }
-
-    // Destroys the separate WS-gateway session cookie - unrelated to the Bearer token above.
-    return fetch('/auth/logout', {
-      method: 'POST',
-      credentials: 'include',
-    });
   }
 }
 

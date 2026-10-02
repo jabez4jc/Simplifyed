@@ -1066,7 +1066,7 @@ class DashboardApp {
 
     if (confirmed) {
       this.stopWsStream();
-      await api.logout();
+      api.logout();
       window.location.href = '/login.html';
     }
   }

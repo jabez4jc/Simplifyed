@@ -171,19 +171,9 @@ app.use('/webhook/tradingview', tradingviewWebhookRoutes);
 // API v1
 app.use('/api/v1', apiV1Routes);
 
-// Auth: login/register/change-password are local email+password (see public/login.html and
-// src/routes/v1/auth.js).
-//
-// Logout is client-side by definition here: the credential is a stateless JWT held in
-// localStorage, and api-client.js has already removed it before calling this. There is no
-// server-side session to destroy - this used to call req.session.destroy() and clear a
-// 'connect.sid' cookie that the app never issued. Kept as an endpoint because two clients call
-// it (api-client.js, access-pending.html) and because it is the hook a future token denylist
-// would attach to.
-app.post('/auth/logout', (req, res) => {
-  log.info('Logout', { user_id: req.user?.id || null });
-  res.json({ status: 'success', message: 'Logged out successfully' });
-});
+// Auth: login/register are local email+password (see public/login.html and src/routes/v1/auth.js).
+// Logout is client-side only: the credential is a stateless JWT in localStorage, so the client
+// just drops it.
 
 // Current user
 app.get('/api/user', requireAuth, (req, res) => {
