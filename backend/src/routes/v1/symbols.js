@@ -9,11 +9,9 @@ import symbolValidationService from '../../services/symbol-validation.service.js
 import instrumentsService from '../../services/instruments.service.js';
 import expiryManagementService from '../../services/expiry-management.service.js';
 import openalgoClient from '../../integrations/openalgo/client.js';
-import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
 import { sanitizeString } from '../../utils/sanitizers.js';
 import marketDataFeedService from '../../services/market-data-feed.service.js';
-import symbolResolutionService from '../../services/symbol-resolution.service.js';
 import optionGreeksService from '../../services/option-greeks.service.js';
 import { requireAuth } from '../../middleware/auth.js';
 import { isContractExpired } from '../../utils/underlying.util.js';
@@ -23,7 +21,7 @@ router.use(requireAuth);
 
 /**
  * GET /api/v1/symbols/search
- * Search for symbols - uses cached instruments if available, falls back to OpenAlgo API
+ * Search for symbols - instruments table first, falls back to the OpenAlgo API
  */
 router.get('/search', async (req, res, next) => {
   try {
@@ -35,50 +33,13 @@ router.get('/search', async (req, res, next) => {
     const requestedExchange = exchange ? sanitizeString(exchange).toUpperCase() : null;
     const requestedType = instrumenttype ? sanitizeString(instrumenttype).toUpperCase() : null;
 
-    // Try cached instruments first (fast path)
-    try {
-      const cachedResults = await symbolResolutionService.searchSymbols(
-        query,
-        requestedExchange
-      );
-
-      if (cachedResults && cachedResults.length > 0) {
-        const filteredResults = requestedType
-          ? cachedResults.filter((instrument) =>
-              String(instrument.instrumenttype || instrument.instrument_type || '').toUpperCase() === requestedType
-            )
-          : cachedResults;
-        // Classify each result
-        const enrichedResults = filteredResults.map(instrument => ({
-          ...instrument,
-          symbol_type: symbolValidationService.classifySymbol(instrument),
-          tradingsymbol: instrument.symbol,
-          source: 'cache'
-        }));
-
-        log.debug('Symbol search using cache', {
-          query,
-          results: enrichedResults.length
-        });
-
-        return res.json({
-          status: 'success',
-          data: enrichedResults,
-          count: enrichedResults.length,
-          source: 'cache'
-        });
-      }
-    } catch (cacheError) {
-      log.warn('Cache search failed, falling back to API', cacheError, { query });
-    }
-
-    // Fallback to OpenAlgo API (slower path)
-    log.debug('Symbol search using OpenAlgo API', { query });
-    const apiResults = await symbolValidationService.searchSymbols(
+    // Instruments table first, OpenAlgo search only when it has nothing (see the service).
+    const found = await symbolValidationService.searchSymbols(
       query,
-      instanceId ? parseInt(instanceId, 10) : null
+      instanceId ? parseInt(instanceId, 10) : null,
+      { exchange: requestedExchange, instrumenttype: requestedType }
     );
-    const results = apiResults.filter((instrument) => {
+    const results = found.filter((instrument) => {
       const resultExchange = String(instrument.exchange || instrument.exch || '').toUpperCase();
       const resultType = String(instrument.instrumenttype || instrument.instrument_type || '').toUpperCase();
       return (!requestedExchange || resultExchange === requestedExchange)
@@ -89,7 +50,7 @@ router.get('/search', async (req, res, next) => {
       status: 'success',
       data: results,
       count: results.length,
-      source: 'api'
+      source: results.length && !results[0].from_cache ? 'api' : 'cache'
     });
   } catch (error) {
     next(error);

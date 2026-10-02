@@ -3,7 +3,7 @@ import test, { before } from 'node:test';
 
 import { useTestDb } from '../helpers/db.js';
 import db from '../../src/core/database.js';
-import symbolResolutionService from '../../src/services/symbol-resolution.service.js';
+import symbolValidationService from '../../src/services/symbol-validation.service.js';
 
 /**
  * The Add Symbol search. Seen live: typing BTCUSD found nothing (the FTS prefix star sat inside
@@ -35,7 +35,7 @@ before(async () => {
   await db.run("INSERT INTO instruments_fts(instruments_fts) VALUES('rebuild')");
 });
 
-const search = async (q, exchange) => (await symbolResolutionService.searchSymbols(q, exchange)).map((r) => r.symbol);
+const search = async (q, exchange) => (await symbolValidationService.searchSymbols(q, null, { exchange })).map((r) => r.symbol);
 
 test('a partial symbol finds the contract - BTCUSD finds the perpetual', async () => {
   assert.deepStrictEqual(await search('BTCUSD'), ['BTCUSDFUT']);

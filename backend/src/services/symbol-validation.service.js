@@ -36,14 +36,14 @@ class SymbolValidationService {
    * @param {number} [instanceId] - Optional instance ID to use
    * @returns {Promise<Array>} - Enriched symbol results with classification
    */
-  async searchSymbols(query, instanceId = null) {
+  async searchSymbols(query, instanceId = null, filters = {}) {
     if (!query || query.trim().length < 2) {
       throw new ValidationError('Search query must be at least 2 characters');
     }
 
     // Try internal instruments cache first
     try {
-      const instrumentResults = await instrumentsService.searchInstruments(query, { limit: 50 });
+      const instrumentResults = await instrumentsService.searchInstruments(query, { limit: 50, ...filters });
       if (instrumentResults.length > 0) {
         log.debug('Symbol search resolved via instruments cache', {
           query,
