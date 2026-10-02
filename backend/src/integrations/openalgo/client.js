@@ -152,7 +152,6 @@ class OpenAlgoClient extends EventEmitter {
     this.nonCriticalRetries = config.openalgo.nonCritical.maxRetries;
     this.nonCriticalRetryDelay = config.openalgo.nonCritical.retryDelay;
     this.instanceTimeoutOverrides = this._loadInstanceTimeoutOverrides();
-    this.fastSnapshotMode = process.env.OPENALGO_FAST_SNAPSHOT_MODE !== 'false';
 
     // Per-symbol quote failure cooldown: a symbol that's invalid/unlisted on a given instance
     // (e.g. bad or expired contract) fails every time it's requested, and since a failed quote
@@ -426,37 +425,6 @@ class OpenAlgoClient extends EventEmitter {
     // Check if this is an order placement endpoint
     const isOrderPlacement = ['placeorder', 'placesmartorder'].includes(endpoint);
 
-    // Store initial position for order placement requests
-    // Track snapshot success separately from position value to enable dedup for new positions
-    // Fast path (default): defer snapshot until a retry is needed to save ~300-500ms on first attempt
-    let initialPosition = null;
-    let initialPositionFetched = false;
-    // The retry check below compares the position before and after. Snapshotting lazily (on the
-    // first retry) takes "before" AFTER a timed-out attempt that may already have filled, so no
-    // change shows and the retry places a DUPLICATE. placeorder has no target to protect it, so
-    // it snapshots up front. placesmartorder is idempotent by its target and skips the extra call.
-    if (endpoint === 'placeorder') {
-      try {
-        initialPosition = await this._getPositionForOrder(instance, data);
-        initialPositionFetched = true;
-      } catch (error) {
-        log.warn('Could not snapshot position before placeorder', { endpoint, symbol: data.symbol, error: error.message });
-      }
-    }
-    if (isOrderPlacement && !this.fastSnapshotMode) {
-      try {
-        initialPosition = await this._getPositionForOrder(instance, data);
-        initialPositionFetched = true;
-      } catch (error) {
-        log.warn('Could not fetch initial position for order retry check', {
-          endpoint,
-          symbol: data.symbol,
-          exchange: data.exchange,
-          error: error.message,
-        });
-      }
-    }
-
     log.debug('OpenAlgo API Request', {
       endpoint,
       url,
@@ -585,8 +553,7 @@ class OpenAlgoClient extends EventEmitter {
           });
         }
 
-        // For order placement requests, check if order was actually placed before retrying
-        // Snapshot is captured lazily on the first retry to avoid adding latency to attempt 0
+        // For order placement requests, check if order was actually placed before retrying.
         // An order whose outcome is unknown (timeout, network or 5xx) must never be re-sent blind.
         // Observed live on Fyers: an exit timed out after it had filled, the position book still
         // lagged, so the position-targeted retry saw the position open and SOLD AGAIN - a short
@@ -606,83 +573,6 @@ class OpenAlgoClient extends EventEmitter {
             });
             return { status: 'success', orderid: landed, message: 'Order placed (confirmed from the order book after an error)' };
           }
-        }
-
-        if (isOrderPlacement && attempt < maxRetries) {
-          if (!initialPositionFetched) {
-            try {
-              initialPosition = await this._getPositionForOrder(instance, data);
-              initialPositionFetched = true;
-            } catch (error) {
-              log.warn('Could not fetch initial position for order retry check', {
-                endpoint,
-                symbol: data.symbol,
-                exchange: data.exchange,
-                error: error.message,
-              });
-            }
-          }
-
-          if (initialPositionFetched) {
-            try {
-              const currentPosition = await this._getPositionForOrder(instance, data);
-
-            // Check if position changed (order was likely placed)
-            if (this._hasPositionChanged(initialPosition, currentPosition, data)) {
-              // Use consistent field access for logging (handle both netqty and net_qty)
-              const getNetQty = (pos) => pos?.netqty || pos?.net_qty || 0;
-
-              // Fetch actual order ID from order book
-              let actualOrderId = null;
-              try {
-                actualOrderId = await this._findOrderIdFromOrderBook(instance, data);
-              } catch (orderIdError) {
-                log.warn('Could not fetch actual order ID from order book', {
-                  symbol: data.symbol,
-                  error: orderIdError.message,
-                });
-              }
-
-              // Only deduplicate if we successfully found the actual order ID
-              // Otherwise, continue with normal retry logic to avoid breaking downstream workflows
-              if (actualOrderId) {
-                log.info('Order appears to have been placed despite error - skipping retry', {
-                  endpoint,
-                  symbol: data.symbol,
-                  exchange: data.exchange,
-                  initialQty: getNetQty(initialPosition),
-                  currentQty: getNetQty(currentPosition),
-                  expectedChange: data.quantity || 0,
-                  action: data.action,
-                  foundOrderId: actualOrderId,
-                });
-
-                // Return success response with actual order ID
-                return {
-                  status: 'success',
-                  orderid: actualOrderId,
-                  message: 'Order placed successfully (verified via position check)',
-                };
-              } else {
-                // Position changed but couldn't find order ID - log and continue with retry
-                log.warn('Position changed but order ID not found in order book - continuing with retry', {
-                  endpoint,
-                  symbol: data.symbol,
-                  exchange: data.exchange,
-                  initialQty: getNetQty(initialPosition),
-                  currentQty: getNetQty(currentPosition),
-                  expectedChange: data.quantity || 0,
-                  action: data.action,
-                });
-              }
-            }
-          } catch (posCheckError) {
-            log.warn('Position check failed during retry, proceeding with retry', {
-              endpoint,
-              error: posCheckError.message,
-            });
-          }
-        }
         }
 
         // Log retry attempt
@@ -2373,162 +2263,9 @@ class OpenAlgoClient extends EventEmitter {
   }
 
   // ==========================================
-  // Utility Methods
+  // Order outcome recovery
   // ==========================================
 
-  // ==========================================
-  // Private Helper Methods for Order Deduplication
-  // ==========================================
-
-  /**
-   * Get position for order validation
-   * Fetches the specific position that would be affected by this order
-   * @private
-   * @param {Object} instance - Instance configuration
-   * @param {Object} orderData - Order data (symbol, exchange, action, quantity)
-   * @returns {Promise<Object|null>} - Position object or null if not found
-   */
-  async _getPositionForOrder(instance, orderData) {
-    try {
-      const positions = await this.getPositionBook(instance);
-
-      // Find position matching this order's symbol, exchange, and product
-      // Product matching is critical because brokers maintain separate positions
-      // for different product types (e.g., RELIANCE-MIS vs RELIANCE-CNC)
-      const position = positions.find(
-        (pos) =>
-          pos.symbol === orderData.symbol &&
-          pos.exchange === orderData.exchange &&
-          pos.product === (orderData.product || 'MIS') // Default to MIS if not specified
-      );
-
-      return position || null;
-    } catch (error) {
-      log.warn('Failed to fetch position for order validation', {
-        symbol: orderData.symbol,
-        exchange: orderData.exchange,
-        product: orderData.product,
-        error: error.message,
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Check if position changed based on order execution
-   * Compares initial and current positions to detect if order was placed
-   * @private
-   * @param {Object|null} initialPosition - Position before order attempt
-   * @param {Object|null} currentPosition - Position after order attempt
-   * @param {Object} orderData - Order data (action, quantity)
-   * @returns {boolean} - true if position changed consistent with order execution
-   */
-  _hasPositionChanged(initialPosition, currentPosition, orderData) {
-    // Validate action is strictly BUY or SELL
-    if (orderData.action !== 'BUY' && orderData.action !== 'SELL') {
-      log.warn('Invalid order action for position deduplication', {
-        action: orderData.action,
-        symbol: orderData.symbol,
-      });
-      return false;
-    }
-
-    // Validate quantity is a positive integer
-    const orderQty = parseInt(orderData.quantity, 10);
-    if (isNaN(orderQty) || orderQty <= 0) {
-      log.warn('Invalid order quantity for position deduplication', {
-        quantity: orderData.quantity,
-        symbol: orderData.symbol,
-      });
-      return false;
-    }
-
-    // Handle different position field names (netqty vs net_qty)
-    const getNetQty = (pos) => {
-      if (!pos) return 0;
-      return pos.netqty || pos.net_qty || 0;
-    };
-
-    const initialQty = getNetQty(initialPosition);
-    const currentQty = getNetQty(currentPosition);
-
-    // Calculate expected change based on action
-    let expectedChange = 0;
-
-    if (orderData.action === 'BUY') {
-      expectedChange = orderQty;
-    } else if (orderData.action === 'SELL') {
-      expectedChange = -orderQty;
-    }
-
-    // Check if actual change matches expected change
-    const actualChange = currentQty - initialQty;
-
-    // Enforce that position movement direction matches expected direction
-    if (expectedChange !== 0 && actualChange !== 0) {
-      if (Math.sign(actualChange) !== Math.sign(expectedChange)) {
-        log.debug('Position changed in opposite direction - not deduplicating', {
-          symbol: orderData.symbol,
-          exchange: orderData.exchange,
-          action: orderData.action,
-          expectedChange,
-          actualChange,
-        });
-        return false;
-      }
-    }
-
-    // Allow for some tolerance in case of partial fills or broker-specific handling
-    // Consider position changed if actual change is at least 80% of expected
-    const tolerance = 0.8;
-    const minExpectedChange = Math.abs(expectedChange) * tolerance;
-
-    const positionChanged = Math.abs(actualChange) >= minExpectedChange;
-
-    // Calculate fill percentage for logging
-    const fillPercentage = Math.abs(expectedChange) > 0
-      ? (Math.abs(actualChange) / Math.abs(expectedChange)) * 100
-      : 0;
-
-    if (positionChanged) {
-      // Warn if partial fill is between 50-80% threshold
-      if (fillPercentage >= 50 && fillPercentage < 80) {
-        log.warn('Partial fill detected near deduplication threshold', {
-          symbol: orderData.symbol,
-          exchange: orderData.exchange,
-          action: orderData.action,
-          orderQty,
-          actualChange,
-          expectedChange,
-          fillPercentage: fillPercentage.toFixed(2) + '%',
-          message: 'Order may have been partially filled - potential for duplicate on retry',
-        });
-      }
-
-      log.debug('Position change detected', {
-        symbol: orderData.symbol,
-        exchange: orderData.exchange,
-        action: orderData.action,
-        orderQty,
-        initialQty,
-        currentQty,
-        actualChange,
-        expectedChange,
-        fillPercentage: fillPercentage.toFixed(2) + '%',
-      });
-    }
-
-    return positionChanged;
-  }
-
-  /**
-   * Find actual order ID from order book for deduplication
-   * Fetches the most recent matching order from order book
-   * @private
-   * @param {Object} instance - Instance configuration
-   * @param {Object} orderData - Order data (symbol, exchange, product, action, quantity)
-   * @returns {Promise<string|null>} - Order ID or null if not found
-   */
   /**
    * Poll the order book for an order matching `orderData` placed since `since`. Returns its id,
    * or null if none shows up within the checks (it was then most likely never placed).
