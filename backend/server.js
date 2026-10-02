@@ -24,6 +24,7 @@ import instrumentsService from './src/services/instruments.service.js';
 import wsGatewayService from './src/services/ws-gateway.service.js';
 import tradingviewWebhookRoutes from './src/routes/tradingview-webhook.js';
 import idempotencyService from './src/services/idempotency.service.js';
+import { pruneOldRows } from './src/services/retention.service.js';
 
 // Middleware
 import { requireAuth, optionalAuth, verifyLocalToken } from './src/middleware/auth.js';
@@ -212,13 +213,12 @@ async function startServer() {
     await config.loadFromDatabase();
     log.info('Configuration loaded from database');
 
-    // Clean up expired idempotency keys and audit logs older than 7 days, on boot and every 6 hours
-    const pruneAuditLogs = () => db.run("DELETE FROM audit_logs WHERE created_at < datetime('now', '-7 days')");
+    // Clean up expired idempotency keys and old rows (see retention.service), on boot and every 6 hours
     await idempotencyService.cleanupExpired();
-    await pruneAuditLogs();
+    await pruneOldRows();
     setInterval(() => {
       idempotencyService.cleanupExpired().catch(() => {});
-      pruneAuditLogs().catch(() => {});
+      pruneOldRows();
     }, 6 * 60 * 60 * 1000);
 
     // Initialize OpenAlgo client rate limits from database

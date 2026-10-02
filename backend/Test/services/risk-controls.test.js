@@ -280,7 +280,7 @@ test('clearing a position forgets its trailing state', async () => {
   assert.strictEqual(riskControls.trailingState.get(key), undefined);
 });
 
-test('a ratchet is recorded as a risk event the operator can audit afterwards', async () => {
+test('arming a trail is recorded as a risk event; later ratchets are not (one row per step filled the table)', async () => {
   // risk_events carries foreign keys to the instance, watchlist and symbol, so this needs real
   // rows - and the recorder swallows a failed insert, which is exactly why it is worth asserting
   // that the row actually lands rather than that the call did not throw.
@@ -302,10 +302,10 @@ test('a ratchet is recorded as a risk event the operator can audit afterwards', 
   await riskControls.evaluateExit({ key, side: 'LONG', entryPrice: 100, currentPrice: 170, configEntry, ...context });
 
   const events = await db.all('SELECT event_type, previous_value, new_value FROM risk_events ORDER BY id');
-  assert.ok(events.length >= 2, 'arming and ratcheting must both be recorded');
+  assert.strictEqual(events.length, 1, 'only the first arm is recorded');
   assert.strictEqual(events[0].event_type, 'TRAIL_ACTIVATED');
-  assert.strictEqual(events[1].event_type, 'STOP_RATCHET');
-  assert.strictEqual(Number(events[1].new_value), 160);
+  assert.strictEqual(Number(events[0].new_value), 140);
+  assert.strictEqual(riskControls.trailingState.get(key).stopPrice, 160, 'the stop itself still ratchets');
 });
 
 test('a trail left by a position that vanished is not inherited by the next one', async () => {

@@ -140,19 +140,8 @@ class RiskControlsService {
       this.trailingState.set(key, state);
       // Await so concurrent ticks for the same key can't race the persisted stop_price out of order.
       await this.persistState(key, state);
-      if (previousStop != null) {
-        await riskEventsService.record({
-          instanceId: context.instanceId,
-          watchlistId: context.watchlistId,
-          symbolId: context.symbolId,
-          exchange: context.exchange,
-          symbol: context.symbol,
-          eventType: 'STOP_RATCHET',
-          previousValue: previousStop,
-          newValue: candidateStop,
-          metadata: { side, currentPrice, entryPrice, trailingPoints },
-        });
-      } else {
+      // Only the first arm is recorded (and the fire, in auto-exit): a row per ratchet step filled risk_events.
+      if (previousStop == null) {
         await riskEventsService.record({
           instanceId: context.instanceId,
           watchlistId: context.watchlistId,
