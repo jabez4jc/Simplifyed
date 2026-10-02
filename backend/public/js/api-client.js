@@ -164,6 +164,10 @@ class APIClient {
     return this.request(`/notifications/${id}/read`, { method: 'POST' });
   }
 
+  async markAllNotificationsRead() {
+    return this.request('/notifications/read-all', { method: 'POST' });
+  }
+
 
   async deleteInstance(id) {
     return this.request(`/instances/${id}`, {

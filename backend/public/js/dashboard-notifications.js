@@ -1,5 +1,5 @@
 /**
- * Simplifyed Admin V2 - Dashboard: Notifications + Audit views.
+ * Simplifyed Admin V2 - Dashboard: Notifications view.
  */
 
 Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors(class {
@@ -58,9 +58,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
 
   async markAllNotificationsRead() {
     try {
-      const res = await api.getNotifications();
-      const rows = res.data || [];
-      await Promise.all(rows.filter((n) => !n.read).map((n) => api.markNotificationRead(n.id)));
+      await api.markAllNotificationsRead();
       await this.renderNotificationsView();
     } catch (err) {
       Utils.showToast('Failed to mark all read', 'error');

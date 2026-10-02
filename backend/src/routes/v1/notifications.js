@@ -20,6 +20,15 @@ router.get('/', requirePermission('pages.notifications.view'), async (req, res, 
   }
 });
 
+router.post('/read-all', requirePermission('pages.notifications.edit'), async (req, res, next) => {
+  try {
+    const { changes } = await db.run(`UPDATE notifications SET read = 1 WHERE read = 0`);
+    res.json({ status: 'success', data: { updated: changes } });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/:id/read', requirePermission('pages.notifications.edit'), async (req, res, next) => {
   try {
     const { id } = req.params;

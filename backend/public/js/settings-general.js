@@ -93,14 +93,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
   handleSearch(query) {
     this.searchQuery = query.toLowerCase().trim();
 
-    // Re-render the settings section
-    const settingsContainer = document.querySelector('.settings-container');
-    if (settingsContainer) {
-      settingsContainer.innerHTML = this.renderApplicationSettings().replace(/<div class="settings-container">/, '').replace(/<\/div>\s*$/, '');
-      // Actually need to re-render properly
-    }
-
-    // Just update the content area
     this.refreshApplicationSettings();
   }
 
@@ -602,16 +594,19 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         // Send update request
         const data = await api.request('/settings', { method: 'PUT', body: settingsToUpdate });
 
-        // Show success message
+        // A partial save is NOT a success: name each rejected setting and why, in a toast that
+        // stays up long enough to read (the details used to go only to the console).
         const summary = data.data.summary;
-        Utils.showToast(
-          `Successfully updated ${summary.successful} of ${summary.total} settings`,
-          'success'
-        );
-
-        // Log errors if any
-        if (data.data.errors && data.data.errors.length > 0) {
-          console.error('[Settings] Some settings failed to update:', data.data.errors);
+        const errors = data.data.errors || [];
+        if (errors.length > 0) {
+          const rejected = errors.map((e) => `${e.key}: ${e.error}`).join('; ');
+          Utils.showToast(
+            `${summary.successful} of ${summary.total} settings saved. Rejected - ${rejected}`,
+            'error',
+            12000
+          );
+        } else {
+          Utils.showToast(`Successfully updated ${summary.successful} of ${summary.total} settings`, 'success');
         }
 
         // Refresh the view to get updated values

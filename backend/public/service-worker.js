@@ -49,7 +49,17 @@
  * under unversioned /vendor urls - same reason as v3.
  */
 /** v6: openalgo-charts 2.6.0 (with the widget tier's study dialogs) and OpenScript 0.8.1. */
-const CACHE_NAME = 'simplifyed-v6';
+/**
+ * v7: /js, /css and /vendor are network-first too (like pages), and keep ONE cached copy per
+ *   path. They used to be cache-first keyed by the full url, so every `?v=` bump added another
+ *   entry that was never removed, and the unversioned /vendor files stayed pinned until someone
+ *   remembered to bump CACHE_NAME - the cause of repeated stale-UI bugs. Offline still works from
+ *   the last copy fetched. Old caches are deleted on activate (below), so this bump evicts v6.
+ */
+const CACHE_NAME = 'simplifyed-v7';
+
+/** App code and vendored libraries: always ask the network first. */
+const NETWORK_FIRST_PREFIXES = ['/js/', '/css/', '/vendor/'];
 
 const OFFLINE_ASSETS = [
   '/',
@@ -93,22 +103,32 @@ self.addEventListener('fetch', (event) => {
   // Returning without calling respondWith hands the request back to the browser untouched.
   if (!isCacheable(url)) return;
 
-  // Pages are network-first. Cache-first pinned dashboard.html forever, and with it every
-  // `?v=` it references - so no JS/CSS change ever reached a browser that had the old page
+  // Pages and app code are network-first. Cache-first pinned dashboard.html forever, and with it
+  // every `?v=` it references - so no JS/CSS change ever reached a browser that had the old page
   // (seen: expired watchlist rows still enabled after the fix shipped). Offline still gets the
   // cached copy.
   const isPage = event.request.mode === 'navigate' || url.pathname.endsWith('.html') || url.pathname === '/';
-  if (isPage) {
+  const isAsset = NETWORK_FIRST_PREFIXES.some((prefix) => url.pathname.startsWith(prefix));
+  if (isPage || isAsset) {
     event.respondWith(
       fetch(event.request)
         .then((response) => {
           if (response.ok) {
             const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+            caches.open(CACHE_NAME).then(async (cache) => {
+              await cache.put(event.request, copy);
+              // One copy per path: drop the same file cached under an older `?v=`.
+              if (isAsset) {
+                for (const key of await cache.keys()) {
+                  const other = new URL(key.url);
+                  if (other.pathname === url.pathname && other.search !== url.search) await cache.delete(key);
+                }
+              }
+            });
           }
           return response;
         })
-        .catch(() => caches.match(event.request).then((cached) => cached || caches.match('/')))
+        .catch(() => caches.match(event.request).then((cached) => cached || (isPage ? caches.match('/') : undefined)))
     );
     return;
   }

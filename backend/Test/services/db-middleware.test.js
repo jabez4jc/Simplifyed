@@ -14,6 +14,7 @@ import rbacService from '../../src/services/rbac.service.js';
 import watchlistService from '../../src/services/watchlist.service.js';
 import authRoutes from '../../src/routes/v1/auth.js';
 import instanceRoutes from '../../src/routes/v1/instances.js';
+import notificationRoutes from '../../src/routes/v1/notifications.js';
 import { optionalAuth, signLocalToken, isValidNewPassword, invalidateUserCache } from '../../src/middleware/auth.js';
 import { rowPayload, upsertByKey } from '../../src/utils/csv-import.js';
 
@@ -174,6 +175,25 @@ test('manual instance refresh needs the edit permission, not just view', async (
   const viewer = await serve(instanceRoutes, { user: { id: 5, role: 'Monitor', permissions: ['pages.instances.view'] } });
   try {
     assert.strictEqual((await fetch(`${viewer.url}/1/refresh`, { method: 'POST' })).status, 403);
+  } finally {
+    await viewer.close();
+  }
+});
+
+test('POST /notifications/read-all marks every unread row in one call', async () => {
+  for (const title of ['a', 'b', 'c']) await db.run('INSERT INTO notifications (title, read) VALUES (?, 0)', [title]);
+  const srv = await serve(notificationRoutes, { user: { id: 5, is_admin: 1, permissions: [] } });
+  try {
+    const res = await fetch(`${srv.url}/read-all`, { method: 'POST' });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual((await res.json()).data.updated, 3);
+    assert.strictEqual((await db.get('SELECT COUNT(*) AS n FROM notifications WHERE read = 0')).n, 0);
+  } finally {
+    await srv.close();
+  }
+  const viewer = await serve(notificationRoutes, { user: { id: 6, role: 'Monitor', permissions: ['pages.notifications.view'] } });
+  try {
+    assert.strictEqual((await fetch(`${viewer.url}/read-all`, { method: 'POST' })).status, 403);
   } finally {
     await viewer.close();
   }
