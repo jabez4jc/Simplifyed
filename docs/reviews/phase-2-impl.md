@@ -78,3 +78,39 @@ Live, 28 failures:
 ## Checklist (§9.3)
 
 Phase 2 is left **unticked**, with a note on the line: D4 is blocked, F1–F6 and §5.4 are outside this session's scope, and G3 ended with an open order and 3 unclassified live failures.
+
+---
+
+# Session 2: F1–F6 and §5.4
+
+Commits, one per item, in ID order. Lint and `test:logic` were green after each (now 379 tests; the 373 from the D-items plus 6 new). `database/simplifyed.db` was never written.
+
+| Item | Commit | What changed | Tests added |
+|---|---|---|---|
+| F1 | – | **Skipped: already done.** ANCHOR_OFS was removed under H9 in Phase 1 (migration 072, `anchor-removal.test.js`). `grep ANCHOR_OFS\|anchored_` over src and public/js is empty. The only hits left are migration 000/072 and live tests that still pass `strike_policy: 'FLOAT_OFS'` to `addLeg`, which now ignores it. | – |
+| F2 | 9d4d07c | `telegram.service` is now only `broadcastText`, `sendOrderNotification`, `sendOrderSummary`, `formatOrderMessage`. Everything goes to `TELEGRAM_DEFAULT_CHAT_ID`, and is a **silent no-op** when the token or chat is unset (the 1,503 `telegram_notify_failed` WARNs end). Deleted `handleWebhook`, `ensureSchema`, the subscriber loops, `routes/v1/telegram.js` + its router entry, `config.telegram.botUsername/webhookSecret`, `TELEGRAM_BOT_USERNAME`/`TELEGRAM_WEBHOOK_SECRET` in `.env.example`, `backend/link-telegram-manual.md`, the contract-test allowlist entry. Migration **076** drops `telegram_subscribers`. | `Test/services/telegram-noop.test.js` |
+| F3 | 5700dc3 | Deleted `LOG_NOTIFICATIONS`, `pushNotification` and the logger's second sqlite connection (and the `sqlite3` import). New `services/notify.service.js` `notify(type, message, {severity, ...meta})` (never throws). Wired to: futures roll / blocked roll, kill switch, exit level fired, session cutoff, max-loss cap, unhealthy instance with open positions. The two ad-hoc `INSERT INTO notifications` sites (`instance-health`, `instance-health-check`) now use it. Removed the key from `.env.example` and `install.sh`. | `Test/services/notify.test.js` (row written; warn/error no longer create rows) |
+| F4 | 5d97175 | Dropped `watchlists.is_broadcast` (migration **077**; promotes any row flagged only by the old column to `type='broadcast'` first). `watchlist.service` normalizer/insert/`_isBroadcast` and `dashboard-watchlists-core.js` read `type` only. Tests that passed `is_broadcast` updated. `?v=` bumped. | `Test/services/watchlist-type-only.test.js` |
+| F5 | 1f2040e | Deleted the `streaming.enabled` branch and `applyStreamingPreference` (the key is in no registry), `togglePasswordVisibility` (the login page has its own), the two commented `console.log`s, and `authFetch` with its now-dead `getAuthHeaders`/`getAuthToken`. All 22 call sites use `api.request` (401 handling). **`api.request` needed two small extensions** because three sites could not use it as-is: a `FormData` body is sent untouched (no JSON content type), and `blob: true` returns the body for the CSV exports. `fetch-status` polling treats a 404 (`statusCode`) as "completed", as before. `?v=` bumped on api-client and all six settings files. | `Test/unit/api-client-body.test.js` |
+| F6 | ca409ac | Removed the console banner. Kept the existing structured `log.info('Server started', {port, env, baseUrl, testMode, wsGateway})` as the one line, rather than renaming it to `listening`. | – |
+| §5.4 | 959924d | Deleted the "removed noisy log" comments (**11** found, not 13; all in `public/js/quick-order-*.js`, none in src), the `console.debug` in `dashboard-watchlists-positions.js`, and dropped `version` from `/health` (no consumer; the report allowed either). `?v=` bumped on the five files. | – |
+
+**Edge:** the F2 commit removed a comment in `settings-status.js` without bumping `?v=`; F4 bumped it. F5 bumped it again.
+
+## Migrations
+
+076 and 077 applied (together with 071–075, since the file was at 070) to a **copy** of `database/live.db`: version 077, `telegram_subscribers` and `watchlists.is_broadcast` gone, the one broadcast watchlist kept `type='broadcast'`, the copy 129 MB → 102 MB.
+
+## Greps (§9.3)
+
+The four sanity greps are empty except one: `_cancelAllOrdersForRetry` still exists in `quick-order.service.js:778` (called at :722). **This is a Phase 0 (C3) leftover, not touched here.** It is symbol- and product-scoped (it reads the order book and cancels matching ids), so it does not cancel the whole account, but its name contradicts the C3 accept grep. Needs a rename or an owner decision. Also empty: `telegram_subscribers`, `handleWebhook`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_WEBHOOK_SECRET`, `LOG_NOTIFICATIONS`, `pushNotification`, `authFetch`, `applyStreamingPreference` and `is_broadcast` over src, public, server.js, `.env.example`, `install.sh`, `update.sh`.
+
+## Gate G3: not run this session
+
+Pre-check (read-only, against the broker): instances **3, 6, 19, 20 and 26 all report analyzer mode**, no positions are open on any of them, but **instance 3 (Jz Kotak) still has the open order NIFTY06OCT2622400CE, id 26100258736054**, the one the previous G3 left behind. §9.2 says to stop if something is left open, and the earlier session asked for it to be cancelled first, so I did not start a gate on top of it. No suites were run; there are no new numbers to compare with G0 (G0 / G2 / previous G3 are in the table above).
+
+**Needs you:** (1) cancel that Kotak order; (2) decide D4 (still blocked from the previous session); (3) then G3 can be run, ideally with the three Fyers live failures rerun in isolation; (4) the `_cancelAllOrdersForRetry` name above.
+
+## Checklist (§9.3)
+
+Phase 2 stays **unticked**: D4 is blocked, and G3 has not passed (the previous run ended on an open order and the gate was not rerun). F1–F6 and §5.4 are done.
