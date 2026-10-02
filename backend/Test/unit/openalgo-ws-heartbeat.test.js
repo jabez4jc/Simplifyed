@@ -1,6 +1,6 @@
 import assert from 'assert';
 import test from 'node:test';
-import { pingReplyFor, isConnectionStale } from '../../src/services/openalgo-ws.service.js';
+import { pingReplyFor, isConnectionStale, authResult } from '../../src/services/openalgo-ws.service.js';
 
 /**
  * Application-level heartbeat handling.
@@ -74,4 +74,13 @@ test('a connection with no lastMessageAt yet (should not happen - _onOpen stamps
 test('malformed connection input does not throw', () => {
   assert.strictEqual(isConnectionStale(null), false);
   assert.strictEqual(isConnectionStale(undefined), false);
+});
+
+test('an untyped error frame before auth is an auth failure (expired broker session)', () => {
+  const refused = { status: 'error', code: 'BROKER_CONNECTION_ERROR', message: 'access token has expired' };
+  assert.strictEqual(authResult(refused, false), 'failed');
+  assert.strictEqual(authResult(refused, true), null, 'after auth it is some other error');
+  assert.strictEqual(authResult({ type: 'auth', status: 'success' }, false), 'success');
+  assert.strictEqual(authResult({ type: 'auth', status: 'error' }, false), 'failed');
+  assert.strictEqual(authResult({ type: 'market_data' }, false), null);
 });

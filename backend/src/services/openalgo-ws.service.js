@@ -129,6 +129,18 @@ export function pingReplyFor(msg) {
 }
 
 /**
+ * The outcome of an authenticate frame, or null for anything else. A refused key comes back as
+ * `{status: 'error', code: 'BROKER_CONNECTION_ERROR', message}` with no `type` (seen on an expired
+ * broker session), so before auth any untyped error frame is the auth reply - read only as
+ * `type === 'auth'`, the refusal was never logged and the watchdog just reconnected every minute.
+ */
+export function authResult(msg, authed) {
+  if (msg?.type === 'auth') return msg.status === 'success' ? 'success' : 'failed';
+  if (!authed && !msg?.type && msg?.status === 'error') return 'failed';
+  return null;
+}
+
+/**
  * Pure decision the liveness watchdog runs against every connection - separated out from
  * `_startLivenessWatchdog` (below) so it's testable without a real socket, same reasoning as
  * `pingReplyFor` above. A connection currently reconnecting (`connected: false`) is never stale -
@@ -247,8 +259,9 @@ class OpenAlgoWsConnection {
           log.warn('OpenAlgo WS order stream refused', { instance: this.instance.name || this.instance.id, message: msg.message });
         }
       }
-      if (msg.type === 'auth') {
-        if (msg.status === 'success') {
+      const auth = authResult(msg, this.authed);
+      if (auth) {
+        if (auth === 'success') {
           this.authed = true;
           this.reconnectAttempts = 0;
           // Account-level order fill/status stream - same connection as quotes. Brokers without
