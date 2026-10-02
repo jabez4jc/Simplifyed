@@ -24,10 +24,11 @@ class APIClient {
     const baseURL = options.baseURL || this.baseURL;
     const url = `${baseURL}${endpoint}`;
 
+    const isForm = options.body instanceof FormData;
     const config = {
       method: options.method || 'GET',
       headers: {
-        'Content-Type': 'application/json',
+        ...(isForm ? {} : { 'Content-Type': 'application/json' }),
         ...options.headers,
       },
       credentials: 'include', // Include cookies for session
@@ -39,7 +40,7 @@ class APIClient {
     }
 
     if (options.body) {
-      config.body = JSON.stringify(options.body);
+      config.body = isForm ? options.body : JSON.stringify(options.body);
     }
 
     try {
@@ -49,6 +50,9 @@ class APIClient {
       if (response.status === 204) {
         return { status: 'success' };
       }
+
+      // `blob: true` (file downloads): hand back the body as-is on success; errors stay JSON.
+      if (options.blob && response.ok) return response.blob();
 
       let data = null;
       const contentType = response.headers.get('content-type') || '';

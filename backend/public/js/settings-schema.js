@@ -20,9 +20,7 @@
 Object.assign(SettingsHandler.prototype, {
   /** Fetch the registry + current values. Stored for the save path to diff against. */
   async fetchSchema() {
-    const response = await this.authFetch('/api/v1/settings/schema');
-    if (!response.ok) throw new Error(`Failed to load settings schema (${response.status})`);
-    const { data } = await response.json();
+    const { data } = await api.request('/settings/schema');
     this.schema = data;
 
     // Mirror into this.settings so handleSettingChange/saveSettings keep working unchanged -

@@ -31,36 +31,6 @@ class SettingsHandler {
 }
 
 Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescriptors(class {
-  getAuthToken() {
-    try {
-      return localStorage.getItem('auth_token');
-    } catch (e) {
-      return null;
-    }
-  }
-
-  getAuthHeaders() {
-    const token = this.getAuthToken();
-    return token ? { Authorization: `Bearer ${token}` } : {};
-  }
-
-  async authFetch(url, options = {}) {
-    const headers =
-      options.headers instanceof Headers
-        ? Object.fromEntries(options.headers.entries())
-        : { ...(options.headers || {}) };
-
-    Object.assign(headers, this.getAuthHeaders());
-
-    const config = {
-      credentials: 'include',
-      ...options,
-      headers,
-    };
-
-    return fetch(url, config);
-  }
-
   hasPermission(key) {
     const perms = this.currentUser?.permissions || [];
     return perms.includes(key);

@@ -178,16 +178,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
   }
 
 
-  /**
-   * Toggle password visibility
-   */
-  togglePasswordVisibility(inputId) {
-    const input = document.getElementById(inputId);
-    if (input) {
-      input.type = input.type === 'password' ? 'text' : 'password';
-    }
-  }
-
   renderTradingSessionsField(key, value) {
     let sessions = [];
     try {
@@ -431,7 +421,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
 
     this.settings[category][key].pendingValue = value;
 
-    // console.log(`[Settings] Setting changed: ${key} = ${value}`);
   }
 
   handleTradingSessionChange(input) {
@@ -464,7 +453,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       this.settings[category][key] = { dataType: 'json', isSensitive: false };
     }
     this.settings[category][key].pendingValue = JSON.stringify(sessions);
-    // console.log('[Settings] trading_sessions updated', sessions);
   }
 
   handleBrokerageChange(input) {
@@ -605,32 +593,14 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         });
       });
 
-      let streamingChange = null;
-      if (Object.prototype.hasOwnProperty.call(settingsToUpdate, 'streaming.enabled')) {
-        streamingChange = settingsToUpdate['streaming.enabled'];
-        delete settingsToUpdate['streaming.enabled'];
-      }
-
-      if (Object.keys(settingsToUpdate).length === 0 && streamingChange === null) {
+      if (Object.keys(settingsToUpdate).length === 0) {
         Utils.showToast('No changes to save', 'info');
         return;
       }
 
       if (Object.keys(settingsToUpdate).length > 0) {
         // Send update request
-        const response = await this.authFetch('/api/v1/settings', {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(settingsToUpdate),
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(data.message || 'Failed to update settings');
-        }
+        const data = await api.request('/settings', { method: 'PUT', body: settingsToUpdate });
 
         // Show success message
         const summary = data.data.summary;
@@ -651,50 +621,12 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
           await window.app.loadPublicConfig();
         }
       }
-
-      if (streamingChange !== null) {
-        this.applyStreamingPreference(Boolean(streamingChange));
-        Utils.showToast('Streaming preference updated', 'success');
-      }
     } catch (error) {
       console.error('[Settings] Error saving settings:', error);
       Utils.showToast(`Failed to save settings: ${error.message}`, 'error');
     } finally {
       this.isSaving = false;
       this.updateSaveButton();
-    }
-  }
-
-  applyStreamingPreference(enabled) {
-    if (typeof window === 'undefined' || !window.app) {
-      return;
-    }
-
-    const current = typeof window.app.getStreamPreference === 'function'
-      ? window.app.getStreamPreference()
-      : false;
-    if (enabled === current) {
-      return;
-    }
-
-    if (enabled) {
-      window.app.useWsGateway = true;
-      if (typeof window.app.saveWsPreference === 'function') {
-        window.app.saveWsPreference(true);
-      }
-      if (typeof window.app.startWsStream === 'function') {
-        window.app.startWsStream();
-      }
-    } else if (typeof window.app.stopWsStream === 'function') {
-      window.app.stopWsStream('user');
-    } else if (typeof window.app.saveWsPreference === 'function') {
-      window.app.saveWsPreference(false);
-    }
-
-    if (this.settings?.streaming?.['streaming.enabled']) {
-      this.settings.streaming['streaming.enabled'].value = enabled;
-      this.settings.streaming['streaming.enabled'].rawValue = enabled ? 'true' : 'false';
-      delete this.settings.streaming['streaming.enabled'].pendingValue;
     }
   }
 
@@ -729,9 +661,10 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
   }
 
   async fetchCurrentUser() {
-    const res = await this.authFetch('/api/user');
-    if (!res.ok) return null;
-    const json = await res.json();
-    return json?.data || null;
+    try {
+      return (await api.request('/user', { baseURL: '/api' }))?.data || null;
+    } catch {
+      return null;
+    }
   }
 }.prototype));

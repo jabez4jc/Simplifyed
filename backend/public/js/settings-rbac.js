@@ -74,14 +74,11 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
   }
   async fetchRbacData() {
     try {
-      const [rolesRes, usersRes, permsRes] = await Promise.all([
-        this.authFetch('/api/v1/rbac/roles'),
-        this.authFetch('/api/v1/rbac/users'),
-        this.authFetch('/api/v1/rbac/permissions'),
+      const [rolesJson, usersJson, permsJson] = await Promise.all([
+        api.request('/rbac/roles'),
+        api.request('/rbac/users'),
+        api.request('/rbac/permissions'),
       ]);
-      const rolesJson = await rolesRes.json();
-      const usersJson = await usersRes.json();
-      const permsJson = await permsRes.json();
       this.roles = rolesJson?.data || [];
       this.users = usersJson?.data || [];
       this.permissions = permsJson?.data || [];
@@ -342,15 +339,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     const data = Object.fromEntries(new FormData(form).entries());
 
     try {
-      const res = await this.authFetch('/api/v1/rbac/users', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-      const json = await res.json();
-      if (!res.ok) {
-        throw new Error(json?.message || 'Failed to create user');
-      }
+      await api.request('/rbac/users', { method: 'POST', body: data });
       Utils.closeModal(document.querySelector('.modal-overlay'), { checkDirty: false });
       Utils.showToast(`User ${data.email} created`, 'success');
       await this.fetchRbacData();
@@ -395,15 +384,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     const data = Object.fromEntries(new FormData(form).entries());
 
     try {
-      const res = await this.authFetch(`/api/v1/rbac/users/${userId}/reset-password`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-      const json = await res.json();
-      if (!res.ok) {
-        throw new Error(json?.message || 'Failed to reset password');
-      }
+      await api.request(`/rbac/users/${userId}/reset-password`, { method: 'POST', body: data });
       Utils.closeModal(document.querySelector('.modal-overlay'), { checkDirty: false });
       Utils.showToast('Password reset', 'success');
     } catch (err) {
@@ -463,14 +444,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
         const userId = e.target.getAttribute('data-user-id');
         const role = e.target.value;
         try {
-          const res = await this.authFetch(`/api/v1/rbac/users/${userId}/role`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ role }),
-          });
-          if (!res.ok) {
-            throw new Error('Failed to assign role');
-          }
+          await api.request(`/rbac/users/${userId}/role`, { method: 'PUT', body: { role } });
         } catch (err) {
           alert('Failed to assign role: ' + err.message);
           console.error(err);
@@ -495,12 +469,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
           .filter(c => c.checked)
           .map(c => c.getAttribute('data-perm'));
         try {
-          const res = await this.authFetch(`/api/v1/rbac/roles/${encodeURIComponent(role)}/permissions`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ permissions: selected }),
-          });
-          if (!res.ok) throw new Error('Failed to update permissions');
+          await api.request(`/rbac/roles/${encodeURIComponent(role)}/permissions`, { method: 'PUT', body: { permissions: selected } });
           this.fetchRbacData(); // refresh silently
           Utils.showToast(`Permissions updated for ${role}`, 'success');
         } catch (err) {

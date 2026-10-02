@@ -58,9 +58,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
    */
   async renderInstrumentsCacheSection() {
     try {
-      const response = await this.authFetch('/api/v1/instruments/stats');
-      const data = await response.json();
-      const stats = data.data;
+      const stats = (await api.request('/instruments/stats')).data;
 
       const html = `
         <div class="space-y-6">
@@ -222,16 +220,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       formData.append('file', file);
 
       // Upload file
-      const response = await this.authFetch('/api/v1/instruments/upload', {
-        method: 'POST',
-        body: formData
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.message || 'Upload failed');
-      }
+      const data = await api.request('/instruments/upload', { method: 'POST', body: formData });
 
       // Show success
       const result = data.data;
@@ -264,12 +253,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
    */
   async loadInstances() {
     try {
-      const response = await this.authFetch('/api/v1/instances?is_active=true');
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.message || 'Failed to load instances');
-      }
+      const data = await api.request('/instances?is_active=true');
 
       const instances = data.data || [];
       const select = document.getElementById('instance-select');
@@ -335,21 +319,10 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       fetchBtn.textContent = 'Fetching...';
 
       // Call the API
-      const response = await this.authFetch('/api/v1/instruments/fetch-from-instance', {
+      await api.request('/instruments/fetch-from-instance', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          instanceId: parseInt(instanceId, 10)
-        })
+        body: { instanceId: parseInt(instanceId, 10) },
       });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.message || 'Fetch failed');
-      }
 
       // Poll for status updates
       this.pollFetchStatus(instanceId, statusText, fetchBtn, progressDiv);
@@ -373,11 +346,14 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
 
     const poll = async () => {
       try {
-        const response = await this.authFetch(`/api/v1/instruments/fetch-status/${instanceId}`);
+        let status = null;
+        try {
+          status = (await api.request(`/instruments/fetch-status/${instanceId}`)).data;
+        } catch (err) {
+          if (err.statusCode !== 404) throw err;
+        }
 
-        if (response.ok) {
-          const data = await response.json();
-          const status = data.data;
+        if (status) {
 
           // Update status display
           statusText.textContent = `${status.message}`;
@@ -418,8 +394,8 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
             fetchBtn.textContent = 'Fetch from Instance';
             return; // Stop polling
           }
-        } else if (response.status === 404) {
-          // Fetch completed (no longer in activeFetches)
+        } else {
+          // 404: fetch completed (no longer in activeFetches)
           statusText.textContent = 'Fetch completed!';
           statusText.classList.remove('text-info');
           statusText.classList.add('text-success');
@@ -481,9 +457,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     const btn = document.getElementById('btn-export-instances');
     if (btn) btn.classList.add('is-loading');
     try {
-      const res = await this.authFetch('/api/v1/instances/export/csv', { method: 'GET' });
-      if (!res.ok) throw new Error('Export failed');
-      const blob = await res.blob();
+      const blob = await api.request('/instances/export/csv', { blob: true });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -513,14 +487,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
 
     if (btn) btn.classList.add('is-loading');
     try {
-      const res = await this.authFetch('/api/v1/instances/import/csv', {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.message || 'Import failed');
-      }
+      const data = await api.request('/instances/import/csv', { method: 'POST', body: formData });
       Utils.showToast(data.message || 'Import completed', 'success');
       await this.renderSettingsView();
     } catch (err) {
@@ -555,9 +522,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     const btn = document.getElementById('btn-export-watchlists');
     if (btn) btn.classList.add('is-loading');
     try {
-      const res = await this.authFetch('/api/v1/watchlists/export/csv', { method: 'GET' });
-      if (!res.ok) throw new Error('Export failed');
-      const blob = await res.blob();
+      const blob = await api.request('/watchlists/export/csv', { blob: true });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -587,14 +552,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
 
     if (btn) btn.classList.add('is-loading');
     try {
-      const res = await this.authFetch('/api/v1/watchlists/import/csv', {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data.message || 'Import failed');
-      }
+      const data = await api.request('/watchlists/import/csv', { method: 'POST', body: formData });
       Utils.showToast(data.message || 'Import completed', 'success');
       await this.renderSettingsView();
     } catch (err) {

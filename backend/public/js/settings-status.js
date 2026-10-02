@@ -26,9 +26,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
    */
   async renderMonitorStatusSection() {
     try {
-      const response = await this.authFetch('/api/v1/monitor/status');
-      const data = await response.json();
-      const status = data.data;
+      const status = (await api.request('/monitor/status')).data;
 
       return `
         <div class="space-y-4">
