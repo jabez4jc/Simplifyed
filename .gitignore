@@ -46,3 +46,7 @@ oasymbols.csv
 backend/e2e/.runtime.json
 backend/test-results/
 backend/playwright-report/
+
+# Old express-session store and empty instruments stub
+data/sessions.db
+backend/database/live.db.instruments
