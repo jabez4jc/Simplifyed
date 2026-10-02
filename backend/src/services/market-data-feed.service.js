@@ -1477,6 +1477,16 @@ class MarketDataFeedService extends EventEmitter {
     return this.QUOTE_TTL_MS;
   }
 
+  /** An instance was deleted: drop everything held for it. */
+  forgetInstance(instanceId) {
+    this.quoteCache.delete(instanceId);
+    this.openPositionInstances.delete(instanceId);
+    this.openOrderInstances.delete(instanceId);
+    this.hasOpenPositions = this.openPositionInstances.size > 0;
+    this.hasOpenOrders = this.openOrderInstances.size > 0;
+    this.invalidateInstanceCaches(instanceId).catch(() => {});
+  }
+
   /**
    * Invalidate all caches for an instance after order placement
    * Ensures consistent cache invalidation across all layers

@@ -428,6 +428,12 @@ class OrderService {
         );
       }
 
+      // No broker id yet (never acknowledged): there is nothing at the broker to cancel, and a
+      // cancel call with a null id would be sent as a malformed request.
+      if (!order.order_id) {
+        throw new ValidationError('Order has no broker order id yet - it cannot be cancelled');
+      }
+
       // Get instance
       const instance = await db.get('SELECT * FROM instances WHERE id = ?', [
         order.instance_id,

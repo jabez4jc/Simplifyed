@@ -54,6 +54,7 @@ class AutoExitService {
 
     this.isRunning = true;
     await riskControlsService.hydrateFromDb();
+    await exitLevelsService.recoverStuck();
     await this.monitorAllPositions();
     this.intervalId = setInterval(
       () => this.monitorAllPositions(),

@@ -168,8 +168,15 @@ class OrderPlacementService {
     const symbolKey = this._symbolKey(payload)
       || `__unknown__:${Date.now()}:${++this.unknownKeySeed}`;
 
+    // A queued request is replaced by a later one for the same symbol ONLY when both come from the
+    // same origin (same strategy tag, request type and source): two different callers must never
+    // have one's payload silently swapped for the other's. Different origins queue separately.
+    const origin = this._originKey(payload, context);
+
     return new Promise((resolve, reject) => {
-      const existing = queue.find((entry) => entry.symbolKey === symbolKey && !entry.started);
+      const existing = queue.find(
+        (entry) => entry.symbolKey === symbolKey && entry.origin === origin && !entry.started
+      );
       if (existing) {
         existing.payload = payload;
         existing.context = context;
@@ -189,6 +196,7 @@ class OrderPlacementService {
         payload,
         context,
         symbolKey,
+        origin,
         started: false,
         resolvers: [{ resolve, reject }],
         coalesced: 0,
@@ -386,6 +394,10 @@ class OrderPlacementService {
       pricetype: 'LIMIT',
       price,
     };
+  }
+
+  _originKey(payload, context) {
+    return `${context?.source ?? ''}|${context?.request_type ?? ''}|${payload?.strategy ?? ''}`;
   }
 
   _symbolKey(payload) {

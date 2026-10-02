@@ -181,7 +181,7 @@ class QuickOrderService {
 
     // Get instances (single or all assigned)
     const instances = await this._getTargetInstances(instanceId, symbol.watchlist_id);
-    const effectiveOrderType = await this._resolveBroadcastOrderType(instances);
+    const effectiveOrderType = await this._resolveBroadcastOrderType(instances, symbol.exchange);
 
     const resolvedProduct = this._resolveProductForOrder(product, tradeMode, symbol);
 
@@ -339,8 +339,8 @@ class QuickOrderService {
       throw new ValidationError(`tradeMode must be one of: ${validTradeModes.join(', ')}`);
     }
 
-    if (!quantity || quantity <= 0) {
-      throw new ValidationError('quantity must be greater than 0');
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      throw new ValidationError('quantity must be a whole number greater than 0');
     }
 
     // Validate action compatibility with trade mode
@@ -461,18 +461,19 @@ class QuickOrderService {
     throw new ValidationError(`Unsupported action/tradeMode combination: ${action}/${tradeMode}`);
   }
 
-  async _resolveOrderTypeForInstance(instance) {
-    const supportsMarketOrders = await brokerCapabilitiesService.supportsMarketOrders(instance?.broker);
+  // MARKET only where the broker takes it AND the exchange allows it (SEBI: Indian exchanges are LIMIT-only).
+  async _resolveOrderTypeForInstance(instance, exchange) {
+    const supportsMarketOrders = await brokerCapabilitiesService.supportsMarketOrders(instance?.broker, exchange);
     return supportsMarketOrders ? 'MARKET' : 'LIMIT';
   }
 
-  async _resolveBroadcastOrderType(instances) {
+  async _resolveBroadcastOrderType(instances, exchange) {
     if (!Array.isArray(instances) || instances.length === 0) {
       return 'LIMIT';
     }
 
     const supportFlags = await Promise.all(
-      instances.map((instance) => brokerCapabilitiesService.supportsMarketOrders(instance?.broker))
+      instances.map((instance) => brokerCapabilitiesService.supportsMarketOrders(instance?.broker, exchange))
     );
 
     if (supportFlags.every(Boolean)) return 'MARKET';
@@ -1036,7 +1037,7 @@ class QuickOrderService {
       exchange: finalExchange,
     });
 
-    const orderType = await this._resolveOrderTypeForInstance(instance);
+    const orderType = await this._resolveOrderTypeForInstance(instance, finalExchange);
     const { pricetype: effectiveOrderType, price: orderPrice } = orderType === 'LIMIT'
       ? await limitPriceService.resolveMarketablePricing({
         instanceId: instance?.id,
@@ -1130,7 +1131,7 @@ class QuickOrderService {
     } = orderParams;
     const { preloadedPositions } = options;
     const bufferPoints = Number.isFinite(symbol.limit_buffer_points) ? symbol.limit_buffer_points : 0;
-    const orderType = await this._resolveOrderTypeForInstance(instance);
+    const orderType = await this._resolveOrderTypeForInstance(instance, symbol.exchange);
     const instanceMultiplier = Math.min(
       Math.max(parseIntSafe(instance.multiplier, 1), 1),
       999
@@ -1311,7 +1312,7 @@ class QuickOrderService {
         });
       }
 
-      const orderType = await this._resolveOrderTypeForInstance(instance);
+      const orderType = await this._resolveOrderTypeForInstance(instance, symbol.exchange);
       const orderPromises = ordersToPlace.map(async order => {
         const floatProduct = order.product || this._resolveProductForOrder(
           product,
@@ -1686,7 +1687,7 @@ class QuickOrderService {
     } = orderParams;
     const { useCachedPositions = false } = options;
     const bufferPoints = Number.isFinite(symbol.limit_buffer_points) ? symbol.limit_buffer_points : 0;
-    const orderType = await this._resolveOrderTypeForInstance(instance);
+    const orderType = await this._resolveOrderTypeForInstance(instance, symbol.exchange);
 
     let underlying = derivativeResolutionService.getUnderlyingForClosing(symbol);
 
@@ -1865,6 +1866,10 @@ class QuickOrderService {
 
         // For EXIT/EXIT_ALL, position_size should be 0 to close completely
         const strategyTag = orderParams.strategy || symbol.watchlist_name || 'default';
+        // The tick belongs to the contract being closed, not to the watchlist row (an option or
+        // future leg ticks differently from the underlying the row describes).
+        const legTick = (await instrumentsService.getInstrument(position.symbol, position.exchange))?.tick_size
+          || (normalizeSymbolKey(position.symbol) === normalizeSymbolKey(symbol.symbol) ? symbol.tick_size : undefined);
         const { pricetype: effectiveOrderType, price: orderPrice } = orderType === 'LIMIT'
           ? await limitPriceService.resolveMarketablePricing({
             instanceId: instance?.id,
@@ -1872,7 +1877,7 @@ class QuickOrderService {
             symbol: position.symbol,
             side: closeAction,
             bufferPoints,
-            tickSize: symbol.tick_size,
+            tickSize: legTick,
             bypassSpreadCheck: true,
             forceLtp: true,
           })
@@ -1898,7 +1903,7 @@ class QuickOrderService {
           closing_symbol: position.symbol,
           correlation_id: correlationId,
           limitBufferPoints: bufferPoints,
-          tickSize: symbol.tick_size,
+          tickSize: legTick,
           strategy: orderPayload.strategy,
           repeatUntilClosed: true,
           ignoreSlippage: true,
@@ -2132,7 +2137,7 @@ class QuickOrderService {
     if (!held || !qty) throw new ValidationError(`Nothing to exit on ${position.symbol}`);
     const action = held > 0 ? 'SELL' : 'BUY';
     const remaining = Math.sign(held) * (Math.abs(held) - qty);
-    const orderType = await this._resolveOrderTypeForInstance(instance);
+    const orderType = await this._resolveOrderTypeForInstance(instance, position.exchange);
     const { pricetype, price } = orderType === 'LIMIT'
       ? await limitPriceService.resolveMarketablePricing({
         instanceId: instance?.id,
@@ -2172,7 +2177,7 @@ class QuickOrderService {
    * Used by Close All, the switch to analyzer mode and the kill switch.
    * @returns {Promise<{closed: number, errors: string[], stillOpen: string[]}>}
    */
-  async closeAllPositions(instance, { strategy = 'CLOSE_ALL' } = {}) {
+  async closeAllPositions(instance, { strategy = 'CLOSE_ALL', settleMs = 10000, pollMs = 1000 } = {}) {
     const quantityOf = (p) => Number(p.quantity ?? p.netqty ?? p.net_quantity ?? p.netQty ?? 0) || 0;
     const openPositions = async () => (await openalgoClient.getPositionBook(instance) || [])
       .filter((p) => quantityOf(p) !== 0);
@@ -2193,8 +2198,15 @@ class QuickOrderService {
         result.errors.push(`${symbol}: ${error.message}`);
       }
     }
-    result.stillOpen = (await openPositions())
-      .map((p) => `${p.symbol || p.tradingsymbol} ${quantityOf(p)}`);
+    // LIMIT exits fill a moment after they are accepted, so the book read straight after the last
+    // send still shows them. Give them up to ~10 s before calling a position "still open" -
+    // the kill switch leaves an instance in LIVE mode on that word.
+    let remaining = seen.size ? await openPositions() : [];
+    for (let waited = 0; remaining.length && waited < settleMs; waited += pollMs) {
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+      remaining = await openPositions();
+    }
+    result.stillOpen = remaining.map((p) => `${p.symbol || p.tradingsymbol} ${quantityOf(p)}`);
     return result;
   }
 

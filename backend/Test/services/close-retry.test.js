@@ -16,7 +16,7 @@ import quickOrderService from '../../src/services/quick-order.service.js';
 const original = {
   close: quickOrderService._closePositions,
   force: quickOrderService._forceCloseSymbolIfNeeded,
-  cancel: quickOrderService._cancelAllOrdersForRetry,
+  cancel: quickOrderService._cancelOwnOrdersBeforeRetry,
 };
 
 before(async () => { await useTestDb('close-retry'); });
@@ -24,7 +24,7 @@ beforeEach(async () => { await truncate(); });
 afterEach(() => {
   quickOrderService._closePositions = original.close;
   quickOrderService._forceCloseSymbolIfNeeded = original.force;
-  quickOrderService._cancelAllOrdersForRetry = original.cancel;
+  quickOrderService._cancelOwnOrdersBeforeRetry = original.cancel;
 });
 
 async function exitWith(error) {
@@ -35,7 +35,7 @@ async function exitWith(error) {
   const sent = { count: 0 };
   quickOrderService._closePositions = async () => { sent.count += 1; throw error; };
   quickOrderService._forceCloseSymbolIfNeeded = async () => {};
-  quickOrderService._cancelAllOrdersForRetry = async () => {};
+  quickOrderService._cancelOwnOrdersBeforeRetry = async () => {};
   const res = await quickOrderService.placeQuickOrder({ symbolId: sym.id, action: 'EXIT', tradeMode: 'FUTURES', quantity: 1 });
   return { res, sent };
 }

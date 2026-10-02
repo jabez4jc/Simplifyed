@@ -17,6 +17,7 @@ import {
 import instanceConnectionTestService from './instance-connection-test.service.js';
 import { normalizeInstanceData } from '../utils/instance-validation.util.js';
 import { parseIntSafe, isMaskedApiKey } from '../utils/sanitizers.js';
+import { extractPositionQty } from '../utils/order-helpers.js';
 
 class InstanceService {
  
@@ -263,37 +264,48 @@ class InstanceService {
    * Delete instance
    * @param {number} id - Instance ID
    */
-  async deleteInstance(id) {
+  /**
+   * Delete an instance and everything keyed to it.
+   * Refuses while the broker still shows an open position (or cannot be asked), because the
+   * app's stop-losses and exits for it go with the instance; `force` overrides that.
+   */
+  async deleteInstance(id, { force = false } = {}) {
     try {
-      // Check if instance exists
-      await this.getInstanceById(id);
+      const instance = await this.getInstanceById(id);
 
-      // Delete instance using transaction for atomicity
-      await db.run('BEGIN TRANSACTION');
-
-      try {
-        // 1. Remove instance from all watchlists (watchlist_instances)
-        await db.run('DELETE FROM watchlist_instances WHERE instance_id = ?', [id]);
-        log.info('Removed instance from watchlists', { instance_id: id });
-
-        // 2. Delete any orders for this instance (watchlist_orders)
-        await db.run('DELETE FROM watchlist_orders WHERE instance_id = ?', [id]);
-        log.info('Deleted orders for instance', { instance_id: id });
-
-        // 3. Delete quick order history
-        await db.run('DELETE FROM quick_orders WHERE instance_id = ?', [id]);
-
-        // 4. Finally, delete the instance itself
-        await db.run('DELETE FROM instances WHERE id = ?', [id]);
-
-        await db.run('COMMIT');
-        log.info('Instance deleted successfully', { id });
-      } catch (error) {
-        await db.run('ROLLBACK');
-        throw error;
+      if (!force) {
+        let positions;
+        try {
+          positions = await openalgoClient.getPositionBook(instance);
+        } catch (error) {
+          throw new ValidationError(
+            `Cannot confirm instance ${id} has no open positions (${error.message}). Retry, or delete with force=true.`
+          );
+        }
+        const open = (Array.isArray(positions) ? positions : []).filter((p) => extractPositionQty(p) !== 0);
+        if (open.length) {
+          throw new ValidationError(
+            `Instance ${id} still has ${open.length} open position(s). Close them first, or delete with force=true.`
+          );
+        }
       }
+
+      // db.transaction (not a raw BEGIN) so the delete queues behind other transactions.
+      // trailing_state has no FK to instances, so it is cleared here.
+      await db.transaction(async () => {
+        await db.run('DELETE FROM watchlist_instances WHERE instance_id = ?', [id]);
+        await db.run('DELETE FROM watchlist_orders WHERE instance_id = ?', [id]);
+        await db.run('DELETE FROM quick_orders WHERE instance_id = ?', [id]);
+        await db.run('DELETE FROM trailing_state WHERE instance_id = ?', [id]);
+        await db.run('DELETE FROM instances WHERE id = ?', [id]);
+      });
+
+      // Imported here: the feed imports this service, so a top-level import would be a cycle.
+      const { default: marketDataFeedService } = await import('./market-data-feed.service.js');
+      marketDataFeedService.forgetInstance(id);
+      log.info('Instance deleted successfully', { id, force });
     } catch (error) {
-      if (error instanceof NotFoundError) throw error;
+      if (error instanceof NotFoundError || error instanceof ValidationError) throw error;
       log.error('Failed to delete instance', error, { id });
       throw error;
     }

@@ -318,11 +318,47 @@ class StrategyService {
   }
 
   async deleteStrategy(strategyId) {
-    const existing = await db.get('SELECT id FROM strategies WHERE id = ?', [strategyId]);
+    const existing = await db.get('SELECT id, watchlist_id, exchange, underlying FROM strategies WHERE id = ?', [strategyId]);
     if (!existing) {
       throw new NotFoundError('Strategy');
     }
-    await db.run('DELETE FROM strategies WHERE id = ?', [strategyId]);
+    const contracts = await db.all(
+      'SELECT DISTINCT resolved_exchange AS exchange, resolved_symbol AS symbol FROM strategy_leg_executions WHERE strategy_id = ?',
+      [strategyId]
+    );
+    const watchlist = await db.get('SELECT type FROM watchlists WHERE id = ?', [existing.watchlist_id]);
+    const anchor = await watchlistSymbolService.findAnchorByWatchlist(existing.watchlist_id, existing.exchange, existing.underlying);
+
+    // Legs and executions go with the strategy by FK cascade. The watchlist_symbols rows it
+    // seeded do not (the auto-seeded anchor and the per-leg exit-config rows), so remove them -
+    // but only in a strategy-type watchlist (nothing there is user-added) and only when no
+    // surviving strategy still resolves off them.
+    await db.transaction(async () => {
+      await db.run('DELETE FROM strategies WHERE id = ?', [strategyId]);
+      if (String(watchlist?.type || '').toLowerCase() !== 'strategy') return;
+
+      for (const contract of contracts) {
+        const stillUsed = await db.get(
+          `SELECT 1 AS used FROM strategy_leg_executions sle JOIN strategies st ON st.id = sle.strategy_id
+           WHERE st.watchlist_id = ? AND sle.resolved_exchange = ? AND sle.resolved_symbol = ? LIMIT 1`,
+          [existing.watchlist_id, contract.exchange, contract.symbol]
+        );
+        if (!stillUsed) {
+          await db.run(
+            'DELETE FROM watchlist_symbols WHERE watchlist_id = ? AND exchange = ? AND symbol = ?',
+            [existing.watchlist_id, contract.exchange, contract.symbol]
+          );
+        }
+      }
+
+      const anchorStillUsed = await db.get(
+        'SELECT 1 AS used FROM strategies WHERE watchlist_id = ? AND exchange = ? AND underlying = ? LIMIT 1',
+        [existing.watchlist_id, existing.exchange, existing.underlying]
+      );
+      if (anchor && !anchorStillUsed) {
+        await db.run('DELETE FROM watchlist_symbols WHERE id = ?', [anchor.id]);
+      }
+    });
   }
 
   async addLeg(strategyId, legData) {
@@ -874,9 +910,11 @@ class StrategyService {
   // placed the closing order (this strategy's own Exit button, the Positions page's "Close All",
   // a broker-side SL/GTT) - order updates aren't scoped to whoever initiated them.
   //
-  // Correlates by instance + symbol + opposite-of-entry-action, not by order_id: a closing order
-  // placed outside this strategy's own Exit flow was never recorded as this row's exit_order_id,
-  // so matching on order_id alone would miss exactly the case this exists to catch.
+  // Correlates by instance + symbol + opposite-of-entry-action AND by ownership: the fill must be
+  // this row's own exit order (exit_order_id) or carry the strategy's broker tag (the tag every
+  // strategy entry/exit is sent with). An opposite fill from anything else - another strategy, a
+  // manual order or a broker-side SL on the same symbol - does not prove THIS leg closed; the
+  // read-time live-position cross-check in getExecutionStatus covers those.
   async reconcileOrderUpdate(instanceId, order) {
     if (!order || order.order_status !== 'complete') return;
 
@@ -890,9 +928,10 @@ class StrategyService {
     if (filledQty <= 0) return;
 
     const openRows = await db.all(
-      `SELECT sle.*, sl.action AS leg_action
+      `SELECT sle.*, sl.action AS leg_action, st.broker_tag AS strategy_tag
        FROM strategy_leg_executions sle
        JOIN strategy_legs sl ON sl.id = sle.strategy_leg_id
+       JOIN strategies st ON st.id = sle.strategy_id
        WHERE sle.instance_id = ?
          AND UPPER(sle.resolved_symbol) = ?
          AND sle.closed_at IS NULL
@@ -908,6 +947,9 @@ class StrategyService {
       // the leg off. Conservative on quantity too: a partial fill doesn't fully close it.
       if (!legAction || orderAction === legAction) continue;
       if (filledQty < row.quantity) continue;
+      const ownExit = Boolean(order.orderid) && String(row.exit_order_id || '') === String(order.orderid);
+      const ownTag = Boolean(order.strategy) && order.strategy === (row.strategy_tag || `strategy-${row.strategy_id}`);
+      if (!ownExit && !ownTag) continue;
 
       await db.run(
         `UPDATE strategy_leg_executions
@@ -1115,6 +1157,7 @@ class StrategyService {
           anchorSymbol: { ...anchorSymbol, lot_size: r.lot_size || anchorSymbol.lot_size },
           instance,
           strategy,
+          contract: { symbol: r.symbol, exchange: r.exchange, product: r.product },
         });
         if (!r.quantity || r.quantity <= 0) {
           r.error = 'Resolved quantity is zero';
@@ -1368,18 +1411,20 @@ class StrategyService {
     };
   }
 
-  async _resolveLegQuantity({ leg, anchorSymbol, instance, strategy }) {
+  async _resolveLegQuantity({ leg, anchorSymbol, instance, strategy, contract }) {
     // For MARGIN_BASED legs, qty_value doubles as the margin_utilization_pct (0-1)
     // rather than a lot/fixed count, since strategy_legs has no separate column for it.
     if (leg.qty_type === 'MARGIN_BASED') {
       const { quantity } = await marginSizingService.computeLotQuantity({
         instance,
         symbolConfig: { ...anchorSymbol, margin_utilization_pct: leg.qty_value },
+        // Margin is asked for the CONTRACT this leg will trade (with its own lot size, passed in
+        // anchorSymbol.lot_size), not the strategy's underlying, which is an untradable index.
         orderContext: {
-          exchange: strategy.exchange,
-          symbol: strategy.underlying,
+          exchange: contract.exchange,
+          symbol: contract.symbol,
           action: leg.action,
-          product: leg.product_type,
+          product: contract.product || leg.product_type,
         },
         watchlistId: strategy.watchlist_id,
       });

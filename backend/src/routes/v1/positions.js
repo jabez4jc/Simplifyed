@@ -181,7 +181,9 @@ router.post('/:instanceId/close', requirePermission('positions.close_all'), asyn
 /**
  * POST /api/v1/positions/:instanceId/close/position
  * Close a single symbol on an instance
- * Body: { symbol, exchange, tradeMode, product }
+ * Body: { symbol, exchange, product }. This closes the EXACT contract named, so any tradeMode the
+ * client sends is ignored (the UI used to guess it from the name: a symbol ending in "CE", such
+ * as RELIANCE, was read as an option). It only labels the Telegram summary.
  */
 router.post('/:instanceId/close/position', requirePermission('positions.close'), async (req, res, next) => {
   try {
@@ -189,18 +191,18 @@ router.post('/:instanceId/close/position', requirePermission('positions.close'),
     const instance = await instanceService.getInstanceById(instanceId);
 
     const { symbol, exchange, tradeMode, product } = req.body;
-    if (!symbol || !exchange || !tradeMode) {
-      throw new ValidationError('symbol, exchange, and tradeMode are required');
+    if (!symbol || !exchange) {
+      throw new ValidationError('symbol and exchange are required');
     }
 
-    const normalizedTradeMode = String(tradeMode).toUpperCase();
+    const normalizedTradeMode = String(tradeMode || 'EQUITY').toUpperCase();
     const normalizedProduct = (product || 'MIS').toUpperCase();
 
     const result = await quickOrderService.closePosition(instance, {
       symbol,
       exchange,
     }, {
-      tradeMode: normalizedTradeMode,
+      tradeMode: 'EQUITY', // exact-symbol close: no underlying/expiry resolution
       product: normalizedProduct,
     });
 

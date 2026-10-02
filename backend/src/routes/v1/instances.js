@@ -166,13 +166,13 @@ router.put('/:id', requirePermission('instances.edit'), async (req, res, next) =
 });
 
 /**
- * DELETE /api/v1/instances/:id
- * Delete instance
+ * DELETE /api/v1/instances/:id[?force=true]
+ * Delete instance (refused while it has open positions, unless forced)
  */
 router.delete('/:id', requirePermission('instances.delete'), async (req, res, next) => {
   try {
     const id = parseInt(req.params.id, 10);
-    await instanceService.deleteInstance(id);
+    await instanceService.deleteInstance(id, { force: req.query.force === 'true' });
     logAudit(req, 'instances.delete', { id });
 
     res.json({

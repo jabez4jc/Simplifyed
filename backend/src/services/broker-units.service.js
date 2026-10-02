@@ -29,7 +29,11 @@ const ORDER_ROWS = {
   splitorder: (d) => [d],
   modifyorder: (d) => [d],
   basketorder: (d) => (Array.isArray(d?.orders) ? d.orders : []),
+  placegttorder: (d) => [d],
+  margin: (d) => (Array.isArray(d?.positions) ? d.positions : []),
 };
+// Endpoints whose payload carries its rows in an array that must be copied before it is edited.
+const ROW_ARRAYS = { basketorder: 'orders', margin: 'positions' };
 const OUT_FIELDS = ['quantity', 'position_size', 'splitsize'];
 const IN_FIELDS = ['quantity', 'netqty', 'net_qty', 'net_quantity', 'filled_quantity', 'pending_quantity', 'filledqty'];
 
@@ -44,18 +48,19 @@ class BrokerUnitsService {
   }
 
   /**
-   * Is broker_lot_sizes (migration 063) there? Checked once. Querying a missing table logs an
-   * ERROR per query in database.js before any catch here sees it, so without this every lot
-   * lookup flooded the log. Absent: work from the in-memory cache and say once what to run.
+   * Is broker_lot_sizes (migration 063) there? Checked once; a miss THROWS. Without the table a
+   * lot-size lookup would silently skip rescaling, and an unscaled quantity is filled at the wrong
+   * size (Kotak MCX is 10x-100x off) - so every order, margin or position read that needs a
+   * conversion fails with the fix in the message until the migration has run.
    */
   _hasTable() {
     if (!this.tableCheck) {
       this.tableCheck = db.get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'broker_lot_sizes'")
         .then((row) => {
-          if (!row) log.warn('broker_lot_sizes table missing - broker lot sizes are kept in memory only. Run: npm run migrate');
-          return Boolean(row);
+          if (!row) throw new Error('broker_lot_sizes table missing - broker lot sizes cannot be converted. Run: npm run migrate');
+          return true;
         })
-        .catch(() => false);
+        .catch((error) => { this.tableCheck = null; throw error; });
     }
     return this.tableCheck;
   }
@@ -89,13 +94,12 @@ class BrokerUnitsService {
       const res = await client.request(instance, 'symbol', { symbol: sym, exchange: ex }, 'POST', { ignoreCircuit: true });
       const brokerLot = Number(res?.data?.lotsize);
       if (!(brokerLot > 0)) throw new Error(`no lotsize in ${JSON.stringify(res?.data)?.slice(0, 120)}`);
-      if (await this._hasTable()) {
-        await db.run(
-          `INSERT OR REPLACE INTO broker_lot_sizes (broker, exchange, symbol, broker_lotsize, canonical_lotsize, checked_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [broker, ex, sym, brokerLot, canonical, toISTISOString()]
-        ).catch(() => {});
-      }
+      await this._hasTable();
+      await db.run(
+        `INSERT OR REPLACE INTO broker_lot_sizes (broker, exchange, symbol, broker_lotsize, canonical_lotsize, checked_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [broker, ex, sym, brokerLot, canonical, toISTISOString()]
+      ).catch(() => {});
       if (brokerLot !== canonical) {
         log.warn('Broker lot size differs from the instruments cache - quantities will be rescaled', {
           instance_name: instance.name, exchange: ex, symbol: sym, reason: `${broker} ${brokerLot} vs cache ${canonical}`,
@@ -103,12 +107,11 @@ class BrokerUnitsService {
       }
       return { canonical, broker: brokerLot };
     } catch (error) {
-      const saved = (await this._hasTable())
-        ? await db.get(
-          'SELECT broker_lotsize FROM broker_lot_sizes WHERE broker = ? AND exchange = ? AND symbol = ?',
-          [broker, ex, sym]
-        ).catch(() => null)
-        : null;
+      await this._hasTable();
+      const saved = await db.get(
+        'SELECT broker_lotsize FROM broker_lot_sizes WHERE broker = ? AND exchange = ? AND symbol = ?',
+        [broker, ex, sym]
+      ).catch(() => null);
       if (saved?.broker_lotsize > 0) return { canonical, broker: Number(saved.broker_lotsize) };
       log.warn('Broker lot size unknown - sending canonical quantity unchanged', {
         instance_name: instance.name, exchange: ex, symbol: sym, error: error.message,
@@ -121,8 +124,9 @@ class BrokerUnitsService {
   async toBroker(instance, endpoint, data, client) {
     const rowsOf = ORDER_ROWS[endpoint];
     if (!rowsOf || !data) return data;
-    const out = endpoint === 'basketorder'
-      ? { ...data, orders: (data.orders || []).map((o) => ({ ...o })) }
+    const arrayKey = ROW_ARRAYS[endpoint];
+    const out = arrayKey
+      ? { ...data, [arrayKey]: (data[arrayKey] || []).map((o) => ({ ...o })) }
       : { ...data };
     for (const row of rowsOf(out)) {
       const info = await this.lotInfo(instance, row.exchange, row.symbol, client);

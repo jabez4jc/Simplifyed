@@ -197,12 +197,10 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
 
   getTradeModeFromSymbol(symbol) {
     const normalized = (symbol || '').toUpperCase();
-    if (normalized.includes('CE') || normalized.includes('PE')) {
-      return 'OPTIONS';
-    }
-    if (normalized.includes('FUT')) {
-      return 'FUTURES';
-    }
+    // An option ends in a digit then CE/PE (NIFTY06OCT2622400CE); a bare "...CE" name such as
+    // RELIANCE is a stock. Futures end in FUT.
+    if (/\d(CE|PE)$/.test(normalized)) return 'OPTIONS';
+    if (/FUT$/.test(normalized)) return 'FUTURES';
     return 'EQUITY';
   }
 

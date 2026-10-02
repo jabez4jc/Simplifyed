@@ -181,6 +181,47 @@ test('a trailing stop follows the best price and fires on the pullback', async (
   assert.ok(sent.every((s) => ['NIFTYW22800CE', 'NIFTYMFUT'].includes(s.symbol)), 'a trailing stop below protects bullish positions only');
 });
 
+test('a failed exit re-arms the level, counts attempts, and the third failure is FAILED', async () => {
+  const level = await exitLevels.create({ symbolId: row.id, price: 22700 });
+  stub(quickOrderService, 'closePosition', async () => { throw new Error('broker rejected'); });
+  feed.ltp = 22690;
+  const status = async () => db.get('SELECT status, attempts FROM exit_levels WHERE id = ?', [level.id]);
+
+  await evaluateConfirmed();
+  assert.deepStrictEqual({ ...(await status()) }, { status: 'ACTIVE', attempts: 1 }, 'still armed after a failed exit');
+  await evaluateConfirmed();
+  assert.deepStrictEqual({ ...(await status()) }, { status: 'ACTIVE', attempts: 2 });
+  await evaluateConfirmed();
+  assert.deepStrictEqual({ ...(await status()) }, { status: 'FAILED', attempts: 3 }, 'gives up after three');
+  await evaluateConfirmed();
+  assert.strictEqual((await status()).attempts, 3, 'a FAILED level is not fired again');
+});
+
+test('a partial level that already sent an exit is not re-fired when another one failed', async () => {
+  const level = await exitLevels.create({ symbolId: row.id, price: 22700, sizeMode: 'PERCENT', sizeValue: 50 });
+  stub(quickOrderService, 'exitPartOfPosition', async (inst) => {
+    if (inst.name === 'Acct B') throw new Error('broker rejected');
+    sent.push({ kind: 'part', inst: inst.name });
+  });
+  feed.ltp = 22690;
+  feed.books = new Map([
+    [acctA, [{ exchange: 'NFO', symbol: 'NIFTYW22800CE', quantity: 130, product: 'NRML', pnl: 0 }]],
+    [acctB, [{ exchange: 'NFO', symbol: 'NIFTYMFUT', quantity: 130, product: 'NRML', pnl: 0 }]],
+  ]);
+  await evaluateConfirmed();
+  assert.strictEqual((await db.get('SELECT status FROM exit_levels WHERE id = ?', [level.id])).status, 'TRIGGERED',
+    'one account already exited half: re-firing would exit another half there');
+});
+
+test('boot recovery: a level stuck TRIGGERING is re-armed when FULL, FAILED when partial', async () => {
+  const full = await exitLevels.create({ symbolId: row.id, price: 22700 });
+  const part = await exitLevels.create({ symbolId: row.id, price: 22600, sizeMode: 'PERCENT', sizeValue: 50 });
+  await db.run("UPDATE exit_levels SET status = 'TRIGGERING'");
+  await exitLevels.recoverStuck();
+  assert.strictEqual((await db.get('SELECT status FROM exit_levels WHERE id = ?', [full.id])).status, 'ACTIVE');
+  assert.strictEqual((await db.get('SELECT status FROM exit_levels WHERE id = ?', [part.id])).status, 'FAILED');
+});
+
 test('a level cannot be dragged across the market', async () => {
   const level = await exitLevels.create({ symbolId: row.id, price: 22700 });
   await assert.rejects(exitLevels.move(level.id, 22850), /must stay below/);

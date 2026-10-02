@@ -41,6 +41,7 @@ const FRESH_MS = 15000;          // a reference price older than this does not t
 const CONFIRM_MS = 2000;         // a crossing must hold this long (one bad tick is not a trigger)
 const OPEN_CACHE_MS = 60000;
 const STALE_WARN_MS = 5 * 60000;
+const MAX_FIRE_ATTEMPTS = 3;     // a level whose exit keeps failing is FAILED after this many fires
 const SIDES = ['BELOW', 'ABOVE'];
 const COVERAGES = ['ALL', 'BULLISH', 'BEARISH'];
 const SIZE_MODES = ['FULL', 'PERCENT', 'LOTS'];
@@ -302,7 +303,7 @@ class ExitLevelsService {
     const row = await this._row(symbolId);
     const rows = await db.all(
       `SELECT * FROM exit_levels WHERE symbol_id = ?
-         AND (status = 'ACTIVE' OR (status IN ('TRIGGERED', 'TRIGGERING') AND triggered_at >= datetime('now', '-1 day')))
+         AND (status = 'ACTIVE' OR (status IN ('TRIGGERED', 'TRIGGERING', 'FAILED') AND triggered_at >= datetime('now', '-1 day')))
        ORDER BY trigger_price DESC`,
       [row.id]
     );
@@ -348,6 +349,24 @@ class ExitLevelsService {
   }
 
   // ---------------------------------------------------------------- evaluation
+
+  /**
+   * Boot: a level left TRIGGERING means the process died mid-exit. A FULL level goes back to
+   * ACTIVE (it exits whatever is still open, so a repeat is harmless); a partial one may already
+   * have sent part of its size, so it is FAILED for the operator rather than risk exiting twice.
+   */
+  async recoverStuck() {
+    const full = await db.run(
+      "UPDATE exit_levels SET status = 'ACTIVE', updated_at = CURRENT_TIMESTAMP WHERE status = 'TRIGGERING' AND size_mode = 'FULL'"
+    );
+    const partial = await db.run(
+      `UPDATE exit_levels SET status = 'FAILED', result = '{"reason":"interrupted by a restart - check the position"}', updated_at = CURRENT_TIMESTAMP
+        WHERE status = 'TRIGGERING'`
+    );
+    if (full.changes || partial.changes) {
+      log.warn('Exit levels interrupted by a restart', { rearmed: full.changes, failed: partial.changes });
+    }
+  }
 
   /** Called every auto-exit cycle. Never throws. */
   async evaluate() {
@@ -462,11 +481,19 @@ class ExitLevelsService {
       results.push({ ok: false, error: error.message });
     }
 
+    // A failed exit must not end the level: the position is still open. Re-arm it (ACTIVE) and
+    // count the attempt; the third failure is final (FAILED + a notification from _announce).
+    // Re-firing is only safe when it cannot exit twice: a FULL level exits whatever is still
+    // open, but a partial (PERCENT/LOTS) one that already sent some exit would exit again.
+    const failed = results.filter((r) => !r.ok);
+    const attempts = Number(level.attempts || 0) + 1;
+    const retriable = failed.length > 0 && (level.size_mode === 'FULL' || failed.length === results.length);
+    const status = !retriable ? 'TRIGGERED' : attempts >= MAX_FIRE_ATTEMPTS ? 'FAILED' : 'ACTIVE';
     await db.run(
-      "UPDATE exit_levels SET status = 'TRIGGERED', result = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [JSON.stringify({ ltp, trigger: level.trigger_price, results }), level.id]
+      'UPDATE exit_levels SET status = ?, attempts = ?, result = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [status, attempts, JSON.stringify({ ltp, trigger: level.trigger_price, attempts, results }), level.id]
     );
-    if (level.size_mode === 'FULL') {
+    if (status === 'TRIGGERED' && level.size_mode === 'FULL') {
       // The pair's other half has nothing left to protect: cancel it.
       await db.run(
         `UPDATE exit_levels SET status = 'CANCELLED', result = ?, updated_at = CURRENT_TIMESTAMP
@@ -475,15 +502,17 @@ class ExitLevelsService {
           level.watchlist_id, level.ref_exchange, level.ref_symbol, level.side]
       );
     }
-    await this._announce(level, ltp, results);
+    await this._announce(level, ltp, results, status);
     return results;
   }
 
-  async _announce(level, ltp, results) {
+  async _announce(level, ltp, results, status = 'TRIGGERED') {
     const ok = results.filter((r) => r.ok).length;
     const failed = results.filter((r) => !r.ok);
+    const outcome = status === 'FAILED' ? ' - GAVE UP, exit the position by hand'
+      : status === 'ACTIVE' ? ' - will try again' : '';
     const summary = `${level.ref_symbol} ${level.kind === 'TRAIL' ? 'trailing stop' : 'level'} ${level.trigger_price} hit at ${ltp}: `
-      + `${ok} exit${ok === 1 ? '' : 's'} sent${failed.length ? `, ${failed.length} failed (${failed[0].error})` : ''}`;
+      + `${ok} exit${ok === 1 ? '' : 's'} sent${failed.length ? `, ${failed.length} failed (${failed[0].error})${outcome}` : ''}`;
     log.warn('Exit level triggered', { symbol: level.ref_symbol, exchange: level.ref_exchange, reason: summary });
     await notify('Exit level fired', summary, { severity: failed.length ? 'error' : 'warn' });
     const { default: telegramService } = await import('./telegram.service.js');
