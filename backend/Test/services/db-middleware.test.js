@@ -46,6 +46,12 @@ test('pending migrations are detected by version', async () => {
   }
 });
 
+test('the unused max-loss hit counter columns are dropped (D24, migration 079)', async () => {
+  const cols = (await db.all('PRAGMA table_info(instances)')).map((c) => c.name);
+  assert.ok(!cols.includes('session_max_loss_hits'));
+  assert.ok(!cols.includes('session_max_loss_hits_date'));
+});
+
 test('a pending idempotency row left by a crash stops blocking after 5 minutes', async () => {
   const claim = () => idempotencyService.getOrCreate({ requestId: 'r1', source: 'webhook', payload: { a: 1 } });
   assert.strictEqual((await claim()).hit, false, 'first request is new');
