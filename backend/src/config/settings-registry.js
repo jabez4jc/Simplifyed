@@ -25,6 +25,8 @@
  * Groups are ordered by how often an operator touches them, not by internal module structure.
  */
 
+import { isCryptoBroker } from '../utils/broker-type.util.js';
+
 /**
  * @typedef {Object} SettingField
  * @property {string}  key       Matches application_settings.key
@@ -171,8 +173,9 @@ export const SETTINGS_GROUPS = [
               'Raise it if you see timeouts at the market open, when brokers are slowest.',
               'Lower it to notice an unreachable instance sooner. Too low, and slow but working '
                 + 'calls fail.',
-              'A timed-out order is retried safely: the app\'s orders set a target position, so a '
-                + 'retry cannot double it.',
+              'A timed-out order is never sent again blind: the app checks the broker\'s order book '
+                + 'first, and if it cannot tell whether the order went through it reports that '
+                + 'instead of retrying.',
             ],
             unit: 'ms', min: 3000, max: 60000,
           },
@@ -353,6 +356,35 @@ export function validateValue(key, value) {
     for (const s of sessions) {
       if (!s || !hhmm.test(s.start) || !hhmm.test(s.end)) {
         return `'${key}': every session needs a start and an end as 24-hour HH:MM times`;
+      }
+      if (s.start >= s.end) return `'${key}': session ${s.start}-${s.end} must start before it ends`;
+    }
+    // HH:MM strings sort like times, so overlap is "starts before the previous one ends".
+    const byStart = [...sessions].sort((a, b) => a.start.localeCompare(b.start));
+    for (let i = 1; i < byStart.length; i += 1) {
+      if (byStart[i].start < byStart[i - 1].end) {
+        return `'${key}': sessions ${byStart[i - 1].start}-${byStart[i - 1].end} and ${byStart[i].start}-${byStart[i].end} overlap`;
+      }
+    }
+    return null;
+  }
+
+  if (field.editor === 'broker-map' || field.editor === 'broker-flags') {
+    let map = value;
+    if (typeof map === 'string') {
+      try { map = JSON.parse(map); } catch { return `'${key}' must be a map of broker to value`; }
+    }
+    if (!map || typeof map !== 'object' || Array.isArray(map)) return `'${key}' must be a map of broker to value`;
+    for (const [broker, v] of Object.entries(map)) {
+      // Lookups lowercase the broker, so a key that is not already a lowercase slug never matches.
+      if (!/^[a-z][a-z0-9_]*$/.test(broker)) return `'${key}': '${broker}' is not a broker key (lowercase letters, digits, _)`;
+      if (field.editor === 'broker-map' && !(typeof v === 'number' && Number.isFinite(v) && v >= 0)) {
+        return `'${key}': the rate for '${broker}' must be a number, 0 or more`;
+      }
+      if (field.editor === 'broker-flags') {
+        // Only crypto brokers can take a MARKET order (SEBI limit-only on Indian ones).
+        if (!isCryptoBroker(broker)) return `'${key}': '${broker}' is not a crypto broker`;
+        if (typeof v !== 'boolean') return `'${key}': '${broker}' must be true or false`;
       }
     }
     return null;

@@ -196,7 +196,7 @@ class Config {
  * Environment-only by design: a database row must never be able to switch off authentication.
  */
 export function isTestMode() {
-  return config.auth.enableTestMode === true || process.env.ENABLE_TEST_MODE === 'true';
+  return config.auth.enableTestMode === true;
 }
 
 export const config = new Config();

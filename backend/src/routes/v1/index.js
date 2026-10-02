@@ -69,13 +69,13 @@ router.get('/public-config', (req, res) => {
   res.json({
     status: 'success',
     data: {
-      wsGatewayEnabled: config.wsGateway?.enabled || false,
-      wsGatewayPath: config.wsGateway?.path || '/stream',
+      wsGatewayEnabled: config.wsGateway.enabled,
+      wsGatewayPath: config.wsGateway.path,
       marketData: {
-        positionsPollIdleMs: config.marketDataFeed?.positionIntervalIdleMs || 30000,
-        positionsPollActiveMs: config.marketDataFeed?.positionIntervalActiveMs || 8000,
-        ltpCacheIdleMs: config.marketDataFeed?.quoteTtlIdleMs || 15000,
-        ltpCacheActiveMs: config.marketDataFeed?.quoteTtlActiveMs || 10000,
+        positionsPollIdleMs: config.marketDataFeed.positionIntervalIdleMs,
+        positionsPollActiveMs: config.marketDataFeed.positionIntervalActiveMs,
+        ltpCacheIdleMs: config.marketDataFeed.quoteTtlIdleMs,
+        ltpCacheActiveMs: config.marketDataFeed.quoteTtlActiveMs,
       },
     },
   });

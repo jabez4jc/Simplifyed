@@ -32,8 +32,11 @@ test('authentication can only be disabled by ENABLE_TEST_MODE', () => {
     process.env.TEST_MODE = 'true';
     assert.strictEqual(isTestMode(), false, 'the retired TEST_MODE var must have no effect');
 
+    // The env var is read once, when config loads - setting it afterwards changes nothing.
     process.env.ENABLE_TEST_MODE = 'true';
-    assert.strictEqual(isTestMode(), true, 'ENABLE_TEST_MODE is the one switch');
+    assert.strictEqual(isTestMode(), false, 'isTestMode reads config only');
+    config.auth.enableTestMode = true;
+    assert.strictEqual(isTestMode(), true, 'config.auth.enableTestMode is the one switch');
   } finally {
     if (envBackup.e === undefined) delete process.env.ENABLE_TEST_MODE; else process.env.ENABLE_TEST_MODE = envBackup.e;
     if (envBackup.t === undefined) delete process.env.TEST_MODE; else process.env.TEST_MODE = envBackup.t;

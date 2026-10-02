@@ -107,3 +107,27 @@ test('paired fields come in complete, labelled pairs', () => {
     }
   }
 });
+
+// P3-4: the JSON editors are shape-checked on the server, not just by the UI.
+test('trading sessions must start before they end and must not overlap', () => {
+  const s = (...list) => JSON.stringify(list.map(([start, end]) => ({ start, end })));
+  assert.strictEqual(validateValue('trading_sessions', s(['09:00', '11:30'], ['11:30', '15:10'])), null, 'touching is not overlapping');
+  assert.match(validateValue('trading_sessions', s(['11:30', '09:00'])), /before it ends/);
+  assert.match(validateValue('trading_sessions', s(['09:00', '09:00'])), /before it ends/);
+  assert.match(validateValue('trading_sessions', s(['12:00', '15:00'], ['09:00', '12:30'])), /overlap/, 'order does not hide an overlap');
+});
+
+test('broker rate and flag maps need the right shape', () => {
+  const rates = (v) => validateValue('brokerage.by_broker', JSON.stringify(v));
+  assert.strictEqual(rates({ zerodha: 20, kotak: 0 }), null);
+  assert.match(rates({ zerodha: -1 }), /0 or more/);
+  assert.match(rates({ zerodha: '20' }), /number/);
+  assert.match(rates({ Zerodha: 20 }), /not a broker key/);
+  assert.match(rates([20]), /map of broker/);
+
+  const flags = (v) => validateValue('brokerage.market_order_support', JSON.stringify(v));
+  assert.strictEqual(flags({}), null);
+  assert.strictEqual(flags({ deltaexchange: false }), null);
+  assert.match(flags({ deltaexchange: 'no' }), /true or false/);
+  assert.match(flags({ zerodha: true }), /not a crypto broker/, 'an Indian broker can never take MARKET (SEBI)');
+});
