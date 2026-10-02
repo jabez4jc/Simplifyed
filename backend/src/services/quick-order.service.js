@@ -42,6 +42,13 @@ import {
   getOptionTypeFromAction,
 } from '../utils/symbol-parsing.util.js';
 
+const DIRECT_ACTIONS = ['BUY', 'SELL', 'SHORT', 'COVER', 'EXIT'];
+const OPTIONS_ACTIONS = [
+  'BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE', 'EXIT_ALL',
+  'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE',
+  'CLOSE_ALL_CE', 'CLOSE_ALL_PE',
+];
+
 class QuickOrderService {
   constructor() {
     this.optionPreviewQuoteCache = new Map(); // key: exch::symbol -> { ltp, changePercent, fetchedAt }
@@ -137,12 +144,7 @@ class QuickOrderService {
     const symbol = await this._getSymbolConfig(symbolId);
 
     // Validate OPTIONS actions require a symbol that supports options trading
-    const optionsActions = [
-      'BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE', 'EXIT_ALL',
-      'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE',
-      'CLOSE_ALL_CE', 'CLOSE_ALL_PE',
-    ];
-    if (optionsActions.includes(action)) {
+    if (OPTIONS_ACTIONS.includes(action)) {
       const supportsOptions =
         symbol.symbol_type === 'OPTIONS' ||
         symbol.tradable_options === 1 ||
@@ -308,18 +310,6 @@ class QuickOrderService {
     };
   }
 
-  async _captureFallbackEntryPrice(instance, exchange, symbol) {
-    try {
-      const quote = await openalgoClient.getQuote(instance, symbol, exchange);
-      const ltp = Array.isArray(quote) ? quote[0]?.ltp || quote[0]?.last_price : quote?.ltp || quote?.last_price;
-      if (ltp && ltp > 0) {
-        marketDataFeedService.setFallbackEntryPrice(instance.id, exchange, symbol, ltp, 'manual_order_quote');
-      }
-    } catch (err) {
-      // best effort only
-    }
-  }
-
   /**
    * Validate order parameters
    * @private
@@ -335,13 +325,7 @@ class QuickOrderService {
       throw new ValidationError('action is required');
     }
 
-    const validActions = [
-      // Direct/Futures actions
-      'BUY', 'SELL', 'SHORT', 'COVER', 'EXIT',
-      // Options actions
-      'BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE', 'EXIT_ALL',
-      'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE', 'CLOSE_ALL_CE', 'CLOSE_ALL_PE'
-    ];
+    const validActions = [...DIRECT_ACTIONS, ...OPTIONS_ACTIONS];
     if (!validActions.includes(action)) {
       throw new ValidationError(`action must be one of: ${validActions.join(', ')}`);
     }
@@ -360,17 +344,11 @@ class QuickOrderService {
     }
 
     // Validate action compatibility with trade mode
-    const optionsActions = [
-      'BUY_CE', 'SELL_CE', 'BUY_PE', 'SELL_PE', 'EXIT_ALL',
-      'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE',
-      'CLOSE_ALL_CE', 'CLOSE_ALL_PE'
-    ];
-    if (optionsActions.includes(action) && tradeMode !== 'OPTIONS') {
+    if (OPTIONS_ACTIONS.includes(action) && tradeMode !== 'OPTIONS') {
       throw new ValidationError(`Action ${action} is only valid for OPTIONS trade mode`);
     }
 
-    const directActions = ['BUY', 'SELL', 'SHORT', 'COVER', 'EXIT'];
-    if (directActions.includes(action) && tradeMode === 'OPTIONS') {
+    if (DIRECT_ACTIONS.includes(action) && tradeMode === 'OPTIONS') {
       throw new ValidationError(`Action ${action} is not valid for OPTIONS trade mode`);
     }
 
@@ -1038,10 +1016,6 @@ class QuickOrderService {
       }
       algoAction = 'BUY';
       targetLots = Math.min(currentLots + tradeLots, 0);
-    } else if (action === 'EXIT') {
-      // Always send an EXIT to enforce position_size = 0, even if currently flat
-      targetLots = 0;
-      algoAction = currentPosition > 0 ? 'SELL' : 'BUY';
     } else {
       throw new ValidationError(`Invalid action: ${action}`);
     }
@@ -1066,7 +1040,7 @@ class QuickOrderService {
 
     // Place order using placesmartorder
     const orderQuantity = Math.abs(targetPosition - currentPosition);
-    if (!orderQuantity && action !== 'EXIT') {
+    if (!orderQuantity) {
       return {
         order_id: null,
         status: 'noop',
@@ -1109,9 +1083,6 @@ class QuickOrderService {
       price: orderPrice,
     });
 
-    // Best-effort capture of entry LTP for manual orders (fallback for auto-exit)
-    this._captureFallbackEntryPrice(instance, finalExchange, finalSymbol).catch(() => {});
-
     const orderResult = await orderPlacementService.placeSmartOrder(instance, orderPayload, {
       request_type: 'DIRECT',
       trade_mode: tradeMode,
@@ -1124,37 +1095,6 @@ class QuickOrderService {
       repeatUntilClosed,
       ignoreSlippage: repeatUntilClosed,
     });
-
-    // Verify final position using live positionbook (fire-and-forget to avoid blocking response)
-    const verifyPosition = async () => {
-      try {
-        const finalPosition = await this._getCurrentPositionSize(
-          instance,
-          finalSymbol,
-          finalExchange,
-          finalProduct,
-          { forceLive: true, failOnError: true }
-        );
-        if (finalPosition !== targetPosition) {
-          log.warn('Post-trade position mismatch', {
-            instance_id: instance.id,
-            instance_name: instance.name,
-            symbol: finalSymbol,
-            expected: targetPosition,
-            actual: finalPosition,
-            action,
-          });
-        }
-      } catch (verifyErr) {
-        log.warn('Failed to verify final position post-trade', {
-          instance_id: instance.id,
-          instance_name: instance.name,
-          symbol: finalSymbol,
-          error: verifyErr.message,
-        });
-      }
-    };
-    verifyPosition().catch(() => {});
 
     // Record order in database
     await this._recordQuickOrder({
@@ -1189,12 +1129,6 @@ class QuickOrderService {
       symbol: finalSymbol,
       quantity: tradeQuantity,
       action: algoAction,
-      // null, not the verified position: verifyPosition() above is deliberately fire-and-forget
-      // so it cannot block the response, and its `finalPosition` is scoped to that closure.
-      // Referencing it here threw ReferenceError and failed the whole order *after* it had been
-      // sent to the broker. The sibling options path already returns null here for the same
-      // reason; no consumer reads this field.
-      final_position: null,
     };
   }
 
@@ -1292,7 +1226,6 @@ class QuickOrderService {
     // add actions → LEG scope (single strike)
     const isReduceOrClose = [
       'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE',
-      'CLOSE_ALL_CE', 'CLOSE_ALL_PE', 'EXIT_ALL'
     ].includes(action);
     // For REDUCE/INCREASE in FLOAT_OFS mode, handle each open position separately
     if (isReduceOrClose && !legPinned) {
@@ -1408,9 +1341,6 @@ class QuickOrderService {
           'OPTIONS',
           { symbol_type: 'OPTIONS', exchange: derivativeExchange }
         );
-
-        // Capture fallback entry price per strike (best effort)
-        this._captureFallbackEntryPrice(instance, derivativeExchange, order.symbol).catch(() => {});
 
         const { pricetype: effectiveOrderType, price: orderPrice } = orderType === 'LIMIT'
           ? await limitPriceService.resolveMarketablePricing({
@@ -1735,36 +1665,6 @@ class QuickOrderService {
       correlation_id: correlationId,
     });
 
-    // Verify final position post-trade (fire-and-forget to avoid blocking the response - this
-    // is a live forceLive position-book round trip whose only purpose is a mismatch warning log,
-    // same pattern already used in the futures/equity order path above).
-    const verifyFinalOptionsPosition = async () => {
-      try {
-        const finalPosition = await this._getCurrentPositionSize(
-          instance,
-          optionSymbol.symbol,
-          derivativeExchange,
-          finalProduct,
-          { forceLive: true, failOnError: true }
-        );
-        if (finalPosition !== targetPosition) {
-          log.warn('Post-trade position mismatch (options)', {
-            instance_id: instance.id,
-            symbol: optionSymbol.symbol,
-            expected: targetPosition,
-            actual: finalPosition,
-          });
-        }
-      } catch (verifyErr) {
-        log.warn('Failed to verify final options position', {
-          instance_id: instance.id,
-          symbol: optionSymbol.symbol,
-          error: verifyErr.message,
-        });
-      }
-    };
-    verifyFinalOptionsPosition().catch(() => {});
-
     this._invalidateInstanceCaches(instance.id);
 
     return {
@@ -1780,9 +1680,6 @@ class QuickOrderService {
       operating_mode: operatingMode,
       current_position: currentPosition,
       target_position: targetPosition,
-      // No longer available synchronously - verifyFinalOptionsPosition() above now runs
-      // fire-and-forget so this call doesn't wait on an extra live position-book round trip.
-      final_position: null,
       instance_name: instance.name,
     };
   }
@@ -1854,10 +1751,6 @@ class QuickOrderService {
         product,
         { useCached: useCachedPositions }
       );
-
-      if (!expiry) {
-        throw new ValidationError('Unable to determine expiry for close-all action');
-      }
 
       positionsToClose = typePositions;
     } else if (action === 'EXIT_ALL' && tradeMode === 'OPTIONS') {
