@@ -229,10 +229,10 @@ class QuickOrderService {
     const instanceNames = instances.map(i => i.name).filter(Boolean);
     const summaryTriggerType = params.triggerType || 'Manual';
     const buttonLabel = params.button_label || action;
-    const sideForSummary = this._deriveSideForSummary(action);
+    const sideForSummary = quickOrderHistoryService.deriveSideForSummary(action);
     const successInstances = results.filter(r => r.success).map(r => r.instance_name).filter(Boolean);
     const failureInstances = results.filter(r => !r.success).map(r => r.instance_name).filter(Boolean);
-    const { summarySymbol, summaryExchange } = this._pickSummaryInstrument(
+    const { summarySymbol, summaryExchange } = quickOrderHistoryService.pickSummaryInstrument(
       results,
       symbol.symbol,
       symbol.exchange
@@ -282,7 +282,7 @@ class QuickOrderService {
       unknown_count: uncertainCount,
     });
 
-    const sideForCount = this._deriveSideForSummary(action);
+    const sideForCount = quickOrderHistoryService.deriveSideForSummary(action);
     if (sideForCount === 'BUY' || sideForCount === 'SELL') {
       const liveInstanceIds = new Set(
         instances.filter(instance => !instance.is_analyzer_mode).map(instance => instance.id)
@@ -595,7 +595,7 @@ class QuickOrderService {
           instance_id: instance.id,
           symbol_id: symbol.id,
         });
-        await this._recordFailedQuickOrder({
+        await quickOrderHistoryService.recordFailedQuickOrder({
           instance,
           symbol,
           orderParams,
@@ -741,7 +741,7 @@ class QuickOrderService {
 
           if (attempt === maxRetries) {
             // Final attempt failed - record failure
-            await this._recordFailedQuickOrder({
+            await quickOrderHistoryService.recordFailedQuickOrder({
               instance,
               symbol,
               orderParams,
@@ -781,9 +781,9 @@ class QuickOrderService {
     const targetExchangeRaw = orderParams?.contractRow?.exchange || symbol?.exchange;
     if (!targetSymbolRaw || !targetExchangeRaw) return;
 
-    const targetSymbol = this._normalizeSymbolKey(targetSymbolRaw);
-    const targetExchange = this._normalizeExchange(targetExchangeRaw);
-    const targetProduct = this._normalizeProduct(orderParams?.product);
+    const targetSymbol = normalizeSymbolKey(targetSymbolRaw);
+    const targetExchange = normalizeExchange(targetExchangeRaw);
+    const targetProduct = normalizeProduct(orderParams?.product);
     const openStatuses = new Set(['open', 'pending', 'trigger pending', 'trigger_pending', 'partial', 'partially filled', 'partially_filled']);
 
     const snapshot = await marketDataFeedService.getOrderbookSnapshot(instance.id, { force: true });
@@ -792,11 +792,11 @@ class QuickOrderService {
     const strategyTag = orderParams?.strategy || symbol?.watchlist_name || 'default';
 
     for (const order of orders) {
-      const orderSymbol = this._normalizeSymbolKey(order.symbol || order.tradingsymbol || order.trading_symbol);
-      const orderExchange = this._normalizeExchange(order.exchange || order.exch || order.brexchange);
+      const orderSymbol = normalizeSymbolKey(order.symbol || order.tradingsymbol || order.trading_symbol);
+      const orderExchange = normalizeExchange(order.exchange || order.exch || order.brexchange);
       if (orderSymbol !== targetSymbol || orderExchange !== targetExchange) continue;
       if (targetProduct) {
-        const orderProduct = this._normalizeProduct(order.product || order.producttype);
+        const orderProduct = normalizeProduct(order.product || order.producttype);
         if (orderProduct && orderProduct !== targetProduct) continue;
       }
       const status = (order.order_status || order.status || '').toString().toLowerCase();
@@ -846,12 +846,12 @@ class QuickOrderService {
       const derivativeExchange = symbol.symbol_type === 'FUTURES'
         ? symbol.exchange
         : derivativeResolutionService.getDerivativeExchange(symbol.exchange);
-      const underlying = this._getFuturesUnderlying(symbol);
+      const underlying = getFuturesUnderlying(symbol);
 
       if (expiry) {
         // A perpetual (BTCUSDFUT) has no expiry: the row IS the contract, whatever was sent.
         const matchesWatchlistExpiry = symbol.symbol_type === 'FUTURES'
-          && (!contractExpiry(symbol) || this._expiryMatchesSymbol(expiry, symbol));
+          && (!contractExpiry(symbol) || expiryMatchesSymbol(expiry, symbol));
 
         if (matchesWatchlistExpiry) {
           finalSymbol = symbol.symbol;
@@ -1097,7 +1097,7 @@ class QuickOrderService {
     });
 
     // Record order in database
-    await this._recordQuickOrder({
+    await quickOrderHistoryService.recordQuickOrder({
       watchlist_id: symbol.watchlist_id,
       symbol_id: symbol.id,
       instance_id: instance.id,
@@ -1170,7 +1170,7 @@ class QuickOrderService {
     });
 
     // Determine option type from action
-    const optionType = this._getOptionTypeFromAction(action);
+    const optionType = getOptionTypeFromAction(action);
 
     // Use pre-resolved option symbol if provided (multi-instance case)
     // Otherwise resolve it now (single-instance case)
@@ -1279,7 +1279,7 @@ class QuickOrderService {
         if (targetStrikePosition !== currentStrikePosition) {
           const algoAction = this._determineAlgoAction(currentStrikePosition, targetStrikePosition);
           const quantity = Math.abs(targetStrikePosition - currentStrikePosition);
-          const parsed = this._parseOptionSymbol(position.symbol || '');
+          const parsed = parseOptionSymbol(position.symbol || '');
 
           log.info('FLOAT_OFS Order per strike', {
             symbol: position.symbol,
@@ -1298,7 +1298,7 @@ class QuickOrderService {
             strike: parsed.strike,
             // REDUCE/INCREASE adjusts an EXISTING position, so it trades in that position's
             // product - an MIS position reduced "as NRML" would open an opposite NRML position.
-            product: this._normalizeProduct(position.product) || null,
+            product: normalizeProduct(position.product) || null,
           });
         } else {
           log.debug('Skipping position - no change needed', {
@@ -1389,7 +1389,7 @@ class QuickOrderService {
           ignoreSlippage: this._isRepeatExitAction(action),
         });
 
-        await this._recordQuickOrder({
+        await quickOrderHistoryService.recordQuickOrder({
           watchlist_id: symbol.watchlist_id,
           symbol_id: symbol.id,
           instance_id: instance.id,
@@ -1521,10 +1521,10 @@ class QuickOrderService {
     // the lookup finds nothing and the close reports "no change needed" while it stays open.
     if (isReduceOrClose && currentPosition === 0) {
       const held = (await this._getPositionBook(instance)).filter((p) =>
-        this._normalizeSymbolKey(p.symbol || p.tradingsymbol) === this._normalizeSymbolKey(optionSymbol.symbol)
+        normalizeSymbolKey(p.symbol || p.tradingsymbol) === normalizeSymbolKey(optionSymbol.symbol)
         && (parseIntSafe(p.quantity) || parseIntSafe(p.netqty) || 0) !== 0);
       if (held.length === 1) {
-        finalProduct = this._normalizeProduct(held[0].product || held[0].producttype) || finalProduct;
+        finalProduct = normalizeProduct(held[0].product || held[0].producttype) || finalProduct;
         currentPosition = parseIntSafe(held[0].quantity) || parseIntSafe(held[0].netqty) || 0;
       }
     }
@@ -1636,7 +1636,7 @@ class QuickOrderService {
     });
 
     // Record order in database
-    await this._recordQuickOrder({
+    await quickOrderHistoryService.recordQuickOrder({
       watchlist_id: symbol.watchlist_id,
       symbol_id: symbol.id,
       instance_id: instance.id,
@@ -1711,7 +1711,7 @@ class QuickOrderService {
     const bufferPoints = Number.isFinite(symbol.limit_buffer_points) ? symbol.limit_buffer_points : 0;
     const orderType = await this._resolveOrderTypeForInstance(instance);
 
-    let underlying = this._getUnderlyingForClosing(symbol);
+    let underlying = getUnderlyingForClosing(symbol);
 
     let positionsToClose = [];
 
@@ -1726,7 +1726,7 @@ class QuickOrderService {
       positionsToClose = await this._getOpenPositionsForSymbol(instance, c.symbol, c.exchange, null);
     } else if (closeAllTypeMap[action] && tradeMode === 'OPTIONS') {
       const optionType = closeAllTypeMap[action];
-      let expiry = userExpiry ? this._normalizeExpiryInput(userExpiry) : null;
+      let expiry = userExpiry ? normalizeExpiryInput(userExpiry) : null;
       if (!expiry) {
         expiry = await expiryManagementService.getNearestExpiry(
           underlying,
@@ -1735,7 +1735,7 @@ class QuickOrderService {
         );
       }
       if (expiry) {
-        expiry = this._normalizeExpiryInput(expiry);
+        expiry = normalizeExpiryInput(expiry);
       }
       log.info('Using expiry for close-all', { action, expiry });
 
@@ -1754,7 +1754,7 @@ class QuickOrderService {
 
       positionsToClose = typePositions;
     } else if (action === 'EXIT_ALL' && tradeMode === 'OPTIONS') {
-      let expiry = userExpiry ? this._normalizeExpiryInput(userExpiry) : null;
+      let expiry = userExpiry ? normalizeExpiryInput(userExpiry) : null;
       if (!expiry) {
         expiry = await expiryManagementService.getNearestExpiry(
           underlying,
@@ -1763,7 +1763,7 @@ class QuickOrderService {
         );
       }
       if (expiry) {
-        expiry = this._normalizeExpiryInput(expiry);
+        expiry = normalizeExpiryInput(expiry);
       }
       log.info('Using expiry for EXIT_ALL', { expiry });
 
@@ -1800,7 +1800,7 @@ class QuickOrderService {
       // but never exited), or a dated future when no other expiry was asked for.
       const rowIsTheContract = tradeMode === 'FUTURES'
         && (symbol.symbol_type === 'FUTURES' || /FUT$/i.test(symbol.symbol || ''))
-        && (!contractExpiry(symbol) || !userExpiry || this._expiryMatchesSymbol(userExpiry, symbol));
+        && (!contractExpiry(symbol) || !userExpiry || expiryMatchesSymbol(userExpiry, symbol));
 
       if (rowIsTheContract) {
         targetSymbol = symbol.symbol;
@@ -1812,14 +1812,14 @@ class QuickOrderService {
 
         // Try to parse the symbol if it's already a futures symbol (e.g., NATGASMINI24NOV25FUT)
         const symbolStr = symbol.symbol || symbol.trading_symbol || '';
-        const parsed = this._parseFuturesSymbol(symbolStr);
+        const parsed = parseFuturesSymbol(symbolStr);
 
-        underlying = parsed.underlying || this._getUnderlyingForClosing(symbol);
-        let expiryInput = userExpiry ? this._normalizeExpiryInput(userExpiry) : null;
+        underlying = parsed.underlying || getUnderlyingForClosing(symbol);
+        let expiryInput = userExpiry ? normalizeExpiryInput(userExpiry) : null;
 
         // If we parsed expiry from the symbol, use it
         if (!expiryInput && parsed.expiry) {
-          expiryInput = this._normalizeExpiryInput(parsed.expiry);
+          expiryInput = normalizeExpiryInput(parsed.expiry);
           log.info('Extracted expiry from futures symbol', {
             symbol: symbolStr,
             underlying,
@@ -1840,7 +1840,7 @@ class QuickOrderService {
             { kind: 'FUTURES' }
           );
           if (expiryInput) {
-            expiryInput = this._normalizeExpiryInput(expiryInput);
+            expiryInput = normalizeExpiryInput(expiryInput);
           }
           log.info('Using fallback expiry for futures close', { underlying, expiry: expiryInput });
         }
@@ -1903,7 +1903,7 @@ class QuickOrderService {
 
         // Close in the position's own product - brokers track MIS and NRML separately, so a
         // close in the other product would open an opposite position instead of flattening.
-        const closeProduct = this._normalizeProduct(position.product) || product;
+        const closeProduct = normalizeProduct(position.product) || product;
         const orderPayload = orderPayloadFactory.buildExitOrder({
           strategy: strategyTag,
           exchange: position.exchange,
@@ -1936,7 +1936,7 @@ class QuickOrderService {
         });
 
         // Record order
-        await this._recordQuickOrder({
+        await quickOrderHistoryService.recordQuickOrder({
           watchlist_id: symbol.watchlist_id,
           symbol_id: symbol.id,
           instance_id: instance.id,
@@ -2066,24 +2066,24 @@ class QuickOrderService {
   async _getCurrentPositionSize(instance, symbol, exchange, product, opts = {}) {
     try {
       const positionBook = await this._getPositionBook(instance, { ...opts, forceLive: true });
-      const targetSymbol = this._normalizeSymbolKey(symbol);
-      const targetExchange = this._normalizeExchange(exchange);
-      const targetProduct = this._normalizeProduct(product);
+      const targetSymbol = normalizeSymbolKey(symbol);
+      const targetExchange = normalizeExchange(exchange);
+      const targetProduct = normalizeProduct(product);
 
       return positionBook.reduce((total, pos) => {
-        const posSymbol = this._normalizeSymbolKey(
+        const posSymbol = normalizeSymbolKey(
           pos.symbol || pos.trading_symbol || pos.tradingsymbol
         );
         if (!posSymbol || posSymbol !== targetSymbol) {
           return total;
         }
 
-        const posExchange = this._normalizeExchange(pos.exchange || pos.exch);
+        const posExchange = normalizeExchange(pos.exchange || pos.exch);
         if (targetExchange && posExchange && posExchange !== targetExchange) {
           return total;
         }
 
-        const posProduct = this._normalizeProduct(pos.product || pos.producttype);
+        const posProduct = normalizeProduct(pos.product || pos.producttype);
         if (targetProduct && posProduct && posProduct !== targetProduct) {
           return total;
         }
@@ -2174,7 +2174,7 @@ class QuickOrderService {
       action,
       quantity: qty,
       position_size: remaining,
-      product: this._normalizeProduct(position.product) || 'MIS',
+      product: normalizeProduct(position.product) || 'MIS',
       pricetype,
       price,
     });
@@ -2262,7 +2262,7 @@ class QuickOrderService {
 
           if (quantity === 0) return false;
 
-          const parsed = this._parseOptionSymbol(symbol);
+          const parsed = parseOptionSymbol(symbol);
           const candidateUnderlying = parsed.underlying
             ? parsed.underlying.toUpperCase()
             : symbol;
@@ -2311,16 +2311,16 @@ class QuickOrderService {
   async _getOpenPositionsForSymbol(instance, symbol, exchange, product) {
     try {
       const positionBook = await this._getPositionBook(instance, { forceLive: true });
-      const targetSymbol = this._normalizeSymbolKey(symbol);
-      const targetExchange = this._normalizeExchange(exchange);
-      const targetProduct = this._normalizeProduct(product);
+      const targetSymbol = normalizeSymbolKey(symbol);
+      const targetExchange = normalizeExchange(exchange);
+      const targetProduct = normalizeProduct(product);
 
       const positions = positionBook.filter(p => {
-        const posSymbol = this._normalizeSymbolKey(
+        const posSymbol = normalizeSymbolKey(
           p.symbol || p.trading_symbol || p.tradingsymbol
         );
-        const posExchange = this._normalizeExchange(p.exchange || p.exch);
-        const posProduct = this._normalizeProduct(p.product || p.producttype);
+        const posExchange = normalizeExchange(p.exchange || p.exch);
+        const posProduct = normalizeProduct(p.product || p.producttype);
         const qty =
           parseIntSafe(p.quantity) ||
           parseIntSafe(p.netqty) ||
@@ -2356,77 +2356,8 @@ class QuickOrderService {
     }
   }
 
-  // Delegated to quick-order-quotes.service.js (LTP/quote fetch+cache cluster, owns its own
-  // optionChainQuoteCache) - names/signatures kept identical so every existing internal call
-  // site keeps working unmodified.
-  async _getUnderlyingLTPWithFallback(instance, underlying, exchange) {
-    return quickOrderQuotesService.getUnderlyingLTPWithFallback(instance, underlying, exchange);
-  }
-
-  async _getUnderlyingLTP(instance, underlying, exchange) {
-    return quickOrderQuotesService.getUnderlyingLTP(instance, underlying, exchange);
-  }
-
-  /**
-   * Record quick order in database
-   * @private
-   */
-  // Delegated to quick-order-history.service.js (pure DB CRUD + summary-formatting helpers, no
-  // shared state with the rest of this class) - names/signatures kept identical so every
-  // existing internal and external call site keeps working unmodified.
-  async _recordQuickOrder(orderData) {
-    return quickOrderHistoryService.recordQuickOrder(orderData);
-  }
-
-
-  async _recordFailedQuickOrder(params) {
-    return quickOrderHistoryService.recordFailedQuickOrder(params);
-  }
-
-  _deriveSideForSummary(action = '') {
-    return quickOrderHistoryService.deriveSideForSummary(action);
-  }
-
-  _pickSummaryInstrument(results, fallbackSymbol, fallbackExchange) {
-    return quickOrderHistoryService.pickSummaryInstrument(results, fallbackSymbol, fallbackExchange);
-  }
-
-  async getQuickOrders(filters = {}) {
-    return quickOrderHistoryService.getQuickOrders(filters);
-  }
-
-  async syncQuickOrdersForInstance(instanceId, options = {}) {
-    return quickOrderHistoryService.syncQuickOrdersForInstance(instanceId, options);
-  }
-
-  // Delegated to utils/symbol-parsing.util.js (pure functions, no shared state) - names/
-  // signatures kept identical so every existing internal call site keeps working unmodified.
-  // MCX note: _getUnderlyingQuoteSymbol's MCX branch is load-bearing for the MCX options
-  // workaround - see the doc comment on the util module before touching it.
-  _getUnderlyingQuoteExchange(symbol = {}) {
-    return getUnderlyingQuoteExchange(symbol);
-  }
-
-  _getUnderlyingQuoteSymbol(symbol = {}) {
-    return getUnderlyingQuoteSymbol(symbol);
-  }
-
-  _getUnderlyingForClosing(symbol = {}) {
-    return getUnderlyingForClosing(symbol);
-  }
-
-  _parseFuturesSymbol(symbolStr) {
-    return parseFuturesSymbol(symbolStr);
-  }
-
-  _getFuturesUnderlying(symbol = {}) {
-    return getFuturesUnderlying(symbol);
-  }
-
-
-  _expiryMatchesSymbol(expiry, symbol = {}) {
-    return expiryMatchesSymbol(expiry, symbol);
-  }
+  // MCX note: getUnderlyingQuoteSymbol's MCX branch (utils/symbol-parsing.util.js) is load-bearing
+  // for the MCX options workaround - see the doc comment on the util module before touching it.
 
   /**
    * Get market data instance from list of instances
@@ -2572,7 +2503,7 @@ class QuickOrderService {
     if (!key || String(row.underlying_key || '').toUpperCase() !== String(key).toUpperCase()) {
       throw new ValidationError(`${name} is not an option on ${symbol.symbol}`);
     }
-    const wantType = this._getOptionTypeFromAction(action);
+    const wantType = getOptionTypeFromAction(action);
     if (wantType && row.instrumenttype !== wantType) {
       throw new ValidationError(`${action} trades ${wantType}, but ${name} is a ${row.instrumenttype}`);
     }
@@ -2592,7 +2523,7 @@ class QuickOrderService {
       const c = orderParams.contractRow;
       return {
         underlying: derivativeResolutionService.getDerivativeUnderlying(symbol),
-        expiry: this._normalizeExpiryInput(c.expiry),
+        expiry: normalizeExpiryInput(c.expiry),
         optionSymbol: {
           symbol: c.symbol, trading_symbol: c.symbol, strike: c.strike, targetStrike: c.strike,
           option_type: c.instrumenttype, lot_size: c.lotsize || 1, tick_size: c.tick_size || 0.05,
@@ -2600,7 +2531,7 @@ class QuickOrderService {
         },
       };
     }
-    const optionType = this._getOptionTypeFromAction(action);
+    const optionType = getOptionTypeFromAction(action);
 
     // Use the shared, normalized underlying derivation (strips embedded date/strike/CE/PE/FUT
     // suffixes) rather than a raw underlying_symbol||symbol fallback - watchlist rows for
@@ -2609,14 +2540,14 @@ class QuickOrderService {
     // lookups (this is what "MCX options not resolving" traced back to).
     const underlying = derivativeResolutionService.getDerivativeUnderlying(symbol);
     const derivativeExchange = derivativeResolutionService.getDerivativeExchange(symbol.exchange);
-    const baseExchange = this._getUnderlyingQuoteExchange(symbol);
-    const quoteSymbol = this._getUnderlyingQuoteSymbol(symbol);
+    const baseExchange = getUnderlyingQuoteExchange(symbol);
+    const quoteSymbol = getUnderlyingQuoteSymbol(symbol);
 
     const strikeOffset = userOptionsLeg || symbol.options_strike_selection || 'ATM';
     await this._ensureQuoteAvailableForSymbol(instance, baseExchange, quoteSymbol);
 
     const [ltp, expiry] = await Promise.all([
-      this._getUnderlyingLTPWithFallback(instance, quoteSymbol, baseExchange),
+      quickOrderQuotesService.getUnderlyingLTPWithFallback(instance, quoteSymbol, baseExchange),
       this._resolveExpiryForOption(instance, underlying, derivativeExchange, userExpiry),
     ]);
 
@@ -2683,7 +2614,7 @@ class QuickOrderService {
       );
     }
 
-    const normalizedExpiry = expiry ? this._normalizeExpiryInput(expiry) : null;
+    const normalizedExpiry = expiry ? normalizeExpiryInput(expiry) : null;
 
     const marketDataInstance = await this._getStableMarketDataInstanceForPreview(symbolId);
 
@@ -2716,9 +2647,9 @@ class QuickOrderService {
     }
 
     const derivativeExchange = derivativeResolutionService.getDerivativeExchange(symbol.exchange);
-    const baseExchange = this._getUnderlyingQuoteExchange(symbol);
-    const quoteSymbol = this._getUnderlyingQuoteSymbol(symbol);
-    const underlyingLtp = await this._getUnderlyingLTP(
+    const baseExchange = getUnderlyingQuoteExchange(symbol);
+    const quoteSymbol = getUnderlyingQuoteSymbol(symbol);
+    const underlyingLtp = await quickOrderQuotesService.getUnderlyingLTP(
       marketDataInstance,
       quoteSymbol,
       baseExchange
@@ -2776,28 +2707,28 @@ class QuickOrderService {
     }
 
     const requestedKeys = quoteRequests
-      .map(req => this._buildQuoteMatchKey(req.exchange || derivativeExchange, req.symbol))
+      .map(req => quickOrderQuotesService.buildQuoteMatchKey(req.exchange || derivativeExchange, req.symbol))
       .filter(Boolean);
 
-    const wsQuotes = await this._getQuotesPreferWs(quoteRequests);
-    const wsHasAll = this._hasAllQuotes(wsQuotes, requestedKeys, true);
+    const wsQuotes = await quickOrderQuotesService.getQuotesPreferWs(quoteRequests);
+    const wsHasAll = quickOrderQuotesService.hasAllQuotes(wsQuotes, requestedKeys, true);
 
     let optionChainQuotes = null;
     let fallbackQuotes = null;
     if (!wsHasAll) {
-      optionChainQuotes = await this._getOptionChainQuotesMap({
+      optionChainQuotes = await quickOrderQuotesService.getOptionChainQuotesMap({
         instance: marketDataInstance,
         underlying,
         expiry: effectiveExpiry,
         exchange: derivativeExchange,
         minStrikeCount: 5,
       });
-      const chainHasAll = this._hasAllQuotes(optionChainQuotes, requestedKeys, true);
-      fallbackQuotes = chainHasAll ? null : await this._getQuotesFromCache(marketDataInstance, quoteRequests);
+      const chainHasAll = quickOrderQuotesService.hasAllQuotes(optionChainQuotes, requestedKeys, true);
+      fallbackQuotes = chainHasAll ? null : await quickOrderQuotesService.getQuotesFromCache(marketDataInstance, quoteRequests);
     }
 
-    let quotesMap = this._mergeQuoteMaps(wsQuotes, optionChainQuotes);
-    quotesMap = this._mergeQuoteMaps(quotesMap, fallbackQuotes);
+    let quotesMap = quickOrderQuotesService.mergeQuoteMaps(wsQuotes, optionChainQuotes);
+    quotesMap = quickOrderQuotesService.mergeQuoteMaps(quotesMap, fallbackQuotes);
     const now = Date.now();
 
     // Use a longer-lived symbol cache to reduce blanks when live fetches miss.
@@ -2808,7 +2739,7 @@ class QuickOrderService {
     if (staleEntries?.cached?.length) {
       const staleMap = new Map();
       staleEntries.cached.forEach((entry) => {
-        const key = this._buildQuoteMatchKey(
+        const key = quickOrderQuotesService.buildQuoteMatchKey(
           entry.quote?.exchange || entry.quote?.exch,
           entry.quote?.symbol || entry.quote?.trading_symbol || entry.quote?.tradingsymbol
         );
@@ -2816,7 +2747,7 @@ class QuickOrderService {
           staleMap.set(key, { ...entry.quote, fetchedAt: entry.fetchedAt });
         }
       });
-      quotesMap = this._mergeQuoteMaps(quotesMap, staleMap);
+      quotesMap = quickOrderQuotesService.mergeQuoteMaps(quotesMap, staleMap);
     }
 
     // Refresh last-good preview quotes and trim expired entries.
@@ -2828,11 +2759,11 @@ class QuickOrderService {
     requestedKeys.forEach((key) => {
       const quote = quotesMap.get(key);
       if (!quote) return;
-      const ltpValue = this._extractLtpFromQuote(quote);
+      const ltpValue = quickOrderQuotesService.extractLtpFromQuote(quote);
       if (ltpValue === null) return;
       this.optionPreviewQuoteCache.set(key, {
         ltp: ltpValue,
-        changePercent: this._extractChangePercentFromQuote(quote),
+        changePercent: quickOrderQuotesService.extractChangePercentFromQuote(quote),
         fetchedAt: quote.fetchedAt || now,
       });
     });
@@ -2842,10 +2773,10 @@ class QuickOrderService {
         return null;
       }
 
-      const quoteKey = this._buildQuoteMatchKey(derivativeExchange, resolution.symbol);
+      const quoteKey = quickOrderQuotesService.buildQuoteMatchKey(derivativeExchange, resolution.symbol);
       let quote = quoteKey ? quotesMap.get(quoteKey) : null;
-      let ltp = quote ? this._extractLtpFromQuote(quote) : null;
-      let changePercent = quote ? this._extractChangePercentFromQuote(quote) : null;
+      let ltp = quote ? quickOrderQuotesService.extractLtpFromQuote(quote) : null;
+      let changePercent = quote ? quickOrderQuotesService.extractChangePercentFromQuote(quote) : null;
       let fetchedAt = quote?.fetchedAt || null;
 
       if (ltp === null && quoteKey) {
@@ -2915,7 +2846,7 @@ class QuickOrderService {
       );
     }
 
-    const normalizedExpiry = expiry ? this._normalizeExpiryInput(expiry) : null;
+    const normalizedExpiry = expiry ? normalizeExpiryInput(expiry) : null;
     // A watchlist symbol that's already itself the tradable contract (a dated future
     // added directly, or a non-expiring instrument like a crypto perpetual) has no
     // separate expiry-dated series to resolve - trade the anchor symbol as-is unless the
@@ -2937,7 +2868,7 @@ class QuickOrderService {
       const pad = (n) => String(n).padStart(2, '0');
       return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     })();
-    const fallbackUnderlying = this._getFuturesUnderlying(symbol);
+    const fallbackUnderlying = getFuturesUnderlying(symbol);
     const chosenExpiry = (normalizedExpiry && normalizedExpiry < todayIso && fallbackUnderlying)
       ? await expiryManagementService.getNearestExpiry(
         fallbackUnderlying,
@@ -2949,7 +2880,7 @@ class QuickOrderService {
 
     let futuresResolution;
     const matchesWatchlistExpiry = symbol.symbol_type === 'FUTURES'
-      && (isDirectContract || this._expiryMatchesSymbol(chosenExpiry, symbol));
+      && (isDirectContract || expiryMatchesSymbol(chosenExpiry, symbol));
 
     if (matchesWatchlistExpiry) {
       futuresResolution = {
@@ -2975,14 +2906,14 @@ class QuickOrderService {
       );
     }
 
-    const quotesMap = await this._getQuotesPreferWs([
+    const quotesMap = await quickOrderQuotesService.getQuotesPreferWs([
       {
         exchange: derivativeExchange,
         symbol: futuresResolution.symbol,
       },
     ]);
 
-    const quoteKey = this._buildQuoteMatchKey(derivativeExchange, futuresResolution.symbol);
+    const quoteKey = quickOrderQuotesService.buildQuoteMatchKey(derivativeExchange, futuresResolution.symbol);
     const quote = quoteKey ? quotesMap.get(quoteKey) : null;
     const fetchedAt = quote?.fetchedAt || Date.now();
     const quoteSource = quote?._source || quote?.source || (quote ? 'rest' : null);
@@ -2998,8 +2929,8 @@ class QuickOrderService {
       tickSize: futuresResolution.tick_size || 0.05,
       quote: quote
         ? {
-            ltp: this._extractLtpFromQuote(quote),
-            changePercent: this._extractChangePercentFromQuote(quote),
+            ltp: quickOrderQuotesService.extractLtpFromQuote(quote),
+            changePercent: quickOrderQuotesService.extractChangePercentFromQuote(quote),
             fetchedAt,
             source: quoteSource,
           }
@@ -3098,7 +3029,7 @@ class QuickOrderService {
             return false;
           }
 
-          const parsed = this._parseOptionSymbol(symbol);
+          const parsed = parseOptionSymbol(symbol);
           const matchesUnderlying = parsed.underlying
             ? parsed.underlying === targetUnderlying
             : symbol.includes(targetUnderlying);
@@ -3146,10 +3077,6 @@ class QuickOrderService {
     }
   }
 
-  _parseOptionSymbol(symbol) {
-    return parseOptionSymbol(symbol);
-  }
-
   /**
    * Determine OpenAlgo action (BUY/SELL) based on target position change
    * @param {number} currentPosition - Current position
@@ -3174,19 +3101,19 @@ class QuickOrderService {
 
   async _resolveExpiryForOption(instance, underlying, derivativeExchange, userExpiry) {
     if (userExpiry) {
-      return this._normalizeExpiryInput(userExpiry);
+      return normalizeExpiryInput(userExpiry);
     }
     const expiry = await expiryManagementService.getNearestExpiry(
       underlying,
       derivativeExchange,
       instance
     );
-    return expiry ? this._normalizeExpiryInput(expiry) : null;
+    return expiry ? normalizeExpiryInput(expiry) : null;
   }
 
   async _ensureQuoteAvailableForSymbol(instance, exchange, symbol) {
     const snapshot = marketDataFeedService.getQuoteSnapshot(instance.id);
-    const cached = this._findQuoteInSnapshot(snapshot, exchange, symbol);
+    const cached = quickOrderQuotesService.findQuoteInSnapshot(snapshot, exchange, symbol);
     if (cached) return;
     try {
       await marketDataFeedService.fetchLtpForSymbol(exchange, symbol, { maxRounds: 1 });
@@ -3226,24 +3153,24 @@ class QuickOrderService {
       return 0;
     }
 
-    const targetSymbol = this._normalizeSymbolKey(symbol);
-    const targetExchange = this._normalizeExchange(exchange);
-    const targetProduct = this._normalizeProduct(product);
+    const targetSymbol = normalizeSymbolKey(symbol);
+    const targetExchange = normalizeExchange(exchange);
+    const targetProduct = normalizeProduct(product);
 
     return positionBook.reduce((total, pos) => {
-      const posSymbol = this._normalizeSymbolKey(
+      const posSymbol = normalizeSymbolKey(
         pos.symbol || pos.trading_symbol || pos.tradingsymbol
       );
       if (!posSymbol || posSymbol !== targetSymbol) {
         return total;
       }
 
-      const posExchange = this._normalizeExchange(pos.exchange || pos.exch);
+      const posExchange = normalizeExchange(pos.exchange || pos.exch);
       if (targetExchange && posExchange && posExchange !== targetExchange) {
         return total;
       }
 
-      const posProduct = this._normalizeProduct(pos.product || pos.producttype);
+      const posProduct = normalizeProduct(pos.product || pos.producttype);
       if (targetProduct && posProduct && posProduct !== targetProduct) {
         return total;
       }
@@ -3258,41 +3185,6 @@ class QuickOrderService {
 
       return total + qty;
     }, 0);
-  }
-
-  // Delegated to quick-order-quotes.service.js - names/signatures kept identical so every
-  // existing internal call site keeps working unmodified.
-  _mergeQuoteMaps(primary, secondary) {
-    return quickOrderQuotesService.mergeQuoteMaps(primary, secondary);
-  }
-
-  _hasAllQuotes(map, keys = [], requirePrice = false) {
-    return quickOrderQuotesService.hasAllQuotes(map, keys, requirePrice);
-  }
-
-  async _getOptionChainQuotesMap(params) {
-    return quickOrderQuotesService.getOptionChainQuotesMap(params);
-  }
-
-
-  _quotesArrayToMap(quotes = [], fetchedAt = Date.now()) {
-    return quickOrderQuotesService.quotesArrayToMap(quotes, fetchedAt);
-  }
-
-  async _getQuotesFromCache(instance, requests = []) {
-    return quickOrderQuotesService.getQuotesFromCache(instance, requests);
-  }
-
-  async _getQuotesPreferWs(requests = []) {
-    return quickOrderQuotesService.getQuotesPreferWs(requests);
-  }
-
-  _findQuoteInSnapshot(snapshot, exchange, symbol) {
-    return quickOrderQuotesService.findQuoteInSnapshot(snapshot, exchange, symbol);
-  }
-
-  _buildQuoteMatchKey(exchange, symbol) {
-    return quickOrderQuotesService.buildQuoteMatchKey(exchange, symbol);
   }
 
   _shouldRepeatToTarget(currentPosition, targetPosition) {
@@ -3310,28 +3202,8 @@ class QuickOrderService {
       .includes((action || '').toUpperCase());
   }
 
-  _normalizeSymbolKey(symbol) {
-    return normalizeSymbolKey(symbol);
-  }
-
-  _normalizeExchange(exchange) {
-    return normalizeExchange(exchange);
-  }
-
-  _normalizeProduct(product) {
-    return normalizeProduct(product);
-  }
-
-  _extractLtpFromQuote(quote) {
-    return quickOrderQuotesService.extractLtpFromQuote(quote);
-  }
-
-  _extractChangePercentFromQuote(quote) {
-    return quickOrderQuotesService.extractChangePercentFromQuote(quote);
-  }
-
   _resolveProductForOrder(product, tradeMode, symbol) {
-    const normalizedProduct = this._normalizeProduct(product) || 'MIS';
+    const normalizedProduct = normalizeProduct(product) || 'MIS';
     const trade = String(tradeMode || '').toUpperCase();
     const symbolType = String(symbol.symbol_type || '').toUpperCase();
     const exch = String(symbol.exchange || symbol.brexchange || '').toUpperCase();
@@ -3349,13 +3221,6 @@ class QuickOrderService {
     return normalizedProduct;
   }
 
-  _normalizeExpiryInput(expiry) {
-    return normalizeExpiryInput(expiry);
-  }
-
-  _getOptionTypeFromAction(action = '') {
-    return getOptionTypeFromAction(action);
-  }
 }
 
 // Export singleton instance

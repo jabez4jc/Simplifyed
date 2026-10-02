@@ -5,6 +5,7 @@
 
 import express from 'express';
 import quickOrderService from '../../services/quick-order.service.js';
+import quickOrderHistoryService from '../../services/quick-order-history.service.js';
 import idempotencyService from '../../services/idempotency.service.js';
 import marginSizingService from '../../services/margin-sizing.service.js';
 import instanceService from '../../services/instance.service.js';
@@ -503,7 +504,7 @@ router.get('/', requirePermission('pages.orders.view'), async (req, res, next) =
     filters.limit = limit;
     filters.offset = offset;
 
-    const orders = await quickOrderService.getQuickOrders(filters);
+    const orders = await quickOrderHistoryService.getQuickOrders(filters);
 
     res.json({
       status: 'success',
@@ -535,7 +536,7 @@ router.post('/sync/:instanceId', requirePermission('orders.place'), async (req, 
       throw new ValidationError('days must be between 1 and 90');
     }
 
-    const result = await quickOrderService.syncQuickOrdersForInstance(instanceId, { days });
+    const result = await quickOrderHistoryService.syncQuickOrdersForInstance(instanceId, { days });
 
     logAudit(req, 'quickorders.sync', { instanceId, days });
 

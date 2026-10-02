@@ -3,16 +3,18 @@ import test from 'node:test';
 
 import quickOrderService from '../../src/services/quick-order.service.js';
 import optionsResolutionService from '../../src/services/options-resolution.service.js';
+import quickOrderQuotesService from '../../src/services/quick-order-quotes.service.js';
 
 // H10: the strike follows the live LTP, so a resolution must never be served from a cache.
 test('two FLOAT resolutions straddling a strike boundary return different strikes', async () => {
   let ltp = 24_990;
   const stubs = {
     _ensureQuoteAvailableForSymbol: async () => {},
-    _getUnderlyingLTPWithFallback: async () => ltp,
     _resolveExpiryForOption: async () => '2026-10-27',
   };
   const realResolve = optionsResolutionService.resolveOptionSymbol;
+  const realLtp = quickOrderQuotesService.getUnderlyingLTPWithFallback;
+  quickOrderQuotesService.getUnderlyingLTPWithFallback = async () => ltp;
   const saved = {};
   for (const [k, v] of Object.entries(stubs)) { saved[k] = quickOrderService[k]; quickOrderService[k] = v; }
   optionsResolutionService.resolveOptionSymbol = async ({ ltp: l }) => ({ strike: Math.round(l / 50) * 50 });
@@ -26,6 +28,7 @@ test('two FLOAT resolutions straddling a strike boundary return different strike
     assert.strictEqual(b.optionSymbol.strike, 25_050);
   } finally {
     Object.assign(quickOrderService, saved);
+    quickOrderQuotesService.getUnderlyingLTPWithFallback = realLtp;
     optionsResolutionService.resolveOptionSymbol = realResolve;
   }
 });
