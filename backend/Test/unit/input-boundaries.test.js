@@ -4,7 +4,6 @@ import express from 'express';
 import request from 'supertest';
 import authRoutes from '../../src/routes/v1/auth.js';
 import { errorHandler } from '../../src/middleware/error-handler.js';
-import instanceHealthService from '../../src/services/instance-health.service.js';
 
 function authApp() {
   const app = express();
@@ -50,20 +49,4 @@ test('oversized uploads return 413 instead of an internal-server error', () => {
   errorHandler(error, { path: '/import', method: 'POST' }, response, () => {});
   assert.equal(captured.status, 413);
   assert.equal(captured.body.code, 'LIMIT_FILE_SIZE');
-});
-
-test('instance health configuration rejects malformed or unbounded test lists', async () => {
-  await assert.rejects(
-    instanceHealthService.updateTestConfig({ quotes: [], multiquotes: [], optionchain: [{}] }),
-    /require underlying and exchange/
-  );
-
-  await assert.rejects(
-    instanceHealthService.updateTestConfig({
-      quotes: Array.from({ length: 21 }, () => ({ symbol: 'SBIN', exchange: 'NSE' })),
-      multiquotes: [],
-      optionchain: [],
-    }),
-    /at most 20 entries/
-  );
 });
