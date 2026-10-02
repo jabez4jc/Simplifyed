@@ -284,36 +284,6 @@ async function startServer() {
         wsGateway: config.wsGateway?.enabled ? config.wsGateway?.path : 'disabled',
       });
 
-      console.log('');
-      console.log('╔════════════════════════════════════════════════════════════╗');
-      console.log('║                                                            ║');
-      console.log('║         Simplifyed Admin V2 - Server Running              ║');
-      console.log('║                                                            ║');
-      console.log('╠════════════════════════════════════════════════════════════╣');
-      console.log(`║  Environment:  ${String(config.env || 'unknown').padEnd(43)} ║`);
-      console.log(`║  Port:         ${String(config.port || 3000).padEnd(43)} ║`);
-      console.log(`║  Base URL:     ${String(config.baseUrl || 'unknown').padEnd(43)} ║`);
-      console.log(`║  Test Mode:    ${String(config.auth.enableTestMode === true ? 'Yes - AUTH DISABLED' : 'No').padEnd(43)} ║`);
-      console.log('║                                                            ║');
-      console.log('╠════════════════════════════════════════════════════════════╣');
-      console.log('║  API Endpoints:                                            ║');
-      console.log('║    - GET  /api/v1/health                                   ║');
-      console.log('║    - GET  /api/v1/instances                                ║');
-      console.log('║    - GET  /api/v1/watchlists                               ║');
-      console.log('║    - GET  /api/v1/orders                                   ║');
-      console.log('║    - GET  /api/v1/positions/:instanceId                    ║');
-      console.log('║    - GET  /api/v1/symbols/search                           ║');
-      console.log('║                                                            ║');
-      console.log('╠════════════════════════════════════════════════════════════╣');
-      console.log('║  Services:                                                 ║');
-      console.log(`║    - Instance Updates:  Every ${(config.polling.instanceInterval / 1000).toString()}s ║`.padEnd(62) + '║');
-      console.log(`║    - Market Data:       Every ${(config.polling.marketDataInterval / 1000).toString()}s (when active) ║`.padEnd(62) + '║');
-      console.log('║    - Health Checks:     Every 5m                           ║');
-      console.log('║    - Telegram:          Webhook-driven (no polling)        ║');
-      console.log('║                                                            ║');
-      console.log('╚════════════════════════════════════════════════════════════╝');
-      console.log('');
-
       // Start instance health cron (every 3h from 08:00 IST)
       instanceHealthService.start();
 
