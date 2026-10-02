@@ -6,7 +6,7 @@
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import marketDataFeedService from './market-data-feed.service.js';
-import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
+import { parseFloatSafe } from '../utils/sanitizers.js';
 import { calculateTradebookPnL, computeSessionPnl } from '../utils/trade-pnl.js';
 import settingsService from './settings.service.js';
 import { buildBrokerageMap, resolveBrokerageValue } from '../utils/brokerage.js';
@@ -193,15 +193,9 @@ class DashboardService {
       // Trade counts/turnover are activity stats ("how many trades today"), not P&L - the
       // same-day tradebook window is correct for these, no FIFO matching needed.
       const tradeStats = hasTradebook ? calculateTradebookPnL(tradebook) : null;
-      const totalTradeValue = hasTradebook
-        ? tradeStats.buy_value + tradeStats.sell_value
-        : parseFloatSafe(instance.total_trade_value, 0);
-      const totalBuyTrades = hasTradebook
-        ? tradeStats.buy_count
-        : parseIntSafe(instance.total_buy_trades, 0);
-      const totalSellTrades = hasTradebook
-        ? tradeStats.sell_count
-        : parseIntSafe(instance.total_sell_trades, 0);
+      const totalTradeValue = hasTradebook ? tradeStats.buy_value + tradeStats.sell_value : 0;
+      const totalBuyTrades = hasTradebook ? tradeStats.buy_count : 0;
+      const totalSellTrades = hasTradebook ? tradeStats.sell_count : 0;
 
       log.debug('Fetched funds from instance', {
         instance_id: instance.id,
