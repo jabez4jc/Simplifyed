@@ -77,7 +77,8 @@ router.post('/quotes', async (req, res, next) => {
     for (const s of symbols) marketDataFeedService.ensureSymbolSubscribed(s?.exchange, s?.symbol);
 
     const ttlMs = 2000;
-    const { cached, missing } = marketDataFeedService.getCachedQuotesForSymbols(symbols, { ttlMs });
+    const { cached: cachedEntries, missing } = marketDataFeedService.getCachedQuoteEntriesForSymbols(symbols, { ttlMs });
+    const cached = cachedEntries.map((entry) => entry.quote);
     let liveQuotes = [];
 
     if (missing.length > 0) {

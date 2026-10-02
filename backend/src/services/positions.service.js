@@ -160,12 +160,12 @@ class PositionsService {
     if (!exchange || !symbol) return null;
 
     // Use cached quotes with aggressive TTL suitable for order/tracking views
-    const { cached } = marketDataFeedService.getCachedQuotesForSymbols(
+    const { cached } = marketDataFeedService.getCachedQuoteEntriesForSymbols(
       [{ exchange, symbol }],
       { orderCritical: true }
     );
     if (cached?.length) {
-      const ltp = extractLtp(cached[0]);
+      const ltp = extractLtp(cached[0].quote);
       if (ltp && ltp > 0) return ltp;
     }
 

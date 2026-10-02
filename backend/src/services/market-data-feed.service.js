@@ -147,7 +147,7 @@ class MarketDataFeedService extends EventEmitter {
     if (this.isRunning) return;
     this.isRunning = true;
 
-    this.applyConfig(options.configOverride || config);
+    this.applyConfig();
     if (options.quoteInterval) {
       this.quoteIntervalMs = options.quoteInterval;
     }
@@ -225,8 +225,8 @@ class MarketDataFeedService extends EventEmitter {
     this.isRunning = false;
   }
 
-  applyConfig(nextConfig = config) {
-    const cfg = nextConfig || config;
+  applyConfig() {
+    const cfg = config;
     const md = cfg.marketDataFeed || {};
 
     this.quoteIntervalMs = cfg.polling?.marketDataInterval || DEFAULT_QUOTE_INTERVAL;
@@ -246,20 +246,6 @@ class MarketDataFeedService extends EventEmitter {
     this.QUOTE_TTL_MS = Math.max(this.quoteTtlIdleMs, TTL_DISPLAY);
     this.QUOTE_TTL_ORDER_MS = TTL_ORDER_CRITICAL;
     this.FUNDS_TTL_MS = this.fundsIntervalMs;
-
-    if (this.isRunning) {
-      this._restartIntervals();
-    }
-  }
-
-  _restartIntervals() {
-    this.intervals.forEach(clearInterval);
-    this.intervals = [];
-
-    this.intervals.push(setInterval(() => this.refreshQuotes(), this.quoteIntervalMs));
-    this.intervals.push(setInterval(() => this.refreshFunds(), this.fundsIntervalMs));
-
-    this._startDynamicPositionRefresh(0);
   }
 
   async _startWsQuotes() {
@@ -323,7 +309,7 @@ class MarketDataFeedService extends EventEmitter {
         return;
       }
 
-      const { missing } = this.getCachedQuotesForSymbols(symbolList, { orderCritical: false });
+      const { missing } = this.getCachedQuoteEntriesForSymbols(symbolList, { orderCritical: false });
       if (openalgoWsService.hasActiveConnections() && missing.length === 0) {
         return;
       }
@@ -467,38 +453,7 @@ class MarketDataFeedService extends EventEmitter {
   }
 
   /**
-   * Retrieve cached quotes for symbols if fresh, and return missing symbols
-   * @param {Array} symbols - Array of {exchange, symbol}
-   * @param {Object} options - Options
-   * @param {number} options.ttlMs - Custom TTL in milliseconds (default: QUOTE_TTL_MS for display)
-   * @param {boolean} options.orderCritical - Use aggressive TTL for order-critical operations
-   * @returns {{ cached: Array, missing: Array }}
-   */
-  getCachedQuotesForSymbols(symbols = [], options = {}) {
-    // Support legacy signature: getCachedQuotesForSymbols(symbols, ttlMs)
-    const opts = typeof options === 'number' ? { ttlMs: options } : options;
-    const { orderCritical = false } = opts;
-
-    // Determine TTL: orderCritical uses aggressive TTL, otherwise use custom or stateful TTL
-    const ttlMs = opts.ttlMs ?? (orderCritical ? this.QUOTE_TTL_ORDER_MS : this._getQuoteTtlMs());
-
-    const now = Date.now();
-    const cached = [];
-    const missing = [];
-    symbols.forEach((s) => {
-      const key = this._symbolKey(s.exchange, s.symbol);
-      const entry = this.symbolQuoteCache.get(key);
-      if (entry && entry.fetchedAt && now - entry.fetchedAt <= ttlMs) {
-        cached.push(entry.quote);
-      } else {
-        missing.push(s);
-      }
-    });
-    return { cached, missing };
-  }
-
-  /**
-   * Retrieve cached quotes with timestamps for symbols if fresh, and return missing symbols
+   * Retrieve cached quotes (with their timestamps) for symbols if fresh, and return missing symbols
    * @param {Array} symbols - Array of {exchange, symbol}
    * @param {Object} options - Options
    * @param {number} options.ttlMs - Custom TTL in milliseconds (default: QUOTE_TTL_MS for display)
@@ -506,9 +461,8 @@ class MarketDataFeedService extends EventEmitter {
    * @returns {{ cached: Array<{quote: Object, fetchedAt: number}>, missing: Array }}
    */
   getCachedQuoteEntriesForSymbols(symbols = [], options = {}) {
-    const opts = typeof options === 'number' ? { ttlMs: options } : options;
-    const { orderCritical = false } = opts;
-    const ttlMs = opts.ttlMs ?? (orderCritical ? this.QUOTE_TTL_ORDER_MS : this._getQuoteTtlMs());
+    const { orderCritical = false } = options;
+    const ttlMs = options.ttlMs ?? (orderCritical ? this.QUOTE_TTL_ORDER_MS : this._getQuoteTtlMs());
 
     const now = Date.now();
     const cached = [];
@@ -827,7 +781,8 @@ class MarketDataFeedService extends EventEmitter {
     if (unique.length === 0) return [];
 
     // Check cache first with appropriate TTL
-    const { cached, missing } = this.getCachedQuotesForSymbols(unique, { ttlMs, orderCritical });
+    const { cached: cachedEntries, missing } = this.getCachedQuoteEntriesForSymbols(unique, { ttlMs, orderCritical });
+    const cached = cachedEntries.map((entry) => entry.quote);
     // Order-critical lookups skip the calendar gate for the same reason as fetchDepthForSymbol.
     const openMissing = orderCritical ? missing : await this._filterSymbolsByMarketOpen(missing);
 
@@ -1025,7 +980,7 @@ class MarketDataFeedService extends EventEmitter {
 
       const currentEntry = extractAveragePrice(pos);
       const fallbackExisting = this.getFallbackEntryPrice(instanceId, exchange, symbol);
-      if (currentEntry && !this._isDummyEntryPrice(currentEntry)) {
+      if (Number.isFinite(currentEntry) && currentEntry > 0) {
         // Do not override valid broker-provided entry
         return;
       }
@@ -1037,12 +992,12 @@ class MarketDataFeedService extends EventEmitter {
       // Resolve LTP from position or cached quotes
       let ltp = extractLtp(pos);
       if (!ltp || ltp <= 0) {
-        const { cached } = this.getCachedQuotesForSymbols(
+        const { cached } = this.getCachedQuoteEntriesForSymbols(
           [{ exchange, symbol }],
           { orderCritical: true }
         );
         if (cached?.length) {
-          ltp = extractLtp(cached[0]);
+          ltp = extractLtp(cached[0].quote);
         }
       }
       if (!ltp || ltp <= 0) return;
@@ -1056,15 +1011,6 @@ class MarketDataFeedService extends EventEmitter {
         { confirmed: true }
       );
     });
-  }
-
-  _isDummyEntryPrice(value) {
-    const num = Number(value);
-    if (!isFinite(num)) return true;
-    if (num <= 0) return true;
-    // Common dummy placeholders observed
-    const dummySet = new Set([100, 1, 0.01]);
-    return dummySet.has(num);
   }
 
   /**
@@ -1171,15 +1117,8 @@ class MarketDataFeedService extends EventEmitter {
 
   /**
    * Funds / balances (per trading instance)
-   * Non-critical: Can be paused during order-critical LTP operations
    */
   async refreshFunds({ force = false } = {}) {
-    // Skip if non-critical polling is paused (LTP operations in progress)
-    if (!force && this._isNonCriticalPaused()) {
-      log.debug('Skipping funds refresh - non-critical polling paused for LTP priority');
-      return;
-    }
-
     try {
       const instances = await instanceService.getAllInstances({ is_active: true });
       for (const inst of instances) {
@@ -1208,11 +1147,6 @@ class MarketDataFeedService extends EventEmitter {
    *   refreshPositionsForInstance for why the batch loop needs this).
    */
   async refreshFundsForInstance(instanceId, { force = false } = {}) {
-    // Skip if non-critical polling is paused (LTP operations in progress)
-    if (!force && this._isNonCriticalPaused()) {
-      log.debug('Skipping funds refresh for instance - non-critical polling paused', { instanceId });
-      return false;
-    }
     if (this._isInstanceUnhealthy(instanceId)) {
       log.debug('Skipping funds refresh - instance unhealthy', { instanceId });
       return false;
@@ -1647,12 +1581,12 @@ class MarketDataFeedService extends EventEmitter {
     const exchangeOpen = await marketCalendarService.isExchangeOpen(exchange);
     if (!exchangeOpen) {
       if (!bypassCache) {
-        const { cached } = this.getCachedQuotesForSymbols(
+        const { cached } = this.getCachedQuoteEntriesForSymbols(
           [{ exchange, symbol }],
           { orderCritical: true }
         );
         if (cached.length > 0) {
-          const quote = cached[0];
+          const quote = cached[0].quote;
           const ltp = this._extractLtpFromQuote(quote);
           if (ltp && ltp > 0) {
             return { ltp, quote, source: 'cache_closed', attempts: 0 };
@@ -1733,13 +1667,13 @@ class MarketDataFeedService extends EventEmitter {
 
     // Check cache next unless bypassed (use order-critical TTL)
     if (!bypassCache) {
-      const { cached } = this.getCachedQuotesForSymbols(
+      const { cached } = this.getCachedQuoteEntriesForSymbols(
         [{ exchange, symbol }],
         { orderCritical: true }
       );
 
       if (cached.length > 0) {
-        const quote = cached[0];
+        const quote = cached[0].quote;
         const ltp = this._extractLtpFromQuote(quote);
         if (ltp && ltp > 0) {
           log.debug('LTP served from cache', { exchange, symbol, ltp });
@@ -1754,9 +1688,6 @@ class MarketDataFeedService extends EventEmitter {
     if (pool.length === 0) {
       throw new Error('No market data instances available for LTP fetch');
     }
-
-    // Pause non-critical polling during LTP fetch to prioritize bandwidth
-    this.pauseNonCriticalPolling(3000);
 
     // Use getLtpWithRetry for aggressive retry with exponential backoff
     // Strategy: Try different instances first, then do another round if needed
@@ -1873,29 +1804,6 @@ class MarketDataFeedService extends EventEmitter {
     }
 
     return null;
-  }
-
-  /**
-   * Pause non-critical polling (Funds, Ping) temporarily
-   * Use during order-critical operations to prioritize LTP
-   * @param {number} durationMs - Duration to pause in milliseconds (default: 5000)
-   */
-  pauseNonCriticalPolling(durationMs = 5000) {
-    this._nonCriticalPausedUntil = Date.now() + durationMs;
-    log.debug('Non-critical polling paused', { resumeInMs: durationMs });
-  }
-
-  /**
-   * Check if non-critical polling should be skipped
-   * @private
-   */
-  _isNonCriticalPaused() {
-    if (!this._nonCriticalPausedUntil) return false;
-    if (Date.now() >= this._nonCriticalPausedUntil) {
-      this._nonCriticalPausedUntil = null;
-      return false;
-    }
-    return true;
   }
 
   /**

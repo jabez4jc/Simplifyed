@@ -450,12 +450,12 @@ class AutoExitService {
     }
 
     // Try cached quotes (order-critical TTL)
-    const { cached } = marketDataFeedService.getCachedQuotesForSymbols(
+    const { cached } = marketDataFeedService.getCachedQuoteEntriesForSymbols(
       [{ exchange: rawExchange, symbol: rawSymbol }],
       { orderCritical: true }
     );
     if (cached?.length) {
-      currentPrice = extractLtp(cached[0]);
+      currentPrice = extractLtp(cached[0].quote);
       if (currentPrice && currentPrice > 0) {
         return { price: currentPrice, source: 'cached_quote' };
       }
