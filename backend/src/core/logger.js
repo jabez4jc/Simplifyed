@@ -19,6 +19,10 @@ if (!existsSync(logsDir)) {
 
 const enableDebug = process.env.ENABLE_DEBUG_LOGS === 'true';
 
+// Test processes (node --test sets NODE_TEST_CONTEXT) log to test-*.log, so their deliberate
+// failures never mix with the running app's error.log.
+export const LOG_PREFIX = process.env.NODE_TEST_CONTEXT ? 'test-' : '';
+
 // Keys that never print their value. Matched as substrings so apiKey, webhook_token and the like
 // are caught too (rule: secrets are never logged).
 const SECRET_KEY = /token|api_?key|password|secret|authorization/i;
@@ -71,14 +75,14 @@ const logger = winston.createLogger({
 
     // File transport for errors
     new winston.transports.File({
-      filename: join(logsDir, 'error.log'),
+      filename: join(logsDir, `${LOG_PREFIX}error.log`),
       level: 'error',
       format: fileFormat,
     }),
 
     // File transport for all logs
     new winston.transports.File({
-      filename: join(logsDir, 'combined.log'),
+      filename: join(logsDir, `${LOG_PREFIX}combined.log`),
       format: fileFormat,
     }),
   ],
@@ -95,8 +99,8 @@ function scheduleDailyTruncate() {
   const delay = next.getTime() - now.getTime();
   const timer = setTimeout(() => {
     try {
-      writeFileSync(join(logsDir, 'combined.log'), '');
-      writeFileSync(join(logsDir, 'error.log'), '');
+      writeFileSync(join(logsDir, `${LOG_PREFIX}combined.log`), '');
+      writeFileSync(join(logsDir, `${LOG_PREFIX}error.log`), '');
     } catch {
       // ignore cleanup errors
     }

@@ -1,6 +1,6 @@
 import assert from 'assert';
 import test from 'node:test';
-import { formatKv, sanitizeMeta } from '../../src/core/logger.js';
+import { formatKv, sanitizeMeta, LOG_PREFIX } from '../../src/core/logger.js';
 
 const line = (meta, message = 'x') => formatKv({ timestamp: 'T', level: 'info', message }, sanitizeMeta(meta));
 
@@ -25,4 +25,8 @@ test('the message stays last and reserved keys cannot shadow the prefix', () => 
   const out = line({ msg: 'spoof', pid: 'spoof', a: 1 }, 'hello');
   assert.ok(out.endsWith('msg="hello"'));
   assert.ok(!out.includes('spoof'));
+});
+
+test('test processes log to test-*.log, never the app error.log', () => {
+  assert.strictEqual(LOG_PREFIX, 'test-');
 });
