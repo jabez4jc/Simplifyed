@@ -250,13 +250,5 @@ export const log = {
       logger.debug('db_query', sanitizeMeta({ duration_ms: duration, sql: sql?.slice(0, 200), param_count: Array.isArray(params) ? params.length : 0 }));
     }
   },
-
-  /**
-   * Log OpenAlgo API call
-   */
-  openalgo: (method, endpoint, duration, success) => {
-    const level = success ? 'info' : 'error';
-    logger[level]('openalgo_call', sanitizeMeta({ method, endpoint, duration_ms: duration, status: success ? 'success' : 'failure' }));
-  },
 };
 

@@ -6,13 +6,11 @@
 import { log } from '../core/logger.js';
 import {
   AppError,
-  BadRequestError,
   UnauthorizedError,
   ForbiddenError,
   NotFoundError,
   ConflictError,
   ValidationError,
-  RateLimitError,
   DatabaseError,
   ExternalAPIError,
   OpenAlgoError,
@@ -125,14 +123,6 @@ export function errorHandler(err, req, res, _next) {
     });
   }
 
-  if (err instanceof RateLimitError) {
-    return res.status(err.statusCode).json({
-      status: 'error',
-      message: err.message,
-      code: 'RATE_LIMIT_EXCEEDED',
-    });
-  }
-
   if (err instanceof OpenAlgoError) {
     return res.status(upstreamStatus(err)).json({
       status: 'error',
@@ -156,14 +146,6 @@ export function errorHandler(err, req, res, _next) {
       status: 'error',
       message: 'Database error occurred',
       code: 'DATABASE_ERROR',
-    });
-  }
-
-  if (err instanceof BadRequestError) {
-    return res.status(err.statusCode).json({
-      status: 'error',
-      message: err.message,
-      code: 'BAD_REQUEST',
     });
   }
 

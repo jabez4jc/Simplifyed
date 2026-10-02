@@ -31,15 +31,6 @@ export class AppError extends Error {
 }
 
 /**
- * Bad Request Error (400)
- */
-export class BadRequestError extends AppError {
-  constructor(message = 'Bad Request') {
-    super(message, 400);
-  }
-}
-
-/**
  * Unauthorized Error (401)
  */
 export class UnauthorizedError extends AppError {
@@ -138,25 +129,6 @@ export class OpenAlgoError extends ExternalAPIError {
       endpoint: this.endpoint,
       statusCode: this.statusCode,
       ...(this.details ? { details: this.details } : {}),
-    };
-  }
-}
-
-/**
- * Rate Limit Error (429)
- */
-export class RateLimitError extends AppError {
-  constructor(message = 'Too many requests', retryAfter = null) {
-    super(message, 429);
-    this.retryAfter = retryAfter;
-  }
-
-  toJSON() {
-    return {
-      status: 'error',
-      message: this.message,
-      statusCode: this.statusCode,
-      retryAfter: this.retryAfter,
     };
   }
 }
