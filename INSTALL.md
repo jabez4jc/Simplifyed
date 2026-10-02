@@ -226,7 +226,7 @@ sudo -u simplifyed npm run set-password -- admin@yourdomain.com new-password-her
 
 The account must already exist - this command never creates one. It is CLI-only with no HTTP route, so it cannot be reached over the network.
 
-Users who *can* sign in change their own password via `POST /api/v1/auth/change-password`.
+An admin resets a user's password under **Settings → Access Control**.
 
 ### Service Management
 

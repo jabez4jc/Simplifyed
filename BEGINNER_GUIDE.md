@@ -418,7 +418,7 @@ Other people can't sign themselves up - an admin creates each account:
 
 Roles decide what someone can do. Until you assign one, that person can log in but only sees an "access pending" screen - so creating the account and assigning the role are both needed.
 
-Ask them to change the starting password after their first login (`POST /api/v1/auth/change-password`). If someone forgets theirs, an admin can reset it under **Settings → Access Control**.
+If someone forgets their password, an admin can reset it under **Settings → Access Control**.
 
 ### 4. Forgot Your Password?
 

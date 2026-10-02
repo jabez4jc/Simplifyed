@@ -108,7 +108,7 @@ sudo nano /opt/simplifyed/backend/.env
 
 2. **Add your team**
    - Settings → Access Control → Create User, then assign a role.
-   - Users change their own password via `POST /api/v1/auth/change-password`; an admin can reset one from the server with `npm run set-password -- <email> <new-password>`.
+   - An admin resets a password under **Settings → Access Control**, or from the server with `npm run set-password -- <email> <new-password>`.
 
 3. **Instruments** load automatically once an instance is healthy. To refresh by hand, use Settings → Data Management.
 
