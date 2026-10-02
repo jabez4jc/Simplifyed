@@ -151,7 +151,6 @@ class OpenAlgoClient extends EventEmitter {
     this.criticalRetryDelay = config.openalgo.critical.retryDelay;
     this.nonCriticalRetries = config.openalgo.nonCritical.maxRetries;
     this.nonCriticalRetryDelay = config.openalgo.nonCritical.retryDelay;
-    this.instanceTimeoutOverrides = this._loadInstanceTimeoutOverrides();
 
     // Per-symbol quote failure cooldown: a symbol that's invalid/unlisted on a given instance
     // (e.g. bad or expired contract) fails every time it's requested, and since a failed quote
@@ -412,10 +411,9 @@ class OpenAlgoClient extends EventEmitter {
     // Market-data reads get a short timeout: a broker stall (seen on Kotak: 15s hangs, while a
     // 20-call burst peaks at ~2.7s) should cost seconds, not stall order pricing - which now
     // falls through to other sources. Orders and books keep the full timeout.
-    const baseTimeout = this._getInstanceTimeoutMs(instance);
     const timeoutOverride = FAST_READ_ENDPOINTS.has(endpoint)
-      ? Math.min(baseTimeout ?? this.timeout, FAST_READ_TIMEOUT_MS)
-      : baseTimeout;
+      ? Math.min(this.timeout, FAST_READ_TIMEOUT_MS)
+      : null;
     this._persistMeta(instKey, instance);
 
     // Select retry configuration based on operation type
@@ -732,27 +730,6 @@ class OpenAlgoClient extends EventEmitter {
     if (bucket.timestamps.length >= bucket.cap) return false;
     bucket.timestamps.push(now);
     return true;
-  }
-
-  _loadInstanceTimeoutOverrides() {
-    try {
-      const raw = process.env.OPENALGO_INSTANCE_TIMEOUT_MS_MAP;
-      if (!raw) return {};
-      const parsed = JSON.parse(raw);
-      return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch (err) {
-      log.warn('Failed to parse OPENALGO_INSTANCE_TIMEOUT_MS_MAP, ignoring', { error: err.message });
-      return {};
-    }
-  }
-
-  _getInstanceTimeoutMs(instance) {
-    if (!instance) return null;
-    const map = this.instanceTimeoutOverrides || {};
-    const byId = map[String(instance.id)];
-    if (byId) return byId;
-    const byName = instance.name ? map[String(instance.name)] : null;
-    return byName || null;
   }
 
   async _throttle(instance, endpoint) {
