@@ -14,6 +14,7 @@ import {
   ConflictError,
   ValidationError,
 } from '../core/errors.js';
+import instanceConnectionTestService from './instance-connection-test.service.js';
 import { normalizeInstanceData } from '../utils/instance-validation.util.js';
 import { parseIntSafe, isMaskedApiKey } from '../utils/sanitizers.js';
 
@@ -95,7 +96,7 @@ class InstanceService {
       }
 
       // Test connection and auto-detect broker
-      const connectionTest = await this.testConnection({
+      const connectionTest = await instanceConnectionTestService.testConnection({
         host_url: normalized.host_url,
         api_key: normalized.api_key,
       });
@@ -155,7 +156,7 @@ class InstanceService {
       // quotes, no chart history) until the next scheduled check, minutes away.
       let created = instance;
       try {
-        created = (await this.updateHealthStatus(instance.id, { force: true })) || instance;
+        created = (await (await import('./instance-health-check.service.js')).default.updateHealthStatus(instance.id, { force: true })) || instance;
       } catch (error) {
         log.warn('Initial health check after create failed', { id: instance.id, error: error.message });
       }
@@ -208,7 +209,7 @@ class InstanceService {
           api_key: normalized.api_key || existing.api_key,
         };
 
-        const connectionTest = await this.testConnection(connectionPayload);
+        const connectionTest = await instanceConnectionTestService.testConnection(connectionPayload);
 
         if (!connectionTest.success) {
           // Allow saving even if the instance is currently unreachable or the API key is invalid.
