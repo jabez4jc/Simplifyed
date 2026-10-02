@@ -209,7 +209,7 @@ if [[ -f "$ENV_FILE" && -f "$ENV_EXAMPLE" ]]; then
     else
       echo "ℹ Only optional keys are missing from .env:"
       echo "$missing_keys"
-      echo "  You can ignore these unless you use TradingView broadcast or WS gateway."
+      echo "  You can ignore these unless you use the WS gateway."
     fi
   else
     echo "✓ .env is up to date with .env.example keys."

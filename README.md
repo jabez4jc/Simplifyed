@@ -9,9 +9,9 @@ Simplifyed Admin is the control plane for running multiple OpenAlgo broker insta
 - **Unified dashboard** – Collapsible navigation, stacked watchlists, help affordances, and quick access to positions and orders.
 - **Buyer/Writer options workflow** – FLOAT_OFS strike selection, operating‑mode toggles, expiry management, option preview with auto‑resolved CE/PE symbols.
 - **Shared market‑data feed** – Quotes, positions, and funds are polled once per interval and cached for every admin session.
-- **Charting** – Historical candles per watchlist symbol (TradingView Lightweight Charts, self-hosted), with a candle cache that keeps chart traffic off the live trading rate limit and keeps charts readable while a broker is unreachable.
+- **Charting** – Historical candles per watchlist symbol (openalgo-charts, self-hosted), with a candle cache that keeps chart traffic off the live trading rate limit and keeps charts readable while a broker is unreachable.
 - **Multi-leg strategies & GTT** – Webhook-triggerable strategies with per-leg risk config, exit orders tracked as GTT triggers.
-- **SQLite + services layer** – Instruments cache, option chain builder, expiry calendar, quick‑order execution engine, and health monitoring. One embedded database file, no external DB service.
+- **SQLite + services layer** – Instruments cache, option chain builder, quick‑order execution engine, and health monitoring. One embedded database file, no external DB service.
 - **Local email/password auth** – Built into the app, no external identity provider. `POST /api/v1/auth/register` bootstraps the first admin and then closes itself; further accounts are created by an admin under Settings → Access Control, with role-based permissions.
 - **Docs as source of truth** – See [ARCHITECTURE.md](ARCHITECTURE.md) for the in‑depth architecture guide.
 
@@ -199,7 +199,7 @@ The first admin is created with `POST /api/v1/auth/register` (it closes once any
 
 ### Caches
 
-- **Market data feed** starts automatically (quotes/positions/funds) after the first login. Its intervals are under Settings → Advanced → Market data.
+- **Market data feed** starts with the server (quotes/positions/funds), whether or not anyone is logged in. Its intervals are fixed in code; only the bid/ask spread guard is a setting (Settings → Orders & Costs).
 - **Expiries** are read from the instruments cache; `/symbols/expiry?...&instanceId=` fetches them from the broker when the cache has none.
 
 ### Uninstall an instance

@@ -276,6 +276,7 @@ There's no external service involved in login. The app handles accounts itself.
 ```
 Telegram Bot Configuration (optional - press Enter to skip)
 Telegram Bot Token:
+Telegram Chat ID:
 ```
 
 **If you DON'T want Telegram notifications:**
@@ -286,7 +287,7 @@ Telegram Bot Token:
 2. Send `/newbot` command
 3. Follow instructions to create your bot
 4. Copy the token you receive
-5. Enter the token when prompted
+5. Enter the token when prompted, then your chat ID (message your bot once to get one)
 
 ---
 
