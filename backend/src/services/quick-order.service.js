@@ -2201,8 +2201,8 @@ class QuickOrderService {
     // LIMIT exits fill a moment after they are accepted, so the book read straight after the last
     // send still shows them. Give them up to ~10 s before calling a position "still open" -
     // the kill switch leaves an instance in LIVE mode on that word.
-    let remaining = seen.size ? await openPositions() : [];
-    for (let waited = 0; remaining.length && waited < settleMs; waited += pollMs) {
+    let remaining = await openPositions(); // always read back, even when nothing was sent
+    for (let waited = 0; seen.size && remaining.length && waited < settleMs; waited += pollMs) {
       await new Promise((resolve) => setTimeout(resolve, pollMs));
       remaining = await openPositions();
     }

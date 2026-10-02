@@ -412,11 +412,13 @@ test('multiplier accepts its documented range and rejects what falls outside it'
 // Deleting
 // ---------------------------------------------------------------------------
 
-test('deleting removes the row', async () => {
+test('deleting removes the row (an instance whose book cannot be read needs force)', async () => {
   const admin = await asAdmin();
-  const inst = await makeInstance();
+  const inst = await makeInstance(); // its host is unreachable, so "no open positions" cannot be confirmed
 
-  assert.strictEqual((await del(`/api/v1/instances/${inst.id}`, admin)).status, STATUS.OK);
+  assert.strictEqual((await del(`/api/v1/instances/${inst.id}`, admin)).status, STATUS.VALIDATION);
+  assert.ok(await db.get('SELECT id FROM instances WHERE id = ?', [inst.id]), 'refused: the row stays');
+  assert.strictEqual((await del(`/api/v1/instances/${inst.id}?force=true`, admin)).status, STATUS.OK);
   assert.ok(!(await db.get('SELECT id FROM instances WHERE id = ?', [inst.id])), 'the row must be gone');
 });
 

@@ -8,7 +8,7 @@
  */
 
 import db from '../../src/core/database.js';
-import { hashPassword, signLocalToken } from '../../src/middleware/auth.js';
+import { hashPassword, signLocalToken, invalidateUserCache } from '../../src/middleware/auth.js';
 
 export const ROLE = { ADMIN: 1, TRADER: 2, MONITOR: 3 };
 
@@ -37,6 +37,10 @@ export async function createUser({ roleId = null, isAdmin = false, password = 't
   if (roleId !== null) {
     await db.run('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)', [lastID, roleId]);
   }
+
+  // These rows are written with raw SQL, behind optionalAuth's 30 s user cache (ids are reused
+  // after a truncate), so drop it the way rbac.service does on a real change.
+  invalidateUserCache();
 
   return { id: lastID, email, password, isAdmin, roleId, token: signLocalToken({ id: lastID, email }) };
 }

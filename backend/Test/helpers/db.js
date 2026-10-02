@@ -14,6 +14,7 @@ import { copyFileSync, existsSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import db from '../../src/core/database.js';
+import { invalidateUserCache } from '../../src/middleware/auth.js';
 
 const BACKEND_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const TEMPLATE = join(BACKEND_ROOT, 'database/test-template.db');
@@ -94,4 +95,5 @@ export async function truncate() {
   }
   await db.run("DELETE FROM sqlite_sequence WHERE name NOT IN ('roles','permissions')").catch(() => {});
   await db.run('PRAGMA foreign_keys = ON');
+  invalidateUserCache(); // users were just deleted behind optionalAuth's cache
 }
