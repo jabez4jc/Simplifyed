@@ -1,17 +1,9 @@
 /**
  * Instance Management Service (core)
  * Owns CRUD operations and schema feature-detection for instance records. Health-check
- * pinging, analyzer-mode switching, connection testing, and P&L/session accounting were
- * split out to their own services (instance-health-check.service.js,
- * instance-analyzer.service.js, instance-connection-test.service.js,
- * instance-pnl.service.js) - this file keeps thin delegating wrapper methods with
- * identical signatures for all of them, so this remains the single singleton every other
- * file imports and the public API is unchanged.
- *
- * The three extracted services that read instances/schema state import this file's
- * singleton back (for getInstanceById), so the wrapper methods below use
- * dynamic import() rather than a static import to avoid a circular static-import cycle -
- * same technique already used for market-data-feed.service.js in updatePnLData/below.
+ * pinging, analyzer-mode switching, connection testing and P&L/session accounting live in
+ * instance-health-check.service.js, instance-analyzer.service.js,
+ * instance-connection-test.service.js and instance-pnl.service.js - import those directly.
  */
 
 import db from '../core/database.js';
@@ -22,9 +14,7 @@ import {
   ConflictError,
   ValidationError,
 } from '../core/errors.js';
-import instanceConnectionTestService from './instance-connection-test.service.js';
 import { normalizeInstanceData } from '../utils/instance-validation.util.js';
-import { computeSessionState } from '../utils/instance-session.util.js';
 import { parseIntSafe, isMaskedApiKey } from '../utils/sanitizers.js';
 
 class InstanceService {
@@ -374,68 +364,6 @@ class InstanceService {
       log.error('Failed to bulk update instances', error, { instanceIds, updates });
       throw error;
     }
-  }
-
-  /**
-   * Update instance health status - delegates to instance-health-check.service.js
-   */
-  async updateHealthStatus(id, opts = {}) {
-    const instanceHealthCheckService = (await import('./instance-health-check.service.js')).default;
-    return instanceHealthCheckService.updateHealthStatus(id, opts);
-  }
-
-  /**
-   * Delegates to instance-health-check.service.js
-   */
-  async resetHealthCheckState(id) {
-    const instanceHealthCheckService = (await import('./instance-health-check.service.js')).default;
-    return instanceHealthCheckService.resetHealthCheckState(id);
-  }
-
-  /**
-   * Delegates to instance-pnl.service.js
-   */
-  async updatePnLData(id) {
-    const instancePnlService = (await import('./instance-pnl.service.js')).default;
-    return instancePnlService.updatePnLData(id);
-  }
-
-  /**
-   * Delegates to instance-analyzer.service.js
-   */
-  async refreshAnalyzerStatus(id, opts = {}) {
-    const instanceAnalyzerService = (await import('./instance-analyzer.service.js')).default;
-    return instanceAnalyzerService.refreshAnalyzerStatus(id, opts);
-  }
-
-  /**
-   * Delegates to instance-analyzer.service.js
-   */
-  async toggleAnalyzerMode(id, mode) {
-    const instanceAnalyzerService = (await import('./instance-analyzer.service.js')).default;
-    return instanceAnalyzerService.toggleAnalyzerMode(id, mode);
-  }
-
-  /**
-   * Test connection to OpenAlgo instance - delegates to instance-connection-test.service.js
-   * @param {Object} credentials - { host_url, api_key }
-   * @returns {Promise<Object>} - { success, broker, message }
-   */
-  async testConnection(credentials) {
-    return instanceConnectionTestService.testConnection(credentials);
-  }
-
-  /**
-   * Test API key validity - delegates to instance-connection-test.service.js
-   * @param {Object} credentials - { host_url, api_key }
-   * @returns {Promise<Object>} - { success, message, funds }
-   */
-  async testApiKey(credentials) {
-    return instanceConnectionTestService.testApiKey(credentials);
-  }
-
-  async _computeSessionState(instance, totalPnl, now, opts = {}) {
-    return computeSessionState(instance, totalPnl, now, opts);
   }
 
   _attachTelemetry(instances = []) {

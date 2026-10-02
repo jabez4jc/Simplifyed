@@ -6,6 +6,9 @@
 import { log } from '../core/logger.js';
 import { config } from '../core/config.js';
 import instanceService from './instance.service.js';
+import instanceAnalyzerService from './instance-analyzer.service.js';
+import instanceHealthCheckService from './instance-health-check.service.js';
+import instancePnlService from './instance-pnl.service.js';
 import orderService from './order.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import marketDataFeedService, { ORDER_STREAM_SWEEP_MS } from './market-data-feed.service.js';
@@ -198,10 +201,10 @@ class PollingService {
       }
 
       // Update analyzer status (itself cached for analyzerCheckIntervalMs)
-      await instanceService.refreshAnalyzerStatus(instanceId);
+      await instanceAnalyzerService.refreshAnalyzerStatus(instanceId);
 
       // Update P&L
-      await instanceService.updatePnLData(instanceId);
+      await instancePnlService.updatePnLData(instanceId);
 
       // Sync order status - REST only when no live push stream covers it (see wireOrderStream)
       if (this._orderSyncDue(instanceId)) {
@@ -236,7 +239,7 @@ class PollingService {
       // Force reset instance health in circuit breaker
       // This clears the cooldown and allows retries
       openalgoClient.forceResetInstanceHealth(instanceId);
-      instanceService.resetHealthCheckState(instanceId);
+      instanceHealthCheckService.resetHealthCheckState(instanceId);
 
       log.info('Manual refresh triggered', {
         instance_id: instanceId,
@@ -250,10 +253,10 @@ class PollingService {
       const startTime = Date.now();
 
       // Update P&L
-      await instanceService.updatePnLData(instanceId);
+      await instancePnlService.updatePnLData(instanceId);
 
       // Update health status
-      await instanceService.updateHealthStatus(instanceId, { force: true });
+      await instanceHealthCheckService.updateHealthStatus(instanceId, { force: true });
 
       // Sync order status
       await orderService.syncOrderStatus(instanceId);
@@ -310,7 +313,7 @@ class PollingService {
       // Check health for each instance in parallel
       const results = await Promise.allSettled(
         instances.map(instance =>
-          instanceService.updateHealthStatus(instance.id)
+          instanceHealthCheckService.updateHealthStatus(instance.id)
         )
       );
 

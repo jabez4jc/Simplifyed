@@ -1,8 +1,7 @@
 import assert from 'assert';
 import test from 'node:test';
-import instanceService from '../../src/services/instance.service.js';
 import settingsService from '../../src/services/settings.service.js';
-import { formatDateIST } from '../../src/utils/instance-session.util.js';
+import { computeSessionState, formatDateIST } from '../../src/utils/instance-session.util.js';
 
 function buildInstance(overrides = {}) {
   return {
@@ -45,7 +44,7 @@ test('session max-loss hits reset on new session key', async () => {
       session_max_loss_hits_date: `${today}|Old Session`,
     });
 
-    const result = await instanceService._computeSessionState(instance, 0, now);
+    const result = await computeSessionState(instance, 0, now);
     assert.equal(result.maxLossHits, 0);
   } finally {
     restore();
@@ -66,7 +65,7 @@ test('session target respects multiplier', async () => {
       multiplier: 2,
     });
 
-    const result = await instanceService._computeSessionState(instance, 200, now);
+    const result = await computeSessionState(instance, 200, now);
     assert.equal(result.cutoffReason, 'SESSION_TARGET_PROFIT_REACHED');
   } finally {
     restore();

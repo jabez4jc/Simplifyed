@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import pollingService from '../../src/services/polling.service.js';
 import instanceService from '../../src/services/instance.service.js';
+import instanceAnalyzerService from '../../src/services/instance-analyzer.service.js';
+import instancePnlService from '../../src/services/instance-pnl.service.js';
 import orderService from '../../src/services/order.service.js';
 import marketCalendarService from '../../src/services/market-calendar.service.js';
 
@@ -10,8 +12,8 @@ import marketCalendarService from '../../src/services/market-calendar.service.js
 test('pollInstance called twice concurrently runs the work once', async () => {
   const real = {
     get: instanceService.getInstanceById,
-    analyzer: instanceService.refreshAnalyzerStatus,
-    pnl: instanceService.updatePnLData,
+    analyzer: instanceAnalyzerService.refreshAnalyzerStatus,
+    pnl: instancePnlService.updatePnLData,
     open: marketCalendarService.isInstanceMarketOpen,
     sync: orderService.syncOrderStatus,
   };
@@ -19,8 +21,8 @@ test('pollInstance called twice concurrently runs the work once', async () => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   instanceService.getInstanceById = async (id) => ({ id, is_active: 1, health_status: 'healthy' });
-  instanceService.refreshAnalyzerStatus = async () => {};
-  instanceService.updatePnLData = async () => { pnlRuns += 1; await gate; };
+  instanceAnalyzerService.refreshAnalyzerStatus = async () => {};
+  instancePnlService.updatePnLData = async () => { pnlRuns += 1; await gate; };
   marketCalendarService.isInstanceMarketOpen = async () => true;
   orderService.syncOrderStatus = async () => {};
   try {
@@ -36,8 +38,8 @@ test('pollInstance called twice concurrently runs the work once', async () => {
     assert.strictEqual(pnlRuns, 2);
   } finally {
     instanceService.getInstanceById = real.get;
-    instanceService.refreshAnalyzerStatus = real.analyzer;
-    instanceService.updatePnLData = real.pnl;
+    instanceAnalyzerService.refreshAnalyzerStatus = real.analyzer;
+    instancePnlService.updatePnLData = real.pnl;
     marketCalendarService.isInstanceMarketOpen = real.open;
     orderService.syncOrderStatus = real.sync;
   }

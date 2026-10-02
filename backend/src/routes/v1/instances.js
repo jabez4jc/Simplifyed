@@ -6,6 +6,8 @@
 import express from 'express';
 import instanceService from '../../services/instance.service.js';
 import pollingService from '../../services/polling.service.js';
+import instanceAnalyzerService from '../../services/instance-analyzer.service.js';
+import instanceConnectionTestService from '../../services/instance-connection-test.service.js';
 import marketDataInstanceService from '../../services/market-data-instance.service.js';
 import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
@@ -195,7 +197,7 @@ router.post('/test/connection', requirePermission('instances.edit'), async (req,
       throw new ValidationError('host_url and api_key are required');
     }
 
-    const result = await instanceService.testConnection({ host_url, api_key });
+    const result = await instanceConnectionTestService.testConnection({ host_url, api_key });
 
     res.json({
       status: result.success ? 'success' : 'error',
@@ -220,7 +222,7 @@ router.post('/test/apikey', requirePermission('instances.edit'), async (req, res
       throw new ValidationError('host_url and api_key are required');
     }
 
-    const result = await instanceService.testApiKey({ host_url, api_key });
+    const result = await instanceConnectionTestService.testApiKey({ host_url, api_key });
 
     res.json({
       status: result.success ? 'success' : 'error',
@@ -268,7 +270,7 @@ router.post('/bulk-update', async (req, res, next) => {
       // Process each instance individually through Safe-Switch workflow
       for (const instanceId of instance_ids) {
         try {
-          await instanceService.toggleAnalyzerMode(instanceId, analyzerMode);
+          await instanceAnalyzerService.toggleAnalyzerMode(instanceId, analyzerMode);
           results.updated++;
         } catch (error) {
           results.failed++;
@@ -382,7 +384,7 @@ router.post('/:id/analyzer/toggle', requirePermission('instances.toggle_mode'), 
       throw new ValidationError('Mode must be a boolean (true for analyzer, false for live)');
     }
 
-    const instance = await instanceService.toggleAnalyzerMode(id, mode);
+    const instance = await instanceAnalyzerService.toggleAnalyzerMode(id, mode);
 
     res.json({
       status: 'success',
