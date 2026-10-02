@@ -425,22 +425,13 @@ class InstrumentsService {
       // Stored as ISO (YYYY-MM-DD); callers may hand over DD-MMM-YY or DDMMMYY.
       const expiryKey = toISO(expiry) || String(expiry || '').trim().toUpperCase();
 
-      let options = await db.all(
+      // underlying_key only: a symbol-prefix match would mix underlyings (CRUDE% -> CRUDEOIL + CRUDEOILM).
+      const options = await db.all(
         `SELECT * FROM instruments
          WHERE underlying_key = ? AND expiry = ? AND exchange = ? AND strike IS NOT NULL
          ORDER BY strike ASC`,
         [normalizedSymbol, expiryKey, exchange]
       );
-
-      // Fallback: symbol prefix match
-      if (!options || options.length === 0) {
-        options = await db.all(
-          `SELECT * FROM instruments
-           WHERE symbol LIKE ? AND expiry = ? AND exchange = ? AND strike IS NOT NULL
-           ORDER BY strike ASC`,
-          [`${normalizedSymbol}%`, expiryKey, exchange]
-        );
-      }
 
       // Separate CE and PE options
       const callOptions = [];

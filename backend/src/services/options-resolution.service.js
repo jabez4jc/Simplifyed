@@ -7,25 +7,12 @@
 import { log } from '../core/logger.js';
 import instrumentsService from './instruments.service.js';
 import { NotFoundError, ValidationError } from '../core/errors.js';
-import { parseFloatSafe } from '../utils/sanitizers.js';
 import { toISO } from '../utils/expiry.js';
-import openalgoClient from '../integrations/openalgo/client.js';
-
-const STRIKES_PER_SIDE = 7; // 7 above + 7 below + ATM = 15 max
-
-// Broker option-chain calls that fail predictably (e.g. an instance that doesn't actually
-// support the endpoint despite supports_option_chain=1) get retried on every quote/preview
-// poll tick otherwise - this cooldown stops hammering a call that's essentially guaranteed
-// to keep failing, mirroring the quote-failure cooldown already used in openalgo/client.js.
-const CHAIN_FAILURE_THRESHOLD = 3;
-const CHAIN_FAILURE_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
 
 class OptionsResolutionService {
   constructor() {
     // Cache the last locked ATM per underlying/expiry to add hysteresis and avoid flip-flops
     this.atmLocks = new Map();
-    // key: `${instanceId}|${exchange}|${underlying}|${expiry}` -> { count, lastFailAt }
-    this._chainFailureCache = new Map();
   }
 
   _buildAtmLockKey(underlying, exchange, expiry) {
@@ -41,7 +28,6 @@ class OptionsResolutionService {
    * @param {string} params.optionType - CE or PE
    * @param {string} params.strikeOffset - ITM3, ITM2, ITM1, ATM, OTM1, OTM2, OTM3
    * @param {number} params.ltp - Current LTP of underlying
-   * @param {Object} params.instance - OpenAlgo instance for fetching data
    * @returns {Promise<Object>} Resolved option symbol with details
    */
   async resolveOptionSymbol({
@@ -51,7 +37,6 @@ class OptionsResolutionService {
     optionType,
     strikeOffset,
     ltp,
-    instance,
     optionChain = null,
   }) {
     // Validate inputs
@@ -88,7 +73,7 @@ class OptionsResolutionService {
     });
 
     // Step 1: Get or fetch option chain
-    const chain = optionChain || await this._getOptionChain(underlying, exchange, expiry, instance);
+    const chain = optionChain || await this._getOptionChain(underlying, exchange, expiry);
 
     // Step 2: Calculate target strike based on LTP and offset (with ATM hysteresis)
     const lockKey = this._buildAtmLockKey(underlying, exchange, expiry);
@@ -138,56 +123,10 @@ class OptionsResolutionService {
 
   /**
    * Get option chain for underlying and expiry
-   * Derived entirely from instruments table - no OpenAlgo API calls
+   * Derived entirely from instruments table - no OpenAlgo API calls (the strike list has one source)
    * @private
    */
-  async _getOptionChain(underlying, exchange, expiry, instance) {
-    // Prefer broker option-chain API when supported by instance (limited strikes with LTP)
-    const chainFailureKey = `${instance?.id || ''}|${(exchange || '').toUpperCase()}|${(underlying || '').toUpperCase()}|${expiry || ''}`;
-    const failureState = this._chainFailureCache.get(chainFailureKey);
-    const inCooldown =
-      failureState &&
-      failureState.count >= CHAIN_FAILURE_THRESHOLD &&
-      Date.now() - failureState.lastFailAt < CHAIN_FAILURE_COOLDOWN_MS;
-
-    if (instance?.supports_option_chain && !inCooldown) {
-      try {
-        const brokerChain = await openalgoClient.getOptionChain(
-          instance,
-          underlying,
-          expiry,
-          exchange,
-          { strikeCount: STRIKES_PER_SIDE, skipBackoff: true }
-        );
-        const normalized = this._buildOptionChainFromBroker(brokerChain, exchange);
-        if (normalized) {
-          this._chainFailureCache.delete(chainFailureKey);
-          return normalized;
-        }
-      } catch (error) {
-        const nextCount = (failureState?.count || 0) + 1;
-        this._chainFailureCache.set(chainFailureKey, { count: nextCount, lastFailAt: Date.now() });
-        // Only log the first few failures at warn - once cooldown kicks in, stay silent until
-        // it's retried again so a broken instance doesn't flood the logs every poll tick.
-        if (nextCount <= CHAIN_FAILURE_THRESHOLD) {
-          log.warn('Broker option chain fetch failed, falling back to cache', {
-            underlying,
-            expiry,
-            exchange,
-            error: error.message,
-          });
-          if (nextCount === CHAIN_FAILURE_THRESHOLD) {
-            log.warn('Broker option chain repeatedly failing, entering cooldown', {
-              underlying,
-              expiry,
-              exchange,
-              cooldownMs: CHAIN_FAILURE_COOLDOWN_MS,
-            });
-          }
-        }
-      }
-    }
-
+  async _getOptionChain(underlying, exchange, expiry) {
     // instruments.expiry is stored as ISO, so one lookup is enough.
     const isoExpiry = toISO(expiry) || expiry;
     log.debug('Looking up option chain from instruments DB', { underlying, exchange, expiry: isoExpiry });
@@ -279,64 +218,6 @@ class OptionsResolutionService {
     }
   }
 
-  _buildOptionChainFromBroker(chainData, exchange) {
-    if (!chainData || !Array.isArray(chainData.chain) || chainData.chain.length === 0) {
-      return null;
-    }
-
-    // Limit to max 15 strikes (7 above + 7 below + ATM)
-    const trimmed = chainData.chain.slice(0, 15);
-    const strikes = trimmed
-      .map(item => parseFloatSafe(item.strike, 0))
-      .filter(s => s > 0)
-      .sort((a, b) => a - b);
-
-    if (strikes.length === 0) return null;
-
-    let strikeStep = 0;
-    if (strikes.length >= 2) {
-      const diffs = [];
-      for (let i = 1; i < strikes.length; i++) {
-        diffs.push(strikes[i] - strikes[i - 1]);
-      }
-      strikeStep = this._mostCommon(diffs);
-    }
-
-    const optionsByStrike = {};
-    for (const item of trimmed) {
-      const strike = parseFloatSafe(item.strike, 0);
-      if (!strike || !strikes.includes(strike)) continue;
-      optionsByStrike[strike] = optionsByStrike[strike] || { CE: null, PE: null };
-      if (item.ce) {
-        optionsByStrike[strike].CE = this._normalizeBrokerOption(item.ce, strike, exchange, 'CE');
-      }
-      if (item.pe) {
-        optionsByStrike[strike].PE = this._normalizeBrokerOption(item.pe, strike, exchange, 'PE');
-      }
-    }
-
-    log.info('Option chain fetched via broker API', {
-      strikes: strikes.length,
-      exchange,
-    });
-
-    return { strikes, strikeStep, optionsByStrike };
-  }
-
-  _normalizeBrokerOption(option, strike, exchange, optionType) {
-    if (!option) return null;
-    const symbol = option.symbol || option.tradingsymbol || '';
-    return {
-      symbol,
-      trading_symbol: symbol,
-      strike,
-      option_type: optionType,
-      lot_size: option.lotsize || option.lot_size || option.lotSize || 1,
-      tick_size: option.tick_size || option.tickSize || 0.05,
-      exchange,
-    };
-  }
-
   _normalizeInstrumentOption(option) {
     if (!option) return null;
     const symbol = option.symbol || option.tradingsymbol || '';
@@ -366,11 +247,10 @@ class OptionsResolutionService {
    * @param {string} params.underlying
    * @param {string} params.exchange
    * @param {string} params.expiry
-   * @param {Object} params.instance
    * @returns {Promise<Object|null>}
    */
-  async getOptionChainSnapshot({ underlying, exchange, expiry, instance }) {
-    return this._getOptionChain(underlying, exchange, expiry, instance);
+  async getOptionChainSnapshot({ underlying, exchange, expiry }) {
+    return this._getOptionChain(underlying, exchange, expiry);
   }
 
   /**
@@ -380,7 +260,6 @@ class OptionsResolutionService {
    * @param {string} params.exchange
    * @param {string} params.expiry
    * @param {number} params.ltp
-   * @param {Object} params.instance
    * @param {Object|null} params.optionChain
    * @returns {Promise<Object|null>}
    */
@@ -389,14 +268,13 @@ class OptionsResolutionService {
     exchange,
     expiry,
     ltp,
-    instance,
     optionChain = null,
   }) {
     if (!Number.isFinite(ltp) || ltp === 0) {
       return null;
     }
 
-    const chain = optionChain || await this._getOptionChain(underlying, exchange, expiry, instance);
+    const chain = optionChain || await this._getOptionChain(underlying, exchange, expiry);
     if (!chain || !Array.isArray(chain.strikes) || chain.strikes.length === 0) {
       return null;
     }

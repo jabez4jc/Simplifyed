@@ -2561,7 +2561,6 @@ class QuickOrderService {
       optionType,
       strikeOffset,
       ltp,
-      instance,
     });
 
     // Not cached: the strike follows the live LTP, so a stale entry trades the wrong strike (H10).
@@ -2649,7 +2648,6 @@ class QuickOrderService {
       underlying,
       exchange: derivativeExchange,
       expiry: effectiveExpiry,
-      instance: marketDataInstance,
     });
 
     if (!optionChain) {
@@ -2662,7 +2660,6 @@ class QuickOrderService {
       expiry: effectiveExpiry,
       strikeOffset,
       ltp: underlyingLtp,
-      instance: marketDataInstance,
       optionChain,
     };
 
@@ -2684,7 +2681,6 @@ class QuickOrderService {
       exchange: derivativeExchange,
       expiry: effectiveExpiry,
       ltp: underlyingLtp,
-      instance: marketDataInstance,
       optionChain,
     });
 

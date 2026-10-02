@@ -9,6 +9,7 @@ import { log } from '../core/logger.js';
 import { ValidationError } from '../core/errors.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import marketDataInstanceService from './market-data-instance.service.js';
+import instrumentsService from './instruments.service.js';
 import {
   parseExpiryToYearFraction,
   riskFreeRateForSymbol,
@@ -271,43 +272,17 @@ class OptionChainService {
       }
       const brokerUnderlying = stripDerivativeSuffix(normalizedUnderlying);
 
-      // Try broker option chain first when quotes requested and a supporting instance exists
-      if (includeQuotes) {
-        const liveChain = await this._getOptionChainFromBroker(
-          brokerUnderlying,
-          expiryKey,
-          exchangeLabel,
-          strikeWindow,
-          forwardSource
-        );
-        if (liveChain && liveChain.rows?.length) {
-          log.info('Option chain (broker)', {
-            underlying: normalizedUnderlying,
-            expiry: liveChain.expiry,
-            rows: liveChain.rows.length,
-            source: 'broker',
-          });
-          this._setCache(normalizedUnderlying, expiryKey, includeQuotes, liveChain, forwardSource);
-          return liveChain;
-        }
-        log.warn('Broker option chain returned empty, falling back to DB cache', {
-          underlying: normalizedUnderlying,
-          expiry: expiryKey,
-        });
+      // The strike list always comes from instruments; the broker /optionchain only adds quotes
+      // and Greeks, matched by symbol.
+      const dbExchanges = exchangeDbList.replace(/'/g, '').split(',');
+      let instrumentRows = [];
+      for (const exch of dbExchanges) {
+        const chain = await instrumentsService.buildOptionChain(normalizedUnderlying, isoExpiry, exch);
+        instrumentRows = (chain?.strikes || []).filter((r) => r.strike > 0 && (r.ce || r.pe));
+        if (instrumentRows.length) break;
       }
 
-      // Validate underlying and expiry using underlying_key
-      const expiryCheck = await db.get(`
-        SELECT DISTINCT expiry
-        FROM instruments
-        WHERE exchange IN (${exchangeDbList})
-        AND instrumenttype IN ('CE', 'PE')
-        AND underlying_key = ?
-        AND expiry = ?
-        LIMIT 1
-      `, [normalizedUnderlying, isoExpiry]);
-
-      if (!expiryCheck) {
+      if (!instrumentRows.length) {
         // Try to find available expiries to give a helpful error message
         const availableExpiries = await db.all(`
           SELECT DISTINCT expiry
@@ -327,78 +302,53 @@ class OptionChainService {
         throw new ValidationError(`No options found for ${underlying} with expiry ${expiry}${expiryHint}`);
       }
 
-      // Get all CE and PE for this underlying + expiry using underlying_key
-      const options = await db.all(`
-        SELECT symbol, underlying_key, strike, lotsize, instrumenttype, exchange
-        FROM instruments
-        WHERE exchange IN (${exchangeDbList})
-        AND instrumenttype IN ('CE', 'PE')
-        AND underlying_key = ?
-        AND expiry = ?
-        AND strike > 0
-        ORDER BY strike
-      `, [normalizedUnderlying, isoExpiry]);
+      let rows = instrumentRows.map((row) => ({
+        strike: row.strike,
+        ce: row.ce ? normalizeLeg({ symbol: row.ce.symbol, lotsize: row.ce.lotsize }) : null,
+        pe: row.pe ? normalizeLeg({ symbol: row.pe.symbol, lotsize: row.pe.lotsize }) : null,
+      }));
 
-      // Pivot into chain rows
-      const strikesMap = new Map();
+      const brokerChain = includeQuotes
+        ? await this._getOptionChainFromBroker(brokerUnderlying, expiryKey, exchangeLabel, strikeWindow)
+        : null;
 
-      for (const option of options) {
-        const strike = option.strike;
-        if (!strikesMap.has(strike)) {
-          strikesMap.set(strike, {
-            strike: strike,
-            call_symbol: null,
-            call_lotsize: null,
-            put_symbol: null,
-            put_lotsize: null
-          });
-        }
+      // Resolve spot from quotes (preferred), then the broker chain's underlying LTP / ATM
+      const midStrike = rows[Math.floor(rows.length / 2)]?.strike ?? null;
+      const brokerSpot = Number(brokerChain?.underlying_ltp || brokerChain?.atm_strike || 0) || null;
+      const spotResolved = await resolveSpotQuote(
+        normalizedUnderlying,
+        exchangeLabel,
+        brokerSpot ?? (includeQuotes ? null : midStrike)
+      );
 
-        const row = strikesMap.get(strike);
-        if (option.instrumenttype === 'CE') {
-          row.call_symbol = option.symbol;
-          row.call_lotsize = option.lotsize;
-        } else if (option.instrumenttype === 'PE') {
-          row.put_symbol = option.symbol;
-          row.put_lotsize = option.lotsize;
-        }
-      }
-
-      // Convert to array and sort by strike
-      let rows = Array.from(strikesMap.values()).sort((a, b) => a.strike - b.strike);
-
-      // Approximate ATM (may be refined later with quotes/spot)
-      let atmStrike = rows.length ? rows[Math.floor(rows.length / 2)]?.strike : null;
-
-      // Attach symbol placeholders for UI
-      rows = rows.map((row) => {
-        const ceNorm = row.call_symbol ? normalizeLeg({ symbol: row.call_symbol, lotsize: row.call_lotsize }) : null;
-        const peNorm = row.put_symbol ? normalizeLeg({ symbol: row.put_symbol, lotsize: row.put_lotsize }) : null;
-        return {
-          strike: row.strike,
-          ce: ceNorm || null,
-          pe: peNorm || null,
-        };
-      });
-
-      // Restrict to window (default 17 ≈ 8 each side)
+      // Restrict to window (default 17 ≈ 8 each side), centred on the strike nearest spot
       const windowSize = strikeWindow ? strikeWindow * 2 + 1 : 17;
+      const atmStrike = nearestStrikeToSpot(rows, spotResolved) ?? midStrike;
       if (rows.length > windowSize) {
-        const centerIndex = atmStrike
-          ? Math.max(0, rows.findIndex((r) => r.strike === atmStrike))
-          : Math.floor(rows.length / 2);
+        const centerIndex = Math.max(0, rows.findIndex((r) => r.strike === atmStrike));
         const start = Math.max(0, centerIndex - Math.floor(windowSize / 2));
         rows = rows.slice(start, start + windowSize);
       }
 
-      const enriched = await enrichWithQuotes(rows, exchangeLabel);
+      // The broker chain carries live quotes (and the Greeks computed from them) when
+      // quotes_included is set; otherwise price the legs via multiquotes.
+      // ponytail: legs outside the broker's strike window stay unpriced; widen strike_count if needed.
+      let enriched;
+      if (brokerChain?.quotes_included) {
+        const brokerLegs = new Map();
+        for (const item of brokerChain.chain) {
+          for (const leg of [normalizeLeg(item.ce), normalizeLeg(item.pe)]) {
+            if (leg?.symbol) brokerLegs.set(leg.symbol, leg);
+          }
+        }
+        const overlay = (leg) => (leg && brokerLegs.has(leg.symbol)
+          ? { ...brokerLegs.get(leg.symbol), lotsize: leg.lotsize ?? brokerLegs.get(leg.symbol).lotsize }
+          : leg);
+        enriched = rows.map((r) => ({ ...r, ce: overlay(r.ce), pe: overlay(r.pe) }));
+      } else {
+        enriched = await enrichWithQuotes(rows, exchangeLabel);
+      }
 
-      // Resolve spot from quotes (preferred), then broker LTP/ATM
-      const spotResolved = await resolveSpotQuote(
-        normalizedUnderlying,
-        exchangeLabel,
-        includeQuotes ? null : atmStrike
-      );
       const atmResolved = nearestStrikeToSpot(enriched, spotResolved) || atmStrike;
 
       const metaBase = {
@@ -433,7 +383,8 @@ class OptionChainService {
     }
   }
 
-  async _getOptionChainFromBroker(underlying, expiry, exchangeLabel, strikeWindow = null, forwardSource = 'carry') {
+  // One broker /optionchain fetch (first instance and exchange that answers); the raw chain or null.
+  async _getOptionChainFromBroker(underlying, expiry, exchangeLabel, strikeWindow = null) {
     try {
       // Prefer instances flagged for option chain using health flags
       let pool = await marketDataInstanceService.getPoolForEndpoint('optionchain');
@@ -504,66 +455,7 @@ class OptionChainService {
         }
       }
 
-      if (!lastData || !Array.isArray(lastData.chain) || !lastData.chain.length) return null;
-
-      // Center around ATM when available
-      let chainRows = lastData.chain;
-      const windowSize = strikeWindow ? strikeWindow * 2 + 1 : 17;
-      if (lastData.atm_strike && chainRows.length > windowSize) {
-        const atmIndex = chainRows.findIndex((c) => Number(c.strike) === Number(lastData.atm_strike));
-        const center = atmIndex >= 0 ? atmIndex : Math.floor(chainRows.length / 2);
-        const start = Math.max(0, center - Math.floor(windowSize / 2));
-        chainRows = chainRows.slice(start, start + windowSize);
-      } else {
-        chainRows = chainRows.slice(0, windowSize);
-      }
-
-      const rows = chainRows
-        .map((item) => {
-          const ceNorm = normalizeLeg(item.ce);
-          const peNorm = normalizeLeg(item.pe);
-          return {
-            strike: item.strike,
-            ce: ceNorm || null,
-            pe: peNorm || null,
-          };
-        })
-        .sort((a, b) => a.strike - b.strike);
-
-      // The chain already carries live quotes (and the Greeks computed from them) when
-      // quotes_included is set; re-fetching them via multiquotes cost a second call and could
-      // leave the prices out of step with the Greeks.
-      const enriched = lastData.quotes_included ? rows : await enrichWithQuotes(rows, exchangeLabel);
-
-      const spotResolved = await resolveSpotQuote(
-        underlying,
-        exchangeLabel,
-        Number(lastData.underlying_ltp || lastData.atm_strike || 0) || null
-      );
-      const atmResolved = nearestStrikeToSpot(enriched, spotResolved) || lastData.atm_strike || null;
-
-      const metaBase = {
-        underlying,
-        expiry: lastData.expiry_date || brokerExpiry,
-        exchange: exchangeLabel,
-        atm_strike: atmResolved,
-        spot: spotResolved || atmResolved || null,
-        r: riskFreeRateForSymbol(underlying),
-        q: dividendYieldForSymbol(underlying),
-        T: parseExpiryToYearFraction(lastData.expiry_date || brokerExpiry) || 7 / 365,
-      };
-      const { rows: withGreeks, meta } = buildGreeksForRows(enriched, metaBase, forwardSource);
-
-      return {
-        underlying,
-        type: exchangeLabel === 'NSE_INDEX' ? 'index' : 'stock',
-        exchange: exchangeLabel,
-        expiry: meta.expiry,
-        has_quotes: true,
-        atm_strike: meta.atm_strike || lastData.atm_strike || null,
-        rows: withGreeks,
-        meta,
-      };
+      return lastData;
     } catch (error) {
       log.warn('Broker option chain fetch failed', { underlying, error: error.message });
       return null;
