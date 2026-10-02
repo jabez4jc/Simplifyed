@@ -596,7 +596,7 @@ Phase 4 is docs only and needs no broker gate.
 - [x] **G0:** baseline recorded.
 - [x] **Phase 0:** C1–C5 merged. New tests exist for C2, C3, C4 and C5. On a cold start with no browser, the logs show auto-exit running. **G1 passed.**
 - [x] **Phase 1:** H1–H17 merged. `?v=` bumped for every changed public file. **G2 passed.**
-- [ ] **Phase 2:** every D/F item is deleted, the drop-tables migration is applied on a **copy** of the DB, and `grep` confirms no references remain. **G3 passed.**
+- [ ] **Phase 2:** every D/F item is deleted, the drop-tables migration is applied on a **copy** of the DB, and `grep` confirms no references remain. **G3 passed.** _(In progress — see docs/reviews/phase-2-impl.md: D1–D26 done except D4 (blocked); F1–F6 and §5.4 not started; migration 075 applied on a copy; G3 stopped on an open Kotak order.)_
 - [ ] **Phase 3:** the DB is under 100 MB after migration and VACUUM, there are no `UPPER(` calls on instrument columns, and the retention job is tested. **G4 passed.**
 - [ ] **Phase 4:** docs are updated, and junk and AI tooling are untracked (per O6/O7).
 
