@@ -13,6 +13,7 @@ import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import settingsService from './settings.service.js';
 import instanceService from './instance.service.js';
+import { notify } from './notify.service.js';
 import instanceAnalyzerService from './instance-analyzer.service.js';
 import { calculateTradebookPnLForAppExits, computeSessionPnl } from '../utils/trade-pnl.js';
 import { buildBrokerageMap, resolveBrokerageValue } from '../utils/brokerage.js';
@@ -179,6 +180,7 @@ class InstancePnlService {
             session_pnl: sessionPnl,
             reason: cutoffReason,
           });
+          await notify('Session cutoff', `Instance ${id} switched to analyzer: ${cutoffReason}`, { severity: 'error', session: sessionLabel, session_pnl: sessionPnl });
           // fire-and-forget safe toggle; errors logged but do not throw to keep polling running
           try {
             await instanceAnalyzerService.toggleAnalyzerMode(id, true);

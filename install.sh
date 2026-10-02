@@ -383,9 +383,6 @@ LOG_LEVEL=info
 # Telegram Bot Configuration
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
 TELEGRAM_DEFAULT_CHAT_ID=${TELEGRAM_DEFAULT_CHAT_ID:-}
-
-# Log Notifications
-LOG_NOTIFICATIONS=true
 EOF
 
     chown $APP_USER:$APP_USER "$INSTALL_DIR/backend/.env"

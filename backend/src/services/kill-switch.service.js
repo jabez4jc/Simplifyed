@@ -20,6 +20,7 @@ import { log } from '../core/logger.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import instanceService from './instance.service.js';
 import quickOrderService from './quick-order.service.js';
+import { notify } from './notify.service.js';
 
 class KillSwitchService {
   async run() {
@@ -29,6 +30,8 @@ class KillSwitchService {
       instances: results.length,
       failed: results.filter((r) => !r.success).map((r) => r.name),
     });
+    const failed = results.filter((r) => !r.success).map((r) => r.name);
+    await notify('Kill switch', `Executed on ${results.length} instance(s)${failed.length ? `; failed: ${failed.join(', ')}` : ''}`, { severity: failed.length ? 'error' : 'warn' });
     return {
       success: results.every((r) => r.success),
       instances: results,

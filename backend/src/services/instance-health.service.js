@@ -3,20 +3,10 @@ import { log } from '../core/logger.js';
 import instanceService from './instance.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import db from '../core/database.js';
+import { notify } from './notify.service.js';
 import { toISTISOString } from '../utils/time.js';
 import marketCalendarService from './market-calendar.service.js';
 import { isCryptoBroker, isCryptoExchange } from '../utils/broker-type.util.js';
-
-async function createNotification(title, body, severity = 'warn') {
-  try {
-    await db.run(
-      `INSERT INTO notifications (title, body, severity) VALUES (?, ?, ?)`,
-      [title, body, severity]
-    );
-  } catch (err) {
-    log.warn('Failed to create notification', { error: err.message, title });
-  }
-}
 
 // Option-chain capability is not probed: expiries change continuously, so a fixed contract would
 // report every healthy broker as degraded once it expires.
@@ -47,7 +37,7 @@ async function updateInstanceEndpoint(instance, endpoint, ok, reason = null) {
   if (prevOk && !ok) {
     const title = `Instance degraded: ${instance.name}`;
     const body = `${endpoint} failed: ${reason || 'Unknown error'}`;
-    await createNotification(title, body, 'warn');
+    await notify(title, body);
     log.warn(`Instance lost ${endpoint} capability`, { instance: instance.name, reason });
   }
 }

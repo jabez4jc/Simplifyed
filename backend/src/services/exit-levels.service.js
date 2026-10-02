@@ -24,11 +24,11 @@
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { NotFoundError, ValidationError } from '../core/errors.js';
-import { config } from '../core/config.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import marketCalendarService from './market-calendar.service.js';
 import derivativeResolutionService from './derivative-resolution.service.js';
 import quickOrderService from './quick-order.service.js';
+import { notify } from './notify.service.js';
 import { resolveOptionsUnderlyingKey, isContractExpired, contractExpiry } from '../utils/underlying.util.js';
 import {
   positionDirection, roleFor, covers, trailCoverage, hasCrossed, trail, exitQuantity,
@@ -485,7 +485,7 @@ class ExitLevelsService {
     const summary = `${level.ref_symbol} ${level.kind === 'TRAIL' ? 'trailing stop' : 'level'} ${level.trigger_price} hit at ${ltp}: `
       + `${ok} exit${ok === 1 ? '' : 's'} sent${failed.length ? `, ${failed.length} failed (${failed[0].error})` : ''}`;
     log.warn('Exit level triggered', { symbol: level.ref_symbol, exchange: level.ref_exchange, reason: summary });
-    if (!config.telegram?.botToken) return;
+    await notify('Exit level fired', summary, { severity: failed.length ? 'error' : 'warn' });
     const { default: telegramService } = await import('./telegram.service.js');
     await telegramService.broadcastText(`*EXIT LEVEL*\n${summary}`).catch(() => {});
   }

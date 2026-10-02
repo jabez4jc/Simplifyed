@@ -5,9 +5,8 @@
 
 import winston from 'winston';
 import { fileURLToPath } from 'url';
-import { dirname, join, resolve } from 'path';
+import { dirname, join } from 'path';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
-import sqlite3 from 'sqlite3';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -19,61 +18,6 @@ if (!existsSync(logsDir)) {
 }
 
 const enableDebug = process.env.ENABLE_DEBUG_LOGS === 'true';
-const logNotifications = process.env.LOG_NOTIFICATIONS === 'true';
-
-// Notification writer (direct sqlite, avoid core db circular deps)
-let notifDb = null;
-let notifDbReady = false;
-let notifDbFailed = false;
-const dbPath = resolve(__dirname, '../../', process.env.DATABASE_PATH || './database/simplifyed.db');
-
-function ensureNotifDb() {
-  if (notifDbFailed || notifDbReady) return notifDbReady;
-  try {
-    notifDb = new sqlite3.Database(dbPath);
-    // Make sure table exists (no migration dependency here)
-    notifDb.run(
-      `CREATE TABLE IF NOT EXISTS notifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        title TEXT NOT NULL,
-        body TEXT,
-        severity TEXT DEFAULT 'info',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        read INTEGER DEFAULT 0
-      )`
-    );
-    notifDbReady = true;
-    return true;
-  } catch (err) {
-    notifDbFailed = true;
-    // Avoid recursion into logger; emit to stderr once
-    console.error('LOG_NOTIFICATIONS init failed:', err?.message || err);
-    return false;
-  }
-}
-
-function pushNotification(level, message, meta = {}) {
-  if (!logNotifications) return;
-  if (!ensureNotifDb()) return;
-  try {
-    const severity = level === 'error' ? 'error' : level === 'warn' ? 'warn' : 'debug';
-    const context = sanitizeMeta(meta);
-    const bodyParts = [];
-    Object.entries(context).forEach(([k, v]) => {
-      if (v !== undefined && v !== null) bodyParts.push(`${k}=${v}`);
-    });
-    const body = bodyParts.length ? `${message} | ${bodyParts.join(' ')}` : message;
-    notifDb.run(
-      `INSERT INTO notifications (title, body, severity) VALUES (?, ?, ?)` ,
-      [`[${severity}]`, body.slice(0, 500), severity],
-      () => {}
-    );
-  } catch (err) {
-    // Avoid recursion into logger; emit once and disable further attempts
-    notifDbFailed = true;
-    console.error('LOG_NOTIFICATIONS insert failed:', err?.message || err);
-  }
-}
 
 // Keys that never print their value. Matched as substrings so apiKey, webhook_token and the like
 // are caught too (rule: secrets are never logged).
@@ -182,7 +126,6 @@ export const log = {
   info: (message, meta = {}) => {
     const clean = sanitizeMeta(meta);
     logger.info(message, clean);
-    // Do not push info to notifications to avoid noise
   },
 
   /**
@@ -196,7 +139,6 @@ export const log = {
       payload.error_message = String(error);
     }
     logger.error(message, payload);
-    pushNotification('error', message, payload);
   },
 
   /**
@@ -205,7 +147,6 @@ export const log = {
   warn: (message, meta = {}) => {
     const payload = sanitizeMeta(meta);
     logger.warn(message, payload);
-    pushNotification('warn', message, payload);
   },
 
   /**
@@ -215,7 +156,6 @@ export const log = {
     if (enableDebug) {
       const payload = sanitizeMeta(meta);
       logger.debug(message, payload);
-      pushNotification('debug', message, payload);
     }
   },
 

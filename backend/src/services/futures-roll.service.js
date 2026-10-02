@@ -23,8 +23,8 @@
 
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
-import { config } from '../core/config.js';
 import settingsService from './settings.service.js';
+import { notify } from './notify.service.js';
 import { settingDefault } from '../config/settings-registry.js';
 import derivativeResolutionService from './derivative-resolution.service.js';
 import { parseExpiry, upcomingExpiries, isContractExpired } from '../utils/underlying.util.js';
@@ -227,10 +227,10 @@ class FuturesRollService {
       rows: outcomes.map((o) => ({ id: o.row.id, watchlist_id: o.row.watchlist_id, status: o.status })),
     });
 
-    if (!config.telegram?.botToken) return;
     const lines = outcomes.map((o) => (o.status === 'rolled'
       ? `${o.row.exchange}: ${o.from} -> ${o.to}`
       : `${o.row.exchange}: ${o.row.symbol} not rolled - ${o.message}`));
+    await notify(outcomes.some((o) => o.status !== 'rolled') ? 'Futures roll blocked' : 'Futures rolled', lines.join('; '));
     const { default: telegramService } = await import('./telegram.service.js');
     await telegramService
       .broadcastText(`*FUTURES ROLL*\n${lines.join('\n')}`)

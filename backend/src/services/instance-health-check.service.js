@@ -16,6 +16,7 @@ import config from '../core/config.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import { backoffMs } from '../integrations/openalgo/instance-health-tracker.service.js';
 import instanceService from './instance.service.js';
+import { notify } from './notify.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import { DEFAULT_ANALYZER_TTL_MS } from './instance-analyzer.service.js';
 import { staggeredInstanceRequest } from '../utils/instance-request-throttle.util.js';
@@ -104,10 +105,7 @@ class InstanceHealthCheckService {
       // Tell the operator the moment an instance holding open positions goes dark (this check is
       // the one place that pings, so it is the one place that sees the transition).
       if (healthStatus === 'unhealthy' && instance.health_status !== 'unhealthy' && marketDataFeedService.openPositionInstances.has(id)) {
-        await db.run(
-          'INSERT INTO notifications (title, body, severity) VALUES (?, ?, ?)',
-          ['Instance unhealthy', `Instance ${id} became unhealthy while positions are open.`, 'error']
-        ).catch((err) => log.warn('Failed to notify unhealthy instance', { id, error: err.message }));
+        await notify('Instance unhealthy', `Instance ${id} became unhealthy while positions are open.`, { severity: 'error' });
       }
 
       const pingHealthyMs = config.instanceHealth?.pingHealthyIntervalMs ?? DEFAULT_PING_HEALTHY_MS;
