@@ -7,10 +7,11 @@ import express from 'express';
 import instanceService from '../../services/instance.service.js';
 import symbolValidationService from '../../services/symbol-validation.service.js';
 import instrumentsService from '../../services/instruments.service.js';
-import expiryManagementService from '../../services/expiry-management.service.js';
 import openalgoClient from '../../integrations/openalgo/client.js';
 import { ValidationError } from '../../core/errors.js';
 import { sanitizeString } from '../../utils/sanitizers.js';
+import { upcomingExpiries, parseExpiry } from '../../utils/underlying.util.js';
+import { isCryptoExchange } from '../../utils/broker-type.util.js';
 import marketDataFeedService from '../../services/market-data-feed.service.js';
 import optionGreeksService from '../../services/option-greeks.service.js';
 import { requireAuth } from '../../middleware/auth.js';
@@ -154,12 +155,9 @@ router.get('/expiry', async (req, res, next) => {
         throw new ValidationError('No cached expiries available. Provide instanceId to fetch from broker.');
       }
       const instance = await instanceService.getInstanceById(parseInt(instanceId, 10));
-      const fetched = await expiryManagementService.fetchExpiries(
-        symbol.toUpperCase(),
-        normalizedExchange,
-        instance
-      );
-      expiries = fetched.map(row => row.expiry_date);
+      const fetched = await openalgoClient.getExpiry(instance, symbol.toUpperCase(), normalizedExchange);
+      expiries = upcomingExpiries(fetched, new Date(), { crypto: isCryptoExchange(normalizedExchange) })
+        .map((e) => parseExpiry(e).toISOString().slice(0, 10));
     }
 
     res.json({

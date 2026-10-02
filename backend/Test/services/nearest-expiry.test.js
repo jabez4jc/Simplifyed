@@ -9,7 +9,7 @@ import marketDataInstanceService from '../../src/services/market-data-instance.s
 /**
  * "Nearest expiry" is what a chart option order with Expiry = Nearest, a strategy leg with no
  * expiry and every close-all trade. On 30 Sep 2026 it resolved NIFTY to 29-DEC: it read
- * expiry_calendar, filled once in July and never refreshed, while the chart showed the 06-OCT
+ * a calendar table, filled once in July and never refreshed, while the chart showed the 06-OCT
  * weekly - and the order traded December. It now reads the instruments cache, which is
  * refreshed daily and purged of expired contracts.
  */
@@ -22,7 +22,6 @@ before(async () => {
 
 beforeEach(async () => {
   await db.run('DELETE FROM instruments');
-  await db.run('DELETE FROM expiry_calendar');
   await db.run('DELETE FROM instances');
   const rows = [
     ['NIFTYWEEKLYCE', 'CE', iso(6)],
@@ -38,14 +37,9 @@ beforeEach(async () => {
       [symbol, expiry, type === 'FUT' ? -1 : 22800, type]
     );
   }
-  // The stale calendar that caused the December trade: its only future date is months away.
-  await db.run(
-    "INSERT INTO expiry_calendar (underlying, exchange, expiry_date, is_active) VALUES ('NIFTY', 'NFO', ?, 1)",
-    [iso(90)]
-  );
 });
 
-test('options resolve to the nearest weekly, not a stale calendar entry months out', async () => {
+test('options resolve to the nearest weekly, not the monthly after it', async () => {
   assert.strictEqual(await expiryManagementService.getNearestExpiry('NIFTY', 'NFO', null), iso(6));
 });
 
