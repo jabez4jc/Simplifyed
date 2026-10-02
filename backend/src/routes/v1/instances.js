@@ -19,6 +19,7 @@ import {
   maskInstancesForResponse,
 } from '../../utils/sanitizers.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';
+import { sanitizeValue } from '../../middleware/audit-logger.js';
 import { rowPayload, upsertByKey } from '../../utils/csv-import.js';
 import db from '../../core/database.js';
 import multer from 'multer';
@@ -43,7 +44,7 @@ function logAudit(req, action, metadata = {}) {
   req.auditLogged = true;
   db.run(
     `INSERT INTO audit_logs (user_id, action, metadata) VALUES (?, ?, ?)`,
-    [req.user.id, action, JSON.stringify(metadata)]
+    [req.user.id, action, JSON.stringify(sanitizeValue(metadata))]
   ).catch(() => {});
 }
 

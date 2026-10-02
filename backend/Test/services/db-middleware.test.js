@@ -186,6 +186,30 @@ test('manual instance refresh needs the edit permission, not just view', async (
   }
 });
 
+test('the instances.update audit entry redacts the api key (D4)', async () => {
+  const inst = await makeInstance();
+  const user = await db.run("INSERT INTO users (email, is_admin, password_hash) VALUES ('audit@example.com', 1, 'x')");
+  const srv = await serve(instanceRoutes, { user: { id: user.lastID, is_admin: 1, permissions: [] } });
+  try {
+    const res = await fetch(`${srv.url}/${inst.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'renamed', api_key: inst.api_key }),
+    });
+    assert.strictEqual(res.status, 200);
+  } finally {
+    await srv.close();
+  }
+  let row;
+  for (let i = 0; i < 50 && !row; i++) {
+    row = await db.get("SELECT metadata FROM audit_logs WHERE action = 'instances.update'");
+    if (!row) await new Promise((r) => setTimeout(r, 10));
+  }
+  assert.ok(row, 'audit row written');
+  assert.ok(!row.metadata.includes(inst.api_key), 'raw api key must not reach audit_logs');
+  assert.strictEqual(JSON.parse(row.metadata).body.api_key, '[redacted]');
+});
+
 test('POST /notifications/read-all marks every unread row in one call', async () => {
   for (const title of ['a', 'b', 'c']) await db.run('INSERT INTO notifications (title, read) VALUES (?, 0)', [title]);
   const srv = await serve(notificationRoutes, { user: { id: 5, is_admin: 1, permissions: [] } });

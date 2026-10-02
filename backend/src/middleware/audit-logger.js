@@ -9,7 +9,7 @@ const SENSITIVE_KEYS = new Set([
   'authorization',
 ]);
 
-function sanitizeValue(value) {
+export function sanitizeValue(value) {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) return value.map(sanitizeValue);
   if (typeof value === 'object') {
