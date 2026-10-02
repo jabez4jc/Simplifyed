@@ -1,13 +1,12 @@
 /**
  * Symbol Validation Service
- * Validates and classifies OpenAlgo symbols with caching
+ * Validates and classifies OpenAlgo symbols (instruments table first, broker as the fallback)
  */
 
 import openalgoClient from '../integrations/openalgo/client.js';
 import instanceService from './instance.service.js';
 import marketDataInstanceService from './market-data-instance.service.js';
 import instrumentsService from './instruments.service.js';
-import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { ValidationError } from '../core/errors.js';
 
@@ -22,15 +21,9 @@ const SymbolType = {
   UNKNOWN: 'UNKNOWN',
 };
 
-/**
- * Cache TTL: 7 days in milliseconds
- */
-const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
 class SymbolValidationService {
   /**
-   * Search symbols using OpenAlgo /search endpoint
-   * Caches results for 7 days
+   * Search symbols: the instruments table first, the OpenAlgo /search endpoint when it has nothing
    *
    * @param {string} query - Search query
    * @param {number} [instanceId] - Optional instance ID to use
@@ -67,9 +60,6 @@ class SymbolValidationService {
 
     const enrichedResults = results.map((symbol) => {
       const classification = this.classifySymbol(symbol);
-      this._cacheSymbol(symbol).catch((err) =>
-        log.warn('Failed to cache symbol', err, { symbol: symbol.symbol })
-      );
       return {
         ...symbol,
         symbol_type: classification,
@@ -111,34 +101,6 @@ class SymbolValidationService {
       return this._transformInstrument(instrument, true);
     }
 
-    // Check cache first
-    const cached = await this._getCachedSymbol(symbol, exchange);
-    if (cached && this._isCacheValid(cached.cached_at)) {
-      log.debug('Using cached symbol', { symbol, exchange });
-
-      // Transform snake_case database fields to camelCase for frontend
-      return {
-        symbol: cached.symbol,
-        exchange: cached.exchange,
-        token: cached.token,
-        name: cached.name,
-        instrumenttype: cached.instrumenttype,
-        lotsize: cached.lotsize,
-        tick_size: cached.tick_size,
-        tickSize: cached.tick_size, // Alias for camelCase consistency
-        expiry: cached.expiry,
-        strike: cached.strike,
-        option_type: cached.option_type,
-        optionType: cached.option_type, // Alias for camelCase consistency
-        brsymbol: cached.brsymbol,
-        brexchange: cached.brexchange,
-        symbol_type: cached.symbol_type,
-        symbolType: cached.symbol_type, // Alias for camelCase consistency
-        cachedAt: cached.cached_at, // Transform cached_at to cachedAt
-        from_cache: true,
-      };
-    }
-
     // Get market data instance
     const instance = await this._getMarketDataInstance(instanceId);
 
@@ -178,9 +140,6 @@ class SymbolValidationService {
       symbol_type: classification,
       from_cache: false,
     };
-
-    // Cache for future use
-    await this._cacheSymbol(validated);
 
     log.info('Symbol validated', {
       symbol: validated.symbol,
@@ -314,107 +273,6 @@ class SymbolValidationService {
 
     return healthyInstances[0];
   }
-
-  /**
-   * Cache symbol in database
-   * @private
-   */
-  async _cacheSymbol(symbol) {
-    try {
-      const symbolName = symbol.symbol || symbol.tradingsymbol;
-      const exchange = symbol.exchange;
-
-      if (!symbolName || !exchange) {
-        log.warn('Cannot cache symbol - missing required fields', { symbol });
-        return;
-      }
-
-      await db.run(
-        `INSERT INTO symbol_cache (
-          exchange, symbol, token, name, instrumenttype,
-          lotsize, tick_size, expiry, strike, option_type,
-          brsymbol, brexchange, symbol_type, cached_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(exchange, symbol) DO UPDATE SET
-          token = excluded.token,
-          name = excluded.name,
-          instrumenttype = excluded.instrumenttype,
-          lotsize = excluded.lotsize,
-          tick_size = excluded.tick_size,
-          expiry = excluded.expiry,
-          strike = excluded.strike,
-          option_type = excluded.option_type,
-          brsymbol = excluded.brsymbol,
-          brexchange = excluded.brexchange,
-          symbol_type = excluded.symbol_type,
-          cached_at = CURRENT_TIMESTAMP`,
-        [
-          exchange.toUpperCase(),
-          symbolName.toUpperCase(),
-          symbol.token || null,
-          symbol.name || symbol.company_name || null,
-          symbol.instrumenttype || null,
-          symbol.lotsize || symbol.lot_size || 1,
-          symbol.tick_size || symbol.ticksize || null,
-          symbol.expiry || null,
-          symbol.strike || null,
-          symbol.option_type || symbol.optiontype || null,
-          symbol.brsymbol || null,
-          symbol.brexchange || null,
-          symbol.symbol_type || this.classifySymbol(symbol),
-        ]
-      );
-    } catch (error) {
-      log.error('Failed to cache symbol', error, { symbol });
-    }
-  }
-
-  /**
-   * Get cached symbol
-   * @private
-   */
-  async _getCachedSymbol(symbol, exchange) {
-    try {
-      const cached = await db.get(
-        `SELECT * FROM symbol_cache
-         WHERE exchange = ? AND symbol = ?`,
-        [exchange.toUpperCase(), symbol.toUpperCase()]
-      );
-
-      return cached;
-    } catch (error) {
-      log.warn('Failed to retrieve cached symbol', error, {
-        symbol,
-        exchange
-      });
-      return null;
-    }
-  }
-
-  /**
-   * Check if cache is still valid (within 7 days)
-   * @private
-   */
-  _isCacheValid(cachedAt) {
-    if (!cachedAt) return false;
-
-    // Convert SQLite timestamp (YYYY-MM-DD HH:MM:SS) to ISO format for parsing
-    // SQLite timestamps don't parse correctly in Node.js and Safari without conversion
-    const isoTimestamp = cachedAt.includes('T')
-      ? cachedAt
-      : `${cachedAt.replace(' ', 'T')}Z`;
-
-    const cacheTime = Date.parse(isoTimestamp);
-
-    // Validate parsed timestamp
-    if (Number.isNaN(cacheTime)) {
-      log.warn('Invalid cached_at timestamp format', { cachedAt });
-      return false;
-    }
-
-    return (Date.now() - cacheTime) < CACHE_TTL_MS;
-  }
-
 }
 
 export default new SymbolValidationService();
