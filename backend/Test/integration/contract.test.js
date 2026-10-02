@@ -56,7 +56,7 @@ const SKIP_SMOKE = new Set([
   'POST /strategies/:id/execute', 'POST /strategies/:id/exit',
   // Cancels, closes and switches EVERY instance - Test/integration/kill-switch.test.js covers it.
   'POST /kill-switch',
-  'POST /auth/login', 'POST /auth/register', 'POST /auth/change-password',
+  'POST /auth/login', 'POST /auth/register',
 ]);
 
 let app;

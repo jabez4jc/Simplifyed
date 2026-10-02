@@ -1,5 +1,6 @@
 import assert from 'assert';
 import test, { before, beforeEach } from 'node:test';
+import express from 'express';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 
@@ -10,6 +11,7 @@ import { STATUS } from '../helpers/http.js';
 import db from '../../src/core/database.js';
 import authRoutes from '../../src/routes/v1/auth.js';
 import { config } from '../../src/core/config.js';
+import { requireAuth } from '../../src/middleware/auth.js';
 
 /**
  * The credential surface. Everything here fronts live broker API keys, so the tests are about
@@ -20,7 +22,12 @@ let app;
 
 before(async () => {
   await useTestDb('auth');
-  app = buildApp(authRoutes, '/api/v1/auth');
+  // The auth router has no authenticated route of its own, so the token tests below probe
+  // requireAuth itself through a stub that does nothing else.
+  const router = express.Router();
+  router.use(authRoutes);
+  router.get('/whoami', requireAuth, (req, res) => res.json({ status: 'success', data: { id: req.user.id } }));
+  app = buildApp(router, '/api/v1/auth');
 });
 beforeEach(async () => {
   await truncate();
@@ -157,47 +164,6 @@ test('a non-string credential does not crash the login handler', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Changing a password
-// ---------------------------------------------------------------------------
-
-test('changing a password requires the current one and then actually takes effect', async () => {
-  const user = await createUser({ roleId: ROLE.ADMIN, isAdmin: true, password: 'the-old-password' });
-
-  const wrong = await bearer(post('/api/v1/auth/change-password'), user)
-    .send({ currentPassword: 'not-it', newPassword: 'the-new-password' });
-  assert.strictEqual(wrong.status, STATUS.UNAUTHORIZED, 'a stolen session must not be enough to take the account');
-
-  const ok = await bearer(post('/api/v1/auth/change-password'), user)
-    .send({ currentPassword: 'the-old-password', newPassword: 'the-new-password' });
-  assert.strictEqual(ok.status, STATUS.OK, JSON.stringify(ok.body));
-
-  const withNew = await post('/api/v1/auth/login').send({ email: user.email, password: 'the-new-password' });
-  assert.strictEqual(withNew.status, STATUS.OK, 'the new password must work');
-
-  const withOld = await post('/api/v1/auth/login').send({ email: user.email, password: 'the-old-password' });
-  assert.strictEqual(withOld.status, STATUS.UNAUTHORIZED, 'the old password must stop working');
-});
-
-test('changing a password requires a session at all', async () => {
-  const res = await post('/api/v1/auth/change-password')
-    .send({ currentPassword: 'x', newPassword: 'the-new-password' });
-  assert.strictEqual(res.status, STATUS.UNAUTHORIZED);
-});
-
-test('a weak new password is refused', async () => {
-  const user = await createUser({ roleId: ROLE.ADMIN, isAdmin: true, password: 'the-old-password' });
-
-  for (const newPassword of ['short', '', 'x'.repeat(73)]) {
-    const res = await bearer(post('/api/v1/auth/change-password'), user)
-      .send({ currentPassword: 'the-old-password', newPassword });
-    assert.strictEqual(res.status, STATUS.BAD_REQUEST, `'${newPassword.slice(0, 12)}' -> ${res.status}`);
-  }
-
-  const stillOld = await post('/api/v1/auth/login').send({ email: user.email, password: 'the-old-password' });
-  assert.strictEqual(stillOld.status, STATUS.OK, 'a refused change must not have altered anything');
-});
-
-// ---------------------------------------------------------------------------
 // Token handling
 // ---------------------------------------------------------------------------
 
@@ -210,9 +176,8 @@ test('a forged or tampered token is not accepted', async () => {
 
   for (const [label, token] of [['forged', forged], ['tampered', tampered], ['expired', expired], ['garbage', 'not.a.token']]) {
     const res = await request(app)
-      .post('/api/v1/auth/change-password')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ currentPassword: 'x', newPassword: 'the-new-password' });
+      .get('/api/v1/auth/whoami')
+      .set('Authorization', `Bearer ${token}`);
     assert.strictEqual(res.status, STATUS.UNAUTHORIZED, `${label} token -> ${res.status}`);
   }
 });
@@ -222,9 +187,8 @@ test('an "alg: none" token is rejected - the classic JWT bypass', async () => {
   const payload = Buffer.from(JSON.stringify({ sub: '1', email: 'admin@example.test' })).toString('base64url');
 
   const res = await request(app)
-    .post('/api/v1/auth/change-password')
-    .set('Authorization', `Bearer ${header}.${payload}.`)
-    .send({ currentPassword: 'x', newPassword: 'the-new-password' });
+    .get('/api/v1/auth/whoami')
+    .set('Authorization', `Bearer ${header}.${payload}.`);
 
   assert.strictEqual(res.status, STATUS.UNAUTHORIZED);
 });
@@ -233,8 +197,7 @@ test('a token for a deleted user stops working', async () => {
   const user = await createUser({ roleId: ROLE.ADMIN, isAdmin: true, password: 'the-old-password' });
   await db.run('DELETE FROM users WHERE id = ?', [user.id]);
 
-  const res = await bearer(post('/api/v1/auth/change-password'), user)
-    .send({ currentPassword: 'the-old-password', newPassword: 'the-new-password' });
+  const res = await bearer(request(app).get('/api/v1/auth/whoami'), user);
 
   assert.strictEqual(res.status, STATUS.UNAUTHORIZED, 'a deleted account must not keep a working session');
 });

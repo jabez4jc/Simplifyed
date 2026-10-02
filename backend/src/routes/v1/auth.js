@@ -1,12 +1,11 @@
 /**
- * Local email/password authentication (bootstrap admin, login, change password)
+ * Local email/password authentication (bootstrap admin, login)
  */
 
 import express from 'express';
 import db from '../../core/database.js';
 import { log } from '../../core/logger.js';
 import {
-  requireAuth,
   hashPassword,
   verifyPassword,
   signLocalToken,
@@ -157,30 +156,6 @@ router.post('/login', async (req, res, next) => {
     const user = await getUserWithRole(row.id);
     const token = signLocalToken(user);
     res.json({ status: 'success', data: { token, user } });
-  } catch (error) {
-    next(error);
-  }
-});
-
-router.post('/change-password', requireAuth, async (req, res, next) => {
-  try {
-    const currentPassword = typeof req.body?.currentPassword === 'string' ? req.body.currentPassword : '';
-    const newPassword = typeof req.body?.newPassword === 'string' ? req.body.newPassword : '';
-    if (!validNewPassword(newPassword)) {
-      return res.status(400).json({ status: 'error', message: 'newPassword must be 8 to 72 bytes' });
-    }
-
-    const row = await db.get('SELECT password_hash FROM users WHERE id = ?', [req.user.id]);
-    if (row.password_hash) {
-      const ok = await verifyPassword(currentPassword, row.password_hash);
-      if (!ok) {
-        return res.status(401).json({ status: 'error', message: 'Current password is incorrect' });
-      }
-    }
-
-    const newHash = await hashPassword(newPassword);
-    await db.run('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, req.user.id]);
-    res.json({ status: 'success', message: 'Password updated' });
   } catch (error) {
     next(error);
   }
