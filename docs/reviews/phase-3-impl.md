@@ -103,3 +103,10 @@ All failures are classified as environmental (market holiday: NSE/NFO closed all
 - **Afterwards:** no positions on any of the five instances. Open orders remain on Kotak (NIFTY06OCT2622400CE, ids 26100258736054 and a new 26100238311600) and Fyers (CRUDEOILM19OCT26FUT 26100229060892); ignored per the owner.
 
 **Caveat:** because the market was closed, this rerun exercised the order paths less than G0 to G2 did. The Fyers MCX auto-exit tests and the NFO option fills should be rerun on a trading day for a clean G4. §9.3 boxes for Phases 2 and 3 stay unticked: D4 is still blocked and the P3-6 option-chain-builder bullet still needs an owner decision.
+
+## Review fixes
+
+- **P3-6 option-chain builders:** fixed (ef2ea13), per your decision "instruments list + broker quotes". `options-resolution` builds strikes from instruments only (its broker branch only ever supplied symbols). The chart chain takes its rows from `instruments.buildOptionChain`; the broker `/optionchain` only overlays quotes and Greeks by symbol (multiquotes otherwise). `buildOptionChain` no longer falls back to a symbol-prefix match, which mixed underlyings (`CRUDE%`). `quick-order-quotes` already only read quotes from the chain; unchanged. Test: `option-chain-source.test.js` (3; all fail on the old code).
+- **P3-10:** deferred by O8 (default), not pending.
+- `npm run lint` clean; `npm run test:logic` 443 pass, 0 fail.
+- **Broker suite not run (needs you).** P3-6 touches option strike resolution, so `Test/integration/options-orders.test.js` must run. Pre-check (read-only, 17:30 IST): 3, 6, 19, 20, 26 all in analyzer mode, no positions. **Open orders:** Kotak 26100258736054 (ignored), plus Kotak 26100238311600 and Fyers 26100229060892. Per the stop rule I did not start. Today is also a market holiday (NFO closed), so the option fills could not be checked. Next: run it on a trading day, once those two orders are cleared or you confirm they can be ignored.

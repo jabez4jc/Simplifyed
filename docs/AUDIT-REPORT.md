@@ -596,8 +596,8 @@ Phase 4 is docs only and needs no broker gate.
 - [x] **G0:** baseline recorded.
 - [x] **Phase 0:** C1–C5 merged. New tests exist for C2, C3, C4 and C5. On a cold start with no browser, the logs show auto-exit running. **G1 passed.**
 - [x] **Phase 1:** H1–H17 merged. `?v=` bumped for every changed public file. **G2 passed.**
-- [ ] **Phase 2:** every D/F item is deleted, the drop-tables migration is applied on a **copy** of the DB, and `grep` confirms no references remain. **G3 passed.** _(In progress — see docs/reviews/phase-2-impl.md: D1–D26 done except D4 (blocked); F1–F6 and §5.4 done; migrations 075–077 applied on a copy; G3 not passed: the open Kotak order from the last run must be cancelled first.)_
-- [ ] **Phase 3:** the DB is under 100 MB after migration and VACUUM, there are no `UPPER(` calls on instrument columns, and the retention job is tested. **G4 passed.** _(P3-1 to P3-9 done, P3-10 deferred; see docs/reviews/phase-3-impl.md. Not ticked: G4 ended with a Kotak CRUDEOILM position and a Fyers order left open, 3 Fyers live failures unclassified, and the option-chain-builder bullet of P3-6 awaits an owner decision.)_
+- [ ] **Phase 2:** every D/F item is deleted, the drop-tables migration is applied on a **copy** of the DB, and `grep` confirms no references remain. **G3 passed.** _(All items done; D4 is done as redaction only, by owner decision (helpers kept). Migrations 075–077 and 079 applied on a copy. Open: G3 on a trading day. See docs/reviews/phase-2-impl.md.)_
+- [ ] **Phase 3:** the DB is under 100 MB after migration and VACUUM, there are no `UPPER(` calls on instrument columns, and the retention job is tested. **G4 passed.** _(P3-1 to P3-9 done, including the P3-6 option-chain bullet (owner decision: instruments list + broker quotes); P3-10 deferred (O8). Open: G4 on a trading day, starting with options-orders. See docs/reviews/phase-3-impl.md.)_
 - [x] **Phase 4:** docs are updated, and junk and AI tooling are untracked (per O6/O7). _(See docs/reviews/phase-4-impl.md.)_
 
 Final sanity greps (each should return nothing):

@@ -114,3 +114,12 @@ Pre-check (read-only, against the broker): instances **3, 6, 19, 20 and 26 all r
 ## Checklist (§9.3)
 
 Phase 2 stays **unticked**: D4 is blocked, and G3 has not passed (the previous run ended on an open order and the gate was not rerun). F1–F6 and §5.4 are done.
+
+## Review fixes
+
+- **D4:** fixed in part (a567b0c), per your choice "redact only, keep helpers". The classifier blocked deleting the per-route `logAudit` helpers again. `instances.update` now passes its metadata through the `auditLogger` sanitiser, so `api_key` is stored as `[redacted]`. Test: `db-middleware.test.js` "redacts the api key".
+- **D24 auto-revert test:** fixed (b6adba2). The condition moved to `instance-session.util.shouldAutoRevertToLive` and is tested in `session-cutoff.test.js` (exact `SESSION_MAX_LOSS_BREACHED` match, new session only).
+- **D24 unused columns:** fixed (5d55968). Migration **079** drops `session_max_loss_hits(_date)`. It was applied to a copy of `simplifyed.db` (now at 079); the real DB was not written. **Run `npm run migrate` before restarting the server.**
+- **`_cancelAllOrdersForRetry` name:** rejected as a pending item. P3-6 already renamed it (`quick-order.service.js:780`, `_cancelOwnOrdersBeforeRetry`), and the §9.3 grep is empty.
+- **D20 "under 2,500 lines":** not changed. All the wrapper deletions are done; the remaining ~3,200 lines are real logic, and cutting them would be a refactor no finding asks for.
+- `npm run lint` clean; `npm run test:logic` 443 pass, 0 fail. No broker suite was run for these items (none of them touches an order path).
