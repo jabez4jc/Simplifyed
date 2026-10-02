@@ -18,7 +18,8 @@ import {
   maskInstanceForResponse,
   maskInstancesForResponse,
 } from '../../utils/sanitizers.js';
-import { requireAuth, requireAdmin, requirePermission } from '../../middleware/auth.js';
+import { requireAuth, requirePermission } from '../../middleware/auth.js';
+import { rowPayload, upsertByKey } from '../../utils/csv-import.js';
 import db from '../../core/database.js';
 import multer from 'multer';
 import { Parser } from '../../utils/csv.js';
@@ -36,8 +37,6 @@ const upload = multer({
 // All instance routes require authentication
 router.use(requireAuth);
 
-// Never importable: identity/timestamps, and broker-verified state that only the toggle/health check may set.
-const CSV_IMPORT_DENY = new Set(['id', 'created_at', 'last_updated', 'is_analyzer_mode', 'health_status']);
 
 function logAudit(req, action, metadata = {}) {
   if (!req.user) return;
@@ -338,7 +337,7 @@ router.post('/bulk-update', async (req, res, next) => {
  * POST /api/v1/instances/:id/refresh
  * Manually refresh instance data (bypasses cron)
  */
-router.post('/:id/refresh', requirePermission('pages.instances.view'), async (req, res, next) => {
+router.post('/:id/refresh', requirePermission('instances.edit'), async (req, res, next) => {
   const startTime = Date.now();
   try {
     const id = parseInt(req.params.id, 10);
@@ -401,7 +400,7 @@ router.post('/:id/analyzer/toggle', requirePermission('instances.toggle_mode'), 
  * GET /api/v1/instances/export/csv
  * Admin-only: Export all instances and settings as CSV
  */
-router.get('/export/csv', requireAdmin, async (req, res, next) => {
+router.get('/export/csv', requirePermission('settings.manage'), async (req, res, next) => {
   try {
     const columns = await db.all("PRAGMA table_info('instances')");
     const colNames = columns.map((c) => c.name);
@@ -431,7 +430,7 @@ router.get('/export/csv', requireAdmin, async (req, res, next) => {
  * POST /api/v1/instances/import/csv
  * Admin-only: Import instances from CSV (upsert by host_url)
  */
-router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res, next) => {
+router.post('/import/csv', requirePermission('settings.manage'), upload.single('file'), async (req, res, next) => {
   try {
     if (!req.file || !req.file.buffer) {
       throw new ValidationError('CSV file is required');
@@ -444,77 +443,48 @@ router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res,
       throw new ValidationError('CSV is empty or invalid');
     }
 
-    const columns = await db.all("PRAGMA table_info('instances')");
-    const allowed = new Set(columns.map((c) => c.name));
-    const importable = records.headers.filter((h) => allowed.has(h) && !CSV_IMPORT_DENY.has(h));
-    const headerIndex = new Map(records.headers.map((h, i) => [h, i]));
-
     let inserted = 0;
     let updated = 0;
     let skippedMissing = 0;
     let rowErrors = 0;
 
-    for (const row of records.rows) {
-      const payload = {};
-      importable.forEach((col) => {
-        const idx = headerIndex.get(col);
-        const val = row[idx];
-        if (val === undefined || val === null || val === '') return;
-        const lowered = String(val).toLowerCase();
-        if (lowered === 'true' || lowered === 'false') {
-          payload[col] = lowered === 'true' ? 1 : 0;
-        } else if (!Number.isNaN(Number(val)) && val !== '') {
-          payload[col] = Number(val);
-        } else {
-          payload[col] = val;
+    // One transaction for the whole file; a row that fails (UNIQUE etc.) rolls back only itself.
+    await db.transaction(async () => {
+      for (const row of records.rows) {
+        const payload = rowPayload('instances', records.headers, row);
+
+        // A CSV produced by the export above carries the masked key, never the real one. Writing
+        // that back would replace a working credential with a row of asterisks and silently break
+        // the instance, so drop it and let the stored value stand.
+        if (isMaskedApiKey(payload.api_key)) {
+          delete payload.api_key;
         }
-      });
 
-      // A CSV produced by the export above carries the masked key, never the real one. Writing
-      // that back would replace a working credential with a row of asterisks and silently break
-      // the instance, so drop it and let the stored value stand.
-      if (isMaskedApiKey(payload.api_key)) {
-        delete payload.api_key;
-      }
-
-      // Guard required fields to avoid NOT NULL/UNIQUE violations
-      if (!payload.host_url) {
-        skippedMissing += 1;
-        continue;
-      }
-      if (!payload.name) {
-        payload.name = payload.host_url;
-      }
-
-      try {
-        const existing = await db.get('SELECT id FROM instances WHERE host_url = ?', [payload.host_url]);
-        if (!existing && !payload.api_key) {
-          // Nothing to fall back on - a new instance cannot be created without a real key.
+        // Guard required fields to avoid NOT NULL/UNIQUE violations
+        if (!payload.host_url) {
           skippedMissing += 1;
           continue;
         }
-        if (existing) {
-          const fields = Object.keys(payload);
-          const setSql = fields.map((f) => `${f} = ?`).join(', ');
-          const params = fields.map((f) => payload[f]);
-          params.push(existing.id);
-          await db.run(`UPDATE instances SET ${setSql}, last_updated = CURRENT_TIMESTAMP WHERE id = ?`, params);
-          updated += 1;
-        } else {
-          const fields = Object.keys(payload);
-          const placeholders = fields.map(() => '?').join(', ');
-          const params = fields.map((f) => payload[f]);
-          await db.run(
-            `INSERT INTO instances (${fields.join(', ')}) VALUES (${placeholders})`,
-            params
-          );
-          inserted += 1;
+        if (!payload.name) {
+          payload.name = payload.host_url;
         }
-      } catch (err) {
-        rowErrors += 1;
-        log.error('Instance import row failed', { err: err.message, host_url: payload.host_url });
+
+        try {
+          const existing = await db.get('SELECT id FROM instances WHERE host_url = ?', [payload.host_url]);
+          if (!existing && !payload.api_key) {
+            // Nothing to fall back on - a new instance cannot be created without a real key.
+            skippedMissing += 1;
+            continue;
+          }
+          const { action } = await upsertByKey(db, 'instances', ['host_url'], payload, { stampColumn: 'last_updated' });
+          if (action === 'inserted') inserted += 1;
+          else if (action === 'updated') updated += 1;
+        } catch (err) {
+          rowErrors += 1;
+          log.error('Instance import row failed', { err: err.message, host_url: payload.host_url });
+        }
       }
-    }
+    });
 
     res.json({
       status: 'success',

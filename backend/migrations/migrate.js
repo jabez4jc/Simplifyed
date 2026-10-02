@@ -12,6 +12,12 @@ import { log } from '../src/core/logger.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// Each migration runs in ONE transaction, with its schema_migrations row, so a failure leaves
+// nothing half-applied. These two cannot: 062 toggles PRAGMA foreign_keys (a no-op inside a
+// transaction) and 073 ends with VACUUM (not allowed inside one). Both are already applied
+// everywhere, and are left untouched.
+const NOT_TRANSACTIONAL = new Set(['062', '073']);
+
 /**
  * Initialize migration tracking table
  */
@@ -133,12 +139,15 @@ async function migrateUp() {
       log.info(`  ⬆️  Applying: ${migration.name}`);
 
       try {
-        await migration.up(db);
-
-        await db.run(
-          'INSERT INTO schema_migrations (version, name) VALUES (?, ?)',
-          [migration.version, migration.name]
-        );
+        const apply = async () => {
+          await migration.up(db);
+          await db.run(
+            'INSERT INTO schema_migrations (version, name) VALUES (?, ?)',
+            [migration.version, migration.name]
+          );
+        };
+        if (NOT_TRANSACTIONAL.has(migration.version)) await apply();
+        else await db.transaction(apply);
 
         log.info(`  ✅ Applied: ${migration.name}`);
       } catch (error) {

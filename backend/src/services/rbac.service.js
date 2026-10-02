@@ -1,6 +1,6 @@
 import db from '../core/database.js';
 import { ValidationError, ConflictError, NotFoundError } from '../core/errors.js';
-import { hashPassword } from '../middleware/auth.js';
+import { hashPassword, assertValidNewPassword, invalidateUserCache } from '../middleware/auth.js';
 
 class RbacService {
   async listRoles() {
@@ -50,6 +50,7 @@ class RbacService {
        VALUES (?, ?, ?)`,
       [userId, role.id, assignedBy || null]
     );
+    invalidateUserCache(userId);
   }
 
   async createUser(email, password, roleName, createdBy) {
@@ -68,6 +69,7 @@ class RbacService {
       throw new ValidationError('Role not found');
     }
 
+    assertValidNewPassword(password);
     const passwordHash = await hashPassword(password);
 
     // One unit of work: an account without a role is not a usable account, so it must not be a
@@ -88,6 +90,7 @@ class RbacService {
   }
 
   async resetPassword(userId, newPassword) {
+    assertValidNewPassword(newPassword);
     const passwordHash = await hashPassword(newPassword);
     const result = await db.run(`UPDATE users SET password_hash = ? WHERE id = ?`, [
       passwordHash,
@@ -124,6 +127,35 @@ class RbacService {
         );
       }
     });
+    invalidateUserCache(); // every user holding this role
+  }
+
+  /**
+   * Delete a user. The last admin cannot be deleted: nobody could then manage access, and the
+   * bootstrap /register route stays closed once any user has ever existed.
+   */
+  async deleteUser(userId) {
+    const user = await db.get(`SELECT id, is_admin FROM users WHERE id = ?`, [userId]);
+    if (!user) {
+      throw new NotFoundError('User');
+    }
+    const isAdmin = (id) => db.get(
+      `SELECT 1 AS yes FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id LEFT JOIN roles r ON r.id = ur.role_id
+       WHERE u.id = ? AND (u.is_admin = 1 OR r.name = 'Admin')`,
+      [id]
+    );
+    if (await isAdmin(userId)) {
+      const others = await db.get(
+        `SELECT COUNT(*) AS n FROM users u LEFT JOIN user_roles ur ON ur.user_id = u.id LEFT JOIN roles r ON r.id = ur.role_id
+         WHERE u.id != ? AND (u.is_admin = 1 OR r.name = 'Admin')`,
+        [userId]
+      );
+      if (!others.n) {
+        throw new ConflictError('Cannot delete the last admin');
+      }
+    }
+    await db.run(`DELETE FROM users WHERE id = ?`, [userId]); // user_roles cascades
+    invalidateUserCache(userId);
   }
 }
 

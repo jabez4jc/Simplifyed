@@ -9,7 +9,8 @@ import {
   ValidationError,
   ForbiddenError,
 } from '../../core/errors.js';
-import { requireAuth, requireAdmin, requirePermission } from '../../middleware/auth.js';
+import { requireAuth, requirePermission } from '../../middleware/auth.js';
+import { rowPayload, upsertByKey } from '../../utils/csv-import.js';
 import multer from 'multer';
 import { Parser } from '../../utils/csv.js';
 import db from '../../core/database.js';
@@ -272,7 +273,7 @@ router.delete('/:id/instances/:instanceId', requirePermission('watchlists.instan
 /**
  * Admin: export watchlists + symbols + instance mappings to CSV text bundle
  */
-router.get('/export/csv', requireAdmin, async (_req, res, next) => {
+router.get('/export/csv', requirePermission('settings.manage'), async (_req, res, next) => {
   try {
     const parser = new Parser();
 
@@ -308,7 +309,7 @@ router.get('/export/csv', requireAdmin, async (_req, res, next) => {
 /**
  * Admin: import watchlists + symbols + mappings from CSV text bundle
  */
-router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res, next) => {
+router.post('/import/csv', requirePermission('settings.manage'), upload.single('file'), async (req, res, next) => {
   try {
     if (!req.file || !req.file.buffer) {
       throw new ValidationError('CSV text file is required');
@@ -317,177 +318,71 @@ router.post('/import/csv', requireAdmin, upload.single('file'), async (req, res,
     const sections = text.split(/^# /m).map((s) => s.trim()).filter(Boolean);
     const parser = new Parser();
 
-    let inserted = { watchlists: 0, symbols: 0, mappings: 0 };
-    let updated = { watchlists: 0, symbols: 0, mappings: 0 };
-    let errors = [];
-
-    const wlCols = (await db.all("PRAGMA table_info('watchlists')")).map((c) => c.name);
-    const symCols = (await db.all("PRAGMA table_info('watchlist_symbols')")).map((c) => c.name);
-    const mapCols = (await db.all("PRAGMA table_info('watchlist_instances')")).map((c) => c.name);
-    const instances = await db.all('SELECT id FROM instances');
-    const validInstanceIds = new Set(instances.map((i) => i.id));
-
-    const buildPayload = (cols, headers, row) => {
-      const headerIndex = new Map(headers.map((h, i) => [h, i]));
-      const payload = {};
-      cols.forEach((col) => {
-        const idx = headerIndex.get(col);
-        const val = row[idx];
-        if (val === undefined || val === null || val === '') return;
-        const lowered = String(val).toLowerCase();
-        if (lowered === 'true' || lowered === 'false') payload[col] = lowered === 'true' ? 1 : 0;
-        else if (!Number.isNaN(Number(val)) && val !== '') payload[col] = Number(val);
-        else payload[col] = val;
-      });
-      return payload;
+    const inserted = { watchlists: 0, symbols: 0, mappings: 0 };
+    const updated = { watchlists: 0, symbols: 0, mappings: 0 };
+    const errors = [];
+    const count = (bucket, action) => {
+      if (action === 'inserted') inserted[bucket] += 1;
+      else if (action === 'updated') updated[bucket] += 1;
     };
 
-    const watchlistIdMap = new Map(); // oldId -> newId
+    const instances = await db.all('SELECT id FROM instances');
+    const validInstanceIds = new Set(instances.map((i) => i.id));
+    const watchlistIdMap = new Map(); // id in the file -> id here
+    const sectionRows = (section, name) => parser.parse(section.replace(new RegExp(`^${name}\\s*`), '').trim());
+    // The file's own watchlist id for a row, mapped to the watchlist it landed on.
+    const mappedWatchlist = (parsed, row, payload) => {
+      const idx = parsed.headers.indexOf('watchlist_id');
+      return idx >= 0 && row[idx] ? watchlistIdMap.get(String(row[idx])) : payload.watchlist_id;
+    };
 
-    for (const section of sections) {
-      if (section.startsWith('WATCHLISTS')) {
-        const csv = section.replace(/^WATCHLISTS\s*/,'');
-        const parsed = parser.parse(csv.trim());
-        if (parsed.headers?.length) {
-          const cols = parsed.headers.filter((h) =>
-            wlCols.includes(h) && h !== 'created_at' && h !== 'updated_at'
-          );
-          const headerIndex = new Map(parsed.headers.map((h, i) => [h, i]));
+    // One transaction for the whole file; a row that fails (UNIQUE etc.) rolls back only itself.
+    await db.transaction(async () => {
+      for (const section of sections) {
+        if (section.startsWith('WATCHLISTS')) {
+          const parsed = sectionRows(section, 'WATCHLISTS');
+          const idIdx = parsed.headers.indexOf('id');
           for (const row of parsed.rows) {
-            const payload = buildPayload(cols, parsed.headers, row);
-            const originalId = headerIndex.has('id') ? row[headerIndex.get('id')] : null;
-            const key = { name: payload.name };
-            if (!key.name) continue;
-
-            let dbId = null;
+            const payload = rowPayload('watchlists', parsed.headers, row);
+            if (!payload.name) continue;
             try {
-              const existing = await db.get('SELECT id FROM watchlists WHERE name = ? LIMIT 1', [key.name]);
-              if (existing) {
-                const fields = Object.keys(payload).filter((c) => c !== 'id');
-                if (fields.length) {
-                  const setSql = fields.map((f) => `${f} = ?`).join(', ');
-                  const params = fields.map((f) => payload[f]);
-                  params.push(existing.id);
-                  await db.run(`UPDATE watchlists SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, params);
-                  updated.watchlists += 1;
-                }
-                dbId = existing.id;
-              } else {
-                const fields = Object.keys(payload).filter((c) => c !== 'id');
-                const placeholders = fields.map(() => '?').join(', ');
-                const params = fields.map((f) => payload[f]);
-                const result = await db.run(
-                  `INSERT INTO watchlists (${fields.join(', ')}) VALUES (${placeholders})`,
-                  params
-                );
-                inserted.watchlists += 1;
-                dbId = result?.lastID;
-              }
+              const { action, id } = await upsertByKey(db, 'watchlists', ['name'], payload);
+              count('watchlists', action);
+              if (idIdx >= 0 && row[idIdx] && id) watchlistIdMap.set(String(row[idIdx]), id);
             } catch (err) {
-              errors.push({ section: 'watchlists', name: key.name, error: err.message });
-              continue;
-            }
-
-            if (originalId && dbId) {
-              watchlistIdMap.set(String(originalId), dbId);
+              errors.push({ section: 'watchlists', name: payload.name, error: err.message });
             }
           }
-        }
-      } else if (section.startsWith('WATCHLIST_SYMBOLS')) {
-        const csv = section.replace(/^WATCHLIST_SYMBOLS\s*/,'');
-        const parsed = parser.parse(csv.trim());
-        if (parsed.headers?.length) {
-          const cols = parsed.headers.filter((h) =>
-            symCols.includes(h) && h !== 'id' && h !== 'created_at' && h !== 'updated_at'
-          );
-          const headerIndex = new Map(parsed.headers.map((h, i) => [h, i]));
+        } else if (section.startsWith('WATCHLIST_SYMBOLS')) {
+          const parsed = sectionRows(section, 'WATCHLIST_SYMBOLS');
           for (const row of parsed.rows) {
-            const payload = buildPayload(cols, parsed.headers, row);
-            const origWatchlistId = headerIndex.has('watchlist_id') ? row[headerIndex.get('watchlist_id')] : null;
-            const mappedWatchlistId = origWatchlistId ? watchlistIdMap.get(String(origWatchlistId)) : payload.watchlist_id;
-            if (!mappedWatchlistId) continue;
-            payload.watchlist_id = mappedWatchlistId;
-
-            const key = { watchlist_id: payload.watchlist_id, symbol: payload.symbol, exchange: payload.exchange };
-            if (!key.watchlist_id || !key.symbol || !key.exchange) continue;
-
+            const payload = rowPayload('watchlist_symbols', parsed.headers, row);
+            payload.watchlist_id = mappedWatchlist(parsed, row, payload);
+            if (!payload.watchlist_id || !payload.symbol || !payload.exchange) continue;
             try {
-              const existing = await db.get(
-                'SELECT id FROM watchlist_symbols WHERE watchlist_id = ? AND symbol = ? AND exchange = ? LIMIT 1',
-                [key.watchlist_id, key.symbol, key.exchange]
-              );
-              if (existing) {
-                const fields = Object.keys(payload).filter((c) => c !== 'id');
-                if (!fields.length) continue;
-                const setSql = fields.map((f) => `${f} = ?`).join(', ');
-                const params = fields.map((f) => payload[f]);
-                params.push(existing.id);
-                await db.run(`UPDATE watchlist_symbols SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, params);
-                updated.symbols += 1;
-              } else {
-                const fields = Object.keys(payload).filter((c) => c !== 'id');
-                const placeholders = fields.map(() => '?').join(', ');
-                const params = fields.map((f) => payload[f]);
-                await db.run(
-                  `INSERT INTO watchlist_symbols (${fields.join(', ')}) VALUES (${placeholders})`,
-                  params
-                );
-                inserted.symbols += 1;
-              }
+              const { action } = await upsertByKey(db, 'watchlist_symbols', ['watchlist_id', 'symbol', 'exchange'], payload);
+              count('symbols', action);
             } catch (err) {
               errors.push({ section: 'watchlist_symbols', watchlist_id: payload.watchlist_id, symbol: payload.symbol, exchange: payload.exchange, error: err.message });
             }
           }
-        }
-      } else if (section.startsWith('WATCHLIST_INSTANCES')) {
-        const csv = section.replace(/^WATCHLIST_INSTANCES\s*/,'');
-        const parsed = parser.parse(csv.trim());
-        if (parsed.headers?.length) {
-          const cols = parsed.headers.filter((h) =>
-            mapCols.includes(h) && h !== 'id' && h !== 'created_at' && h !== 'updated_at'
-          );
-          const headerIndex = new Map(parsed.headers.map((h, i) => [h, i]));
+        } else if (section.startsWith('WATCHLIST_INSTANCES')) {
+          const parsed = sectionRows(section, 'WATCHLIST_INSTANCES');
           for (const row of parsed.rows) {
-            const payload = buildPayload(cols, parsed.headers, row);
-            const origWatchlistId = headerIndex.has('watchlist_id') ? row[headerIndex.get('watchlist_id')] : null;
-            const mappedWatchlistId = origWatchlistId ? watchlistIdMap.get(String(origWatchlistId)) : payload.watchlist_id;
-            if (!mappedWatchlistId) continue;
-            payload.watchlist_id = mappedWatchlistId;
-
-            // Ensure instance exists; if not, skip to avoid FK failures
-            if (!validInstanceIds.has(payload.instance_id)) continue;
-
-            const key = { watchlist_id: payload.watchlist_id, instance_id: payload.instance_id };
+            const payload = rowPayload('watchlist_instances', parsed.headers, row);
+            payload.watchlist_id = mappedWatchlist(parsed, row, payload);
+            // Skip an instance that does not exist here, to avoid FK failures
+            if (!payload.watchlist_id || !validInstanceIds.has(payload.instance_id)) continue;
             try {
-              const existing = await db.get(
-                'SELECT id FROM watchlist_instances WHERE watchlist_id = ? AND instance_id = ? LIMIT 1',
-                [key.watchlist_id, key.instance_id]
-              );
-              if (existing) {
-                const fields = Object.keys(payload).filter((c) => c !== 'id');
-                if (!fields.length) continue;
-                const setSql = fields.map((f) => `${f} = ?`).join(', ');
-                const params = fields.map((f) => payload[f]);
-                params.push(existing.id);
-                await db.run(`UPDATE watchlist_instances SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, params);
-                updated.mappings += 1;
-              } else {
-                const fields = Object.keys(payload).filter((c) => c !== 'id');
-                const placeholders = fields.map(() => '?').join(', ');
-                const params = fields.map((f) => payload[f]);
-                await db.run(
-                  `INSERT INTO watchlist_instances (${fields.join(', ')}) VALUES (${placeholders})`,
-                  params
-                );
-                inserted.mappings += 1;
-              }
+              const { action } = await upsertByKey(db, 'watchlist_instances', ['watchlist_id', 'instance_id'], payload);
+              count('mappings', action);
             } catch (err) {
               errors.push({ section: 'watchlist_instances', watchlist_id: payload.watchlist_id, instance_id: payload.instance_id, error: err.message });
             }
           }
         }
       }
-    }
+    });
 
     res.json({
       status: 'success',

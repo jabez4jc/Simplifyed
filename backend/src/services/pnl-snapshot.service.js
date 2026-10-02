@@ -34,31 +34,18 @@ class PnlSnapshotService {
 
     const dateKey = snapshotDate || this._formatDateKey(toISTDate());
 
-    const existing = await db.get(
-      `SELECT id
-       FROM daily_instance_pnl_snapshots
-       WHERE instance_id = ? AND snapshot_date = ?`,
-      [instanceId, dateKey]
-    );
-
-    if (existing) {
-      await db.run(
-        `UPDATE daily_instance_pnl_snapshots
-         SET webhook_buy_signals = webhook_buy_signals + ?,
-             webhook_sell_signals = webhook_sell_signals + ?,
-             manual_buy_signals = manual_buy_signals + ?,
-             manual_sell_signals = manual_sell_signals + ?,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [incWebhookBuy, incWebhookSell, incManualBuy, incManualSell, existing.id]
-      );
-      return;
-    }
-
+    // One statement: a select-then-insert let two concurrent signals both miss the row and one
+    // insert hit the UNIQUE(instance_id, snapshot_date) constraint.
     await db.run(
       `INSERT INTO daily_instance_pnl_snapshots
         (instance_id, snapshot_date, webhook_buy_signals, webhook_sell_signals, manual_buy_signals, manual_sell_signals)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(instance_id, snapshot_date) DO UPDATE SET
+         webhook_buy_signals = webhook_buy_signals + excluded.webhook_buy_signals,
+         webhook_sell_signals = webhook_sell_signals + excluded.webhook_sell_signals,
+         manual_buy_signals = manual_buy_signals + excluded.manual_buy_signals,
+         manual_sell_signals = manual_sell_signals + excluded.manual_sell_signals,
+         updated_at = CURRENT_TIMESTAMP`,
       [instanceId, dateKey, incWebhookBuy, incWebhookSell, incManualBuy, incManualSell]
     );
   }

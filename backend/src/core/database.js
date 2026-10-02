@@ -182,6 +182,11 @@ class Database {
    * ponytail: single global queue - if transaction throughput ever matters, the upgrade is a
    * connection pool, not finer-grained locks (one connection can only hold one transaction).
    *
+   * CAUTION - one connection means a plain db.run()/db.get() issued by ANY other code while a
+   * transaction is open runs INSIDE it: it is committed with it and, if the callback throws,
+   * rolled back with it. So keep a transaction short and do not await slow work (broker calls,
+   * HTTP) inside it; fetch first, write after. Long imports (instruments) commit per exchange.
+   *
    * @param {Function} callback - Async function that performs queries
    */
   async transaction(callback) {

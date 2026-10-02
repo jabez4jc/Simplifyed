@@ -58,44 +58,25 @@ class InstancePnlService {
       sell_value = 0,
     } = payload || {};
 
-    const existing = await db.get(
-      `SELECT id, total_pnl, buy_trades, sell_trades, buy_value, sell_value
-       FROM daily_instance_pnl_snapshots
-       WHERE instance_id = ? AND snapshot_date = ?`,
-      [instanceId, snapshotDate]
-    );
-
-    if (existing) {
-      if (total_pnl === 0 && existing.total_pnl !== 0) {
-        return;
-      }
-      if (
-        buy_trades < existing.buy_trades ||
-        sell_trades < existing.sell_trades ||
-        buy_value < existing.buy_value ||
-        sell_value < existing.sell_value
-      ) {
-        return;
-      }
-
-      await db.run(
-        `UPDATE daily_instance_pnl_snapshots
-         SET total_pnl = ?,
-             buy_trades = ?,
-             sell_trades = ?,
-             buy_value = ?,
-             sell_value = ?,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?`,
-        [total_pnl, buy_trades, sell_trades, buy_value, sell_value, existing.id]
-      );
-      return;
-    }
-
+    // One statement (no select-then-insert race). An existing row is only overwritten by a
+    // snapshot that is not a regression: a 0 P&L never replaces a non-zero one (a failed or empty
+    // read), and trade counts/values only grow within a day.
     await db.run(
       `INSERT INTO daily_instance_pnl_snapshots
         (instance_id, snapshot_date, total_pnl, buy_trades, sell_trades, buy_value, sell_value)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(instance_id, snapshot_date) DO UPDATE SET
+         total_pnl = excluded.total_pnl,
+         buy_trades = excluded.buy_trades,
+         sell_trades = excluded.sell_trades,
+         buy_value = excluded.buy_value,
+         sell_value = excluded.sell_value,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE NOT (excluded.total_pnl = 0 AND total_pnl != 0)
+         AND excluded.buy_trades >= buy_trades
+         AND excluded.sell_trades >= sell_trades
+         AND excluded.buy_value >= buy_value
+         AND excluded.sell_value >= sell_value`,
       [instanceId, snapshotDate, total_pnl, buy_trades, sell_trades, buy_value, sell_value]
     );
   }

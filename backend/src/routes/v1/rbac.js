@@ -1,6 +1,6 @@
 import express from 'express';
 import rbacService from '../../services/rbac.service.js';
-import { requirePermission } from '../../middleware/auth.js';
+import { requirePermission, isValidNewPassword } from '../../middleware/auth.js';
 
 const router = express.Router();
 
@@ -85,10 +85,10 @@ router.post(
   async (req, res, next) => {
     try {
       const { email, password, role } = req.body || {};
-      if (!email || !password || password.length < 8) {
+      if (!email || !isValidNewPassword(password)) {
         return res.status(400).json({
           status: 'error',
-          message: 'email and a password of at least 8 characters are required',
+          message: 'email and a password of 8 to 72 bytes are required',
         });
       }
       if (!role) {
@@ -111,15 +111,29 @@ router.post(
     try {
       const userId = parseInt(req.params.userId, 10);
       const { newPassword } = req.body || {};
-      if (!newPassword || newPassword.length < 8) {
+      if (!isValidNewPassword(newPassword)) {
         return res.status(400).json({
           status: 'error',
-          message: 'newPassword must be at least 8 characters',
+          message: 'newPassword must be 8 to 72 bytes',
         });
       }
 
       await rbacService.resetPassword(userId, newPassword);
       res.json({ status: 'success', message: 'Password reset' });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// Delete a user (refused for the last admin)
+router.delete(
+  '/users/:userId',
+  requirePermission('rbac.assign_roles'),
+  async (req, res, next) => {
+    try {
+      await rbacService.deleteUser(parseInt(req.params.userId, 10));
+      res.json({ status: 'success', message: 'User deleted' });
     } catch (error) {
       next(error);
     }

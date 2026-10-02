@@ -696,15 +696,18 @@ class WatchlistService {
     return hydrated;
   }
 
+  // Only the type is needed to gate symbol edits - not the symbols, instances and webhook that
+  // getWatchlistById hydrates.
   async _getWatchlistForSymbol(symbolId) {
-    const link = await db.get(
-      'SELECT watchlist_id FROM watchlist_symbols WHERE id = ? LIMIT 1',
+    const row = await db.get(
+      `SELECT w.id, w.type FROM watchlist_symbols s JOIN watchlists w ON w.id = s.watchlist_id
+        WHERE s.id = ? LIMIT 1`,
       [symbolId]
     );
-    if (!link) {
+    if (!row) {
       throw new NotFoundError('Symbol');
     }
-    return this.getWatchlistById(link.watchlist_id);
+    return row;
   }
 }
 

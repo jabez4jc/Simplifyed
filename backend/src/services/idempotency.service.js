@@ -3,6 +3,9 @@ import db from '../core/database.js';
 import { log } from '../core/logger.js';
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+// A request that never completed (the process died mid-flight) must not block its request_id for
+// the whole TTL: after this long a still-pending row is treated as abandoned.
+const PENDING_STALE_MS = 5 * 60 * 1000;
 
 // cleanupExpired compares expires_at against SQLite's CURRENT_TIMESTAMP, which is UTC
 // 'YYYY-MM-DD HH:MM:SS'. toISOString() is also UTC but formats as 'YYYY-MM-DDTHH:MM:SS.sssZ',
@@ -23,10 +26,22 @@ class IdempotencyService {
       return { hit: false, record: null, mismatch: false };
     }
 
-    const existing = await db.get(
+    let existing = await db.get(
       'SELECT * FROM idempotency_keys WHERE request_id = ? AND source = ?',
       [requestId, source]
     );
+    if (existing?.status === 'pending') {
+      // Atomic claim of the stale row: only one caller's DELETE changes a row, and the INSERT
+      // below then lets the normal UNIQUE race decide who owns the request.
+      const stale = await db.run(
+        "DELETE FROM idempotency_keys WHERE id = ? AND status = 'pending' AND created_at < ?",
+        [existing.id, toSqliteUtc(Date.now() - PENDING_STALE_MS)]
+      );
+      if (stale.changes) {
+        log.warn('Idempotency: abandoned pending request expired, accepting it again', { requestId, source });
+        existing = null;
+      }
+    }
     if (existing) {
       let mismatch = false;
       if (payload) {

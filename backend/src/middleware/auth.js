@@ -3,9 +3,24 @@ import jwt from 'jsonwebtoken';
 import db from '../core/database.js';
 import { config, isTestMode } from '../core/config.js';
 import { log } from '../core/logger.js';
-import { UnauthorizedError, ForbiddenError } from '../core/errors.js';
+import { UnauthorizedError, ForbiddenError, ValidationError } from '../core/errors.js';
 
 const LOCAL_TOKEN_TTL = '7d';
+export const MIN_PASSWORD_CHARS = 8;
+export const MAX_PASSWORD_BYTES = 72; // bcrypt ignores everything past 72 bytes
+
+/** The one password rule: at least 8 characters, at most 72 bytes (bcrypt's limit). */
+export function isValidNewPassword(password) {
+  return typeof password === 'string'
+    && password.length >= MIN_PASSWORD_CHARS
+    && Buffer.byteLength(password, 'utf8') <= MAX_PASSWORD_BYTES;
+}
+
+export function assertValidNewPassword(password) {
+  if (!isValidNewPassword(password)) {
+    throw new ValidationError(`password must be ${MIN_PASSWORD_CHARS} to ${MAX_PASSWORD_BYTES} bytes`);
+  }
+}
 
 export async function hashPassword(password) {
   return bcrypt.hash(password, 10);
@@ -34,6 +49,28 @@ export function signLocalToken(user) {
  * pinned sqlite3@5, which was the last thing holding the app's dependency tree on a vulnerable
  * node-gyp/tar chain.
  */
+
+// optionalAuth runs on every request and used to cost three queries each time. The resolved
+// user (role + permissions) is kept for 30 s per user id. Anything that changes who a user is or
+// what a role may do must call invalidateUserCache() (rbac.service does), so a revoked
+// permission bites at once rather than after the TTL.
+const USER_CACHE_TTL_MS = 30000;
+const userCache = new Map(); // userId -> { user, at }
+
+/** Forget one user's cached role/permissions, or everyone's (a role's permission set changed). */
+export function invalidateUserCache(userId = null) {
+  if (userId === null || userId === undefined) userCache.clear();
+  else userCache.delete(Number(userId));
+}
+
+async function cachedRoleAndPermissions(userId) {
+  const hit = userCache.get(userId);
+  if (hit && Date.now() - hit.at < USER_CACHE_TTL_MS) return { ...hit.user };
+  const user = await attachRoleAndPermissions(userId);
+  if (user) userCache.set(userId, { user, at: Date.now() });
+  else userCache.delete(userId);
+  return user ? { ...user } : null;
+}
 
 // Helper to fetch user with role/permissions
 async function attachRoleAndPermissions(userId) {
@@ -97,7 +134,7 @@ export async function optionalAuth(req, res, next) {
     if (token) {
       try {
         const localPayload = jwt.verify(token, config.auth.jwtSecret, { algorithms: ['HS256'] });
-        const user = await attachRoleAndPermissions(parseInt(localPayload.sub, 10));
+        const user = await cachedRoleAndPermissions(parseInt(localPayload.sub, 10));
         if (user) {
           log.debug('User authenticated via local token', { userId: user.id, email: user.email });
           req.user = user;
@@ -130,16 +167,6 @@ export function requireAuth(req, res, next) {
   }
 
   return next();
-}
-
-export function requireAdmin(req, res, next) {
-  if (!req.user) {
-    throw new UnauthorizedError('Authentication required');
-  }
-  if (req.user.is_admin) {
-    return next();
-  }
-  throw new ForbiddenError('Admin access required');
 }
 
 export function requirePermission(permissionKey) {

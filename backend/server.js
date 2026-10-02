@@ -28,6 +28,7 @@ import { pruneOldRows } from './src/services/retention.service.js';
 
 // Middleware
 import { requireAuth, optionalAuth, verifyLocalToken } from './src/middleware/auth.js';
+import { pendingMigrations } from './src/core/migration-check.js';
 import { errorHandler, notFoundHandler } from './src/middleware/error-handler.js';
 import { correlationId, requestLogger, bodyParserErrorHandler } from './src/middleware/request-logger.js';
 import { noStore } from './src/middleware/no-store.js';
@@ -205,6 +206,10 @@ async function startServer() {
     // Connect to database
     await db.connect();
     log.info('Database connected');
+    const pending = await pendingMigrations(db);
+    if (pending.length) {
+      throw new Error(`Database has ${pending.length} pending migration(s) (${pending.join(', ')}). Run: npm run migrate`);
+    }
     await settingsService.ensureEssentialSettings();
 
     // Load configuration from database

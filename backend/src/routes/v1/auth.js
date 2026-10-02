@@ -10,6 +10,7 @@ import {
   verifyPassword,
   signLocalToken,
   getUserWithRole,
+  isValidNewPassword,
 } from '../../middleware/auth.js';
 
 const router = express.Router();
@@ -31,7 +32,6 @@ const router = express.Router();
  */
 const LOGIN_MAX_FAILS = 5;
 const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
-const MAX_PASSWORD_BYTES = 72;
 const loginFails = new Map(); // `ip|email` -> { count, until }
 
 function normalizeCredentials(body = {}) {
@@ -42,11 +42,6 @@ function normalizeCredentials(body = {}) {
 
 function validEmail(email) {
   return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-function validNewPassword(password) {
-  const bytes = Buffer.byteLength(password, 'utf8');
-  return password.length >= 8 && bytes <= MAX_PASSWORD_BYTES;
 }
 
 function loginKey(req, email) {
@@ -88,26 +83,27 @@ function recordLoginFailure(key) {
 router.post('/register', async (req, res, next) => {
   try {
     const { email, password } = normalizeCredentials(req.body);
-    if (!validEmail(email) || !validNewPassword(password)) {
+    if (!validEmail(email) || !isValidNewPassword(password)) {
       return res.status(400).json({
         status: 'error',
         message: 'A valid email and password of 8 to 72 bytes are required',
       });
     }
 
-    const { count } = await db.get('SELECT COUNT(*) as count FROM users');
-    if (count > 0) {
+    // The first-account check and the INSERT are ONE statement: two concurrent /register calls
+    // can no longer both see an empty table and each create an admin.
+    const passwordHash = await hashPassword(password);
+    const result = await db.run(
+      `INSERT INTO users (email, is_admin, password_hash)
+       SELECT ?, 1, ? WHERE NOT EXISTS (SELECT 1 FROM users)`,
+      [email, passwordHash]
+    );
+    if (!result.changes) {
       return res.status(403).json({
         status: 'error',
         message: 'Registration is closed - an account already exists. Ask an admin to assign you a role.',
       });
     }
-
-    const passwordHash = await hashPassword(password);
-    const result = await db.run(
-      'INSERT INTO users (email, is_admin, password_hash) VALUES (?, 1, ?)',
-      [email, passwordHash]
-    );
 
     const adminRole = await db.get('SELECT id FROM roles WHERE name = ?', ['Admin']);
     if (adminRole?.id) {
