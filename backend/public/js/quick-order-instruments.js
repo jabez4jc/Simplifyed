@@ -13,7 +13,6 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
     const shouldUseSymbolMatch = ['NSE_INDEX', 'BSE_INDEX'].includes((baseExchange || '').toUpperCase());
     const primaryMatchField = shouldUseSymbolMatch ? 'symbol' : 'name';
     const instrumentTypes = this.getInstrumentTypesForMode(tradeMode);
-    // debug: removed noisy log
 
     const fetchWithField = async (field, options = {}) => {
       const response = await api.getExpiry(normalizedUnderlying, {
@@ -40,11 +39,8 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
       }
 
       if (cachedExpiries.length > 0) {
-        // debug: removed noisy log
         return cachedExpiries;
       }
-
-      // debug: removed noisy log
 
       // Fallback: find an active instance to refresh expiries from broker
       let instancesResponse = await api.getInstances({ is_active: 1 });
@@ -62,7 +58,6 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
       }
 
       const fallbackInstance = activeInstances[0];
-      // debug: removed noisy log
       let refreshedExpiries = await fetchWithField(primaryMatchField, { instanceId: fallbackInstance.id });
       if (refreshedExpiries.length === 0) {
         const fallbackField = primaryMatchField === 'symbol' ? 'name' : 'symbol';
@@ -70,7 +65,6 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
           refreshedExpiries = await fetchWithField(fallbackField, { instanceId: fallbackInstance.id });
         }
       }
-      // debug: removed noisy log
       return refreshedExpiries;
     } catch (error) {
       console.error('[QuickOrder] Failed to fetch expiries:', error);

@@ -8,5 +8,4 @@ if (window.quickOrder) {
   console.warn('[QuickOrder] Existing handler detected, reusing global instance');
 } else {
   window.quickOrder = new QuickOrderHandler();
-  // debug: removed noisy log
 }

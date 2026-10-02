@@ -15,12 +15,6 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       // Fetch cached open positions; refresh live only when forced
       const response = await api.getAllPositions({ onlyOpen: true, refresh: force });
       const normalized = this.prepareWatchlistPositions(response.data);
-      console.debug('[Watchlists] Positions payload', {
-        instances: response.data?.instances?.length,
-        normalizedLive: normalized.liveInstances.length,
-        normalizedAnalyzer: normalized.analyzerInstances.length,
-        rawSample: response.data?.instances?.slice?.(0, 2) || [],
-      });
       this._updatePositionsPollingInterval(normalized.overallOpen > 0);
       this.latestWatchlistPositionsData = normalized;
       this.updateWatchlistPositionsSummary(normalized);

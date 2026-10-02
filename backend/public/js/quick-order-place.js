@@ -90,7 +90,6 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
 
       if ((tradeMode === 'FUTURES' || tradeMode === 'OPTIONS') && selectedExpiry) {
         orderData.expiry = this.normalizeExpiryDate(selectedExpiry);
-        // debug: removed noisy log
       }
 
       const optionActions = [

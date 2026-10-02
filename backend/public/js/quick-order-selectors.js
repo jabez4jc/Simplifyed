@@ -70,7 +70,6 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
    * Select trade mode
    */
   selectTradeMode(symbolId, mode) {
-    // debug: removed noisy log
 
     const symbolRow = document.querySelector(`tr[data-symbol-id="${symbolId}"]`);
     if (symbolRow) {
@@ -160,9 +159,7 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
    * Select operating mode (BUYER or WRITER)
    */
   selectOperatingMode(symbolId, mode) {
-    // debug: removed noisy log
     this.operatingModes.set(symbolId, mode);
-    // debug: removed noisy log
     this.reloadExpansionContent(symbolId);
   }
 
@@ -178,7 +175,6 @@ Object.defineProperties(QuickOrderHandler.prototype, Object.getOwnPropertyDescri
   selectExpiry(symbolId, expiry) {
     // Ensure expiry is always stored in YYYY-MM-DD format (API format)
     const normalizedExpiry = this.normalizeExpiryDate(expiry);
-    // debug: removed noisy log
     this.selectedExpiries.set(symbolId, normalizedExpiry);
     this.strikeOffsetSnapshots.delete(symbolId);
     this.refreshStrikeDropdownLabels(symbolId);

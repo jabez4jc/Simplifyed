@@ -127,7 +127,6 @@ router.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: toISTISOString(),
-    version: '2.0.0',
   });
 });
 
