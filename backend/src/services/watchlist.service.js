@@ -126,8 +126,8 @@ class WatchlistService {
 
       // Create watchlist
       const result = await db.run(
-        `INSERT INTO watchlists (name, description, is_active, type, is_broadcast, webhook_slug)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO watchlists (name, description, is_active, type, webhook_slug)
+         VALUES (?, ?, ?, ?, ?)`,
         [
           normalized.name,
           normalized.description,
@@ -135,7 +135,6 @@ class WatchlistService {
           // created from the dashboard inactive, and an inactive watchlist is never quoted.
           normalized.is_active === false ? 0 : 1,
           normalized.type || 'standard',
-          normalized.is_broadcast ? 1 : 0,
           normalized.webhook_slug || null,
         ]
       );
@@ -622,16 +621,6 @@ class WatchlistService {
         errors.push({ field: 'type', message: `type must be one of: ${allowed.join(', ')}` });
       } else {
         normalized.type = type;
-        normalized.is_broadcast = type === 'broadcast';
-      }
-    }
-
-    // is_broadcast flag (kept for backward compatibility)
-    if (data.is_broadcast !== undefined) {
-      const flag = parseBooleanSafe(data.is_broadcast, false);
-      normalized.is_broadcast = flag;
-      if (!normalized.type) {
-        normalized.type = flag ? 'broadcast' : 'standard';
       }
     }
 
@@ -641,17 +630,7 @@ class WatchlistService {
       normalized.webhook_slug = slug || null;
     }
 
-    if (!isUpdate) {
-      if (normalized.type === undefined) normalized.type = 'standard';
-      if (normalized.is_broadcast === undefined) normalized.is_broadcast = normalized.type === 'broadcast';
-    } else {
-      if (normalized.type && normalized.is_broadcast === undefined) {
-        normalized.is_broadcast = normalized.type === 'broadcast';
-      }
-      if (normalized.is_broadcast !== undefined && !normalized.type) {
-        normalized.type = normalized.is_broadcast ? 'broadcast' : 'standard';
-      }
-    }
+    if (!isUpdate && normalized.type === undefined) normalized.type = 'standard';
 
     if (errors.length > 0) {
       throw new ValidationError('Watchlist validation failed', errors);
@@ -662,10 +641,7 @@ class WatchlistService {
 
   _isBroadcast(watchlist) {
     if (!watchlist) return false;
-    return Boolean(
-      watchlist.is_broadcast ||
-      (typeof watchlist.type === 'string' && watchlist.type.toLowerCase() === 'broadcast')
-    );
+    return typeof watchlist.type === 'string' && watchlist.type.toLowerCase() === 'broadcast';
   }
 
   _isStrategy(watchlist) {

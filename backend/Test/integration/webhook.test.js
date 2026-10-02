@@ -73,7 +73,7 @@ const alert = (overrides = {}) => ({
 
 /** A broadcast-enabled watchlist with the real crypto account behind it. */
 async function broadcastTarget() {
-  const wl = await makeWatchlist({ type: 'broadcast', is_broadcast: 1, webhook_slug: `slug-${Date.now()}` });
+  const wl = await makeWatchlist({ type: 'broadcast', webhook_slug: `slug-${Date.now()}` });
   const inst = await realInstance(CRYPTO);
   await linkInstanceToWatchlist(wl.id, inst.id);
   return { wl, inst };
@@ -185,7 +185,7 @@ test('an alert for an unknown watchlist slug does not place an order anywhere', 
 });
 
 test('a non-broadcast watchlist cannot be driven through the broadcast webhook', async () => {
-  const wl = await makeWatchlist({ type: 'standard', is_broadcast: 0, webhook_slug: `std-${Date.now()}` });
+  const wl = await makeWatchlist({ type: 'standard', webhook_slug: `std-${Date.now()}` });
   const inst = await realInstance(CRYPTO);
   await linkInstanceToWatchlist(wl.id, inst.id);
 

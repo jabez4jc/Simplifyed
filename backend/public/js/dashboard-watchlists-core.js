@@ -170,7 +170,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
   isBroadcastWatchlist(watchlist) {
     if (!watchlist) return false;
     const type = (watchlist.type || '').toLowerCase();
-    return Boolean(watchlist.is_broadcast || type === 'broadcast');
+    return type === 'broadcast';
   }
 
   isStrategyWatchlist(watchlist) {

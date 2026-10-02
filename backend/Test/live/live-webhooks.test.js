@@ -86,7 +86,7 @@ before(async () => {
   for (const inst of instances) await assertAnalyzerModeAtBroker(inst);
 
   for (const [label, names] of [['Indian', INDIAN], ['Crypto', CRYPTO]]) {
-    const wl = await watchlistService.createWatchlist({ name: `${TAG} ${label} broadcast`, type: 'broadcast', is_broadcast: true, is_active: true });
+    const wl = await watchlistService.createWatchlist({ name: `${TAG} ${label} broadcast`, type: 'broadcast', is_active: true });
     made.watchlists.push(wl.id);
     for (const inst of byName(names)) await watchlistService.assignInstance(wl.id, inst.id);
     slugs[label] = (await watchlistService.getWatchlistById(wl.id)).webhook_slug;

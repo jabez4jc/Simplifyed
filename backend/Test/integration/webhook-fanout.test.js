@@ -66,7 +66,7 @@ const alert = (overrides = {}) => ({
 });
 
 async function broadcastWatchlist() {
-  const wl = await makeWatchlist({ type: 'broadcast', is_broadcast: 1, webhook_slug: `fan-${Date.now()}` });
+  const wl = await makeWatchlist({ type: 'broadcast', webhook_slug: `fan-${Date.now()}` });
   const inst = await realInstance(CRYPTO);
   await linkInstanceToWatchlist(wl.id, inst.id);
   return { wl, inst };
