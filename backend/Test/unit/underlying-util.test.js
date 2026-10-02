@@ -1,6 +1,7 @@
 import assert from 'assert';
 import test from 'node:test';
-import { parseExpiry, upcomingExpiries } from '../../src/utils/underlying.util.js';
+import { upcomingExpiries } from '../../src/utils/underlying.util.js';
+import { parseExpiry } from '../../src/utils/expiry.js';
 
 /**
  * Expiry parsing spans four exchanges with two formats. A parser that silently returns null for

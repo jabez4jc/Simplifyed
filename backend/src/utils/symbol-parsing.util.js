@@ -18,7 +18,7 @@ import derivativeResolutionService, {
   BSE_INDEX_UNDERLYINGS,
 } from '../services/derivative-resolution.service.js';
 import { log } from '../core/logger.js';
-import { ValidationError } from '../core/errors.js';
+import { sameExpiry, toISO } from './expiry.js';
 
 /**
  * Map cash market exchange to derivative exchange
@@ -79,8 +79,6 @@ export function parseFuturesSymbol(symbolStr) {
     return { underlying: null, expiry: null };
   }
 
-  const MONTH_NAMES = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-
   // Normalize: uppercase, remove exchange prefix
   let normalized = symbolStr.toUpperCase();
   if (normalized.includes(':')) {
@@ -95,13 +93,11 @@ export function parseFuturesSymbol(symbolStr) {
 
   const [, underlying, day, monthStr, year] = match;
 
-  const monthIndex = MONTH_NAMES.indexOf(monthStr);
-  if (monthIndex === -1) {
+  // 2-digit year assumed to be 2000-2099
+  const expiry = toISO(`${day}${monthStr}${year}`);
+  if (!expiry) {
     return { underlying: null, expiry: null };
   }
-
-  // 2-digit year assumed to be 2000-2099
-  const expiry = `20${year}-${String(monthIndex + 1).padStart(2, '0')}-${day}`;
 
   return { underlying, expiry };
 }
@@ -111,28 +107,9 @@ export function getFuturesUnderlying(symbol = {}) {
   return parsed.underlying || derivativeResolutionService.getDerivativeUnderlying(symbol);
 }
 
-function getSymbolExpiryVariants(symbol = {}) {
-  const variants = new Set();
-  const direct = symbol.expiry;
-  if (direct) {
-    derivativeResolutionService.expandExpiryFormats(direct)
-      .forEach((value) => variants.add(value));
-  }
-  const parsed = parseFuturesSymbol(symbol.symbol || symbol.trading_symbol || symbol.name);
-  if (parsed.expiry) {
-    derivativeResolutionService.expandExpiryFormats(parsed.expiry)
-      .forEach((value) => variants.add(value));
-  }
-  return variants;
-}
-
 export function expiryMatchesSymbol(expiry, symbol = {}) {
-  const selected = derivativeResolutionService.expandExpiryFormats(expiry);
-  if (!selected.length) {
-    return false;
-  }
-  const symbolVariants = getSymbolExpiryVariants(symbol);
-  return selected.some((value) => symbolVariants.has(value));
+  const parsed = parseFuturesSymbol(symbol.symbol || symbol.trading_symbol || symbol.name);
+  return sameExpiry(expiry, symbol.expiry) || sameExpiry(expiry, parsed.expiry);
 }
 
 /**
@@ -169,17 +146,7 @@ export function parseOptionSymbol(symbol) {
 
   const [, underlying, dateStr, strikeStr, rawType] = match;
 
-  const monthMap = {
-    JAN: '01', FEB: '02', MAR: '03', APR: '04',
-    MAY: '05', JUN: '06', JUL: '07', AUG: '08',
-    SEP: '09', OCT: '10', NOV: '11', DEC: '12',
-  };
-
-  const day = dateStr.substring(0, 2);
-  const monthAbbr = dateStr.substring(2, 5);
-  const year = '20' + dateStr.substring(5, 7);
-  const month = monthMap[monthAbbr] || '01';
-  const expiry = `${year}-${month}-${day}`;
+  const expiry = toISO(dateStr);
 
   const type = rawType.startsWith('C') ? 'CE' : 'PE';
 
@@ -210,29 +177,11 @@ export function normalizeProduct(product) {
 }
 
 /**
- * Normalize expiry input to YYYY-MM-DD
+ * Normalize expiry input to YYYY-MM-DD; input that is not a date is passed through upper-cased.
  */
 export function normalizeExpiryInput(expiry) {
   if (!expiry) return null;
-  const trimmed = String(expiry).trim().toUpperCase();
-
-  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-    return trimmed;
-  }
-
-  if (/^\d{2}-[A-Z]{3}-\d{2}$/.test(trimmed)) {
-    const [day, monthStr, year] = trimmed.split('-');
-    const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
-                        'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-    const monthIndex = monthNames.indexOf(monthStr);
-    if (monthIndex === -1) {
-      throw new ValidationError(`Unknown expiry month: ${monthStr}`);
-    }
-    const paddedMonth = String(monthIndex + 1).padStart(2, '0');
-    return `20${year}-${paddedMonth}-${day}`;
-  }
-
-  return trimmed;
+  return toISO(expiry) || String(expiry).trim().toUpperCase();
 }
 
 /**

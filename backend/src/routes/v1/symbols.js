@@ -10,7 +10,8 @@ import instrumentsService from '../../services/instruments.service.js';
 import openalgoClient from '../../integrations/openalgo/client.js';
 import { ValidationError } from '../../core/errors.js';
 import { sanitizeString } from '../../utils/sanitizers.js';
-import { upcomingExpiries, parseExpiry } from '../../utils/underlying.util.js';
+import { upcomingExpiries } from '../../utils/underlying.util.js';
+import { toISO } from '../../utils/expiry.js';
 import { isCryptoExchange } from '../../utils/broker-type.util.js';
 import marketDataFeedService from '../../services/market-data-feed.service.js';
 import optionGreeksService from '../../services/option-greeks.service.js';
@@ -158,7 +159,7 @@ router.get('/expiry', async (req, res, next) => {
       const instance = await instanceService.getInstanceById(parseInt(instanceId, 10));
       const fetched = await openalgoClient.getExpiry(instance, symbol.toUpperCase(), normalizedExchange);
       expiries = upcomingExpiries(fetched, new Date(), { crypto: isCryptoExchange(normalizedExchange) })
-        .map((e) => parseExpiry(e).toISOString().slice(0, 10));
+        .map((e) => toISO(e));
     }
 
     res.json({

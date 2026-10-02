@@ -7,7 +7,8 @@ import { log } from '../core/logger.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import instrumentsService from './instruments.service.js';
 import { NotFoundError } from '../core/errors.js';
-import { parseExpiry, tradableExpiries } from '../utils/underlying.util.js';
+import { tradableExpiries } from '../utils/underlying.util.js';
+import { parseExpiry } from '../utils/expiry.js';
 import { isCryptoExchange } from '../utils/broker-type.util.js';
 import derivativeResolutionService from './derivative-resolution.service.js';
 

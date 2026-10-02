@@ -14,18 +14,9 @@ import { isTestMode } from '../core/config.js';
 import { toISTISOString } from '../utils/time.js';
 import cron from 'node-cron';
 import { isCryptoBroker, isCryptoExchange } from '../utils/broker-type.util.js';
-import { parseExpiry, upcomingExpiries, isContractExpired } from '../utils/underlying.util.js';
+import { upcomingExpiries, isContractExpired } from '../utils/underlying.util.js';
+import { parseExpiry, toISO, toDisplay } from '../utils/expiry.js';
 import futuresRollService from './futures-roll.service.js';
-
-const MONTH_ABBR_TO_NUMBER = {
-  JAN: '01', FEB: '02', MAR: '03', APR: '04',
-  MAY: '05', JUN: '06', JUL: '07', AUG: '08',
-  SEP: '09', OCT: '10', NOV: '11', DEC: '12'
-};
-
-const MONTH_NUMBER_TO_ABBR = Object.fromEntries(
-  Object.entries(MONTH_ABBR_TO_NUMBER).map(([abbr, num]) => [num, abbr])
-);
 
 const EXPIRY_PATTERN = /(\d{2})([A-Z]{3})(\d{2})(?=(?:\d+(?:\.\d+)?(?:CE|PE))|FUT)/;
 
@@ -432,7 +423,7 @@ class InstrumentsService {
       const normalizedSymbol = String(symbol || '').toUpperCase();
 
       // Stored as ISO (YYYY-MM-DD); callers may hand over DD-MMM-YY or DDMMMYY.
-      const expiryKey = this._normalizeExpiryDate(expiry) || String(expiry || '').trim().toUpperCase();
+      const expiryKey = toISO(expiry) || String(expiry || '').trim().toUpperCase();
 
       let options = await db.all(
         `SELECT * FROM instruments
@@ -633,29 +624,6 @@ class InstrumentsService {
     }
   }
 
-  _normalizeExpiryDate(expiry) {
-    if (!expiry) return null;
-    const trimmed = String(expiry).trim().toUpperCase();
-
-    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-      return trimmed;
-    }
-
-    const match = trimmed.match(/^(\d{2})-?([A-Z]{3})-?(\d{2})$/);
-    if (match) {
-      const [, day, monthStr, year] = match;
-      const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-      const monthIndex = months.indexOf(monthStr);
-      if (monthIndex === -1) {
-        return null;
-      }
-      const isoMonth = String(monthIndex + 1).padStart(2, '0');
-      return `20${year}-${isoMonth}-${day}`;
-    }
-
-    return null;
-  }
-
   _buildExpiryDisplayList(rows = []) {
     const map = new Map();
     const todayIso = (() => {
@@ -666,12 +634,12 @@ class InstrumentsService {
 
     for (const row of rows) {
       if (!row || !row.expiry) continue;
-      const normalized = this._normalizeExpiryDate(row.expiry);
+      const normalized = toISO(row.expiry);
       if (!normalized) continue;
       // Skip past expiries to avoid showing or using stale contracts
       if (normalized < todayIso) continue;
       if (!map.has(normalized)) {
-        const display = this._formatExpiryForDisplay(normalized) || row.expiry;
+        const display = toDisplay(normalized) || row.expiry;
         map.set(normalized, display);
       }
     }
@@ -691,18 +659,6 @@ class InstrumentsService {
         return (a.display || '').localeCompare(b.display || '');
       })
       .map(entry => entry.display);
-  }
-
-  _formatExpiryForDisplay(normalizedExpiry) {
-    if (!normalizedExpiry) return null;
-    const match = normalizedExpiry.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (!match) {
-      return normalizedExpiry;
-    }
-
-    const [, year, month, day] = match;
-    const monthName = MONTH_NUMBER_TO_ABBR[month] || month;
-    return `${day}-${monthName}-${year.slice(-2)}`;
   }
 
   /**
@@ -742,7 +698,7 @@ class InstrumentsService {
     if (!symbol) return null;
     const instrumenttype = inst.instrumenttype ? String(inst.instrumenttype).toUpperCase() : null;
     const underlyingKey = this._deriveUnderlyingKey({ symbol, instrumenttype });
-    const expiry = this._deriveExpiryFromSymbol(symbol, instrumenttype) || this._normalizeExpiryDate(inst.expiry);
+    const expiry = this._deriveExpiryFromSymbol(symbol, instrumenttype) || toISO(inst.expiry);
     const lotsize = parseInt(orNull(inst.lotsize), 10);
 
     return [
@@ -882,35 +838,8 @@ class InstrumentsService {
    */
   _deriveExpiryFromSymbol(symbol, instrumentType) {
     if (!symbol || !this._isDerivativeInstrumentType(instrumentType)) return null;
-    const upperSymbol = symbol.toUpperCase();
-    const match = upperSymbol.match(EXPIRY_PATTERN);
-    if (!match || match.length < 4) {
-      return null;
-    }
-
-    const [, dayFragment, monthFragment, yearFragment] = match;
-    const day = String(dayFragment).padStart(2, '0');
-    const monthAbbr = monthFragment;
-    let year = yearFragment;
-
-    const monthNumber = MONTH_ABBR_TO_NUMBER[monthAbbr];
-    if (!monthNumber) {
-      return null;
-    }
-
-    if (year.length === 2) {
-      year = `20${year}`;
-    }
-    if (year.length !== 4 || Number.isNaN(Number(year))) {
-      return null;
-    }
-
-    const dayNumber = Number(day);
-    if (Number.isNaN(dayNumber) || dayNumber < 1 || dayNumber > 31) {
-      return null;
-    }
-
-    return `${year}-${monthNumber}-${day}`;
+    const match = symbol.toUpperCase().match(EXPIRY_PATTERN);
+    return match ? toISO(`${match[1]}${match[2]}${match[3]}`) : null;
   }
 
   /**

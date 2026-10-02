@@ -5,6 +5,8 @@
  * quote-enrichment/spot-resolution logic that calls these.
  */
 
+import { toISO } from './expiry.js';
+
 function erfApprox(x) {
   // Abramowitz and Stegun formula 7.1.26
   const sign = x < 0 ? -1 : 1;
@@ -107,22 +109,8 @@ export function impliedVolBlack76(targetPrice, F, K, T, r, isCall, opts = {}) {
 export function parseExpiryToYearFraction(expiry) {
   if (!expiry) return null;
   const now = new Date();
-  let dt = null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
-    dt = new Date(`${expiry}T15:30:00`);
-  } else if (/^\d{2}-[A-Z]{3}-\d{2}$/.test(expiry)) {
-    const [d, mon, yy] = expiry.split('-');
-    const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-    const mi = monthNames.indexOf(mon);
-    if (mi >= 0) dt = new Date(`20${yy}-${String(mi + 1).padStart(2, '0')}-${d}T15:30:00`);
-  } else if (/^\d{2}[A-Z]{3}\d{2}$/.test(expiry)) {
-    const d = expiry.slice(0, 2);
-    const mon = expiry.slice(2, 5);
-    const yy = expiry.slice(5, 7);
-    const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-    const mi = monthNames.indexOf(mon);
-    if (mi >= 0) dt = new Date(`20${yy}-${String(mi + 1).padStart(2, '0')}-${d}T15:30:00`);
-  }
+  const iso = toISO(expiry);
+  const dt = iso ? new Date(`${iso}T15:30:00`) : null;
   if (!dt) return null;
   const ms = dt.getTime() - now.getTime();
   const years = ms / (1000 * 60 * 60 * 24 * 365.25);

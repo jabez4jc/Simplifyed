@@ -19,6 +19,7 @@ import {
   stripDerivativeSuffix,
 } from '../utils/black76-pricing.util.js';
 import { isCryptoBroker, isCryptoExchange } from '../utils/broker-type.util.js';
+import { toISO, toBroker } from '../utils/expiry.js';
 
 async function enrichWithQuotes(rows, exchangeLabel) {
   try {
@@ -239,9 +240,11 @@ class OptionChainService {
   async getOptionChain(underlying, expiry, type = null, includeQuotes = false, strikeWindow = null, forwardSource = 'carry') {
     try {
       const normalizedUnderlying = underlying.toUpperCase();
-      const expiryVariants = this._expandExpiryFormats(expiry);
+      // The expiry as asked for (what the response and cache carry), and as stored (ISO).
+      const expiryKey = String(expiry || '').trim().toUpperCase();
+      const isoExpiry = toISO(expiry) || expiryKey;
 
-      const cached = this._getCached(normalizedUnderlying, expiryVariants[0], includeQuotes, forwardSource);
+      const cached = this._getCached(normalizedUnderlying, expiryKey, includeQuotes, forwardSource);
       if (cached) return cached;
 
       const exchangeLookup = await db.get(
@@ -272,7 +275,7 @@ class OptionChainService {
       if (includeQuotes) {
         const liveChain = await this._getOptionChainFromBroker(
           brokerUnderlying,
-          expiryVariants,
+          expiryKey,
           exchangeLabel,
           strikeWindow,
           forwardSource
@@ -284,26 +287,25 @@ class OptionChainService {
             rows: liveChain.rows.length,
             source: 'broker',
           });
-          this._setCache(normalizedUnderlying, expiryVariants[0], includeQuotes, liveChain, forwardSource);
+          this._setCache(normalizedUnderlying, expiryKey, includeQuotes, liveChain, forwardSource);
           return liveChain;
         }
         log.warn('Broker option chain returned empty, falling back to DB cache', {
           underlying: normalizedUnderlying,
-          expiry: expiryVariants[0],
+          expiry: expiryKey,
         });
       }
 
       // Validate underlying and expiry using underlying_key
-      const placeholders = expiryVariants.map(() => '?').join(', ');
       const expiryCheck = await db.get(`
         SELECT DISTINCT expiry
         FROM instruments
         WHERE exchange IN (${exchangeDbList})
         AND instrumenttype IN ('CE', 'PE')
         AND underlying_key = ?
-        AND expiry IN (${placeholders})
+        AND expiry = ?
         LIMIT 1
-      `, [normalizedUnderlying, ...expiryVariants]);
+      `, [normalizedUnderlying, isoExpiry]);
 
       if (!expiryCheck) {
         // Try to find available expiries to give a helpful error message
@@ -332,10 +334,10 @@ class OptionChainService {
         WHERE exchange IN (${exchangeDbList})
         AND instrumenttype IN ('CE', 'PE')
         AND underlying_key = ?
-        AND expiry IN (${placeholders})
+        AND expiry = ?
         AND strike > 0
         ORDER BY strike
-      `, [normalizedUnderlying, ...expiryVariants]);
+      `, [normalizedUnderlying, isoExpiry]);
 
       // Pivot into chain rows
       const strikesMap = new Map();
@@ -401,26 +403,26 @@ class OptionChainService {
 
       const metaBase = {
         underlying: normalizedUnderlying,
-        expiry: expiryVariants[0],
+        expiry: expiryKey,
         exchange: exchangeLabel,
         atm_strike: atmResolved,
         spot: spotResolved || atmResolved || null,
         r: riskFreeRateForSymbol(normalizedUnderlying),
         q: dividendYieldForSymbol(normalizedUnderlying),
-        T: parseExpiryToYearFraction(expiryVariants[0]) || 7 / 365,
+        T: parseExpiryToYearFraction(expiryKey) || 7 / 365,
       };
       const { rows: withGreeks, meta } = buildGreeksForRows(enriched, metaBase, forwardSource);
       const result = {
         underlying: normalizedUnderlying,
         type: isIndex ? 'index' : 'stock',
         exchange: exchangeLabel,
-        expiry: expiryVariants[0],
+        expiry: expiryKey,
         has_quotes: includeQuotes,
         atm_strike: meta.atm_strike || atmStrike,
         rows: withGreeks,
         meta,
       };
-      this._setCache(normalizedUnderlying, expiryVariants[0], includeQuotes, result, forwardSource);
+      this._setCache(normalizedUnderlying, expiryKey, includeQuotes, result, forwardSource);
       return result;
     } catch (error) {
       if (error instanceof ValidationError) {
@@ -431,60 +433,7 @@ class OptionChainService {
     }
   }
 
-  /**
-   * Expand expiry formats to support DB (DD-MMM-YY) and ISO (YYYY-MM-DD) and broker (DDMMMYY)
-   * @param {string} expiry
-   * @returns {string[]} unique variants
-   */
-  _expandExpiryFormats(expiry) {
-    if (!expiry) return [];
-    const variants = new Set();
-    const upper = String(expiry).toUpperCase().trim();
-    variants.add(upper);
-
-    // YYYY-MM-DD -> DD-MMM-YY and DDMMMYY
-    if (/^\d{4}-\d{2}-\d{2}$/.test(upper)) {
-      const d = new Date(upper);
-      const day = String(d.getDate()).padStart(2, '0');
-      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-      const mon = monthNames[d.getMonth()];
-      const yy = String(d.getFullYear()).slice(-2);
-      variants.add(`${day}-${mon}-${yy}`);
-      variants.add(`${day}${mon}${yy}`);
-    }
-
-    // DD-MMM-YY -> YYYY-MM-DD and DDMMMYY
-    if (/^\d{2}-[A-Z]{3}-\d{2}$/.test(upper)) {
-      const [day, mon, yy] = upper.split('-');
-      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-      const idx = monthNames.indexOf(mon);
-      if (idx >= 0) {
-        const yyyy = `20${yy}`;
-        const month = String(idx + 1).padStart(2, '0');
-        variants.add(`${yyyy}-${month}-${day}`);
-        variants.add(`${day}${mon}${yy}`);
-      }
-    }
-
-    // DDMMMYY -> add hyphenated and ISO
-    if (/^\d{2}[A-Z]{3}\d{2}$/.test(upper)) {
-      const day = upper.slice(0, 2);
-      const mon = upper.slice(2, 5);
-      const yy = upper.slice(5, 7);
-      variants.add(`${day}-${mon}-${yy}`);
-      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-      const idx = monthNames.indexOf(mon);
-      if (idx >= 0) {
-        const yyyy = `20${yy}`;
-        const month = String(idx + 1).padStart(2, '0');
-        variants.add(`${yyyy}-${month}-${day}`);
-      }
-    }
-
-    return Array.from(variants);
-  }
-
-  async _getOptionChainFromBroker(underlying, expiryVariants, exchangeLabel, strikeWindow = null, forwardSource = 'carry') {
+  async _getOptionChainFromBroker(underlying, expiry, exchangeLabel, strikeWindow = null, forwardSource = 'carry') {
     try {
       // Prefer instances flagged for option chain using health flags
       let pool = await marketDataInstanceService.getPoolForEndpoint('optionchain');
@@ -504,7 +453,7 @@ class OptionChainService {
 
       for (const instance of orderedPool) {
         try {
-          brokerExpiry = expiryVariants.find((e) => /^\d{2}[A-Z]{3}\d{2}$/.test(e)) || expiryVariants[0];
+          brokerExpiry = toBroker(expiry);
           let data = null;
 
           for (const exch of exchangeCandidates) {

@@ -27,13 +27,13 @@ import settingsService from './settings.service.js';
 import { notify } from './notify.service.js';
 import { settingDefault } from '../config/settings-registry.js';
 import derivativeResolutionService from './derivative-resolution.service.js';
-import { parseExpiry, upcomingExpiries, isContractExpired } from '../utils/underlying.util.js';
+import { upcomingExpiries, isContractExpired } from '../utils/underlying.util.js';
+import { parseExpiry, toDisplay } from '../utils/expiry.js';
 import { isCryptoExchange } from '../utils/broker-type.util.js';
 import { toISTDate } from '../utils/time.js';
 
 export const EARLY_ROLL_SETTING = 'futures.roll_days_before_expiry';
 const DAY_MS = 24 * 60 * 60 * 1000;
-const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
 /** 'NIFTY1!' -> { underlying: 'NIFTY', series: 1 }; anything else -> null. */
 export function parseContinuousSymbol(symbol) {
@@ -41,12 +41,6 @@ export function parseContinuousSymbol(symbol) {
   return m ? { underlying: m[1], series: Number(m[2]) } : null;
 }
 
-/** '2026-10-27' or '27-OCT-26' -> '27-OCT-26', the format watchlist rows carry. */
-function toRowExpiry(raw) {
-  const d = parseExpiry(raw);
-  if (!d) return raw || null;
-  return `${String(d.getUTCDate()).padStart(2, '0')}-${MONTHS[d.getUTCMonth()]}-${String(d.getUTCFullYear()).slice(-2)}`;
-}
 
 function daysToExpiry(raw, now) {
   const ist = toISTDate(now);
@@ -153,7 +147,7 @@ class FuturesRollService {
               underlying_symbol = ?, is_enabled = 1, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?`,
       [
-        contract.symbol, contract.token, toRowExpiry(contract.expiry), contract.lotsize || 1,
+        contract.symbol, contract.token, toDisplay(contract.expiry) || contract.expiry || null, contract.lotsize || 1,
         contract.tick_size, contract.brsymbol, contract.brexchange, contract.name || underlying,
         underlying, row.id,
       ]

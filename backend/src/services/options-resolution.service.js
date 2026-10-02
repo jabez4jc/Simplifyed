@@ -8,6 +8,7 @@ import { log } from '../core/logger.js';
 import instrumentsService from './instruments.service.js';
 import { NotFoundError, ValidationError } from '../core/errors.js';
 import { parseFloatSafe } from '../utils/sanitizers.js';
+import { toISO } from '../utils/expiry.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 
 const STRIKES_PER_SIDE = 7; // 7 above + 7 below + ATM = 15 max
@@ -29,55 +30,6 @@ class OptionsResolutionService {
 
   _buildAtmLockKey(underlying, exchange, expiry) {
     return `${(underlying || '').toUpperCase()}|${(exchange || '').toUpperCase()}|${expiry || ''}`;
-  }
-
-  /**
-   * Convert expiry date from YYYY-MM-DD to DD-MMM-YY format (OpenAlgo format)
-   * @param {string} expiry - Expiry in YYYY-MM-DD format
-   * @returns {string} Expiry in DD-MMM-YY format
-   * @private
-   */
-  _convertToOpenAlgoExpiryFormat(expiry) {
-    if (!expiry) return null;
-
-    // If already in DD-MMM-YY format, return as-is
-    if (/^\d{2}-[A-Z]{3}-\d{2}$/.test(expiry)) {
-      return expiry;
-    }
-
-    // Convert YYYY-MM-DD to DD-MMM-YY
-    if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
-      const date = new Date(expiry);
-      const day = String(date.getDate()).padStart(2, '0');
-      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
-                          'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-      const month = monthNames[date.getMonth()];
-      const year = String(date.getFullYear()).slice(-2);
-      return `${day}-${month}-${year}`;
-    }
-
-    log.warn('Unknown expiry format in _convertToOpenAlgoExpiryFormat', { expiry });
-    return expiry;
-  }
-
-  _normalizeExpiryToISO(expiry) {
-    if (!expiry) return null;
-    if (/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
-      return expiry;
-    }
-    if (/^\d{2}-[A-Z]{3}-\d{2}$/.test(expiry)) {
-      const [day, monthStr, year] = expiry.split('-');
-      const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
-                          'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-      const monthIndex = monthNames.indexOf(monthStr);
-      if (monthIndex === -1) {
-        return null;
-      }
-      const fullYear = `20${year}`;
-      const paddedMonth = String(monthIndex + 1).padStart(2, '0');
-      return `${fullYear}-${paddedMonth}-${day}`;
-    }
-    return expiry;
   }
 
   /**
@@ -236,40 +188,23 @@ class OptionsResolutionService {
       }
     }
 
-    const isoExpiry = this._normalizeExpiryToISO(expiry);
-    const openalgoExpiry = this._convertToOpenAlgoExpiryFormat(expiry);
+    // instruments.expiry is stored as ISO, so one lookup is enough.
+    const isoExpiry = toISO(expiry) || expiry;
+    log.debug('Looking up option chain from instruments DB', { underlying, exchange, expiry: isoExpiry });
 
-    // Try multiple expiry formats when querying DB
-    const expiryFormatsToTry = [isoExpiry, openalgoExpiry, expiry].filter(Boolean);
-    const uniqueFormats = [...new Set(expiryFormatsToTry)];
-
-    log.debug('Looking up option chain from instruments DB', {
-      underlying,
-      exchange,
-      expiry,
-      formatsToTry: uniqueFormats,
-    });
-
-    for (const expiryFormat of uniqueFormats) {
-      try {
-        const dbChain = await this._buildOptionChainFromDb(underlying, expiryFormat, exchange);
-        if (dbChain) {
-          log.debug('Found option chain in instruments DB', {
-            underlying,
-            expiryFormat,
-            exchange,
-            strikes: dbChain.strikes?.length || 0,
-          });
-          return dbChain;
-        }
-      } catch (error) {
-        log.debug('DB option chain lookup failed for format', {
+    try {
+      const dbChain = await this._buildOptionChainFromDb(underlying, isoExpiry, exchange);
+      if (dbChain) {
+        log.debug('Found option chain in instruments DB', {
           underlying,
-          expiryFormat,
+          expiry: isoExpiry,
           exchange,
-          error: error.message,
+          strikes: dbChain.strikes?.length || 0,
         });
+        return dbChain;
       }
+    } catch (error) {
+      log.debug('DB option chain lookup failed', { underlying, expiry: isoExpiry, exchange, error: error.message });
     }
 
     // If not found in DB, throw an error with helpful message

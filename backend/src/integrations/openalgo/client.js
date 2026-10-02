@@ -9,22 +9,9 @@ import { log } from '../../core/logger.js';
 import { OpenAlgoError, ValidationError } from '../../core/errors.js';
 import { requiresLimitOrders } from '../../utils/broker-type.util.js';
 import brokerUnitsService from '../../services/broker-units.service.js';
-import { contractExpiry, isContractExpired, parseExpiry } from '../../utils/underlying.util.js';
+import { contractExpiry, isContractExpired } from '../../utils/underlying.util.js';
+import { toBroker } from '../../utils/expiry.js';
 
-const EXPIRY_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
-
-/**
- * OpenAlgo's /optionchain matches `expiry_date` only as DDMMMYY ("30SEP26"). Verified live on
- * 30 Sep 2026: "2026-09-30" and "30-SEP-26" both answer "No strikes found", for every expiry - so
- * order-side resolution, which passed ISO dates, silently fell back to the local cache.
- */
-export function toBrokerExpiry(expiry) {
-  const raw = String(expiry || '').trim().toUpperCase();
-  if (/^\d{2}[A-Z]{3}\d{2}$/.test(raw)) return raw;
-  const d = parseExpiry(raw);
-  if (!d) return raw;
-  return `${String(d.getUTCDate()).padStart(2, '0')}${EXPIRY_MONTHS[d.getUTCMonth()]}${String(d.getUTCFullYear()).slice(-2)}`;
-}
 import config from '../../core/config.js';
 import { maskApiKey } from '../../utils/sanitizers.js';
 import settingsService from '../../services/settings.service.js';
@@ -2083,7 +2070,7 @@ class OpenAlgoClient extends EventEmitter {
       exchange,
     };
     if (expiry) {
-      payload.expiry_date = toBrokerExpiry(expiry);
+      payload.expiry_date = toBroker(expiry);
     }
     if (strikeCount) {
       payload.strike_count = strikeCount;

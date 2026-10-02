@@ -1,6 +1,6 @@
 /**
  * Resolving a tradeable symbol to the key its OPTIONS are filed under, across NFO, BFO, MCX and
- * CRYPTO - and parsing the expiry formats those exchanges use.
+ * CRYPTO. (Expiry parsing and formatting live in expiry.js.)
  *
  * No single source is right for every segment, which is why this validates candidates instead
  * of picking one rule:
@@ -20,45 +20,7 @@
 import db from '../core/database.js';
 import { toISTDate } from './time.js';
 import { isCryptoExchange } from './broker-type.util.js';
-
-const MONTHS = {
-  JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5,
-  JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11,
-};
-
-/**
- * Parse an expiry into a UTC Date, or null.
- *
- * Two formats are in use and both must be handled:
- *   DD-MMM-YY    '23-OCT-26'   NFO, BFO, MCX, CDS
- *   YYYY-MM-DD   '2026-08-14'  CRYPTO
- * Perpetual crypto futures carry no expiry at all, which is correct and yields null.
- */
-export function parseExpiry(raw) {
-  const value = String(raw || '').trim().toUpperCase();
-  if (!value) return null;
-
-  const dmy = /^(\d{2})-([A-Z]{3})-(\d{2})$/.exec(value);
-  if (dmy && dmy[2] in MONTHS) {
-    const [day, mon, yy] = [Number(dmy[1]), MONTHS[dmy[2]], 2000 + Number(dmy[3])];
-    const d = new Date(Date.UTC(yy, mon, day));
-    // Same rollover guard: '32-JAN-26' would otherwise become 1 February.
-    return d.getUTCMonth() === mon && d.getUTCDate() === day ? d : null;
-  }
-
-  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (iso) {
-    const [y, m, day] = [Number(iso[1]), Number(iso[2]), Number(iso[3])];
-    const d = new Date(Date.UTC(y, m - 1, day));
-    // Date.UTC ROLLS OVER out-of-range parts rather than failing: (2026, 12, 40) silently
-    // becomes 2027-02-09. A malformed feed value would then resolve to a real-looking expiry
-    // and select the wrong contracts. Round-trip the components to reject it.
-    const ok = d.getUTCFullYear() === y && d.getUTCMonth() === m - 1 && d.getUTCDate() === day;
-    return ok ? d : null;
-  }
-
-  return null;
-}
+import { parseExpiry } from './expiry.js';
 
 /** Crypto's daily options actually lapse at 5:30 PM IST, not at UTC/IST midnight. */
 const CRYPTO_EXPIRY_CUTOFF_IST_MINUTES = 17 * 60 + 30;
@@ -145,7 +107,7 @@ export function contractExpiry(row = {}) {
   if (row.expiry && parseExpiry(row.expiry)) return row.expiry;
   const symbol = String(row.trading_symbol || row.symbol || '').trim().toUpperCase();
   const m = SYMBOL_EXPIRY_RE.exec(symbol);
-  if (!m || !(m[2] in MONTHS)) return null;
+  if (!m) return null;
   const raw = `${m[1]}-${m[2]}-${m[3]}`;
   return parseExpiry(raw) ? raw : null;
 }
