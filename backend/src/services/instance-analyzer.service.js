@@ -118,10 +118,8 @@ class InstanceAnalyzerService {
           session_baseline_at = ?,
           session_pnl = ?,
           session_cutoff_reason = NULL,
-          session_cutoff_at = NULL,
-          session_max_loss_hits = 0,
-          session_max_loss_hits_date = ?`;
-        params.push(baseline, sessionKey, 0, sessionKey);
+          session_cutoff_at = NULL`;
+        params.push(baseline, sessionKey, 0);
       }
 
       sql += ', last_analyzer_check_at = CURRENT_TIMESTAMP';

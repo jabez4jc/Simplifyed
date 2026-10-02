@@ -38,8 +38,6 @@ function instance(overrides = {}) {
     session_pnl: 0,
     session_target_profit: null,
     session_max_loss: null,
-    session_max_loss_hits: 0,
-    session_max_loss_hits_date: null,
     last_live_total_pnl: null,
     last_live_total_pnl_at: null,
     multiplier: 1,
@@ -128,44 +126,6 @@ test('the max loss fires at the threshold, whichever sign it was configured with
     const beyond = await computeSessionState(withBaseline(now, config), -20000, now);
     assert.ok(beyond.cutoffReason, `${configured}: a gap through the limit must still trigger`);
   }
-});
-
-test('the third max-loss breach escalates from a pause to a hard stop', async () => {
-  const now = duringSession();
-  const key = `${formatDateIST(now)}|Session 2`;
-  const config = { session_max_loss: 5000, session_baseline_at: key, session_baseline_total_pnl: 0 };
-
-  const first = await computeSessionState(instance({ ...config, session_max_loss_hits: 0, session_max_loss_hits_date: key }), -6000, now);
-  assert.strictEqual(first.cutoffReason, 'SESSION_MAX_LOSS_BREACHED');
-  assert.strictEqual(first.maxLossHits, 1);
-
-  const second = await computeSessionState(instance({ ...config, session_max_loss_hits: 1, session_max_loss_hits_date: key }), -6000, now);
-  assert.strictEqual(second.cutoffReason, 'SESSION_MAX_LOSS_BREACHED');
-  assert.strictEqual(second.maxLossHits, 2);
-
-  const third = await computeSessionState(instance({ ...config, session_max_loss_hits: 2, session_max_loss_hits_date: key }), -6000, now);
-  assert.strictEqual(third.cutoffReason, 'SESSION_MAX_LOSS_LIMIT_REACHED', 'the third breach is the hard stop');
-  assert.strictEqual(third.maxLossHits, 3);
-});
-
-test('the breach counter resets for a new session but not within one', async () => {
-  const now = duringSession();
-  const todayKey = `${formatDateIST(now)}|Session 2`;
-  const config = { session_max_loss: 5000, session_baseline_at: todayKey, session_baseline_total_pnl: 0 };
-
-  const carriedOver = await computeSessionState(
-    instance({ ...config, session_max_loss_hits: 2, session_max_loss_hits_date: '2026-03-09|Session 2' }),
-    -6000,
-    now
-  );
-  assert.strictEqual(carriedOver.maxLossHits, 1, "yesterday's breaches must not count toward today's hard stop");
-
-  const sameSession = await computeSessionState(
-    instance({ ...config, session_max_loss_hits: 2, session_max_loss_hits_date: todayKey }),
-    -6000,
-    now
-  );
-  assert.strictEqual(sameSession.maxLossHits, 3, 'breaches within one session accumulate');
 });
 
 // ---------------------------------------------------------------------------

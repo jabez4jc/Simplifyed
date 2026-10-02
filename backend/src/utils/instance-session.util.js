@@ -10,7 +10,8 @@
 import { log } from '../core/logger.js';
 import settingsService from '../services/settings.service.js';
 import { toISTDate, toISTISOString } from './time.js';
-import { parseFloatSafe, parseIntSafe } from './sanitizers.js';
+import { parseFloatSafe } from './sanitizers.js';
+import { settingDefault } from '../config/settings-registry.js';
 
 export function nowInIST() {
   return toISTDate();
@@ -40,13 +41,6 @@ export function findCurrentSession(date, sessions = []) {
 }
 
 export async function getTradingSessions() {
-  const fallback = [
-    { label: 'Session 1', start: '09:00', end: '11:30' },
-    { label: 'Session 2', start: '12:30', end: '15:10' },
-    { label: 'Session 3', start: '15:45', end: '19:00' },
-    { label: 'Session 4', start: '20:30', end: '22:45' },
-  ];
-
   try {
     const setting = await settingsService.getSetting('trading_sessions');
     const raw = setting?.value ?? setting?.rawValue;
@@ -62,7 +56,7 @@ export async function getTradingSessions() {
   } catch (error) {
     log.warn('Falling back to default trading sessions', { error: error.message });
   }
-  return fallback;
+  return JSON.parse(settingDefault('trading_sessions'));
 }
 
 export async function computeSessionState(instance, totalPnl, now, { overrideAnalyzerMode = null } = {}) {
@@ -78,12 +72,6 @@ export async function computeSessionState(instance, totalPnl, now, { overrideAna
 
   const sessionLabel = currentSession?.label || null;
   const sessionKey = currentSession ? `${todayIst}|${sessionLabel}` : null;
-
-  let maxLossHits = parseIntSafe(instance.session_max_loss_hits, 0);
-  const hitsKey = instance.session_max_loss_hits_date;
-  if (currentSession && hitsKey !== sessionKey) {
-    maxLossHits = 0;
-  }
 
   const analyzerMode = overrideAnalyzerMode === null ? !!instance.is_analyzer_mode : !!overrideAnalyzerMode;
   const isLiveMode = !analyzerMode;
@@ -114,11 +102,7 @@ export async function computeSessionState(instance, totalPnl, now, { overrideAna
     if (effectiveTarget !== null && sessionPnl >= effectiveTarget) {
       cutoffReason = 'SESSION_TARGET_PROFIT_REACHED';
     } else if (effectiveMaxLoss !== null && sessionPnl <= -effectiveMaxLoss) {
-      maxLossHits += 1;
-      const limitReached = maxLossHits >= 3;
-      cutoffReason = limitReached
-        ? 'SESSION_MAX_LOSS_LIMIT_REACHED'
-        : 'SESSION_MAX_LOSS_BREACHED';
+      cutoffReason = 'SESSION_MAX_LOSS_BREACHED';
     }
   }
 
@@ -129,8 +113,6 @@ export async function computeSessionState(instance, totalPnl, now, { overrideAna
     sessionBaseline,
     sessionBaselineAt,
     sessionPnl,
-    maxLossHits,
-    hitsKey,
     cutoffReason,
     effectiveTarget,
     effectiveMaxLoss,

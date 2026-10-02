@@ -12,8 +12,6 @@ function buildInstance(overrides = {}) {
     session_pnl: 0,
     session_target_profit: null,
     session_max_loss: null,
-    session_max_loss_hits: 0,
-    session_max_loss_hits_date: null,
     last_live_total_pnl: null,
     last_live_total_pnl_at: null,
     multiplier: 1,
@@ -32,24 +30,6 @@ function stubTradingSessions(sessions) {
     settingsService.getSetting = original;
   };
 }
-
-test('session max-loss hits reset on new session key', async () => {
-  const now = new Date(2025, 0, 1, 10, 0, 0);
-  const today = formatDateIST(now);
-  const restore = stubTradingSessions([{ label: 'Session 1', start: '00:00', end: '23:59' }]);
-
-  try {
-    const instance = buildInstance({
-      session_max_loss_hits: 2,
-      session_max_loss_hits_date: `${today}|Old Session`,
-    });
-
-    const result = await computeSessionState(instance, 0, now);
-    assert.equal(result.maxLossHits, 0);
-  } finally {
-    restore();
-  }
-});
 
 test('session target respects multiplier', async () => {
   const now = new Date(2025, 0, 1, 10, 0, 0);

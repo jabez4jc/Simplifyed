@@ -148,22 +148,21 @@ class InstancePnlService {
           sessionBaseline,
           sessionBaselineAt,
           sessionPnl,
-          maxLossHits,
-          hitsKey,
           cutoffReason,
           lastLiveTotalPnl,
           lastLiveTotalPnlAt,
           isLiveMode,
         } = sessionState;
 
-        // Auto-revert to live at start of a new session if prior cutoff was max-loss (not limit reached)
+        // Auto-revert to live at the start of a new session if the prior cutoff was the max loss.
+        // The baseline is only (re)set while live, so a different baseline key means the cutoff
+        // happened in an earlier session.
         if (
           instance.is_analyzer_mode &&
           currentSession &&
-          instance.session_cutoff_reason &&
-          instance.session_cutoff_reason.startsWith('SESSION_MAX_LOSS') &&
+          instance.session_cutoff_reason === 'SESSION_MAX_LOSS_BREACHED' &&
           cutoffReason === null &&
-          hitsKey !== sessionKey // new session window
+          instance.session_baseline_at !== sessionKey // new session window
         ) {
           try {
             await instanceAnalyzerService.toggleAnalyzerMode(id, false);
@@ -179,7 +178,6 @@ class InstancePnlService {
             session: sessionLabel,
             session_pnl: sessionPnl,
             reason: cutoffReason,
-            max_loss_hits: maxLossHits,
           });
           // fire-and-forget safe toggle; errors logged but do not throw to keep polling running
           try {
@@ -229,8 +227,6 @@ class InstancePnlService {
               WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP
               ELSE session_cutoff_at
             END,
-            session_max_loss_hits = ?,
-            session_max_loss_hits_date = ?,
             last_updated = CURRENT_TIMESTAMP
           WHERE id = ?`,
           [
@@ -245,8 +241,6 @@ class InstancePnlService {
             lastLiveTotalPnlAt,
             cutoffReason,
             cutoffReason,
-            maxLossHits,
-            sessionKey || hitsKey || null,
             id,
           ]
         );
