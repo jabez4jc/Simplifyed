@@ -1,7 +1,7 @@
 import assert from 'assert';
 import test from 'node:test';
 import settingsService from '../../src/services/settings.service.js';
-import { computeSessionState, formatDateIST } from '../../src/utils/instance-session.util.js';
+import { computeSessionState, formatDateIST, shouldAutoRevertToLive } from '../../src/utils/instance-session.util.js';
 
 function buildInstance(overrides = {}) {
   return {
@@ -50,4 +50,16 @@ test('session target respects multiplier', async () => {
   } finally {
     restore();
   }
+});
+
+test('auto-revert to live only after a max-loss cutoff, in a later session, with no new breach', () => {
+  const cutoff = { is_analyzer_mode: 1, session_cutoff_reason: 'SESSION_MAX_LOSS_BREACHED', session_baseline_at: '2026-10-01|S1' };
+  const ctx = { currentSession: { name: 'S1' }, cutoffReason: null, sessionKey: '2026-10-02|S1' };
+  assert.strictEqual(shouldAutoRevertToLive(cutoff, ctx), true);
+  assert.strictEqual(shouldAutoRevertToLive(cutoff, { ...ctx, sessionKey: '2026-10-01|S1' }), false, 'same session');
+  assert.strictEqual(shouldAutoRevertToLive({ ...cutoff, session_cutoff_reason: 'SESSION_TARGET_PROFIT_REACHED' }, ctx), false, 'target cutoff');
+  assert.strictEqual(shouldAutoRevertToLive({ ...cutoff, session_cutoff_reason: 'SESSION_MAX_LOSS_BREACHED_X' }, ctx), false, 'exact match only');
+  assert.strictEqual(shouldAutoRevertToLive(cutoff, { ...ctx, cutoffReason: 'SESSION_MAX_LOSS_BREACHED' }), false, 'still breached');
+  assert.strictEqual(shouldAutoRevertToLive(cutoff, { ...ctx, currentSession: null }), false, 'outside a session');
+  assert.strictEqual(shouldAutoRevertToLive({ ...cutoff, is_analyzer_mode: 0 }, ctx), false, 'already live');
 });

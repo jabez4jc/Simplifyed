@@ -59,6 +59,19 @@ export async function getTradingSessions() {
   return JSON.parse(settingDefault('trading_sessions'));
 }
 
+// Auto-revert to live at the start of a new session if the prior cutoff was the max loss.
+// The baseline is only (re)set while live, so a different baseline key means the cutoff
+// happened in an earlier session.
+export function shouldAutoRevertToLive(instance, { currentSession, cutoffReason, sessionKey }) {
+  return Boolean(
+    instance.is_analyzer_mode &&
+    currentSession &&
+    instance.session_cutoff_reason === 'SESSION_MAX_LOSS_BREACHED' &&
+    cutoffReason === null &&
+    instance.session_baseline_at !== sessionKey
+  );
+}
+
 export async function computeSessionState(instance, totalPnl, now, { overrideAnalyzerMode = null } = {}) {
   const istNow = now || nowInIST();
   const todayIst = formatDateIST(istNow);

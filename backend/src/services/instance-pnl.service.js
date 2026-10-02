@@ -17,7 +17,7 @@ import { notify } from './notify.service.js';
 import instanceAnalyzerService from './instance-analyzer.service.js';
 import { calculateTradebookPnLForAppExits, computeSessionPnl } from '../utils/trade-pnl.js';
 import { buildBrokerageMap, resolveBrokerageValue } from '../utils/brokerage.js';
-import { nowInIST, formatDateIST, computeSessionState } from '../utils/instance-session.util.js';
+import { nowInIST, formatDateIST, computeSessionState, shouldAutoRevertToLive } from '../utils/instance-session.util.js';
 import { settingDefault } from '../config/settings-registry.js';
 
 class InstancePnlService {
@@ -136,16 +136,7 @@ class InstancePnlService {
           isLiveMode,
         } = sessionState;
 
-        // Auto-revert to live at the start of a new session if the prior cutoff was the max loss.
-        // The baseline is only (re)set while live, so a different baseline key means the cutoff
-        // happened in an earlier session.
-        if (
-          instance.is_analyzer_mode &&
-          currentSession &&
-          instance.session_cutoff_reason === 'SESSION_MAX_LOSS_BREACHED' &&
-          cutoffReason === null &&
-          instance.session_baseline_at !== sessionKey // new session window
-        ) {
+        if (shouldAutoRevertToLive(instance, { currentSession, cutoffReason, sessionKey })) {
           try {
             await instanceAnalyzerService.toggleAnalyzerMode(id, false);
             log.info('Auto-switching back to live for new session after prior max-loss cutoff', { id });
