@@ -84,3 +84,22 @@ Both are from the e2e MCX workflow runs (qty 10 and 50 orders on CRUDEOILM that 
 ## Checklist (§9.3)
 
 Phase 3 stays **unticked**. Done: P3-1 to P3-9, DB under 100 MB, no `UPPER(` on instrument columns, retention tested. Not satisfied: G4 did not end clean (open Kotak position and Fyers order, unclassified Fyers live failures, one pre-existing e2e failure), one P3-6 bullet is open, and P3-10 is deferred by default.
+
+## G3 / G4 rerun (2026-10-02, ~16:10-16:45 IST, Indian market holiday)
+
+The code state is the final tree, so one serial run of the three suites counts as both G3 and G4. Pre-check: instances 3, 6, 19, 20, 26 all in analyzer mode at the broker. The leftover Kotak CRUDEOILM position (20) was flattened first, in analyzer mode. Per the owner (2026-10-02), open orders and order-related errors are ignored: they cannot be closed because of an OpenAlgo analyzer margin bug.
+
+| Suite | G0 | G3 (earlier) | G4 (earlier) | This rerun |
+|---|---|---|---|---|
+| integration | 201 pass, 2 skip | 199 pass, 1 fail | 200 of 200 | **196 pass, 3 fail, 1 skip** |
+| e2e | 83 pass, 3 fail, 1 skip, 9 not run | 83 pass, 2 fail, 11 not run | 81 pass, 4 fail, 11 not run | **83 pass, 2 fail, 11 not run** |
+| live | incomplete | 133 pass, 28 fail, 206 skip | 133 pass, 28 fail, 206 skip | **127 pass, 29 fail, 212 skip** |
+
+All failures are classified as environmental (market holiday: NSE/NFO closed all day, MCX closed until its evening session). No code was changed.
+
+- **Integration (3):** `options-orders` CE, PE and CNC-on-option: an NFO option BUY never fills ("the broker holds the option", 0 !== 1). NFO is closed.
+- **e2e (2):** `chart-orders-markets` MCX limit order, and `workflow-watchlist` MCX fan-out (Fyers expected 500, got 0). These are the same two MCX tests as before, and MCX was not trading.
+- **Live (29):** 24 Maha/Ana "no last price" (as at G3/G4); the 3 Fyers CRUDEOIL auto-exit tests ("position never appeared") now track the same MCX-closed cause, so they are no longer unclassified; "every order and position ... is closed" fails on open orders only (ignored); "the contract quotes with a usable price" timed out at 60 s with no quotes, which is new versus G3/G4 and is also a closed-market symptom. The pass/skip shift (-6/+6) is the same cause.
+- **Afterwards:** no positions on any of the five instances. Open orders remain on Kotak (NIFTY06OCT2622400CE, ids 26100258736054 and a new 26100238311600) and Fyers (CRUDEOILM19OCT26FUT 26100229060892); ignored per the owner.
+
+**Caveat:** because the market was closed, this rerun exercised the order paths less than G0 to G2 did. The Fyers MCX auto-exit tests and the NFO option fills should be rerun on a trading day for a clean G4. §9.3 boxes for Phases 2 and 3 stay unticked: D4 is still blocked and the P3-6 option-chain-builder bullet still needs an owner decision.
