@@ -30,7 +30,6 @@ import { maskApiKey } from '../../utils/sanitizers.js';
 import settingsService from '../../services/settings.service.js';
 
 import instanceHealthTrackerService, { isUnreachableError } from './instance-health-tracker.service.js';
-import resolutionCacheService from './resolution-cache.service.js';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -235,9 +234,7 @@ class OpenAlgoClient extends EventEmitter {
       reloadPromise: null,  // Promise-based lock for concurrent reload calls
     };
 
-    // Symbol resolution cache and lot-size cache moved to resolution-cache.service.js
-    // (fully self-contained, zero coupling to anything else in this file).
-    // Instance health/circuit-breaker tracking moved to instance-health-tracker.service.js.
+    // Instance health/circuit-breaker tracking lives in instance-health-tracker.service.js.
   }
 
   /** Settings > Broker Connection, read on every call so a change applies at once. */
@@ -371,34 +368,6 @@ class OpenAlgoClient extends EventEmitter {
     const smart = Number(await settingsService.getRawValue('rate_limits.smart_orders_per_second'));
     if (Number.isFinite(smart) && smart > 0) this.smartOrdersPerSecondLimit = smart;
     this.limitsCache.loadedAt = Date.now();
-  }
-
-  /**
-   * Cache a resolved symbol with bounded size
-   * Evicts oldest entries when cache exceeds max size
-   * @param {string} underlying - Underlying symbol
-   * @param {string} exchange - Exchange
-   * @param {string} expiry - Expiry date
-   * @param {Object} resolved - Resolved symbol data
-   */
-  cacheResolvedSymbol(underlying, exchange, expiry, resolved) {
-    return resolutionCacheService.cacheResolvedSymbol(underlying, exchange, expiry, resolved);
-  }
-
-  getCachedResolvedSymbol(underlying, exchange, expiry) {
-    return resolutionCacheService.getCachedResolvedSymbol(underlying, exchange, expiry);
-  }
-
-  cacheLotSize(exchange, symbol, lotSize) {
-    return resolutionCacheService.cacheLotSize(exchange, symbol, lotSize);
-  }
-
-  getCachedLotSize(exchange, symbol) {
-    return resolutionCacheService.getCachedLotSize(exchange, symbol);
-  }
-
-  preloadLotSizes(symbols) {
-    return resolutionCacheService.preloadLotSizes(symbols);
   }
 
   /**
