@@ -13,8 +13,8 @@ test('two FLOAT resolutions straddling a strike boundary return different strike
     _resolveExpiryForOption: async () => '2026-10-27',
   };
   const realResolve = optionsResolutionService.resolveOptionSymbol;
-  const realLtp = quickOrderQuotesService.getUnderlyingLTPWithFallback;
-  quickOrderQuotesService.getUnderlyingLTPWithFallback = async () => ltp;
+  const realLtp = quickOrderQuotesService.getUnderlyingLTP;
+  quickOrderQuotesService.getUnderlyingLTP = async () => ltp;
   const saved = {};
   for (const [k, v] of Object.entries(stubs)) { saved[k] = quickOrderService[k]; quickOrderService[k] = v; }
   optionsResolutionService.resolveOptionSymbol = async ({ ltp: l }) => ({ strike: Math.round(l / 50) * 50 });
@@ -28,7 +28,7 @@ test('two FLOAT resolutions straddling a strike boundary return different strike
     assert.strictEqual(b.optionSymbol.strike, 25_050);
   } finally {
     Object.assign(quickOrderService, saved);
-    quickOrderQuotesService.getUnderlyingLTPWithFallback = realLtp;
+    quickOrderQuotesService.getUnderlyingLTP = realLtp;
     optionsResolutionService.resolveOptionSymbol = realResolve;
   }
 });

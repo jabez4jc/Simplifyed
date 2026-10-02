@@ -8,7 +8,6 @@
 
 import { log } from '../core/logger.js';
 import marketDataFeedService from './market-data-feed.service.js';
-import marketDataInstanceService from './market-data-instance.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import { ValidationError } from '../core/errors.js';
 import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
@@ -18,44 +17,6 @@ class QuickOrderQuotesService {
   constructor() {
     this.optionChainQuoteCache = new Map(); // key: inst|exch|underlying|expiry -> { map, fetchedAt }
     this.optionChainQuoteTtlMs = 20000; // retain option chain quotes for 20s to avoid blanks
-  }
-
-  /**
-   * Underlying LTP from the market-data pool, not from the ordering instance
-   */
-  async getUnderlyingLTPWithFallback(instance, underlying, exchange) {
-    try {
-      const marketDataInstance = await marketDataInstanceService.getMarketDataInstance();
-
-      log.debug('Using market data instance for LTP', {
-        order_instance_id: instance.id,
-        order_instance_name: instance.name,
-        market_data_instance_id: marketDataInstance.id,
-        market_data_instance_name: marketDataInstance.name,
-        underlying,
-        exchange,
-      });
-
-      // Fetch LTP from the market data instance
-      const ltp = await this.getUnderlyingLTP(marketDataInstance, underlying, exchange);
-
-      log.debug('Successfully fetched LTP from market data instance', {
-        market_data_instance: marketDataInstance.name,
-        underlying,
-        ltp,
-      });
-
-      return ltp;
-    } catch (error) {
-      log.error('Failed to get LTP from market data instances', {
-        order_instance_id: instance.id,
-        order_instance_name: instance.name,
-        underlying,
-        exchange,
-        error: error.message,
-      });
-      throw error;
-    }
   }
 
   /**

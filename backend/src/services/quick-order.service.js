@@ -2547,7 +2547,7 @@ class QuickOrderService {
     await this._ensureQuoteAvailableForSymbol(instance, baseExchange, quoteSymbol);
 
     const [ltp, expiry] = await Promise.all([
-      quickOrderQuotesService.getUnderlyingLTPWithFallback(instance, quoteSymbol, baseExchange),
+      quickOrderQuotesService.getUnderlyingLTP(instance, quoteSymbol, baseExchange),
       this._resolveExpiryForOption(instance, underlying, derivativeExchange, userExpiry),
     ]);
 
