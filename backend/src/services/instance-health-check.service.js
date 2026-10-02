@@ -40,7 +40,6 @@ class InstanceHealthCheckService {
       const state = this.healthCache.get(id) || {
         nextPingAt: 0,
         unhealthyAttempts: 0,
-        requiresManualRefresh: false,
       };
 
       if (!force) {
@@ -118,8 +117,7 @@ class InstanceHealthCheckService {
         this.healthCache.set(id, {
           nextPingAt: Date.now() + pingHealthyMs,
           unhealthyAttempts: 0,
-          requiresManualRefresh: false,
-        });
+          });
       } else {
         // Pinged again at a growing interval rather than written off after N failures, so an
         // instance that was down (overnight, say) is seen healthy again on its own.
@@ -127,8 +125,7 @@ class InstanceHealthCheckService {
         this.healthCache.set(id, {
           nextPingAt: Date.now() + backoffMs(attempts, pingUnhealthyMs),
           unhealthyAttempts: attempts,
-          requiresManualRefresh: false,
-        });
+          });
       }
 
       return await instanceService.getInstanceById(id);

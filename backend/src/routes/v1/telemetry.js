@@ -13,7 +13,7 @@ router.use(requireAuth);
 
 /**
  * GET /api/v1/telemetry/rate-limits
- * Returns per-instance rate counters plus health state (cooldowns/manual refresh)
+ * Returns per-instance rate counters plus health state (cooldowns)
  */
 router.get('/rate-limits', (req, res) => {
   const metrics = openalgoClient.getInstanceMetrics();

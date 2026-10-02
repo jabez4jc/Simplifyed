@@ -40,14 +40,13 @@ class InstanceHealthTrackerService {
     // Tracks instances that return HTML/error responses and puts them in cooldown
     // DNS/HTML errors: Immediate cooldown, max 3 retries (6 mins), then require manual refresh
     // Non-critical errors (5xx, rate-limit): Standard cooldown with exponential backoff, auto-recovers
-    this.instanceHealth = new Map(); // key: instanceId -> { failures, cooldownUntil, lastError, isHtml, isDnsError, dnsRetryCount, cooldownCount, requiresManualRefresh }
+    this.instanceHealth = new Map(); // key: instanceId -> { failures, cooldownUntil, lastError, isHtml, isDnsError, cooldownCount }
     this.instanceHealthConfig = {
       failureThreshold: 3,             // consecutive failures before cooldown (non-DNS/HTML errors)
       cooldownMs: 60 * 1000,           // first cooldown for repeated failures, doubling after
       dnsCooldownMs: 60 * 1000,        // first cooldown for a DNS failure, doubling after
       htmlCooldownMs: 60 * 1000,       // first cooldown for an HTML error page, doubling after
       maxCooldownMs: MAX_UNREACHABLE_BACKOFF_MS,
-      maxDnsRetries: 0,                // kept for the circuit-breaker API response shape; unused
     };
   }
 
@@ -66,16 +65,6 @@ class InstanceHealthTrackerService {
   }
 
   /**
-   * Check if instance requires manual refresh
-   * @param {number|string} instanceId - Instance ID
-   * @returns {boolean} - True if instance requires manual refresh
-   */
-  instanceRequiresManualRefresh(instanceId) {
-    const health = this.instanceHealth.get(instanceId);
-    return health?.requiresManualRefresh === true;
-  }
-
-  /**
    * Get instance health status for display
    * @param {number|string} instanceId - Instance ID
    * @returns {Object|null} - Health status or null if healthy
@@ -89,9 +78,6 @@ class InstanceHealthTrackerService {
 
     return {
       isHealthy: this.isInstanceHealthy(instanceId),
-      requiresManualRefresh: health.requiresManualRefresh || false,
-      dnsRetryCount: health.dnsRetryCount || 0,
-      maxDnsRetries: this.instanceHealthConfig.maxDnsRetries,
       cooldownRemaining,
       cooldownUntil: health.cooldownUntil,
       lastError: health.lastError,
@@ -150,9 +136,7 @@ class InstanceHealthTrackerService {
       lastError: null,
       isHtml: false,
       isDnsError: false,
-      dnsRetryCount: 0,           // Only for DNS/HTML errors - triggers manual refresh
-      cooldownCount: 0,           // For non-critical errors - exponential backoff
-      requiresManualRefresh: false,
+      cooldownCount: 0,           // consecutive openings - drives the exponential cooldown
     };
 
     health.failures += 1;
@@ -189,18 +173,11 @@ class InstanceHealthTrackerService {
 
   /**
    * Reset instance health after successful request
-   * Only resets if instance doesn't require manual refresh
    * @param {number|string} instanceId - Instance ID
    */
   resetInstanceHealth(instanceId) {
     const health = this.instanceHealth.get(instanceId);
     if (!health) return;
-
-    // Don't auto-reset if instance requires manual refresh
-    if (health.requiresManualRefresh) {
-      log.debug('Instance requires manual refresh - not auto-resetting', { instanceId });
-      return;
-    }
 
     this.instanceHealth.delete(instanceId);
     log.debug('Instance health reset after successful request', { instanceId });
@@ -208,7 +185,7 @@ class InstanceHealthTrackerService {
 
   /**
    * Force reset instance health (called on manual refresh by user)
-   * This clears all health state including requiresManualRefresh flag
+   * This clears all health state
    * @param {number|string} instanceId - Instance ID
    */
   forceResetInstanceHealth(instanceId) {
@@ -221,8 +198,6 @@ class InstanceHealthTrackerService {
       log.info('Instance health force reset via manual refresh', {
         instanceId,
         previousState: previousState ? {
-          requiresManualRefresh: previousState.requiresManualRefresh,
-          dnsRetryCount: previousState.dnsRetryCount,
           cooldownCount: previousState.cooldownCount,
           lastError: previousState.lastError,
           isDnsError: previousState.isDnsError,

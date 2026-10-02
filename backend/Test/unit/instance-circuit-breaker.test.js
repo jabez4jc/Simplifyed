@@ -44,7 +44,6 @@ test('an HTML error page opens the circuit at once, a probe failure widens it, s
     tracker.recordInstanceFailure(1, new Error('502'), { isHtml: true });
   }
   assert.strictEqual(tracker.getInstanceCooldownRemaining(1), MAX_UNREACHABLE_BACKOFF_MS);
-  assert.strictEqual(tracker.instanceRequiresManualRefresh(1), false);
 
   now += MAX_UNREACHABLE_BACKOFF_MS;
   tracker.resetInstanceHealth(1); // the probe succeeded

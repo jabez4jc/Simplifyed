@@ -248,25 +248,8 @@ class OpenAlgoClient extends EventEmitter {
     return instanceHealthTrackerService.isInstanceHealthy(instanceId);
   }
 
-  instanceRequiresManualRefresh(instanceId) {
-    return instanceHealthTrackerService.instanceRequiresManualRefresh(instanceId);
-  }
-
   getInstanceHealthStatus(instanceId) {
     return instanceHealthTrackerService.getInstanceHealthStatus(instanceId);
-  }
-
-  /**
-   * Circuit-breaker thresholds, delegated like every other tracker accessor above.
-   *
-   * GET /instances/:id/circuit-breaker reads `openalgoClient.instanceHealthConfig.maxDnsRetries`
-   * to build its "nothing recorded yet" response - and that is the response it gives for any
-   * instance that has NOT been failing, i.e. the normal case. Without this delegate the property
-   * was undefined and the endpoint threw a TypeError, so the one instance state the endpoint
-   * exists to report as fine was the one state it could not report at all.
-   */
-  get instanceHealthConfig() {
-    return instanceHealthTrackerService.instanceHealthConfig;
   }
 
   getInstanceCooldownRemaining(instanceId) {
@@ -1212,12 +1195,6 @@ class OpenAlgoClient extends EventEmitter {
     return response.data;
   }
 
-  /**
-   * Get holdings
-   * @param {Object} instance - Instance configuration
-   * @returns {Promise<Array>} - Holdings list
-   */
- 
   // ==========================================
   // Order APIs
   // ==========================================
@@ -1319,16 +1296,6 @@ class OpenAlgoClient extends EventEmitter {
     return response.data || [];
   }
 
-  /**
-   * Get open position for specific symbol
-   * @param {Object} instance - Instance configuration
-   * @param {string} symbol - Trading symbol
-   * @param {string} exchange - Exchange code
-   * @param {string} product - Product type
-   * @param {string} strategy - Strategy tag
-   * @returns {Promise<Object>} - { quantity }
-   */
- 
   // ==========================================
   // Trade APIs
   // ==========================================
@@ -1709,13 +1676,10 @@ class OpenAlgoClient extends EventEmitter {
       let instancesToTry = healthyThisRound;
       if (healthyThisRound.length === 0) {
         if (round === 0) {
-          // Find first instance that doesn't require manual refresh
-          const firstAvailableInstance = instances.find(inst =>
-            !this.instanceRequiresManualRefresh(inst.id)
-          );
+          const firstAvailableInstance = instances[0];
 
           if (firstAvailableInstance) {
-            // Only force on first round if instance doesn't require manual refresh
+            // Only force on the first round
             instancesToTry = [firstAvailableInstance];
             log.warn('All instances unhealthy for LTP fetch, forcing attempt on first available instance', {
               exchange,
@@ -2211,13 +2175,6 @@ class OpenAlgoClient extends EventEmitter {
     }
   }
 
-  /**
-   * Modify existing order
-   * @param {Object} instance - Instance configuration
-   * @param {Object} orderData - Modified order parameters
-   * @returns {Promise<Object>} - { orderid, status }
-   */
- 
   // ==========================================
   // Options & Derivatives APIs
   // ==========================================
@@ -2276,17 +2233,6 @@ class OpenAlgoClient extends EventEmitter {
     return response.data || response;
   }
 
-  /**
-   * Get option chain with fallback to alternate instances
-   * Critical for options resolution - tries multiple instances before failing
-   * ALWAYS makes at least one attempt even if all instances are unhealthy
-   * @param {Array} instances - Pool of instances to try
-   * @param {string} symbol - Underlying symbol
-   * @param {string} expiry - Expiry date
-   * @param {string} exchange - Exchange code
-   * @returns {Promise<Object>} - Option chain data
-   */
- 
   // ==========================================
   // Historical Data APIs
   // ==========================================
@@ -2426,24 +2372,10 @@ class OpenAlgoClient extends EventEmitter {
     return response;
   }
 
-  /**
-   * Get Greeks for up to 50 option symbols in one call
-   * @param {Object} instance - Instance configuration
-   * @param {Object} params - { symbols: [{symbol, exchange, underlying_symbol?, underlying_exchange?}, ...],
-   *   interest_rate?, expiry_time? }
-   * @returns {Promise<Object>} - { status, data: [{status, symbol, exchange, implied_volatility, greeks}, ...], summary }
-   */
- 
   // ==========================================
   // Utility Methods
   // ==========================================
 
-  /**
-   * Get comprehensive account summary
-   * @param {Object} instance - Instance configuration
-   * @returns {Promise<Object>} - Complete account data
-   */
- 
   // ==========================================
   // Private Helper Methods for Order Deduplication
   // ==========================================

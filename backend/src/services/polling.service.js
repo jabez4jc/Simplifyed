@@ -234,15 +234,13 @@ class PollingService {
       const previousHealthState = openalgoClient.getInstanceHealthStatus(instanceId);
 
       // Force reset instance health in circuit breaker
-      // This clears any requiresManualRefresh flag and allows retries
+      // This clears the cooldown and allows retries
       openalgoClient.forceResetInstanceHealth(instanceId);
       instanceService.resetHealthCheckState(instanceId);
 
       log.info('Manual refresh triggered', {
         instance_id: instanceId,
         previousHealthState: previousHealthState ? {
-          requiresManualRefresh: previousHealthState.requiresManualRefresh,
-          dnsRetryCount: previousHealthState.dnsRetryCount,
           isDnsError: previousHealthState.isDnsError,
           isHtmlError: previousHealthState.isHtmlError,
           lastError: previousHealthState.lastError,
