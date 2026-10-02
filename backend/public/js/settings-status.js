@@ -73,9 +73,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
   }
 
   /**
-   * Fetch Telegram link status
-   */
-  /**
    * Format date for display
    */
   formatDate(dateString) {

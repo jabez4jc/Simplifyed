@@ -153,14 +153,7 @@ class Config {
 
     this.telegram = {
       botToken: getEnv('TELEGRAM_BOT_TOKEN', ''),
-      botUsername: getEnv('TELEGRAM_BOT_USERNAME', ''),
       defaultChatId: getEnv('TELEGRAM_DEFAULT_CHAT_ID', '') || null,
-      // Optional - if set, the webhook route requires Telegram's X-Telegram-Bot-Api-Secret-Token
-      // header to match. Must also be passed as `secret_token` when calling Telegram's
-      // setWebhook API, or Telegram won't send the header at all. Left optional (rather than
-      // required) so existing bot setups that registered their webhook without a secret_token
-      // keep working until the operator rotates it.
-      webhookSecret: getEnv('TELEGRAM_WEBHOOK_SECRET', ''),
     };
 
     this.webhooks = {

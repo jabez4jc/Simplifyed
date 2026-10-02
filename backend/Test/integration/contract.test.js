@@ -40,10 +40,6 @@ const PUBLIC = new Set([
   'GET /public-config', // non-sensitive frontend bootstrap - see the comment in routes/v1/index.js
   'POST /auth/login',
   'POST /auth/register',
-  // Authenticated by Telegram's own webhook secret, not by a user session, so it sits outside
-  // the role system entirely. It still refuses an anonymous caller - see the sweep above, which
-  // covers it - it just answers 401 rather than 403 because there is no role to check.
-  'POST /telegram/webhook',
 ]);
 
 // Endpoints whose side effects are real and unwanted in a sweep - they are covered by their own

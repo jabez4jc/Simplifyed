@@ -113,8 +113,7 @@ export function isMaskedApiKey(value) {
  * prefix. Both sides are hashed first so timingSafeEqual always gets equal-length buffers - it
  * throws on a length mismatch, and that throw would itself be a length oracle.
  *
- * Used for the TradingView webhook token (sole auth on a live-order endpoint) and the Telegram
- * webhook secret.
+ * Used for the TradingView webhook token (sole auth on a live-order endpoint).
  */
 export function timingSafeEqualStr(a, b) {
   const digest = (v) => createHash('sha256').update(String(v ?? '')).digest();

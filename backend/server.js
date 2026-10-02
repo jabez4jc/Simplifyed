@@ -55,9 +55,6 @@ async function startBackgroundServices() {
 
     await pollingService.start();
     log.info('Polling service started');
-
-    // Telegram integration is webhook-based (see routes/v1/telegram.js POST /webhook), so no
-    // polling service needs to be started here.
   } catch (err) {
     servicesStarted = false;
     log.error('Failed to start background services', err);

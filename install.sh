@@ -347,7 +347,7 @@ configure_environment() {
     echo ""
     print_info "Telegram Bot Configuration (optional - press Enter to skip)"
     read -p "Telegram Bot Token: " TELEGRAM_BOT_TOKEN
-    read -p "Telegram Bot Username: " TELEGRAM_BOT_USERNAME
+    read -p "Telegram Chat ID: " TELEGRAM_DEFAULT_CHAT_ID
 
     # Create .env file
     cat > "$INSTALL_DIR/backend/.env" <<EOF
@@ -382,8 +382,7 @@ LOG_LEVEL=info
 
 # Telegram Bot Configuration
 TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
-TELEGRAM_BOT_USERNAME=${TELEGRAM_BOT_USERNAME:-simplifyed_bot}
-TELEGRAM_DEFAULT_CHAT_ID=
+TELEGRAM_DEFAULT_CHAT_ID=${TELEGRAM_DEFAULT_CHAT_ID:-}
 
 # Log Notifications
 LOG_NOTIFICATIONS=true

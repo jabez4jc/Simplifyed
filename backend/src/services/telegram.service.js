@@ -1,91 +1,32 @@
-import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import { config } from '../core/config.js';
 
-const BOT_TOKEN = config.telegram.botToken;
-const BOT_USERNAME = config.telegram.botUsername;
-const DEFAULT_CHAT_ID = config.telegram.defaultChatId;
-const API_URL = BOT_TOKEN ? `https://api.telegram.org/bot${BOT_TOKEN}` : null;
-
-function ensureConfigured() {
-  if (!BOT_TOKEN || !BOT_USERNAME || !API_URL) {
-    throw new Error('Telegram bot is not configured');
-  }
-}
-
-async function ensureSchema() {
-  await db.run(`
-    CREATE TABLE IF NOT EXISTS telegram_subscribers (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id INTEGER,
-      chat_id TEXT NOT NULL UNIQUE,
-      username TEXT,
-      linking_code TEXT,
-      linked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      is_active BOOLEAN DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-}
+const { botToken, defaultChatId } = config.telegram;
 
 class TelegramService {
- 
-  async handleWebhook(update) {
-    if (!update || !update.message) return;
-    const msg = update.message;
-    const chatId = msg.chat?.id;
-    const username = msg.chat?.username || null;
-    const text = msg.text || '';
-    if (!chatId || !text.startsWith('/start')) return;
-
-    const parts = text.split(' ');
-    const code = parts.length > 1 ? parts[1].trim() : null;
-    if (!code) return;
-    await ensureSchema();
-
-    const row = await db.get('SELECT * FROM telegram_subscribers WHERE linking_code = ?', [code]);
-    if (!row) {
-      await this.sendMessage(chatId, 'Invalid or expired linking code.');
-      return;
-    }
-
-    await db.run(
-      `UPDATE telegram_subscribers
-       SET chat_id = ?, username = ?, is_active = 1, linked_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-       WHERE linking_code = ?`,
-      [String(chatId), username, code]
-    );
-
-    await this.sendMessage(chatId, '✅ Telegram linked. You will now receive trade notifications.');
-  }
-
-
-  async sendMessage(chatId, text) {
-    ensureConfigured();
-    if (!chatId) return;
-    // Attempt with Markdown, fallback to plain text if Telegram rejects formatting
-    const attemptSend = async (payload) => {
-      const res = await fetch(`${API_URL}/sendMessage`, {
+  /** Send one message to TELEGRAM_DEFAULT_CHAT_ID. A silent no-op when the token or chat is unset. */
+  async broadcastText(text) {
+    if (!botToken || !defaultChatId) return [];
+    const send = async (payload) => {
+      const res = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
       const body = await res.json();
-      if (!body.ok) {
-        const err = new Error(body.description || 'Telegram API error');
-        err.code = body.error_code;
-        throw err;
-      }
-      return body.result;
+      if (!body.ok) throw new Error(body.description || 'Telegram API error');
     };
-
     try {
-      return await attemptSend({ chat_id: chatId, text, parse_mode: 'Markdown' });
+      // Markdown first; plain text if Telegram rejects the formatting
+      try {
+        await send({ chat_id: defaultChatId, text, parse_mode: 'Markdown' });
+      } catch {
+        await send({ chat_id: defaultChatId, text });
+      }
+      return [defaultChatId];
     } catch (err) {
-      // Retry without parse_mode for formatting errors
-      log.warn('telegram_send_retry_plain', { chat_id: chatId, reason: err.message });
-      return await attemptSend({ chat_id: chatId, text });
+      log.warn('telegram_send_failed', { reason: err.message });
+      return [];
     }
   }
 
@@ -109,33 +50,7 @@ class TelegramService {
   }
 
   async sendOrderNotification(order, context = {}) {
-    ensureConfigured();
-    await ensureSchema();
-    const msg = this.formatOrderMessage(order, context);
-
-    const targets = [];
-    // Global chat first if configured
-    if (DEFAULT_CHAT_ID) {
-      try {
-        await this.sendMessage(DEFAULT_CHAT_ID, msg);
-        targets.push(DEFAULT_CHAT_ID);
-      } catch (err) {
-        log.error('Telegram send failed (global)', { chat_id: DEFAULT_CHAT_ID, reason: err.message });
-      }
-    }
-
-    // Active subscribers
-    const subs = await db.all('SELECT chat_id FROM telegram_subscribers WHERE is_active = 1 AND chat_id IS NOT NULL');
-    log.info('telegram_dispatch', { count: subs.length + (DEFAULT_CHAT_ID ? 1 : 0), chat_id: DEFAULT_CHAT_ID || 'subs' });
-    for (const sub of subs) {
-      try {
-        await this.sendMessage(sub.chat_id, msg);
-        targets.push(sub.chat_id);
-      } catch (err) {
-        log.error('Telegram send failed (subscriber)', { chat_id: sub.chat_id, reason: err.message });
-      }
-    }
-    return targets;
+    return this.broadcastText(this.formatOrderMessage(order, context));
   }
 
   /**
@@ -143,9 +58,6 @@ class TelegramService {
    * Includes instance list, trigger type (manual/automated), and button label.
    */
   async sendOrderSummary(summary) {
-    ensureConfigured();
-    await ensureSchema();
-
     const instances = summary.instances || [];
     const successInstances = summary.success_instances || [];
     const failureInstances = summary.failure_instances || [];
@@ -171,38 +83,6 @@ class TelegramService {
     lines.push(`Results: ${successCount} success${successList}${failureCount ? `, ${failureCount} failed${failureList}` : ''}`);
 
     return this.broadcastText(lines.join('\n'));
-  }
-
-  /** Send one message to the global chat and every active subscriber. */
-  async broadcastText(msg) {
-    ensureConfigured();
-    await ensureSchema();
-
-    const targets = [];
-
-    // Global chat
-    if (DEFAULT_CHAT_ID) {
-      try {
-        await this.sendMessage(DEFAULT_CHAT_ID, msg);
-        targets.push(DEFAULT_CHAT_ID);
-      } catch (err) {
-        log.error('Telegram send failed (summary global)', { chat_id: DEFAULT_CHAT_ID, reason: err.message });
-      }
-    }
-
-    // Subscribers
-    const subs = await db.all('SELECT chat_id FROM telegram_subscribers WHERE is_active = 1 AND chat_id IS NOT NULL');
-    log.info('telegram_dispatch_summary', { count: subs.length + (DEFAULT_CHAT_ID ? 1 : 0), chat_id: DEFAULT_CHAT_ID || 'subs' });
-    for (const sub of subs) {
-      try {
-        await this.sendMessage(sub.chat_id, msg);
-        targets.push(sub.chat_id);
-      } catch (err) {
-        log.error('Telegram send failed (summary subscriber)', { chat_id: sub.chat_id, reason: err.message });
-      }
-    }
-
-    return targets;
   }
 }
 
