@@ -60,45 +60,6 @@ class RiskEventsService {
       log.warn('Failed to record risk event', { eventType, symbol, error: err.message });
     }
   }
-
-  async list({ instanceId, watchlistId, symbolId, from, to, limit = 200 } = {}) {
-    const clauses = [];
-    const params = [];
-
-    if (instanceId) {
-      clauses.push('instance_id = ?');
-      params.push(instanceId);
-    }
-    if (watchlistId) {
-      clauses.push('watchlist_id = ?');
-      params.push(watchlistId);
-    }
-    if (symbolId) {
-      clauses.push('symbol_id = ?');
-      params.push(symbolId);
-    }
-    if (from) {
-      clauses.push('created_at >= ?');
-      params.push(from);
-    }
-    if (to) {
-      clauses.push('created_at <= ?');
-      params.push(to);
-    }
-
-    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
-    const cappedLimit = Math.min(Number(limit) || 200, 1000);
-
-    const rows = await db.all(
-      `SELECT * FROM risk_events ${where} ORDER BY created_at DESC, id DESC LIMIT ?`,
-      [...params, cappedLimit]
-    );
-
-    return rows.map((row) => ({
-      ...row,
-      metadata: row.metadata ? JSON.parse(row.metadata) : null,
-    }));
-  }
 }
 
 const riskEventsService = new RiskEventsService();
