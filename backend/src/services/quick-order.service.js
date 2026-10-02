@@ -1294,8 +1294,6 @@ class QuickOrderService {
       'REDUCE_CE', 'REDUCE_PE', 'INCREASE_CE', 'INCREASE_PE',
       'CLOSE_ALL_CE', 'CLOSE_ALL_PE', 'EXIT_ALL'
     ].includes(action);
-    const useTypeScope = isReduceOrClose && !legPinned;
-
     // For REDUCE/INCREASE in FLOAT_OFS mode, handle each open position separately
     if (isReduceOrClose && !legPinned) {
       log.info('REDUCE/INCREASE: Handling each open position separately', {
@@ -1461,19 +1459,6 @@ class QuickOrderService {
           ignoreSlippage: this._isRepeatExitAction(action),
         });
 
-        await this._syncOptionsState(
-          symbol.watchlist_id,
-          symbol.id,
-          instance.id,
-          underlying,
-          expiry,
-          optionType,
-          order.strike,
-          order.position_size,
-          0,
-          floatProduct
-        );
-
         await this._recordQuickOrder({
           watchlist_id: symbol.watchlist_id,
           symbol_id: symbol.id,
@@ -1561,79 +1546,63 @@ class QuickOrderService {
     // For all other cases (BUY/SELL actions, CLOSE_ALL), use legacy logic
     // Get current position
     let currentPosition;
-    if (useTypeScope) {
-      // Aggregate across all strikes for this TYPE and expiry
-      currentPosition = await this._getAggregatedTypePosition(
-        instance,
-        underlying,
-        expiry,
-        optionType,
-        product
-      );
-      log.info('Using TYPE-scoped position (FLOAT_OFS)', {
-        optionType,
-        expiry,
-        currentPosition,
-      });
-    } else {
-      // Single leg position
-      // Use preloaded positions if available to avoid additional API call
-      if (preloadedPositions && preloadedPositions.has(instance.id)) {
-        const preloaded = preloadedPositions.get(instance.id);
-        // Only use preloaded positions if fetch was successful
-        if (preloaded.success) {
-          currentPosition = this._extractPositionFromBook(
-            preloaded.positions,
-            optionSymbol.symbol,
-            derivativeExchange,
-            product
-          );
-          log.debug('Using preloaded position for options', {
-            instanceId: instance.id,
-            symbol: optionSymbol.symbol,
-            position: currentPosition,
-            fromCache: preloaded.fromCache,
-          });
-        } else {
-          // Prefetch failed - fall back to live fetch
-          log.warn('Preloaded position fetch failed for options, falling back to live fetch', {
-            instanceId: instance.id,
-            error: preloaded.error,
-          });
-          currentPosition = await this._getCurrentPositionSize(
-            instance,
-            optionSymbol.symbol,
-            derivativeExchange,
-            product,
-            { forceLive: true, failOnError: true }
-          );
-        }
-      } else {
-        currentPosition = await this._getCurrentPositionSize(
-          instance,
+    // Single leg position
+    // Use preloaded positions if available to avoid additional API call
+    if (preloadedPositions && preloadedPositions.has(instance.id)) {
+      const preloaded = preloadedPositions.get(instance.id);
+      // Only use preloaded positions if fetch was successful
+      if (preloaded.success) {
+        currentPosition = this._extractPositionFromBook(
+          preloaded.positions,
           optionSymbol.symbol,
           derivativeExchange,
           product
         );
+        log.debug('Using preloaded position for options', {
+          instanceId: instance.id,
+          symbol: optionSymbol.symbol,
+          position: currentPosition,
+          fromCache: preloaded.fromCache,
+        });
+      } else {
+        // Prefetch failed - fall back to live fetch
+        log.warn('Preloaded position fetch failed for options, falling back to live fetch', {
+          instanceId: instance.id,
+          error: preloaded.error,
+        });
+        currentPosition = await this._getCurrentPositionSize(
+          instance,
+          optionSymbol.symbol,
+          derivativeExchange,
+          product,
+          { forceLive: true, failOnError: true }
+        );
       }
-      // Reducing or closing acts on the position that EXISTS. If it is held in the other
-      // product (an NRML position with MIS selected), trade it in its own product - otherwise
-      // the lookup finds nothing and the close reports "no change needed" while it stays open.
-      if (isReduceOrClose && currentPosition === 0) {
-        const held = (await this._getPositionBook(instance)).filter((p) =>
-          this._normalizeSymbolKey(p.symbol || p.tradingsymbol) === this._normalizeSymbolKey(optionSymbol.symbol)
-          && (parseIntSafe(p.quantity) || parseIntSafe(p.netqty) || 0) !== 0);
-        if (held.length === 1) {
-          finalProduct = this._normalizeProduct(held[0].product || held[0].producttype) || finalProduct;
-          currentPosition = parseIntSafe(held[0].quantity) || parseIntSafe(held[0].netqty) || 0;
-        }
-      }
-      log.info('Using LEG-scoped position', {
-        symbol: optionSymbol.symbol,
-        currentPosition,
-        product: finalProduct,
-      });
+    } else {
+      currentPosition = await this._getCurrentPositionSize(
+        instance,
+        optionSymbol.symbol,
+        derivativeExchange,
+        product
+      );
     }
+    // Reducing or closing acts on the position that EXISTS. If it is held in the other
+    // product (an NRML position with MIS selected), trade it in its own product - otherwise
+    // the lookup finds nothing and the close reports "no change needed" while it stays open.
+    if (isReduceOrClose && currentPosition === 0) {
+      const held = (await this._getPositionBook(instance)).filter((p) =>
+        this._normalizeSymbolKey(p.symbol || p.tradingsymbol) === this._normalizeSymbolKey(optionSymbol.symbol)
+        && (parseIntSafe(p.quantity) || parseIntSafe(p.netqty) || 0) !== 0);
+      if (held.length === 1) {
+        finalProduct = this._normalizeProduct(held[0].product || held[0].producttype) || finalProduct;
+        currentPosition = parseIntSafe(held[0].quantity) || parseIntSafe(held[0].netqty) || 0;
+      }
+    }
+    log.info('Using LEG-scoped position', {
+      symbol: optionSymbol.symbol,
+      currentPosition,
+      product: finalProduct,
+    });
 
     // Calculate Qstep = step_lots × lotsize × multiplier
     const lotSize = optionSymbol.lot_size || symbol.lot_size || 1;
@@ -1736,20 +1705,6 @@ class QuickOrderService {
       ignoreSlippage: repeatUntilClosed,
     });
 
-    // Sync position to watchlist_options_state table
-    await this._syncOptionsState(
-      symbol.watchlist_id,
-      symbol.id,
-      instance.id,
-      underlying,
-      expiry,
-      optionType,
-      strike,
-      targetPosition,  // New net position
-      0,  // We don't have avg price yet, will be updated by polling
-      finalProduct
-    );
-
     // Record order in database
     await this._recordQuickOrder({
       watchlist_id: symbol.watchlist_id,
@@ -1785,22 +1740,19 @@ class QuickOrderService {
     // same pattern already used in the futures/equity order path above).
     const verifyFinalOptionsPosition = async () => {
       try {
-        const finalPosition = useTypeScope
-          ? await this._getAggregatedTypePosition(instance, underlying, expiry, optionType, finalProduct)
-          : await this._getCurrentPositionSize(
-              instance,
-              optionSymbol.symbol,
-              derivativeExchange,
-              finalProduct,
-              { forceLive: true, failOnError: true }
-            );
+        const finalPosition = await this._getCurrentPositionSize(
+          instance,
+          optionSymbol.symbol,
+          derivativeExchange,
+          finalProduct,
+          { forceLive: true, failOnError: true }
+        );
         if (finalPosition !== targetPosition) {
           log.warn('Post-trade position mismatch (options)', {
             instance_id: instance.id,
             symbol: optionSymbol.symbol,
             expected: targetPosition,
             actual: finalPosition,
-            scope: useTypeScope ? 'TYPE' : 'LEG',
           });
         }
       } catch (verifyErr) {
@@ -3208,48 +3160,6 @@ class QuickOrderService {
   }
 
   /**
-   * Get aggregated position for all strikes of a TYPE (CE/PE) for selected expiry
-   * Required for FLOAT_OFS mode where multiple strikes may be held
-   * @param {Object} instance - Instance object
-   * @param {string} underlying - Underlying symbol
-   * @param {string} expiry - Expiry date (YYYY-MM-DD)
-   * @param {string} optionType - CE or PE
-   * @param {string} product - Product type (MIS, NRML)
-   * @returns {Promise<number>} - Total net position across all strikes
-   * @private
-   */
-  async _getAggregatedTypePosition(instance, underlying, expiry, optionType, product) {
-    try {
-      // Query watchlist_options_state for aggregated position
-      const rows = await db.all(`
-        SELECT SUM(net_qty) as total_qty
-        FROM watchlist_options_state
-        WHERE instance_id = ?
-          AND underlying = ?
-          AND expiry = ?
-          AND option_type = ?
-          AND product = ?
-      `, [instance.id, underlying, expiry, optionType, product]);
-
-      const totalQty = rows && rows[0] && rows[0].total_qty ? parseIntSafe(rows[0].total_qty) : 0;
-
-      log.debug('Aggregated TYPE position', {
-        instance_id: instance.id,
-        underlying,
-        expiry,
-        optionType,
-        product,
-        totalQty,
-      });
-
-      return totalQty;
-    } catch (error) {
-      log.warn('Failed to get aggregated position from state, falling back to 0', error);
-      return 0;
-    }
-  }
-
-  /**
    * Get ALL open positions for all strikes of a TYPE (CE/PE) for selected expiry
    * Required for FLOAT_OFS REDUCE/INCREASE actions to target each open strike
    * @param {Object} instance - Instance object
@@ -3392,56 +3302,6 @@ class QuickOrderService {
       // fallback to REST refresh
     }
     await marketDataFeedService.refreshQuotes({ force: true });
-  }
-
-  /**
-   * Sync position to watchlist_options_state table
-   * @param {number} watchlistId - Watchlist ID
-   * @param {number} symbolId - Symbol ID
-   * @param {number} instanceId - Instance ID
-   * @param {string} underlying - Underlying symbol
-   * @param {string} expiry - Expiry date
-   * @param {string} optionType - CE or PE
-   * @param {number} strike - Strike price
-   * @param {number} netQty - Net quantity
-   * @param {number} avgPrice - Average price
-   * @param {string} product - Product type
-   * @private
-   */
-  async _syncOptionsState(watchlistId, symbolId, instanceId, underlying, expiry, optionType, strike, netQty, avgPrice, product) {
-    try {
-      await db.run(`
-        INSERT INTO watchlist_options_state
-          (watchlist_id, symbol_id, instance_id, underlying, expiry, option_type, strike, net_qty, avg_price, product, last_updated)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(instance_id, underlying, expiry, option_type, strike)
-        DO UPDATE SET
-          net_qty = ?,
-          avg_price = ?,
-          last_updated = CURRENT_TIMESTAMP
-      `, [
-        watchlistId, symbolId, instanceId, underlying, expiry, optionType, strike,
-        netQty, avgPrice, product,
-        netQty, avgPrice
-      ]);
-
-      log.debug('Synced options state', {
-        instance_id: instanceId,
-        underlying,
-        expiry,
-        optionType,
-        strike,
-        netQty,
-      });
-    } catch (error) {
-      log.error('Failed to sync options state', error, {
-        instance_id: instanceId,
-        underlying,
-        expiry,
-        optionType,
-        strike,
-      });
-    }
   }
 
   /**

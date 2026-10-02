@@ -4,6 +4,7 @@
  * - instance_health_tests setting (D12): the endpoint probes are constants now.
  * - expiry_calendar (D16): write-only; nearest expiry comes from the instruments table.
  * - symbol_cache (D17): duplicated `instruments` and could serve expired contracts.
+ * - watchlist_options_state (D18): write-only.
  */
 
 export const version = '075';
@@ -13,6 +14,7 @@ export async function up(db) {
   await db.run("DELETE FROM application_settings WHERE key = 'instance_health_tests'");
   await db.run('DROP TABLE IF EXISTS expiry_calendar');
   await db.run('DROP TABLE IF EXISTS symbol_cache');
+  await db.run('DROP TABLE IF EXISTS watchlist_options_state');
 }
 
 export async function down() {

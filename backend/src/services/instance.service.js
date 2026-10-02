@@ -279,13 +279,10 @@ class InstanceService {
         await db.run('DELETE FROM watchlist_orders WHERE instance_id = ?', [id]);
         log.info('Deleted orders for instance', { instance_id: id });
 
-        // 3. Delete options state tracking
-        await db.run('DELETE FROM watchlist_options_state WHERE instance_id = ?', [id]);
-
-        // 4. Delete quick order history
+        // 3. Delete quick order history
         await db.run('DELETE FROM quick_orders WHERE instance_id = ?', [id]);
 
-        // 5. Finally, delete the instance itself
+        // 4. Finally, delete the instance itself
         await db.run('DELETE FROM instances WHERE id = ?', [id]);
 
         await db.run('COMMIT');
