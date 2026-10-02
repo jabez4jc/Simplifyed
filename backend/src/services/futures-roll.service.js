@@ -71,7 +71,7 @@ class FuturesRollService {
   async listFutures(exchange, underlying, now = new Date()) {
     const rows = await db.all(
       `SELECT * FROM instruments
-        WHERE exchange = ? AND UPPER(underlying_key) = ? AND instrumenttype = 'FUT'`,
+        WHERE exchange = ? AND underlying_key = ? AND instrumenttype = 'FUT'`,
       [exchange, String(underlying || '').toUpperCase()]
     );
     // The cache stores text expiries - sorting them in SQL orders by day-of-month, not by date.

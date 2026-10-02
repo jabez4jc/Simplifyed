@@ -2495,7 +2495,7 @@ class QuickOrderService {
     const name = String(contract?.symbol || '').trim().toUpperCase();
     if (!exchange || !name) throw new ValidationError('contract needs exchange and symbol');
     const row = await db.get(
-      "SELECT * FROM instruments WHERE UPPER(exchange) = ? AND UPPER(symbol) = ? AND instrumenttype IN ('CE','PE') LIMIT 1",
+      "SELECT * FROM instruments WHERE exchange = ? AND symbol = ? AND instrumenttype IN ('CE','PE') LIMIT 1",
       [exchange, name]
     );
     if (!row) throw new ValidationError(`${exchange}:${name} is not a known option contract`);

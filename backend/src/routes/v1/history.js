@@ -60,7 +60,7 @@ router.get('/symbols', VIEW, async (req, res, next) => {
          FROM watchlist_symbols ws
          JOIN watchlists w ON w.id = ws.watchlist_id
          LEFT JOIN instruments i
-           ON UPPER(i.exchange) = UPPER(ws.exchange) AND UPPER(i.symbol) = UPPER(ws.symbol)
+           ON i.exchange = UPPER(ws.exchange) AND i.symbol = UPPER(ws.symbol)
         WHERE w.is_active = 1
         ORDER BY w.name, ws.symbol`
     );
@@ -122,7 +122,7 @@ router.get('/option-legs', VIEW, async (req, res, next) => {
     // (DD-MMM-YY everywhere, YYYY-MM-DD on some crypto feeds); crypto also lapses at 5:30 PM IST.
     const rows = await db.all(
       `SELECT DISTINCT expiry FROM instruments
-        WHERE UPPER(underlying_key) = ? AND instrumenttype IN ('CE','PE') AND expiry IS NOT NULL`,
+        WHERE underlying_key = ? AND instrumenttype IN ('CE','PE') AND expiry IS NOT NULL`,
       [key]
     );
     const upcoming = upcomingExpiries(rows, new Date(), { crypto: isCryptoExchange(row.exchange) });
@@ -138,7 +138,7 @@ router.get('/option-legs', VIEW, async (req, res, next) => {
 
     const strikes = await db.all(
       `SELECT DISTINCT strike FROM instruments
-        WHERE UPPER(underlying_key) = ? AND expiry = ? AND instrumenttype IN ('CE','PE')
+        WHERE underlying_key = ? AND expiry = ? AND instrumenttype IN ('CE','PE')
           AND strike > 0 ORDER BY strike ASC`,
       [key, expiryRow.expiry]
     );
@@ -159,7 +159,7 @@ router.get('/option-legs', VIEW, async (req, res, next) => {
 
     const find = async (strike, type) => db.get(
       `SELECT symbol, exchange, lotsize, strike, expiry, tick_size AS tickSize FROM instruments
-        WHERE UPPER(underlying_key) = ? AND expiry = ? AND strike = ? AND instrumenttype = ?
+        WHERE underlying_key = ? AND expiry = ? AND strike = ? AND instrumenttype = ?
         LIMIT 1`,
       [key, expiryRow.expiry, strike, type]
     );
@@ -209,8 +209,8 @@ router.get('/future', VIEW, async (req, res, next) => {
       // The contract's own lot size wins over the row's: the exchange refuses any other multiple,
       // and a row added without one (lot_size 1) sent CRUDEOILM orders of 1 unit, not 10.
       const inst = await db.get(
-        'SELECT tick_size, lotsize FROM instruments WHERE UPPER(exchange) = UPPER(?) AND UPPER(symbol) = UPPER(?)',
-        [row.exchange, row.symbol]
+        'SELECT tick_size, lotsize FROM instruments WHERE exchange = ? AND symbol = ?',
+        [String(row.exchange).toUpperCase(), String(row.symbol).toUpperCase()]
       );
       return res.json({
         status: 'success',
@@ -276,8 +276,8 @@ router.get('/exposure', VIEW, async (req, res, next) => {
       const [exchange, symbol] = k.split('|');
       const inst = await db.get(
         `SELECT symbol, exchange, instrumenttype, strike, expiry, lotsize FROM instruments
-          WHERE UPPER(exchange) = ? AND UPPER(symbol) = ? AND instrumenttype IN ('CE','PE')
-            AND UPPER(underlying_key) = ? LIMIT 1`,
+          WHERE exchange = ? AND symbol = ? AND instrumenttype IN ('CE','PE')
+            AND underlying_key = ? LIMIT 1`,
         [exchange, symbol, String(key).toUpperCase()]
       );
       if (inst && (e.netQty || e.orders)) {

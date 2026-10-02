@@ -262,7 +262,7 @@ class InstrumentsService {
     const params = [underlyingKey, exchange];
 
     if (instrumentTypes.length > 0) {
-      const clauses = instrumentTypes.map(() => 'UPPER(instrumenttype) LIKE ?').join(' OR ');
+      const clauses = instrumentTypes.map(() => 'instrumenttype LIKE ?').join(' OR ');
       query += ` AND (${clauses})`;
       instrumentTypes.forEach(type => {
         const normalized = type.toUpperCase();
@@ -537,7 +537,7 @@ class InstrumentsService {
         let q = `
           SELECT DISTINCT expiry
           FROM instruments
-          WHERE UPPER(${field}) LIKE ? AND exchange = ?
+          WHERE ${field} LIKE ? AND exchange = ?
         `;
         const params = [
           searchValue,
@@ -545,7 +545,7 @@ class InstrumentsService {
         ];
 
         if (instrumentTypes.length > 0) {
-          const clauses = instrumentTypes.map(() => 'UPPER(instrumenttype) LIKE ?').join(' OR ');
+          const clauses = instrumentTypes.map(() => 'instrumenttype LIKE ?').join(' OR ');
           q += ` AND (${clauses})`;
           instrumentTypes.forEach(type => {
             const normalized = type.toUpperCase();

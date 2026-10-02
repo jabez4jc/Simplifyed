@@ -166,7 +166,7 @@ async function hasOptions(key) {
   if (!key) return false;
   const row = await db.get(
     `SELECT 1 AS ok FROM instruments
-      WHERE UPPER(underlying_key) = ? AND instrumenttype IN ('CE','PE') LIMIT 1`,
+      WHERE underlying_key = ? AND instrumenttype IN ('CE','PE') LIMIT 1`,
     [key]
   );
   return Boolean(row);
@@ -194,7 +194,7 @@ export async function resolveOptionsUnderlyingKey(symbolRow) {
   // index and for MCX futures; on a crypto perpetual it points back at itself, which the
   // hasOptions check below rejects.
   const inst = await db.get(
-    'SELECT underlying_key FROM instruments WHERE UPPER(symbol) = ? AND UPPER(exchange) = ? LIMIT 1',
+    'SELECT underlying_key FROM instruments WHERE symbol = ? AND exchange = ? LIMIT 1',
     [String(symbolRow.symbol || '').toUpperCase(), String(symbolRow.exchange || '').toUpperCase()]
   );
   push(inst?.underlying_key);
@@ -222,8 +222,8 @@ export async function resolveOptionLotSize(key) {
   if (!key) return null;
   const rows = await db.all(
     `SELECT DISTINCT lotsize FROM instruments
-      WHERE UPPER(underlying_key) = ? AND instrumenttype IN ('CE','PE') AND lotsize > 0`,
-    [key]
+      WHERE underlying_key = ? AND instrumenttype IN ('CE','PE') AND lotsize > 0`,
+    [String(key).toUpperCase()]
   );
   return rows.length === 1 ? Number(rows[0].lotsize) : null;
 }

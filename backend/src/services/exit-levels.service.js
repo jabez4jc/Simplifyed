@@ -100,7 +100,7 @@ class ExitLevelsService {
     const k = `${exchange}|${symbol}`;
     if (!cache.has(k)) {
       cache.set(k, await db.get(
-        'SELECT instrumenttype, underlying_key, lotsize, expiry FROM instruments WHERE UPPER(exchange) = ? AND UPPER(symbol) = ? LIMIT 1',
+        'SELECT instrumenttype, underlying_key, lotsize, expiry FROM instruments WHERE exchange = ? AND symbol = ? LIMIT 1',
         [exchange, symbol]
       ).catch(() => null));
     }
@@ -326,7 +326,7 @@ class ExitLevelsService {
     const out = [];
     for (const c of contracts.slice(0, 4)) {
       const inst = await db.get(
-        "SELECT symbol, exchange, instrumenttype, strike, expiry FROM instruments WHERE UPPER(exchange) = ? AND UPPER(symbol) = ? AND instrumenttype IN ('CE','PE') LIMIT 1",
+        "SELECT symbol, exchange, instrumenttype, strike, expiry FROM instruments WHERE exchange = ? AND symbol = ? AND instrumenttype IN ('CE','PE') LIMIT 1",
         [upper(c.exchange), upper(c.symbol)]
       );
       if (!inst || isContractExpired(inst)) continue;

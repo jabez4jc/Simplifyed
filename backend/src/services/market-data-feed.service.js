@@ -644,7 +644,7 @@ class MarketDataFeedService extends EventEmitter {
     let known = this.instrumentTokens.get(key);
     if (known === undefined) {
       const row = await db.get(
-        'SELECT token FROM instruments WHERE UPPER(exchange) = ? AND UPPER(symbol) = ? LIMIT 1',
+        'SELECT token FROM instruments WHERE exchange = ? AND symbol = ? LIMIT 1',
         [String(frame.exchange).toUpperCase(), String(frame.symbol).toUpperCase()]
       ).catch(() => null);
       known = row?.token ? String(row.token) : null;
