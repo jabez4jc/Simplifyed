@@ -28,6 +28,7 @@ import instrumentsService from './instruments.service.js';
 import { toISTDate, toISTISOString } from '../utils/time.js';
 import { isDerivativeExchange } from '../utils/broker-type.util.js';
 import { cancelOpenOrdersForSymbol } from '../utils/order-helpers.js';
+import { extractLtp } from '../utils/price-extraction.js';
 import {
   getUnderlyingQuoteExchange,
   getUnderlyingQuoteSymbol,
@@ -2748,7 +2749,7 @@ class QuickOrderService {
     requestedKeys.forEach((key) => {
       const quote = quotesMap.get(key);
       if (!quote) return;
-      const ltpValue = quickOrderQuotesService.extractLtpFromQuote(quote);
+      const ltpValue = extractLtp(quote);
       if (ltpValue === null) return;
       this.optionPreviewQuoteCache.set(key, {
         ltp: ltpValue,
@@ -2764,7 +2765,7 @@ class QuickOrderService {
 
       const quoteKey = quickOrderQuotesService.buildQuoteMatchKey(derivativeExchange, resolution.symbol);
       let quote = quoteKey ? quotesMap.get(quoteKey) : null;
-      let ltp = quote ? quickOrderQuotesService.extractLtpFromQuote(quote) : null;
+      let ltp = quote ? extractLtp(quote) : null;
       let changePercent = quote ? quickOrderQuotesService.extractChangePercentFromQuote(quote) : null;
       let fetchedAt = quote?.fetchedAt || null;
 
@@ -2918,7 +2919,7 @@ class QuickOrderService {
       tickSize: futuresResolution.tick_size || 0.05,
       quote: quote
         ? {
-            ltp: quickOrderQuotesService.extractLtpFromQuote(quote),
+            ltp: extractLtp(quote),
             changePercent: quickOrderQuotesService.extractChangePercentFromQuote(quote),
             fetchedAt,
             source: quoteSource,

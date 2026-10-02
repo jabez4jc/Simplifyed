@@ -42,3 +42,12 @@ test('extractChangePercentFromQuote never reads an absolute change as a percent'
   assert.strictEqual(quickOrderQuotesService.extractChangePercentFromQuote({ change: 12.5 }), null);
   assert.strictEqual(quickOrderQuotesService.extractChangePercentFromQuote({ percent_change: 1.2, change: 12.5 }), 1.2);
 });
+
+test('no caller still uses a quote helper that was merged away', async () => {
+  const { readFileSync, readdirSync } = await import('fs');
+  const dir = new URL('../../src/services/', import.meta.url);
+  for (const f of readdirSync(dir).filter((n) => n.endsWith('.js'))) {
+    const src = readFileSync(new URL(f, dir), 'utf8');
+    assert.ok(!/quickOrderQuotesService\.extractLtpFromQuote\(/.test(src), `${f} calls the removed extractLtpFromQuote`);
+  }
+});
