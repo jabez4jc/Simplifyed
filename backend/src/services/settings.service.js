@@ -284,7 +284,12 @@ class SettingsService extends EventEmitter {
    * than rendered as empty inputs that fail on save.
    */
   async getSchema() {
-    const rows = await db.all('SELECT key, value, data_type FROM application_settings');
+    // Registry keys only: an unfiltered read would also load the webhook token.
+    const keys = [...SETTINGS_FIELDS.keys()];
+    const rows = await db.all(
+      `SELECT key, value, data_type FROM application_settings WHERE key IN (${keys.map(() => '?').join(', ')})`,
+      keys
+    );
     const byKey = new Map(rows.map((r) => [r.key, r]));
 
     const hydrate = (field) => {

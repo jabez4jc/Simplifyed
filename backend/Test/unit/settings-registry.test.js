@@ -1,5 +1,7 @@
 import assert from 'assert';
 import test from 'node:test';
+import { readdirSync, readFileSync, statSync } from 'fs';
+import { join } from 'path';
 import {
   SETTINGS_GROUPS,
   SETTINGS_FIELDS,
@@ -130,4 +132,21 @@ test('broker rate and flag maps need the right shape', () => {
   assert.strictEqual(flags({ deltaexchange: false }), null);
   assert.match(flags({ deltaexchange: 'no' }), /true or false/);
   assert.match(flags({ zerodha: true }), /not a crypto broker/, 'an Indian broker can never take MARKET (SEBI)');
+});
+
+test('no unfiltered SELECT on application_settings in src (it holds the webhook token)', () => {
+  const hits = [];
+  const walk = (dir) => {
+    for (const f of readdirSync(dir)) {
+      const p = join(dir, f);
+      if (statSync(p).isDirectory()) { walk(p); continue; }
+      if (!p.endsWith('.js')) continue;
+      const src = readFileSync(p, 'utf8');
+      for (const m of src.matchAll(/SELECT[^`'"]*?FROM application_settings([^`'"]*)/g)) {
+        if (!/WHERE/i.test(m[1])) hits.push(`${p}: ${m[0].slice(0, 80)}`);
+      }
+    }
+  };
+  walk(new URL('../../src', import.meta.url).pathname);
+  assert.deepStrictEqual(hits, []);
 });
