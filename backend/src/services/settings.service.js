@@ -61,68 +61,6 @@ class SettingsService extends EventEmitter {
       );
     }
   }
-  /**
-   * Get all settings grouped by category
-   * @returns {Promise<Object>} - Settings grouped by category
-   */
-  async getAllSettings() {
-    try {
-      await this.ensureEssentialSettings();
-      const rows = await db.all(`
-        SELECT key, value, description, category, data_type, is_sensitive
-        FROM application_settings
-        ORDER BY category, key
-      `);
-
-      // Group by category
-      const settings = {};
-      rows.forEach(row => {
-        if (!settings[row.category]) {
-          settings[row.category] = {};
-        }
-
-        // Convert value based on data type
-        let parsedValue = row.value;
-        switch (row.data_type) {
-          case 'number':
-            parsedValue = parseFloat(row.value);
-            break;
-          case 'boolean':
-            parsedValue = row.value === 'true';
-            break;
-          case 'json':
-            try {
-              parsedValue = JSON.parse(row.value);
-            } catch (e) {
-              log.warn('Failed to parse JSON setting', { key: row.key, value: row.value });
-            }
-            break;
-        }
-
-        settings[row.category][row.key] = {
-          // rawValue must follow the same rule as value. Masking one while shipping the other
-          // unmasked in the very same object defeats the mask entirely: these objects are
-          // returned straight to the browser by GET /api/v1/settings and friends. Nothing is
-          // flagged is_sensitive today, so this is latent rather than live - but the masking
-          // code and the schema column both exist to be used, and the first secret stored here
-          // would have been published. Internal readers of rawValue (config.js,
-          // limit-price.service, broker-capabilities.service) only ever read non-sensitive
-          // settings, which are unaffected.
-          value: row.is_sensitive ? this.maskValue(row.value) : parsedValue,
-          rawValue: row.is_sensitive ? this.maskValue(row.value) : row.value,
-          description: row.description,
-          dataType: row.data_type,
-          isSensitive: !!row.is_sensitive,
-        };
-      });
-
-      return settings;
-    } catch (error) {
-      log.error('Failed to get all settings', error);
-      throw error;
-    }
-  }
-
   /** A row's stored value, unmasked and unparsed. Server-side only - never send it to a client. */
   async getRawValue(key) {
     const row = await db.get('SELECT value FROM application_settings WHERE key = ?', [key]);
@@ -165,7 +103,7 @@ class SettingsService extends EventEmitter {
 
       return {
         key: row.key,
-        // See the note above - rawValue is masked in step with value.
+        // rawValue is masked in step with value: masking one while shipping the other defeats the mask.
         value: row.is_sensitive ? this.maskValue(row.value) : parsedValue,
         rawValue: row.is_sensitive ? this.maskValue(row.value) : row.value,
         description: row.description,

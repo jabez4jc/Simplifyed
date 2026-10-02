@@ -717,7 +717,7 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       return;
     }
 
-    this.settings = await this.fetchAllSettings();
+    this.settings = {};
     await this.fetchSchema();
 
     const host = document.getElementById('settings-schema-host');
@@ -728,25 +728,6 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
     }
   }
 
-  /**
-   * Fetch all settings
-   */
-  async fetchAllSettings() {
-    try {
-      const response = await this.authFetch('/api/v1/settings');
-      if (!response.ok) throw new Error('Failed to fetch settings');
-      const data = await response.json();
-      return data.data;
-    } catch (error) {
-      console.error('[Settings] Error fetching settings:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Fetch categories
-   */
- 
   async fetchCurrentUser() {
     const res = await this.authFetch('/api/user');
     if (!res.ok) return null;

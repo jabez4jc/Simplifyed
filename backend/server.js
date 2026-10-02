@@ -219,6 +219,7 @@ async function startServer() {
     // Connect to database
     await db.connect();
     log.info('Database connected');
+    await settingsService.ensureEssentialSettings();
 
     // Load configuration from database
     await config.loadFromDatabase();

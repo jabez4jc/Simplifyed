@@ -84,10 +84,10 @@ Object.defineProperties(SettingsHandler.prototype, Object.getOwnPropertyDescript
       this.currentUser = await this.fetchCurrentUser();
       const canViewAppSettings = this.canViewApplicationSettings();
 
-      this.settings = canViewAppSettings ? await this.fetchAllSettings() : {};
+      this.settings = {};
 
-      // The schema is what the UI renders from; fetch it after this.settings so its values win
-      // (it reads the same rows, but only the editable subset, already grouped and labelled).
+      // The schema is what the UI renders from (the editable subset, already grouped and
+      // labelled); fetchSchema also fills this.settings for the save path to diff against.
       if (canViewAppSettings) {
         await this.fetchSchema();
       }

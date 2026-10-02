@@ -61,7 +61,6 @@ const valueOf = async (key) => (await db.get('SELECT value FROM application_sett
 
 test('no settings route answers an anonymous caller', async () => {
   const routes = [
-    ['get', '/api/v1/settings'],
     ['get', '/api/v1/settings/schema'],
     ['put', '/api/v1/settings'],
     ['post', `/api/v1/settings/${NUMERIC_KEY}/reset`],
@@ -75,7 +74,7 @@ test('no settings route answers an anonymous caller', async () => {
 test('reading settings and changing them are separate permissions', async () => {
   const reader = await withPermissions(['pages.settings.view']);
 
-  assert.strictEqual((await get('/api/v1/settings', reader)).status, STATUS.OK);
+  assert.strictEqual((await get('/api/v1/settings/schema', reader)).status, STATUS.OK);
   assert.strictEqual(
     (await save(reader, NUMERIC_KEY, IN_RANGE)).status,
     STATUS.FORBIDDEN,
@@ -90,13 +89,13 @@ test('a user with every permission except settings.manage still cannot write', a
 
 test('a monitor cannot see or change settings at all', async () => {
   const monitor = await asMonitor();
-  assert.strictEqual((await get('/api/v1/settings', monitor)).status, STATUS.FORBIDDEN);
+  assert.strictEqual((await get('/api/v1/settings/schema', monitor)).status, STATUS.FORBIDDEN);
   assert.strictEqual((await save(monitor, NUMERIC_KEY, IN_RANGE)).status, STATUS.FORBIDDEN);
 });
 
 test('a trader can view settings but not rewrite them', async () => {
   const trader = await asTrader();
-  assert.strictEqual((await get('/api/v1/settings', trader)).status, STATUS.OK);
+  assert.strictEqual((await get('/api/v1/settings/schema', trader)).status, STATUS.OK);
   assert.strictEqual((await save(trader, NUMERIC_KEY, IN_RANGE)).status, STATUS.FORBIDDEN);
 });
 
@@ -104,12 +103,8 @@ test('a trader can view settings but not rewrite them', async () => {
 // Reading
 // ---------------------------------------------------------------------------
 
-test('the settings list and the schema the screen renders from both answer', async () => {
+test('the schema the screen renders from answers', async () => {
   const admin = await asAdmin();
-
-  const all = await get('/api/v1/settings', admin);
-  assert.strictEqual(all.status, STATUS.OK);
-  assert.ok(all.body.data, 'settings must come back');
 
   const schema = await get('/api/v1/settings/schema', admin);
   assert.strictEqual(schema.status, STATUS.OK);
@@ -124,7 +119,7 @@ test('no settings response exposes a sensitive value in the clear', async () => 
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, is_sensitive = 1`
   );
 
-  for (const path of ['/api/v1/settings', '/api/v1/settings/schema']) {
+  for (const path of ['/api/v1/settings/schema']) {
     const res = await get(path, admin);
     assert.ok(
       !JSON.stringify(res.body).includes('super-secret-value-9999'),

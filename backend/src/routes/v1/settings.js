@@ -12,22 +12,6 @@ const router = express.Router();
 router.use(requireAuth);
 
 /**
- * GET /api/v1/settings
- * Get all settings grouped by category
- */
-router.get('/', requirePermission('pages.settings.view'), async (req, res, next) => {
-  try {
-    const settings = await settingsService.getAllSettings();
-    res.json({
-      status: 'success',
-      data: settings
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
  * GET /api/v1/settings/schema
  * The runtime-editable settings, grouped and labelled for display, with current values.
  * Registered before /:category so the literal path isn't swallowed by the param route.
