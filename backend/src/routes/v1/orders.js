@@ -157,24 +157,6 @@ router.get('/orderbook', requirePermission('pages.orders.view'), async (req, res
 });
 
 /**
- * GET /api/v1/orders/:id
- * Get order by ID
- */
-router.get('/:id', requirePermission('pages.orders.view'), async (req, res, next) => {
-  try {
-    const id = parseInt(req.params.id, 10);
-    const order = await orderService.getOrderById(id);
-
-    res.json({
-      status: 'success',
-      data: order,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
  * POST /api/v1/orders
  * Place order (using placesmartorder)
  */

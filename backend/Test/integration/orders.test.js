@@ -61,7 +61,6 @@ test('no order route answers an unauthenticated caller', async () => {
   const routes = [
     ['get', '/api/v1/orders'],
     ['get', '/api/v1/orders/orderbook'],
-    ['get', '/api/v1/orders/1'],
     ['post', '/api/v1/orders'],
     ['post', '/api/v1/orders/1/cancel'],
     ['post', '/api/v1/orders/cancel-all'],

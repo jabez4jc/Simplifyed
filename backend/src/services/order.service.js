@@ -591,38 +591,6 @@ class OrderService {
   }
 
   /**
-   * Get order by ID
-   * @param {number} orderId - Order ID
-   * @returns {Promise<Object>} - Order details
-   */
-  async getOrderById(orderId) {
-    try {
-      const order = await db.get(
-        `SELECT
-          wo.*,
-          i.name as instance_name,
-          i.host_url as instance_host,
-          w.name as watchlist_name
-         FROM watchlist_orders wo
-         JOIN instances i ON wo.instance_id = i.id
-         LEFT JOIN watchlists w ON wo.watchlist_id = w.id
-         WHERE wo.id = ?`,
-        [orderId]
-      );
-
-      if (!order) {
-        throw new NotFoundError('Order');
-      }
-
-      return order;
-    } catch (error) {
-      if (error instanceof NotFoundError) throw error;
-      log.error('Failed to get order', error, { orderId });
-      throw error;
-    }
-  }
-
-  /**
    * Get orders with filters
    * @param {Object} filters - Filter options
    * @returns {Promise<Array>} - List of orders
@@ -679,27 +647,6 @@ class OrderService {
       log.error('Failed to get orders', error, { filters });
       throw error;
     }
-  }
-
-  /**
-   * On-demand single-order status lookup - lighter than fetching the whole orderbook when only
-   * one specific order needs checking. Does NOT replace syncOrderStatus's bulk reconciliation:
-   * with many pending orders, one orderstatus call per order would be MORE broker calls than one
-   * whole-orderbook fetch, so this is for targeted checks only (e.g. right after placing an order).
-   * @param {number} instanceId
-   * @param {string} orderId
-   * @returns {Promise<Object>} - broker order detail
-   */
-  async getOrderStatus(instanceId, orderId) {
-    const instance = await db.get('SELECT * FROM instances WHERE id = ?', [instanceId]);
-    if (!instance) {
-      throw new NotFoundError('Instance');
-    }
-    // `strategy` is mandatory on /orderstatus; OpenAlgo rejects the request with 400 without it.
-    return openalgoClient.getOrderStatus(instance, {
-      orderid: orderId,
-      strategy: instance.strategy_tag || 'default',
-    });
   }
 
   /**

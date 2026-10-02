@@ -9,7 +9,6 @@ import instrumentsService, { SUPPORTED_EXCHANGES } from '../../services/instrume
 import { log } from '../../core/logger.js';
 import { ValidationError } from '../../core/errors.js';
 import { toISTISOString } from '../../utils/time.js';
-import { sanitizeString } from '../../utils/sanitizers.js';
 import { requireAuth, requirePermission } from '../../middleware/auth.js';
 
 const router = express.Router();
@@ -199,38 +198,6 @@ router.post('/fetch-from-instance', requirePermission('settings.instruments.refr
       log.error('Fetch from instance failed', error, {
         instanceId: parsedInstanceId
       });
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
- * GET /api/v1/instruments/:exchange/:symbol
- * Get specific instrument by exchange and symbol
- */
-router.get('/:exchange/:symbol', async (req, res, next) => {
-  try {
-    const { exchange, symbol } = req.params;
-
-    // Service handles case conversion
-    const instrument = await instrumentsService.getInstrument(
-      sanitizeString(symbol),
-      sanitizeString(exchange)
-    );
-
-    if (!instrument) {
-      res.status(404).json({
-        status: 'error',
-        message: 'Instrument not found',
-        data: null
-      });
-      return;
-    }
-
-    res.json({
-      status: 'success',
-      data: instrument
     });
   } catch (error) {
     next(error);
