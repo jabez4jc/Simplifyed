@@ -25,6 +25,8 @@ const WS_LIVENESS_CHECK_MS = 15 * 1000;
 const WS_LIVENESS_TIMEOUT_MS = 45 * 1000;
 const ORDER_UPDATE_CACHE_MAX = 500;
 const ORDER_UPDATE_CACHE_TTL_MS = 10 * 60 * 1000;
+// A Depth subscription is only asked for while an order needs the book; drop it once unused.
+const DEPTH_IDLE_MS = 2 * 60 * 1000;
 
 const keyToSymbol = (key) => {
   const [exchange, symbol] = key.split('|');
@@ -54,15 +56,24 @@ export function quoteSubscriptionFrames(current, desired) {
   return frames;
 }
 
-/** One batched Depth `subscribe` per requested level, for entries not already subscribed. */
+/**
+ * One batched Depth `subscribe` per requested level for entries not already subscribed, and one
+ * `unsubscribe` for entries no longer wanted.
+ */
 export function depthSubscriptionFrames(current, desired) {
+  const frames = [];
+  const removed = [...current.keys()].filter((k) => !desired.has(k));
+  if (removed.length) {
+    frames.push({ action: 'unsubscribe', symbols: removed.map((k) => ({ ...keyToSymbol(k), mode: 'Depth' })) });
+  }
   const byLevel = new Map();
   for (const [key, entry] of desired) {
     if (current.get(key) === entry.depth_level) continue;
     if (!byLevel.has(entry.depth_level)) byLevel.set(entry.depth_level, []);
     byLevel.get(entry.depth_level).push({ exchange: entry.exchange, symbol: entry.symbol });
   }
-  return [...byLevel].map(([depth, symbols]) => ({ action: 'subscribe', mode: 'Depth', depth, symbols }));
+  for (const [depth, symbols] of byLevel) frames.push({ action: 'subscribe', mode: 'Depth', depth, symbols });
+  return frames;
 }
 
 /**
@@ -98,8 +109,8 @@ export function routeMarketData(msg) {
  * The spec warns a broker WebSocket and an HTTPS postback can deliver the same transition twice,
  * and says to deduplicate on these three fields.
  */
-export function orderUpdateKey(order) {
-  return `${order?.orderid}|${order?.order_status}|${order?.filled_quantity}`;
+export function orderUpdateKey(order, instanceId = '') {
+  return `${instanceId}|${order?.orderid}|${order?.order_status}|${order?.filled_quantity}`;
 }
 
 /**
@@ -310,8 +321,20 @@ class OpenAlgoWsConnection {
     const sym = (symbol?.symbol || '').toUpperCase();
     if (!exchange || !sym) return;
     const key = `${exchange}|${sym}`;
-    this.depthDesired.set(key, { exchange, symbol: sym, depth_level: depthLevel });
+    this.depthDesired.set(key, { exchange, symbol: sym, depth_level: depthLevel, lastAskedAt: Date.now() });
     this._syncSubscriptions();
+  }
+
+  /** Stop streaming depth nobody has asked for lately. */
+  dropIdleDepth(now = Date.now()) {
+    let dropped = false;
+    for (const [key, entry] of this.depthDesired) {
+      if (now - entry.lastAskedAt > DEPTH_IDLE_MS) {
+        this.depthDesired.delete(key);
+        dropped = true;
+      }
+    }
+    if (dropped) this._syncSubscriptions();
   }
 
   _syncSubscriptions() {
@@ -333,6 +356,21 @@ class OpenAlgoWsService extends EventEmitter {
     this._livenessInterval = null;
   }
 
+  /**
+   * Bring the connections in line with `instances` (the active ones that use WS quotes): open new
+   * ones, close those that were deactivated or deleted, and reopen one whose endpoint or key changed.
+   */
+  reconcile(instances = []) {
+    const wanted = new Map(instances.map((i) => [i.id, i]));
+    for (const [id, conn] of this.connections) {
+      const next = wanted.get(id);
+      if (next && ['host_url', 'api_key', 'websocket_url'].every((f) => conn.instance[f] === next[f])) continue;
+      conn.close();
+      this.connections.delete(id);
+    }
+    this.start(instances);
+  }
+
   start(instances = []) {
     this.instances = instances;
     instances.forEach((inst) => {
@@ -349,7 +387,7 @@ class OpenAlgoWsService extends EventEmitter {
         conn.onDepth = (instanceId, depth) => this.emit('depth', { instanceId, depth });
         conn.onOrderStream = (instanceId, live) => this.emit('order_stream', { instanceId, live });
         conn.onOrderUpdate = (instanceId, order) => {
-          if (this._isDuplicateOrderUpdate(order)) return;
+          if (this._isDuplicateOrderUpdate(order, instanceId)) return;
           this._recordOrderUpdate(order);
           this.emit('order_update', { instanceId, order });
         };
@@ -372,6 +410,7 @@ class OpenAlgoWsService extends EventEmitter {
         // The spec's `ping` action answers with `pong`, so a socket with nothing subscribed
         // (after hours, or orders-only) still proves it is alive instead of being torn down.
         if (conn.authed) conn._send({ action: 'ping' });
+        conn.dropIdleDepth(now);
         if (!isConnectionStale(conn, now)) continue;
         log.warn('OpenAlgo WS liveness check failed - reconnecting', {
           instance: conn.instance?.name || conn.instance?.id,
@@ -497,8 +536,8 @@ class OpenAlgoWsService extends EventEmitter {
     return this.getActiveConnectionCount() > 0;
   }
 
-  _isDuplicateOrderUpdate(order) {
-    const key = orderUpdateKey(order);
+  _isDuplicateOrderUpdate(order, instanceId) {
+    const key = orderUpdateKey(order, instanceId);
     const seen = this.orderUpdateSeen.get(key);
     const now = Date.now();
     if (seen && now - seen < ORDER_UPDATE_CACHE_TTL_MS) return true;

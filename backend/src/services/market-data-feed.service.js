@@ -25,25 +25,14 @@ import { extractAveragePrice, extractLtp } from '../utils/price-extraction.js';
 import openalgoWsService from './openalgo-ws.service.js';
 import marketCalendarService from './market-calendar.service.js';
 
-const DEFAULT_QUOTE_INTERVAL = 5000;               // 5 seconds for quote refresh (WS primary; REST uses TTL)
-const DEFAULT_QUOTE_TTL_IDLE_MS = 15000;
-const DEFAULT_QUOTE_TTL_ACTIVE_MS = 10000;
-const DEFAULT_POSITION_INTERVAL_IDLE = 30000;      // 30 seconds when no open positions
-const DEFAULT_POSITION_INTERVAL_ACTIVE = 8000;     // 8 seconds when positions open
-const DEFAULT_TRADEBOOK_INTERVAL_IDLE = 30000;
-const DEFAULT_TRADEBOOK_INTERVAL_ACTIVE = 8000;
-const DEFAULT_ORDERBOOK_INTERVAL = 30000;
 // How often REST re-reads orders while the WebSocket order stream is live - a safety net for a
 // push lost in transit, not the refresh path. Shared with polling.service.js.
 export const ORDER_STREAM_SWEEP_MS = 3 * 60 * 1000;
-const DEFAULT_FUNDS_INTERVAL = 3 * 60 * 1000;      // 3 minutes for funds refresh (sequential)
 
 // TTL configurations
 const TTL_DISPLAY = 5000;      // 5s TTL for watchlist display (relaxed)
 const TTL_ORDER_CRITICAL = 3000; // 3s TTL for order-critical operations (aligned with default)
 
-const MULTI_QUOTE_COOLDOWN_ACTIVE_MS = 10000;
-const MULTI_QUOTE_COOLDOWN_IDLE_MS = 15000;
 const MULTI_QUOTE_SYMBOL_LIMIT = 50;
 const FEED_STAGGER_MS = 2000;
 const WS_SYMBOL_STALE_MS = 10 * 60 * 1000;
@@ -99,21 +88,9 @@ class MarketDataFeedService extends EventEmitter {
     this.positionRefreshTimestamps = new Map();
     this.fundsRefreshTimestamps = new Map();
 
-    // Consolidated TTL settings
-    this.QUOTE_TTL_MS = DEFAULT_QUOTE_TTL_IDLE_MS;
-    this.QUOTE_TTL_ORDER_MS = TTL_ORDER_CRITICAL;
-    this.FUNDS_TTL_MS = DEFAULT_FUNDS_INTERVAL;
-    this.quoteTtlIdleMs = DEFAULT_QUOTE_TTL_IDLE_MS;
-    this.quoteTtlActiveMs = DEFAULT_QUOTE_TTL_ACTIVE_MS;
-    this.positionIntervalIdleMs = DEFAULT_POSITION_INTERVAL_IDLE;
-    this.positionIntervalActiveMs = DEFAULT_POSITION_INTERVAL_ACTIVE;
-    this.tradebookIntervalIdleMs = DEFAULT_TRADEBOOK_INTERVAL_IDLE;
-    this.tradebookIntervalActiveMs = DEFAULT_TRADEBOOK_INTERVAL_ACTIVE;
-    this.orderbookIntervalMs = DEFAULT_ORDERBOOK_INTERVAL;
-    this.fundsIntervalMs = DEFAULT_FUNDS_INTERVAL;
-    this.quoteIntervalMs = DEFAULT_QUOTE_INTERVAL;
-    this.multiQuoteCooldownIdleMs = MULTI_QUOTE_COOLDOWN_IDLE_MS;
-    this.multiQuoteCooldownActiveMs = MULTI_QUOTE_COOLDOWN_ACTIVE_MS;
+    // Intervals and TTLs: config.js is the only source (applyConfig, below).
+    this.applyConfig();
+    this._inFlight = new Map(); // name -> promise of the refresh currently running
     this.orderbookCache = new Map();
     this.orderbookRefreshTimestamps = new Map();
     this.tradebookCache = new Map();
@@ -143,17 +120,11 @@ class MarketDataFeedService extends EventEmitter {
     this.positionIntervalHandle = null;
   }
 
-  async start(options = {}) {
+  async start() {
     if (this.isRunning) return;
     this.isRunning = true;
 
     this.applyConfig();
-    if (options.quoteInterval) {
-      this.quoteIntervalMs = options.quoteInterval;
-    }
-    if (options.fundsInterval) {
-      this.fundsIntervalMs = options.fundsInterval;
-    }
 
     // Start WS quotes (best-effort; falls back to HTTP polling)
     await this._startWsQuotes();
@@ -199,7 +170,10 @@ class MarketDataFeedService extends EventEmitter {
     setTimeout(() => this.refreshFunds({ force: true }).catch(() => {}), FEED_STAGGER_MS * 2);
 
     // Quotes interval
-    this.intervals.push(setInterval(() => this.refreshQuotes(), this.quoteIntervalMs));
+    this.intervals.push(setInterval(() => {
+      this._reconcileWsConnections().catch((err) => log.warn('WS reconcile failed', { error: err.message }));
+      this.refreshQuotes();
+    }, this.quoteIntervalMs));
     // Position refresh uses dynamic interval based on open positions
     this._startDynamicPositionRefresh(FEED_STAGGER_MS);
     // Funds interval (already slow)
@@ -226,51 +200,69 @@ class MarketDataFeedService extends EventEmitter {
   }
 
   applyConfig() {
-    const cfg = config;
-    const md = cfg.marketDataFeed || {};
+    const md = config.marketDataFeed;
 
-    this.quoteIntervalMs = cfg.polling?.marketDataInterval || DEFAULT_QUOTE_INTERVAL;
-    this.fundsIntervalMs = md.fundsIntervalMs || DEFAULT_FUNDS_INTERVAL;
+    this.quoteIntervalMs = config.polling.marketDataInterval;
+    this.fundsIntervalMs = md.fundsIntervalMs;
 
-    this.quoteTtlIdleMs = md.quoteTtlIdleMs || DEFAULT_QUOTE_TTL_IDLE_MS;
-    this.quoteTtlActiveMs = md.quoteTtlActiveMs || Math.min(this.quoteTtlIdleMs, DEFAULT_QUOTE_TTL_ACTIVE_MS);
-    this.positionIntervalIdleMs = md.positionIntervalIdleMs || DEFAULT_POSITION_INTERVAL_IDLE;
-    this.positionIntervalActiveMs = md.positionIntervalActiveMs || DEFAULT_POSITION_INTERVAL_ACTIVE;
-    this.tradebookIntervalIdleMs = md.tradebookIntervalIdleMs || DEFAULT_TRADEBOOK_INTERVAL_IDLE;
-    this.tradebookIntervalActiveMs = md.tradebookIntervalActiveMs || DEFAULT_TRADEBOOK_INTERVAL_ACTIVE;
-    this.orderbookIntervalMs = md.orderbookIntervalMs || DEFAULT_ORDERBOOK_INTERVAL;
+    this.quoteTtlIdleMs = md.quoteTtlIdleMs;
+    this.quoteTtlActiveMs = md.quoteTtlActiveMs;
+    this.positionIntervalIdleMs = md.positionIntervalIdleMs;
+    this.positionIntervalActiveMs = md.positionIntervalActiveMs;
+    this.tradebookIntervalIdleMs = md.tradebookIntervalIdleMs;
+    this.tradebookIntervalActiveMs = md.tradebookIntervalActiveMs;
+    this.orderbookIntervalMs = md.orderbookIntervalMs;
 
-    this.multiQuoteCooldownIdleMs = md.multiquoteCooldownIdleMs || MULTI_QUOTE_COOLDOWN_IDLE_MS;
-    this.multiQuoteCooldownActiveMs = md.multiquoteCooldownActiveMs || MULTI_QUOTE_COOLDOWN_ACTIVE_MS;
+    this.multiQuoteCooldownIdleMs = md.multiquoteCooldownIdleMs;
+    this.multiQuoteCooldownActiveMs = md.multiquoteCooldownActiveMs;
 
     this.QUOTE_TTL_MS = Math.max(this.quoteTtlIdleMs, TTL_DISPLAY);
     this.QUOTE_TTL_ORDER_MS = TTL_ORDER_CRITICAL;
     this.FUNDS_TTL_MS = this.fundsIntervalMs;
   }
 
+  /** One run of `fn` at a time per name: a caller arriving mid-run waits for that run's result. */
+  _singleFlight(name, fn) {
+    const running = this._inFlight.get(name);
+    if (running) return running;
+    const run = (async () => fn())().finally(() => this._inFlight.delete(name));
+    this._inFlight.set(name, run);
+    return run;
+  }
+
   async _startWsQuotes() {
     try {
-      const instances = await instanceService.getAllInstances({ is_active: true });
-      const wsInstances = instances.filter((i) => i.use_ws_quotes);
-      if (wsInstances.length === 0) return;
-      openalgoWsService.start(wsInstances.map((i) => ({
-        id: i.id,
-        name: i.name,
-        host_url: i.host_url,
-        api_key: i.api_key,
-        websocket_url: i.websocket_url,
-        // Needed so a symbol is only ever round-robined onto a connection whose broker can
-        // actually serve its exchange - see the note on syncAll's compatibility filter.
-        broker: i.broker,
-      })));
+      const count = await this._reconcileWsConnections();
+      if (count === 0) return;
       // Prime subscriptions immediately with current symbols
       const symbols = await this._buildGlobalSymbolList();
       this.lastGlobalSymbolList = this._dedupeSymbols(symbols);
       openalgoWsService.syncAll(this.lastGlobalSymbolList);
-      log.info('OpenAlgo WS quotes started', { instances: wsInstances.length });
+      log.info('OpenAlgo WS quotes started', { instances: count });
     } catch (err) {
       log.warn('OpenAlgo WS quotes init failed', { error: err.message });
     }
+  }
+
+  /**
+   * Make the WS connections match the active instances that use WS quotes, so an instance created,
+   * re-keyed, deactivated or deleted after boot is picked up (run on every quote tick).
+   * @returns {Promise<number>} how many instances should be connected
+   */
+  async _reconcileWsConnections() {
+    const instances = await instanceService.getAllInstances({ is_active: true });
+    const wsInstances = instances.filter((i) => i.use_ws_quotes).map((i) => ({
+      id: i.id,
+      name: i.name,
+      host_url: i.host_url,
+      api_key: i.api_key,
+      websocket_url: i.websocket_url,
+      // Needed so a symbol is only ever round-robined onto a connection whose broker can
+      // actually serve its exchange - see the note on syncAll's compatibility filter.
+      broker: i.broker,
+    }));
+    openalgoWsService.reconcile(wsInstances);
+    return wsInstances.length;
   }
 
   _syncWsSubscriptions() {
@@ -286,7 +278,11 @@ class MarketDataFeedService extends EventEmitter {
   /**
    * Quotes (per market-data instance)
    */
-  async refreshQuotes({ force = false } = {}) {
+  refreshQuotes(opts = {}) {
+    return this._singleFlight('quotes', () => this._refreshQuotes(opts));
+  }
+
+  async _refreshQuotes({ force = false } = {}) {
     const now = Date.now();
     const targetInterval = this._getQuoteTtlMs();
     if (!force && now - this.lastQuoteRefreshAt < targetInterval) {
@@ -323,7 +319,6 @@ class MarketDataFeedService extends EventEmitter {
       }
 
       const supportPool = marketDataInstances.filter(inst => inst.supports_multiquotes && !inst.disable_multiquotes && inst.multiquotes_ok);
-      const regularPool = marketDataInstances.filter(inst => !inst.supports_multiquotes);
 
       let pendingSymbols = await this._filterSymbolsByMarketOpen(missing);
       if (pendingSymbols.length === 0) {
@@ -342,8 +337,7 @@ class MarketDataFeedService extends EventEmitter {
 
       // Fallback to multiquotes only; no single-quote fanout for multiple symbols
       if (pendingSymbols.length > 0) {
-        const poolForFallback = supportPool.length > 0 ? supportPool.concat(regularPool) : marketDataInstances;
-        for (const inst of poolForFallback) {
+        for (const inst of supportPool) {
           if (this._isInstanceUnhealthy(inst.id)) continue;
           const maxRetries = 2;
           let lastError = null;
@@ -377,7 +371,6 @@ class MarketDataFeedService extends EventEmitter {
             log.warn('Failed multiquotes fallback', { instance: inst.name, error: lastError?.message });
           }
 
-          await this._sleep(Math.floor(Math.random() * FEED_STAGGER_MS) + FEED_STAGGER_MS);
           if (pendingSymbols.length === 0) break;
         }
       }
@@ -876,20 +869,20 @@ class MarketDataFeedService extends EventEmitter {
   /**
    * Positions (per trading instance)
    */
-  async refreshPositions({ force = false } = {}) {
+  refreshPositions(opts = {}) {
+    return this._singleFlight('positions', () => this._refreshAll(opts, 'positions', (id, o) => this.refreshPositionsForInstance(id, o)));
+  }
+
+  /** Every active instance in parallel - the client rate-limits per instance, so no sleeping between them. */
+  async _refreshAll({ force = false }, what, refreshOne) {
     try {
       const instances = await instanceService.getAllInstances({ is_active: true });
-      for (const inst of instances) {
-        if (!force && !(await marketCalendarService.isInstanceMarketOpen(inst))) continue;
-        const madeLiveCall = await this.refreshPositionsForInstance(inst.id, { force });
-        // Per-instance jitter to smooth RPS - only needed when a real broker call happened;
-        // idle/cached instances just no-op and shouldn't stall the batch loop.
-        if (madeLiveCall) {
-          await this._sleep(Math.floor(Math.random() * FEED_STAGGER_MS) + FEED_STAGGER_MS);
-        }
-      }
+      await Promise.allSettled(instances.map(async (inst) => {
+        if (!force && !(await marketCalendarService.isInstanceMarketOpen(inst))) return;
+        await refreshOne(inst.id, { force });
+      }));
     } catch (error) {
-      log.warn('refreshPositions failed to load instances', { error: error.message });
+      log.warn(`refresh ${what} failed to load instances`, { error: error.message });
     }
   }
 
@@ -903,11 +896,7 @@ class MarketDataFeedService extends EventEmitter {
     this._updateOpenPositionState(instanceId, positions);
   }
 
-  /**
-   * @returns {Promise<boolean>} true if a live broker call was actually made (used by the batch
-   *   loop in refreshPositions() to skip the inter-instance jitter sleep for instances that were
-   *   idle/cached and made no network call).
-   */
+  /** @returns {Promise<boolean>} true if a live broker call was actually made. */
   async refreshPositionsForInstance(instanceId, { force = false } = {}) {
     try {
       if (this._isInstanceUnhealthy(instanceId)) {
@@ -1118,19 +1107,8 @@ class MarketDataFeedService extends EventEmitter {
   /**
    * Funds / balances (per trading instance)
    */
-  async refreshFunds({ force = false } = {}) {
-    try {
-      const instances = await instanceService.getAllInstances({ is_active: true });
-      for (const inst of instances) {
-        if (!force && !(await marketCalendarService.isInstanceMarketOpen(inst))) continue;
-        const madeLiveCall = await this.refreshFundsForInstance(inst.id, { force });
-        if (madeLiveCall) {
-          await this._sleep(Math.floor(Math.random() * FEED_STAGGER_MS) + FEED_STAGGER_MS);
-        }
-      }
-    } catch (error) {
-      log.warn('refreshFunds failed to load instances', { error: error.message });
-    }
+  refreshFunds(opts = {}) {
+    return this._singleFlight('funds', () => this._refreshAll(opts, 'funds', (id, o) => this.refreshFundsForInstance(id, o)));
   }
 
   getFundsSnapshot(instanceId) {
@@ -1142,10 +1120,7 @@ class MarketDataFeedService extends EventEmitter {
     this.emit('funds:update', { instanceId, data: funds });
   }
 
-  /**
-   * @returns {Promise<boolean>} true if a live broker call was actually made (see
-   *   refreshPositionsForInstance for why the batch loop needs this).
-   */
+  /** @returns {Promise<boolean>} true if a live broker call was actually made. */
   async refreshFundsForInstance(instanceId, { force = false } = {}) {
     if (this._isInstanceUnhealthy(instanceId)) {
       log.debug('Skipping funds refresh - instance unhealthy', { instanceId });
@@ -1815,8 +1790,8 @@ class MarketDataFeedService extends EventEmitter {
   _startDynamicPositionRefresh(initialDelayMs = 0) {
     // Initial interval based on current state
     const initialInterval = this._hasActiveRisk()
-      ? DEFAULT_POSITION_INTERVAL_ACTIVE
-      : DEFAULT_POSITION_INTERVAL_IDLE;
+      ? this.positionIntervalActiveMs
+      : this.positionIntervalIdleMs;
 
     this._schedulePositionRefresh(initialInterval + initialDelayMs);
   }
@@ -1849,8 +1824,8 @@ class MarketDataFeedService extends EventEmitter {
         const hasActiveRisk = this._hasActiveRisk();
         if (hadActiveRisk !== hasActiveRisk) {
           const newInterval = hasActiveRisk
-            ? DEFAULT_POSITION_INTERVAL_ACTIVE
-            : DEFAULT_POSITION_INTERVAL_IDLE;
+            ? this.positionIntervalActiveMs
+            : this.positionIntervalIdleMs;
           log.info('Position refresh interval changed', {
             hasOpenPositions: this.hasOpenPositions,
             hasOpenOrders: this.hasOpenOrders,
@@ -1863,13 +1838,13 @@ class MarketDataFeedService extends EventEmitter {
 
         // Schedule next refresh with appropriate interval
         const nextInterval = this._hasActiveRisk()
-          ? DEFAULT_POSITION_INTERVAL_ACTIVE
-          : DEFAULT_POSITION_INTERVAL_IDLE;
+          ? this.positionIntervalActiveMs
+          : this.positionIntervalIdleMs;
         this._schedulePositionRefresh(nextInterval);
       } catch (error) {
         log.warn('Dynamic position refresh failed', { error: error.message });
         // On error, retry with idle interval
-        this._schedulePositionRefresh(DEFAULT_POSITION_INTERVAL_IDLE);
+        this._schedulePositionRefresh(this.positionIntervalIdleMs);
       }
     }, intervalMs);
   }

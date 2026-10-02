@@ -46,9 +46,7 @@ async function startBackgroundServices() {
   servicesStarted = true;
 
   try {
-    await marketDataFeedService.start({
-      quoteInterval: config.polling.marketDataInterval || undefined,
-    });
+    await marketDataFeedService.start();
     log.info('Market data feed service started');
 
     await autoExitService.start();
