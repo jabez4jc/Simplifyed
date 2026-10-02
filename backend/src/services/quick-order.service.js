@@ -2554,14 +2554,6 @@ class QuickOrderService {
     return quickOrderHistoryService.syncQuickOrdersForInstance(instanceId, options);
   }
 
-  async getQuickOrderById(id) {
-    return quickOrderHistoryService.getQuickOrderById(id);
-  }
-
-  async getQuickOrderStats(filters = {}) {
-    return quickOrderHistoryService.getQuickOrderStats(filters);
-  }
-
   // Delegated to utils/symbol-parsing.util.js (pure functions, no shared state) - names/
   // signatures kept identical so every existing internal call site keeps working unmodified.
   // MCX note: _getUnderlyingQuoteSymbol's MCX branch is load-bearing for the MCX options

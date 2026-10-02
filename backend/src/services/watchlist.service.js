@@ -232,55 +232,6 @@ class WatchlistService {
   }
 
   /**
-   * Clone watchlist
-   * @param {number} id - Source watchlist ID
-   * @param {string} newName - Name for cloned watchlist
-   * @returns {Promise<Object>} - Cloned watchlist
-   */
-  async cloneWatchlist(id, newName) {
-    try {
-      const source = await this.getWatchlistById(id);
-
-      // Create new watchlist
-      const cloned = await this.createWatchlist({
-        name: newName,
-        description: source.description
-          ? `${source.description} (cloned)`
-          : 'Cloned watchlist',
-        is_active: false, // Start inactive
-        type: source.type || (this._isBroadcast(source) ? 'broadcast' : 'standard'),
-        is_broadcast: this._isBroadcast(source),
-      });
-
-      // Clone symbols
-      if (!this._isBroadcast(source) && !this._isStrategy(source)) {
-        for (const symbol of source.symbols) {
-          await watchlistSymbolService.addSymbol(cloned.id, { ...symbol });
-        }
-      }
-
-      // Clone instance assignments
-      for (const instance of source.instances) {
-        await this.assignInstance(cloned.id, instance.id);
-      }
-
-      log.info('Watchlist cloned', {
-        source_id: id,
-        cloned_id: cloned.id,
-        name: newName,
-      });
-
-      return await this.getWatchlistById(cloned.id);
-    } catch (error) {
-      if (error instanceof NotFoundError || error instanceof ConflictError) {
-        throw error;
-      }
-      log.error('Failed to clone watchlist', error, { id, newName });
-      throw error;
-    }
-  }
-
-  /**
    * Add symbol to watchlist
    * @param {number} watchlistId - Watchlist ID
    * @param {Object} symbolData - Symbol configuration

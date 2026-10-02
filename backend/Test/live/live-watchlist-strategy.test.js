@@ -53,9 +53,12 @@ async function assertAnalyzerModeAtBroker(instance) {
 }
 
 async function copyWatchlist(sourceId, name, instanceNames) {
-  const wl = await watchlistService.cloneWatchlist(sourceId, name);
+  const source = await watchlistService.getWatchlistById(sourceId);
+  const wl = await watchlistService.createWatchlist({
+    name, description: source.description, is_active: true, type: source.type || 'standard',
+  });
   made.watchlists.push(wl.id);
-  await watchlistService.updateWatchlist(wl.id, { is_active: true }); // clones start inactive
+  for (const symbol of source.symbols) await watchlistSymbolService.addSymbol(wl.id, { ...symbol });
   const clear = EXIT_FIELDS.map((f) => `${f} = NULL`).join(', ');
   await db.run(`UPDATE watchlist_symbols SET ${clear} WHERE watchlist_id = ?`, [wl.id]);
   for (const inst of byName(instanceNames)) await watchlistService.assignInstance(wl.id, inst.id);
