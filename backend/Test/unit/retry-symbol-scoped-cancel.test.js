@@ -1,6 +1,6 @@
 import assert from 'assert';
 import test, { afterEach } from 'node:test';
-import orderRetryService from '../../src/services/order-retry.service.js';
+import { cancelOpenOrdersForSymbol } from '../../src/utils/order-helpers.js';
 import quickOrderService from '../../src/services/quick-order.service.js';
 import marketDataFeedService from '../../src/services/market-data-feed.service.js';
 import openalgoClient from '../../src/integrations/openalgo/client.js';
@@ -36,7 +36,7 @@ test('order-retry: retrying symbol A cancels only A\'s open orders, never the wh
   ];
   const payload = { symbol: 'NIFTY24DECFUT', exchange: 'NFO', product: 'MIS' };
 
-  await orderRetryService._cancelOpenOrdersForSymbol(instance, orders, payload, 'default');
+  await cancelOpenOrdersForSymbol(instance, orders, payload, 'default');
 
   assert.deepStrictEqual(
     cancelledIds.sort(),
@@ -62,7 +62,7 @@ test('quick-order: a close/exit retry cancels only its own contract\'s orders, n
   });
 
   try {
-    await quickOrderService._cancelAllOrdersForRetry(
+    await quickOrderService._cancelOwnOrdersBeforeRetry(
       instance,
       { symbol: 'BTCUSDFUT', exchange: 'CRYPTO', watchlist_name: 'wl' },
       { product: 'MIS' }

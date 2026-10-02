@@ -10,6 +10,7 @@ import { log } from '../core/logger.js';
 import db from '../core/database.js';
 import orderRepository from './order-repository.js';
 import marketDataFeedService from './market-data-feed.service.js';
+import { normalizeOrderStatus } from '../utils/order-helpers.js';
 
 class QuickOrderHistoryService {
   async recordQuickOrder(orderData) {
@@ -252,16 +253,6 @@ class QuickOrderHistoryService {
     const payload = snapshot?.data || [];
     const orders = Array.isArray(payload) ? payload : payload.orders || payload.data || [];
 
-    const normalizeStatus = (value) => {
-      const normalized = (value || '').toString().toLowerCase();
-      if (!normalized) return null;
-      if (['open', 'pending'].includes(normalized)) return normalized;
-      if (['complete', 'completed', 'filled'].includes(normalized)) return 'complete';
-      if (['cancelled', 'canceled'].includes(normalized)) return 'cancelled';
-      if (['rejected'].includes(normalized)) return 'rejected';
-      return normalized;
-    };
-
     const statusMap = new Map();
     for (const order of orders) {
       const orderId = order?.orderid || order?.order_id || order?.id;
@@ -269,7 +260,7 @@ class QuickOrderHistoryService {
       const rawStatus = order?.order_status || order?.status || order?.orderStatus || null;
       statusMap.set(String(orderId), {
         broker_status: rawStatus ? String(rawStatus) : null,
-        status: normalizeStatus(rawStatus),
+        status: rawStatus ? normalizeOrderStatus(rawStatus) : null,
       });
     }
 

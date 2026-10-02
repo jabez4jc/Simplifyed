@@ -3,6 +3,7 @@
  * HTTP client with HTTP/2 multiplexing and exponential backoff retry logic
  */
 
+import { extractLtp } from '../../utils/price-extraction.js';
 import { Agent, ProxyAgent } from 'undici';
 import { EventEmitter } from 'events';
 import { log } from '../../core/logger.js';
@@ -1489,6 +1490,7 @@ class OpenAlgoClient extends EventEmitter {
    * @param {Object} options - Options
    * @param {number} options.maxRounds - Max retry rounds across all instances (default: 2)
    * @param {number} options.baseDelayMs - Base delay for exponential backoff (default: 50ms)
+   * @param {boolean} options.forOrder - price an order off it: ltp/bid/ask only, never close
    * @returns {Promise<Object>} - { ltp: number, quote: Object, source: string, attempts: number }
    */
   async getLtpWithRetry(instanceOrPool, exchange, symbol, options = {}) {
@@ -1587,7 +1589,7 @@ class OpenAlgoClient extends EventEmitter {
           );
 
           const quote = response.data || {};
-          const ltp = this._extractLtp(quote);
+          const ltp = extractLtp(quote, { forOrder: options.forOrder });
 
           // Validate LTP - must be a positive number
           if (ltp === null || ltp <= 0) {
@@ -1681,82 +1683,6 @@ class OpenAlgoClient extends EventEmitter {
     });
 
     throw new Error(errorMessage);
-  }
-
-  /**
-   * Extract LTP from quote response
-   * Falls back to bid/ask or other price fields if LTP is unavailable
-   * @private
-   */
-  _extractLtp(quote) {
-    if (!quote) return null;
-
-    // Primary candidates: various LTP field names (most reliable)
-    const primaryCandidates = [
-      quote.ltp,
-      quote.LTP,
-      quote.last_price,
-      quote.lastPrice,
-      quote.last_traded_price,
-      quote.lastTradedPrice,
-    ];
-
-    for (const value of primaryCandidates) {
-      const parsed = parseFloat(value);
-      if (!isNaN(parsed) && parsed > 0) {
-        return parsed;
-      }
-    }
-
-    // Fallback 1: use mid-price (bid + ask) / 2 if both are valid and non-zero
-    // CRITICAL FIX: Changed from Math.min(bid, ask) to mid-price for accuracy
-    const bid = parseFloat(quote.bid);
-    const ask = parseFloat(quote.ask);
-
-    if (!isNaN(bid) && bid > 0 && !isNaN(ask) && ask > 0) {
-      const fallbackLtp = (bid + ask) / 2;
-      log.debug('Using bid/ask mid-price fallback for LTP', {
-        bid,
-        ask,
-        fallbackLtp,
-        reason: 'LTP unavailable',
-      });
-      return fallbackLtp;
-    }
-
-    // Fallback 2: use bid or ask alone
-    if (!isNaN(bid) && bid > 0) {
-      log.debug('Using bid as LTP fallback', { bid, reason: 'LTP and ask unavailable' });
-      return bid;
-    }
-    if (!isNaN(ask) && ask > 0) {
-      log.debug('Using ask as LTP fallback', { ask, reason: 'LTP and bid unavailable' });
-      return ask;
-    }
-
-    // Fallback 3: use close, prev_close, open, high, low (for indices that might not have bid/ask)
-    const secondaryCandidates = [
-      quote.close,
-      quote.prev_close,
-      quote.prevClose,
-      quote.previous_close,
-      quote.open,
-      quote.high,
-      quote.low,
-    ];
-
-    for (const value of secondaryCandidates) {
-      const parsed = parseFloat(value);
-      if (!isNaN(parsed) && parsed > 0) {
-        log.debug('Using secondary price fallback for LTP', {
-          value: parsed,
-          reason: 'LTP and bid/ask unavailable',
-        });
-        return parsed;
-      }
-    }
-
-    return null;
   }
 
   /**

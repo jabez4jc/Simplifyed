@@ -6,6 +6,7 @@
  * that no other cluster in that file touched.
  */
 
+import { extractLtp } from '../utils/price-extraction.js';
 import { log } from '../core/logger.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
@@ -67,8 +68,8 @@ class QuickOrderQuotesService {
     if (primary) {
       primary.forEach((value, key) => {
         const existing = merged.get(key);
-        const hasExistingLtp = existing && this.extractLtpFromQuote(existing) !== null;
-        const hasNewLtp = this.extractLtpFromQuote(value) !== null;
+        const hasExistingLtp = existing && extractLtp(existing) !== null;
+        const hasNewLtp = extractLtp(value) !== null;
 
         // Prefer the option chain quote when it has an LTP; otherwise keep the richer entry
         if (!existing || (hasNewLtp || !hasExistingLtp)) {
@@ -86,7 +87,7 @@ class QuickOrderQuotesService {
       const q = map.get(k);
       if (!q) return false;
       if (!requirePrice) return true;
-      return this.extractLtpFromQuote(q) !== null;
+      return extractLtp(q) !== null;
     });
   }
 
@@ -152,7 +153,7 @@ class QuickOrderQuotesService {
           symbol: ce.symbol || ce.trading_symbol || ce.tradingsymbol,
           strike,
           option_type: 'CE',
-          ltp: this.extractLtpFromQuote(ce),
+          ltp: extractLtp(ce),
           changePercent: this.extractChangePercentFromQuote(ce),
         });
       }
@@ -163,7 +164,7 @@ class QuickOrderQuotesService {
           symbol: pe.symbol || pe.trading_symbol || pe.tradingsymbol,
           strike,
           option_type: 'PE',
-          ltp: this.extractLtpFromQuote(pe),
+          ltp: extractLtp(pe),
           changePercent: this.extractChangePercentFromQuote(pe),
         });
       }
@@ -307,35 +308,12 @@ class QuickOrderQuotesService {
     return `${normalizedExchange}::${normalizedSymbol}`;
   }
 
-  extractLtpFromQuote(quote) {
-    if (!quote) return null;
-    const candidates = [
-      quote.ltp,
-      quote.LTP,
-      quote.last_price,
-      quote.lastPrice,
-      quote.last_traded_price,
-      quote.lastTradedPrice,
-      quote.close,
-    ];
-
-    for (const value of candidates) {
-      const parsed = parseFloatSafe(value, null);
-      if (parsed !== null && !Number.isNaN(parsed) && parsed !== 0) {
-        return parsed;
-      }
-    }
-
-    return null;
-  }
-
   extractChangePercentFromQuote(quote) {
     if (!quote) return null;
     const candidates = [
       quote.percent_change,
       quote.pchange,
       quote.change_percent,
-      quote.change,
     ];
 
     for (const value of candidates) {

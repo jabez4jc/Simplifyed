@@ -123,8 +123,8 @@ class AutoExitService {
     const positionQty = this._getPositionQuantity(position);
     const rawSymbol = position.symbol || position.tradingsymbol || position.trading_symbol;
     const rawExchange = position.exchange || position.exch || position.brexchange;
-    const positionSymbol = this._normalizeSymbol(rawSymbol);
-    const positionExchange = this._normalizeExchange(rawExchange);
+    const positionSymbol = normalizeSymbolKey(rawSymbol);
+    const positionExchange = normalizeExchange(rawExchange);
 
     if (!positionSymbol || !positionExchange) {
       return;
@@ -387,12 +387,12 @@ class AutoExitService {
          AND sle.strategy_id IN (${strategies.map(() => '?').join(',')})`,
       [instanceId, ...strategies.map((r) => r.id)]
     );
-    const sym = this._normalizeSymbol(symbol);
-    const exch = this._normalizeExchange(exchange);
+    const sym = normalizeSymbolKey(symbol);
+    const exch = normalizeExchange(exchange);
     const prod = String(product || '').toUpperCase();
     return rows
-      .filter((r) => this._normalizeSymbol(r.resolved_symbol) === sym
-        && this._normalizeExchange(r.resolved_exchange) === exch
+      .filter((r) => normalizeSymbolKey(r.resolved_symbol) === sym
+        && normalizeExchange(r.resolved_exchange) === exch
         && String(r.product || '').toUpperCase() === prod)
       .reduce((total, r) => total + (String(r.action).toUpperCase() === 'SELL' ? -1 : 1) * (Number(r.quantity) || 0), 0);
   }
@@ -484,8 +484,8 @@ class AutoExitService {
   }
 
   _findConfig(symbol, exchange, lookup) {
-    const normalizedSymbol = this._normalizeSymbol(symbol);
-    const normalizedExchange = this._normalizeExchange(exchange);
+    const normalizedSymbol = normalizeSymbolKey(symbol);
+    const normalizedExchange = normalizeExchange(exchange);
     const directKey = `${normalizedExchange}:${normalizedSymbol}`;
 
     if (lookup.has(directKey)) {
@@ -497,7 +497,7 @@ class AutoExitService {
     // carried the futures stop, and the stop never ran.
     for (const rows of lookup.values()) {
       for (const row of rows) {
-        const normalizedUnderlying = this._normalizeSymbol(row.underlying_symbol || row.symbol);
+        const normalizedUnderlying = normalizeSymbolKey(row.underlying_symbol || row.symbol);
         if (normalizedUnderlying && normalizedSymbol.startsWith(normalizedUnderlying)
           && riskControlsService._getThresholds(row, riskControlsService._determineMode(row, normalizedSymbol), 1)) {
           return row;
@@ -567,13 +567,7 @@ class AutoExitService {
     return parseFloat(qty) || 0;
   }
 
-  _normalizeSymbol(symbol) {
-    return normalizeSymbolKey(symbol);
-  }
 
-  _normalizeExchange(exchange) {
-    return normalizeExchange(exchange);
-  }
 }
 
 

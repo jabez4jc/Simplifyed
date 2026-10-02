@@ -27,10 +27,10 @@ import { parseFloatSafe, parseIntSafe } from '../utils/sanitizers.js';
 import instrumentsService from './instruments.service.js';
 import { toISTDate, toISTISOString } from '../utils/time.js';
 import { isDerivativeExchange } from '../utils/broker-type.util.js';
+import { cancelOpenOrdersForSymbol } from '../utils/order-helpers.js';
 import {
   getUnderlyingQuoteExchange,
   getUnderlyingQuoteSymbol,
-  getUnderlyingForClosing,
   parseFuturesSymbol,
   getFuturesUnderlying,
   expiryMatchesSymbol,
@@ -719,7 +719,7 @@ class QuickOrderService {
 
       for (const instance of remaining) {
         try {
-          await this._cancelAllOrdersForRetry(instance, symbol, orderParams);
+          await this._cancelOwnOrdersBeforeRetry(instance, symbol, orderParams);
           const result = await this._closePositions(instance, symbol, orderParams, {
             useCachedPositions: false, // Use live positions for retry
           });
@@ -775,44 +775,21 @@ class QuickOrderService {
   // one close/exit retry ran. A contract row (set for a named-contract CLOSE) takes priority over
   // the watchlist row's own symbol/exchange, which may describe an underlying rather than the
   // actual traded leg.
-  async _cancelAllOrdersForRetry(instance, symbol, orderParams) {
+  async _cancelOwnOrdersBeforeRetry(instance, symbol, orderParams) {
     if (!instance?.id) return;
-    const targetSymbolRaw = orderParams?.contractRow?.symbol || symbol?.symbol;
-    const targetExchangeRaw = orderParams?.contractRow?.exchange || symbol?.exchange;
-    if (!targetSymbolRaw || !targetExchangeRaw) return;
-
-    const targetSymbol = normalizeSymbolKey(targetSymbolRaw);
-    const targetExchange = normalizeExchange(targetExchangeRaw);
-    const targetProduct = normalizeProduct(orderParams?.product);
-    const openStatuses = new Set(['open', 'pending', 'trigger pending', 'trigger_pending', 'partial', 'partially filled', 'partially_filled']);
+    const target = {
+      symbol: orderParams?.contractRow?.symbol || symbol?.symbol,
+      exchange: orderParams?.contractRow?.exchange || symbol?.exchange,
+      product: orderParams?.product,
+    };
+    if (!target.symbol || !target.exchange) return;
 
     const snapshot = await marketDataFeedService.getOrderbookSnapshot(instance.id, { force: true });
     const raw = snapshot?.data || [];
     const orders = Array.isArray(raw) ? raw : raw.orders || raw.data || [];
-    const strategyTag = orderParams?.strategy || symbol?.watchlist_name || 'default';
-
-    for (const order of orders) {
-      const orderSymbol = normalizeSymbolKey(order.symbol || order.tradingsymbol || order.trading_symbol);
-      const orderExchange = normalizeExchange(order.exchange || order.exch || order.brexchange);
-      if (orderSymbol !== targetSymbol || orderExchange !== targetExchange) continue;
-      if (targetProduct) {
-        const orderProduct = normalizeProduct(order.product || order.producttype);
-        if (orderProduct && orderProduct !== targetProduct) continue;
-      }
-      const status = (order.order_status || order.status || '').toString().toLowerCase();
-      if (!openStatuses.has(status)) continue;
-      const id = order.orderid || order.order_id || order.id;
-      if (!id) continue;
-      try {
-        await openalgoClient.cancelOrder(instance, id, strategyTag);
-      } catch (error) {
-        log.warn('Failed to cancel open order before close/exit retry', {
-          instance_id: instance.id,
-          order_id: id,
-          error: error.message,
-        });
-      }
-    }
+    await cancelOpenOrdersForSymbol(
+      instance, orders, target, orderParams?.strategy || symbol?.watchlist_name || 'default'
+    );
   }
 
   /**
@@ -1711,7 +1688,7 @@ class QuickOrderService {
     const bufferPoints = Number.isFinite(symbol.limit_buffer_points) ? symbol.limit_buffer_points : 0;
     const orderType = await this._resolveOrderTypeForInstance(instance);
 
-    let underlying = getUnderlyingForClosing(symbol);
+    let underlying = derivativeResolutionService.getUnderlyingForClosing(symbol);
 
     let positionsToClose = [];
 
@@ -1814,7 +1791,7 @@ class QuickOrderService {
         const symbolStr = symbol.symbol || symbol.trading_symbol || '';
         const parsed = parseFuturesSymbol(symbolStr);
 
-        underlying = parsed.underlying || getUnderlyingForClosing(symbol);
+        underlying = parsed.underlying || derivativeResolutionService.getUnderlyingForClosing(symbol);
         let expiryInput = userExpiry ? normalizeExpiryInput(userExpiry) : null;
 
         // If we parsed expiry from the symbol, use it

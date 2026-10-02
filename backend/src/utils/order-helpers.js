@@ -1,6 +1,7 @@
 /**
- * Shared order helpers (P3-6 will grow this file; today it holds the live-position read that
- * order.service and order-retry.service each used to carry a copy of).
+ * Shared order helpers: status normalisation, tick rounding, the live-position read and the
+ * symbol-scoped cancel that order.service, order-placement, order-retry, the feed and the
+ * quick-order history each used to carry their own copy of.
  */
 import { log } from '../core/logger.js';
 import openalgoClient from '../integrations/openalgo/client.js';
@@ -44,4 +45,85 @@ export async function getLivePosition(instance, params) {
     return extractPositionQty(position);
   }
   return 0;
+}
+
+/** Broker status text -> one of complete | cancelled | rejected | trigger_pending | partial | open | pending | unknown. */
+export function normalizeOrderStatus(status) {
+  const value = (status ?? '').toString().trim().toLowerCase();
+  if (['complete', 'completed', 'filled'].includes(value)) return 'complete';
+  if (['cancelled', 'canceled'].includes(value)) return 'cancelled';
+  if (value === 'rejected') return 'rejected';
+  if (['trigger_pending', 'trigger pending'].includes(value)) return 'trigger_pending';
+  if (['partial', 'partially_filled', 'partiallyfilled'].includes(value)) return 'partial';
+  return value || 'unknown';
+}
+
+export const OPEN_ORDER_STATUSES = new Set(['open', 'pending', 'trigger_pending', 'partial']);
+
+export function countDecimals(value) {
+  const text = value.toString();
+  const idx = text.indexOf('.');
+  return idx === -1 ? 0 : Math.min(6, text.length - idx - 1);
+}
+
+/** Round onto the tick grid: BUY rounds up, anything else down. Two decimals when the tick is unknown. */
+export function roundToTick(price, tickSize, side) {
+  const tick = typeof tickSize === 'string' ? parseFloat(tickSize) : tickSize;
+  if (!Number.isFinite(tick) || tick <= 0) return Number(price.toFixed(2));
+  const ticks = price / tick;
+  const roundedTicks = String(side || '').toUpperCase() === 'BUY' ? Math.ceil(ticks - 1e-9) : Math.floor(ticks + 1e-9);
+  return Number((roundedTicks * tick).toFixed(countDecimals(tick)));
+}
+
+/** Nearest whole tick; 0 stays 0 (no price / no trigger). Two decimals when the tick is unknown. */
+export function roundToNearestTick(value, tick) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return n;
+  if (!Number.isFinite(tick) || tick <= 0) return Number(n.toFixed(2));
+  return Number((Math.round(n / tick) * tick).toFixed(countDecimals(tick)));
+}
+
+/** Base price +/- (points, else pct of base) buffer for the side, rounded onto the tick grid. */
+export function applyBufferAndTick({ ltp, basePrice = null, side, bufferPoints, bufferPct, tickSize }) {
+  const priceBase = Number.isFinite(basePrice) && basePrice > 0 ? basePrice : ltp;
+  let buffer = Number(bufferPoints) || 0;
+  if ((!buffer || buffer <= 0) && Number.isFinite(bufferPct) && bufferPct > 0) {
+    buffer = priceBase * (bufferPct / 100);
+  }
+  let price = String(side || '').toUpperCase() === 'BUY' ? priceBase + buffer : priceBase - buffer;
+  if (!Number.isFinite(price) || price <= 0) price = priceBase;
+  return roundToTick(price, tickSize, side);
+}
+
+/**
+ * Cancel this instance's OPEN orders for ONE symbol/exchange(/product) out of `orders` (an
+ * orderbook). Never an account-wide cancel (C3). Each failure is logged and skipped.
+ */
+export async function cancelOpenOrdersForSymbol(instance, orders, payload, strategy) {
+  if (!instance?.id || !Array.isArray(orders) || !payload?.symbol || !payload?.exchange) return;
+
+  const targetSymbol = normalizeSymbolKey(payload.symbol);
+  const targetExchange = normalizeExchange(payload.exchange);
+  const targetProduct = normalizeProduct(payload.product);
+
+  const toCancel = [];
+  for (const order of orders) {
+    const symbol = normalizeSymbolKey(order.symbol || order.tradingsymbol || order.trading_symbol);
+    const exchange = normalizeExchange(order.exchange || order.exch || order.brexchange);
+    const product = normalizeProduct(order.product || order.producttype);
+    if (symbol !== targetSymbol || exchange !== targetExchange) continue;
+    if (targetProduct && product && product !== targetProduct) continue;
+    if (!OPEN_ORDER_STATUSES.has(normalizeOrderStatus(order.order_status || order.status))) continue;
+    const id = order.orderid || order.order_id || order.id;
+    if (id) toCancel.push(id);
+  }
+
+  const strategyTag = strategy || payload.strategy || 'default';
+  for (const orderId of toCancel) {
+    try {
+      await openalgoClient.cancelOrder(instance, orderId, strategyTag);
+    } catch (error) {
+      log.warn('Failed to cancel open order', { instance_id: instance.id, order_id: orderId, error: error.message });
+    }
+  }
 }

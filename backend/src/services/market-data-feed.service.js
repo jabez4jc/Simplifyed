@@ -22,6 +22,7 @@ import config from '../core/config.js';
 import { log } from '../core/logger.js';
 import db from '../core/database.js';
 import { extractAveragePrice, extractLtp } from '../utils/price-extraction.js';
+import { normalizeOrderStatus } from '../utils/order-helpers.js';
 import openalgoWsService from './openalgo-ws.service.js';
 import marketCalendarService from './market-calendar.service.js';
 
@@ -674,7 +675,7 @@ class MarketDataFeedService extends EventEmitter {
   }
 
   _fingerprintQuote(quote) {
-    const ltp = this._extractLtpFromQuote(quote);
+    const ltp = extractLtp(quote);
     const bid = Number(quote?.bid ?? quote?.best_bid ?? quote?.bestBid ?? quote?.bp ?? 0);
     const ask = Number(quote?.ask ?? quote?.best_ask ?? quote?.bestAsk ?? quote?.ap ?? 0);
     return `${ltp || 0}|${bid || 0}|${ask || 0}`;
@@ -1551,6 +1552,7 @@ class MarketDataFeedService extends EventEmitter {
       bypassCache = false,
       wsRetries = 5,
       wsRetryDelayMs = 200,
+      forOrder = false,
     } = options;
 
     const exchangeOpen = await marketCalendarService.isExchangeOpen(exchange);
@@ -1562,7 +1564,7 @@ class MarketDataFeedService extends EventEmitter {
         );
         if (cached.length > 0) {
           const quote = cached[0].quote;
-          const ltp = this._extractLtpFromQuote(quote);
+          const ltp = extractLtp(quote, { forOrder });
           if (ltp && ltp > 0) {
             return { ltp, quote, source: 'cache_closed', attempts: 0 };
           }
@@ -1581,6 +1583,7 @@ class MarketDataFeedService extends EventEmitter {
           const closedResult = await openalgoClient.getLtpWithRetry(pool, exchange, symbol, {
             maxRounds: 1,
             baseDelayMs: 50,
+            forOrder,
           });
           if (closedResult?.ltp > 0) {
             if (closedResult.quote) {
@@ -1616,7 +1619,7 @@ class MarketDataFeedService extends EventEmitter {
           targetInstanceId: instanceId,
         });
         if (wsResult) {
-          const ltp = this._extractLtpFromQuote(wsResult.quote);
+          const ltp = extractLtp(wsResult.quote, { forOrder });
           if (ltp && ltp > 0) {
             return {
               ltp,
@@ -1632,7 +1635,7 @@ class MarketDataFeedService extends EventEmitter {
       if (!bypassCache) {
         const cachedWs = this._getWsCachedQuote(exchange, symbol);
         if (cachedWs) {
-          const ltp = this._extractLtpFromQuote(cachedWs.quote);
+          const ltp = extractLtp(cachedWs.quote, { forOrder });
           if (ltp && ltp > 0) {
             return { ltp, quote: cachedWs.quote, source: 'ws_cache', attempts: cachedWs.attempts };
           }
@@ -1649,7 +1652,7 @@ class MarketDataFeedService extends EventEmitter {
 
       if (cached.length > 0) {
         const quote = cached[0].quote;
-        const ltp = this._extractLtpFromQuote(quote);
+        const ltp = extractLtp(quote, { forOrder });
         if (ltp && ltp > 0) {
           log.debug('LTP served from cache', { exchange, symbol, ltp });
           return { ltp, quote, source: 'cache', attempts: 0 };
@@ -1669,6 +1672,7 @@ class MarketDataFeedService extends EventEmitter {
     const result = await openalgoClient.getLtpWithRetry(pool, exchange, symbol, {
       maxRounds: Math.max(1, maxRounds), // Ensure at least 1 round
       baseDelayMs: 50,
+      forOrder,
     });
 
     // Update caches
@@ -1758,29 +1762,6 @@ class MarketDataFeedService extends EventEmitter {
    * Extract LTP from quote (helper method)
    * @private
    */
-  _extractLtpFromQuote(quote) {
-    if (!quote) return null;
-
-    const candidates = [
-      quote.ltp,
-      quote.LTP,
-      quote.last_price,
-      quote.lastPrice,
-      quote.last_traded_price,
-      quote.lastTradedPrice,
-      quote.close,
-    ];
-
-    for (const value of candidates) {
-      const parsed = parseFloat(value);
-      if (!isNaN(parsed) && parsed > 0) {
-        return parsed;
-      }
-    }
-
-    return null;
-  }
-
   /**
    * Start dynamic position refresh with adaptive intervals
    * - 30 seconds when no open positions (idle)
@@ -1921,7 +1902,7 @@ class MarketDataFeedService extends EventEmitter {
     const list = Array.isArray(orders) ? orders : orders?.orders || orders?.data || [];
     const hasOpen = Array.isArray(list) && list.some((order) => {
       const statusRaw = (order.order_status || order.status || '').toString().toLowerCase();
-      const status = this._normalizeOrderStatus(statusRaw);
+      const status = normalizeOrderStatus(statusRaw);
       return openStatuses.has(status);
     });
 
@@ -1933,15 +1914,6 @@ class MarketDataFeedService extends EventEmitter {
     this.hasOpenOrders = this.openOrderInstances.size > 0;
   }
 
-  _normalizeOrderStatus(status) {
-    if (['complete', 'completed', 'filled'].includes(status)) return 'complete';
-    if (['cancelled', 'canceled'].includes(status)) return 'cancelled';
-    if (['rejected'].includes(status)) return 'rejected';
-    if (['trigger_pending', 'trigger pending'].includes(status)) return 'trigger_pending';
-    if (['partial', 'partially_filled', 'partiallyfilled'].includes(status)) return 'partial';
-    if (['open', 'pending'].includes(status)) return status;
-    return status || 'unknown';
-  }
 
   _hasActiveRisk(instanceId) {
     if (!instanceId) {

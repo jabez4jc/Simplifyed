@@ -2,7 +2,7 @@ import { log } from '../core/logger.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import orderPlacementService from './order-placement.service.js';
 import openalgoClient from '../integrations/openalgo/client.js';
-import { getLivePosition } from '../utils/order-helpers.js';
+import { getLivePosition, cancelOpenOrdersForSymbol, applyBufferAndTick, normalizeOrderStatus } from '../utils/order-helpers.js';
 import openalgoWsService from './openalgo-ws.service.js';
 import { extractLtp } from '../utils/price-extraction.js';
 import { normalizeSymbolKey, normalizeExchange, normalizeProduct } from '../utils/symbol-parsing.util.js';
@@ -173,7 +173,7 @@ class OrderRetryService {
     const remainingForRetry = remainingNeeded;
 
     if (remainingAfterPending !== null && remainingAfterPending <= 0) {
-      await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
+      await cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
       log.info('Retry skipped - target position already satisfied', {
         instance_id: instance.id,
         order_id: orderId,
@@ -185,7 +185,7 @@ class OrderRetryService {
     }
     if (order) {
       const statusRaw = (order.order_status || order.status || '').toString().toLowerCase();
-      normalizedStatus = this._normalizeStatus(statusRaw);
+      normalizedStatus = normalizeOrderStatus(statusRaw);
       if (['complete', 'filled'].includes(normalizedStatus)) {
         log.info('Retry skipped - order already filled', {
           instance_id: instance.id,
@@ -224,7 +224,7 @@ class OrderRetryService {
         return;
       }
       if (normalizedStatus === 'partial') {
-        await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
+        await cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
       }
     }
 
@@ -234,10 +234,11 @@ class OrderRetryService {
 
     const ltpResult = await marketDataFeedService.fetchLtpForSymbol(exchange, symbol, {
       orderCritical: true,
+      forOrder: true,
     });
-    const ltp = ltpResult?.ltp || extractLtp(ltpResult?.quote);
+    const ltp = ltpResult?.ltp || extractLtp(ltpResult?.quote, { forOrder: true });
     if (!ltp || ltp <= 0) {
-      await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
+      await cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
       log.warn('Retry cancelled - no LTP available', {
         instance_id: instance.id,
         order_id: orderId,
@@ -263,7 +264,7 @@ class OrderRetryService {
 
     const initialPrice = Number(initialLimitPrice || payload.price || 0);
     if (!Number.isFinite(initialPrice) || initialPrice <= 0) {
-      await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
+      await cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
       log.warn('Retry cancelled - invalid initial limit price', {
         instance_id: instance.id,
         order_id: orderId,
@@ -290,7 +291,7 @@ class OrderRetryService {
     if (!resolvedIgnore) {
       const slippage = Math.abs(initialPrice - ltp) / ltp;
       if (slippage > MAX_SLIPPAGE_PCT) {
-        await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
+        await cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
         log.warn('Retry cancelled - slippage threshold exceeded', {
           instance_id: instance.id,
           order_id: orderId,
@@ -316,7 +317,7 @@ class OrderRetryService {
       }
     }
 
-    await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
+    await cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
 
     let depthBasePrice = null;
     let depthPriceSource = null;
@@ -339,7 +340,7 @@ class OrderRetryService {
       });
     }
 
-    const retryPrice = this._applyBufferAndTick({
+    const retryPrice = applyBufferAndTick({
       ltp,
       basePrice: depthBasePrice,
       side,
@@ -362,7 +363,7 @@ class OrderRetryService {
       : cappedQty;
     if (finalQty !== null) {
       if (finalQty <= 0) {
-        await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
+        await cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
         log.info('Retry skipped - no remaining quantity to place', {
           instance_id: instance.id,
           order_id: orderId,
@@ -509,7 +510,7 @@ class OrderRetryService {
     }
 
     const statusRaw = (order.order_status || order.status || '').toString().toLowerCase();
-    const normalizedStatus = this._normalizeStatus(statusRaw);
+    const normalizedStatus = normalizeOrderStatus(statusRaw);
     if (['complete', 'filled'].includes(normalizedStatus)) {
       log.info('Final check skipped - order already filled', {
         instance_id: instance.id,
@@ -551,7 +552,7 @@ class OrderRetryService {
       return;
     }
 
-    await this._cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
+    await cancelOpenOrdersForSymbol(instance, orders, payload, strategy);
     log.info('Final check cancelled open/pending orders for symbol', {
       instance_id: instance.id,
       order_id: orderId,
@@ -577,7 +578,7 @@ class OrderRetryService {
     try {
       const pushed = await openalgoWsService.waitForOrderUpdate(orderId, 1500);
       if (pushed) {
-        const pushedNormalized = this._normalizeStatus((pushed.order_status || '').toString().toLowerCase());
+        const pushedNormalized = normalizeOrderStatus((pushed.order_status || '').toString().toLowerCase());
         if (pushedNormalized === 'complete') return 'filled';
         if (pushedNormalized === 'rejected' || pushedNormalized === 'cancelled') return 'rejected';
       }
@@ -591,7 +592,7 @@ class OrderRetryService {
         strategy: strategy || undefined,
       });
       const statusRaw = (response?.order_status || response?.status || '').toString().toLowerCase();
-      const normalized = this._normalizeStatus(statusRaw);
+      const normalized = normalizeOrderStatus(statusRaw);
       if (normalized === 'complete') return 'filled';
       if (normalized === 'rejected' || normalized === 'cancelled') return 'rejected';
       return 'uncertain';
@@ -601,15 +602,6 @@ class OrderRetryService {
     }
   }
 
-  _normalizeStatus(status) {
-    if (['complete', 'completed', 'filled'].includes(status)) return 'complete';
-    if (['cancelled', 'canceled'].includes(status)) return 'cancelled';
-    if (['rejected'].includes(status)) return 'rejected';
-    if (['trigger_pending'].includes(status)) return 'trigger_pending';
-    if (['partial', 'partially_filled', 'partiallyfilled'].includes(status)) return 'partial';
-    if (['open', 'pending'].includes(status)) return status;
-    return status || 'unknown';
-  }
 
   _extractFilledQty(order) {
     const candidates = [
@@ -663,19 +655,19 @@ class OrderRetryService {
 
   _sumOpenOrders(orders, payload) {
     if (!Array.isArray(orders) || !payload?.symbol || !payload?.exchange) return 0;
-    const targetSymbol = this._normalizeSymbol(payload.symbol);
-    const targetExchange = this._normalizeExchange(payload.exchange);
+    const targetSymbol = normalizeSymbolKey(payload.symbol);
+    const targetExchange = normalizeExchange(payload.exchange);
     const targetSide = (payload.action || '').toUpperCase();
-    const targetProduct = this._normalizeProduct(payload.product);
+    const targetProduct = normalizeProduct(payload.product);
     const openStatuses = new Set(['open', 'pending', 'trigger_pending', 'partial']);
 
     let total = 0;
     for (const order of orders) {
-      const symbol = this._normalizeSymbol(
+      const symbol = normalizeSymbolKey(
         order.symbol || order.tradingsymbol || order.trading_symbol
       );
-      const exchange = this._normalizeExchange(order.exchange || order.exch || order.brexchange);
-      const product = this._normalizeProduct(order.product || order.producttype);
+      const exchange = normalizeExchange(order.exchange || order.exch || order.brexchange);
+      const product = normalizeProduct(order.product || order.producttype);
       if (symbol !== targetSymbol || exchange !== targetExchange) {
         continue;
       }
@@ -683,7 +675,7 @@ class OrderRetryService {
         continue;
       }
       const statusRaw = (order.order_status || order.status || '').toString().toLowerCase();
-      const status = this._normalizeStatus(statusRaw);
+      const status = normalizeOrderStatus(statusRaw);
       if (!openStatuses.has(status)) {
         continue;
       }
@@ -695,55 +687,6 @@ class OrderRetryService {
       total += qty;
     }
     return total;
-  }
-
-  async _cancelOpenOrdersForSymbol(instance, orders, payload, strategy) {
-    if (!instance?.id || !Array.isArray(orders)) return;
-    if (!payload?.symbol || !payload?.exchange) return;
-
-    const targetSymbol = this._normalizeSymbol(payload.symbol);
-    const targetExchange = this._normalizeExchange(payload.exchange);
-    const targetProduct = this._normalizeProduct(payload.product);
-    const openStatuses = new Set(['open', 'pending', 'trigger_pending', 'partial']);
-
-    const toCancel = [];
-    for (const order of orders) {
-      const symbol = this._normalizeSymbol(
-        order.symbol || order.tradingsymbol || order.trading_symbol
-      );
-      const exchange = this._normalizeExchange(order.exchange || order.exch || order.brexchange);
-      const product = this._normalizeProduct(order.product || order.producttype);
-      if (symbol !== targetSymbol || exchange !== targetExchange) {
-        continue;
-      }
-      if (targetProduct && product && product !== targetProduct) {
-        continue;
-      }
-      const statusRaw = (order.order_status || order.status || '').toString().toLowerCase();
-      const status = this._normalizeStatus(statusRaw);
-      if (!openStatuses.has(status)) {
-        continue;
-      }
-      const id = order.orderid || order.order_id || order.id;
-      if (id) {
-        toCancel.push(id);
-      }
-    }
-
-    if (!toCancel.length) return;
-
-    const strategyTag = strategy || payload.strategy || 'default';
-    for (const orderId of toCancel) {
-      try {
-        await openalgoClient.cancelOrder(instance, orderId, strategyTag);
-      } catch (error) {
-        log.warn('Failed to cancel open order', {
-          instance_id: instance.id,
-          order_id: orderId,
-          error: error.message,
-        });
-      }
-    }
   }
 
   async _inferRetryPolicy(instance, payload) {
@@ -780,17 +723,8 @@ class OrderRetryService {
     return Math.abs(targetPosition) < Math.abs(currentPosition);
   }
 
-  _normalizeSymbol(symbol) {
-    return normalizeSymbolKey(symbol);
-  }
 
-  _normalizeExchange(exchange) {
-    return normalizeExchange(exchange);
-  }
 
-  _normalizeProduct(product) {
-    return normalizeProduct(product);
-  }
 
   _parseNumber(value) {
     if (value === null || value === undefined || value === '') return null;
@@ -798,36 +732,7 @@ class OrderRetryService {
     return Number.isFinite(num) ? num : null;
   }
 
-  _applyBufferAndTick({ ltp, basePrice = null, side, bufferPoints, bufferPct, tickSize }) {
-    const priceBase = Number.isFinite(basePrice) && basePrice > 0 ? basePrice : ltp;
-    let buffer = Number(bufferPoints) || 0;
-    if ((!buffer || buffer <= 0) && Number.isFinite(bufferPct) && bufferPct > 0) {
-      buffer = priceBase * (bufferPct / 100);
-    }
-    let price = (side || '').toUpperCase() === 'BUY'
-      ? priceBase + buffer
-      : priceBase - buffer;
-    if (!Number.isFinite(price) || price <= 0) {
-      price = priceBase;
-    }
-    const tick = typeof tickSize === 'string' ? parseFloat(tickSize) : tickSize;
-    if (!Number.isFinite(tick) || tick <= 0) {
-      return Number(price.toFixed(2));
-    }
-    const ticks = price / tick;
-    const roundedTicks = (side || '').toUpperCase() === 'BUY'
-      ? Math.ceil(ticks - 1e-9)
-      : Math.floor(ticks + 1e-9);
-    const rounded = roundedTicks * tick;
-    const decimals = this._countDecimals(tick);
-    return Number(rounded.toFixed(decimals));
-  }
 
-  _countDecimals(value) {
-    const text = value.toString();
-    const idx = text.indexOf('.');
-    return idx === -1 ? 0 : Math.min(6, text.length - idx - 1);
-  }
 }
 
 const orderRetryService = new OrderRetryService();

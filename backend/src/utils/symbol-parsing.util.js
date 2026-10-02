@@ -66,10 +66,6 @@ export function getUnderlyingQuoteSymbol(symbol = {}) {
   return (symbol.underlying_symbol || symbol.symbol || symbol.name || '').toUpperCase();
 }
 
-export function getUnderlyingForClosing(symbol = {}) {
-  return derivativeResolutionService.getUnderlyingForClosing(symbol);
-}
-
 /**
  * Parse futures symbol to extract underlying and expiry
  * Format: SYMBOL + DDMMMYY + FUT (e.g., NATGASMINI24NOV25FUT)

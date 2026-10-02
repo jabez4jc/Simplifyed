@@ -18,6 +18,7 @@ import { requiresLimitOrders } from '../utils/broker-type.util.js';
 // ponytail: fixed 0.5% stop protection band; make it a setting if it needs tuning per segment.
 const SLM_PROTECTION_PCT = 0.005;
 import { normalizeSymbolKey, normalizeExchange, normalizeProduct } from '../utils/symbol-parsing.util.js';
+import { cancelOpenOrdersForSymbol, roundToTick } from '../utils/order-helpers.js';
 
 class OrderPlacementService {
   constructor() {
@@ -291,58 +292,7 @@ class OrderPlacementService {
 
     const raw = snapshot?.data || [];
     const orders = Array.isArray(raw) ? raw : raw.orders || raw.data || [];
-    if (!Array.isArray(orders) || orders.length === 0) return;
-
-    const targetSymbol = this._normalizeSymbol(payload.symbol);
-    const targetExchange = this._normalizeExchange(payload.exchange);
-    const targetProduct = this._normalizeProduct(payload.product);
-    const openStatuses = new Set(['open', 'pending', 'trigger_pending', 'partial']);
-
-    const toCancel = [];
-    for (const order of orders) {
-      const symbol = this._normalizeSymbol(
-        order.symbol || order.tradingsymbol || order.trading_symbol
-      );
-      const exchange = this._normalizeExchange(order.exchange || order.exch || order.brexchange);
-      const product = this._normalizeProduct(order.product || order.producttype);
-      if (symbol !== targetSymbol || exchange !== targetExchange) {
-        continue;
-      }
-      if (targetProduct && product && product !== targetProduct) {
-        continue;
-      }
-      const statusRaw = (order.order_status || order.status || '').toString().toLowerCase();
-      const status = this._normalizeStatus(statusRaw);
-      if (!openStatuses.has(status)) {
-        continue;
-      }
-      const id = order.orderid || order.order_id || order.id;
-      if (id) {
-        toCancel.push(id);
-      }
-    }
-
-    if (!toCancel.length) return;
-
-    const strategyTag = payload.strategy || context.strategy || 'default';
-    for (const orderId of toCancel) {
-      try {
-        await openalgoClient.cancelOrder(instance, orderId, strategyTag);
-      } catch (error) {
-        log.warn('[OrderPlacement] Failed to cancel open order', {
-          instance_id: instance.id,
-          order_id: orderId,
-          error: error.message,
-        });
-      }
-    }
-
-    log.info('[OrderPlacement] Cancelled open orders before placement', {
-      instance_id: instance.id,
-      symbol: payload.symbol,
-      exchange: payload.exchange,
-      count: toCancel.length,
-    });
+    await cancelOpenOrdersForSymbol(instance, orders, payload, payload.strategy || context.strategy);
   }
 
   /**
@@ -363,7 +313,7 @@ class OrderPlacementService {
     const buffer = Number.isFinite(given) && given > 0 ? given : trigger * SLM_PROTECTION_PCT;
     const tickSize = context?.tickSize ?? await limitPriceService.resolveTickSize(payload.exchange, payload.symbol);
     const raw = side === 'BUY' ? trigger + buffer : trigger - buffer;
-    const price = this._roundToTick(raw > 0 ? raw : trigger, tickSize, side);
+    const price = roundToTick(raw > 0 ? raw : trigger, tickSize, side);
     log.info('[OrderPlacement] SL-M converted to SL (SEBI)', {
       exchange: payload.exchange, symbol: payload.symbol, action: side, trigger, price,
     });
@@ -389,6 +339,7 @@ class OrderPlacementService {
     try {
       ltpResult = await marketDataFeedService.fetchLtpForSymbol(exchange, symbol, {
         orderCritical: true,
+        forOrder: true,
       });
     } catch (quoteError) {
       log.warn('[OrderPlacement] Feed LTP lookup failed', {
@@ -396,7 +347,7 @@ class OrderPlacementService {
       });
     }
 
-    const ltp = ltpResult?.ltp || extractLtp(ltpResult?.quote)
+    const ltp = ltpResult?.ltp || extractLtp(ltpResult?.quote, { forOrder: true })
       || await limitPriceService.instanceLtp(context?.instance, exchange, symbol);
     if (!ltp || ltp <= 0) {
       log.warn('[OrderPlacement] No LTP - sending MARKET unconverted', {
@@ -419,7 +370,7 @@ class OrderPlacementService {
     }
 
     const tickSize = context?.tickSize ?? await limitPriceService.resolveTickSize(exchange, symbol);
-    price = this._roundToTick(price, tickSize, side);
+    price = roundToTick(price, tickSize, side);
 
     log.info('[OrderPlacement] MARKET converted to LIMIT', {
       exchange,
@@ -437,53 +388,10 @@ class OrderPlacementService {
     };
   }
 
-  _roundToTick(price, tickSize, side) {
-    const tick = typeof tickSize === 'string' ? parseFloat(tickSize) : tickSize;
-    if (!Number.isFinite(tick) || tick <= 0) {
-      return Number(price.toFixed(2));
-    }
-
-    const ticks = price / tick;
-    const roundedTicks = side === 'BUY'
-      ? Math.ceil(ticks - 1e-9)
-      : Math.floor(ticks + 1e-9);
-    const rounded = roundedTicks * tick;
-    const decimals = this._countDecimals(tick);
-    return Number(rounded.toFixed(decimals));
-  }
-
-  _countDecimals(value) {
-    const text = value.toString();
-    const idx = text.indexOf('.');
-    return idx === -1 ? 0 : Math.min(6, text.length - idx - 1);
-  }
-
-  _normalizeSymbol(symbol) {
-    return normalizeSymbolKey(symbol);
-  }
-
-  _normalizeExchange(exchange) {
-    return normalizeExchange(exchange);
-  }
-
-  _normalizeProduct(product) {
-    return normalizeProduct(product);
-  }
-
-  _normalizeStatus(status) {
-    if (['complete', 'completed', 'filled'].includes(status)) return 'complete';
-    if (['cancelled', 'canceled'].includes(status)) return 'cancelled';
-    if (['rejected'].includes(status)) return 'rejected';
-    if (['trigger_pending'].includes(status)) return 'trigger_pending';
-    if (['partial', 'partially_filled', 'partiallyfilled'].includes(status)) return 'partial';
-    if (['open', 'pending'].includes(status)) return status;
-    return status || 'unknown';
-  }
-
   _symbolKey(payload) {
-    const exchange = this._normalizeExchange(payload?.exchange);
-    const symbol = this._normalizeSymbol(payload?.symbol);
-    const product = this._normalizeProduct(payload?.product);
+    const exchange = normalizeExchange(payload?.exchange);
+    const symbol = normalizeSymbolKey(payload?.symbol);
+    const product = normalizeProduct(payload?.product);
     if (!exchange || !symbol) return null;
     return product ? `${exchange}|${symbol}|${product}` : `${exchange}|${symbol}`;
   }

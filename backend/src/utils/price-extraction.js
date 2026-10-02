@@ -10,9 +10,12 @@ import { log } from '../core/logger.js';
  * Extract LTP (Last Traded Price) from quote/position data
  * Tries multiple field names in order of reliability
  * @param {Object} data - Quote or position data from broker
+ * @param {Object} [options]
+ * @param {boolean} [options.forOrder] - price an order off this: only ltp/bid/ask, never
+ *   close/prev_close/open/high/low (a fill-now LIMIT must not be priced off yesterday's close)
  * @returns {number|null} - LTP value or null if not found
  */
-export function extractLtp(data) {
+export function extractLtp(data, { forOrder = false } = {}) {
   if (!data) return null;
 
   // Primary candidates: various LTP field names (most reliable)
@@ -58,6 +61,8 @@ export function extractLtp(data) {
     log.debug('Using ask as LTP fallback', { ask, reason: 'LTP and bid unavailable' });
     return ask;
   }
+
+  if (forOrder) return null;
 
   // Fallback 3: use close, prev_close, open, high, low (for indices that might not have bid/ask)
   const secondaryCandidates = [

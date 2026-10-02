@@ -7,7 +7,7 @@ import db from '../core/database.js';
 import { log } from '../core/logger.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import orderPlacementService from './order-placement.service.js';
-import { getLivePosition } from '../utils/order-helpers.js';
+import { getLivePosition, roundToNearestTick } from '../utils/order-helpers.js';
 import orderPayloadFactory from './order-payload.factory.js';
 import orderRepository from './order-repository.js';
 import telegramService from './telegram.service.js';
@@ -20,7 +20,6 @@ import {
   NotFoundError,
   ValidationError,
 } from '../core/errors.js';
-import { normalizeSymbolKey, normalizeExchange, normalizeProduct } from '../utils/symbol-parsing.util.js';
 import {
   sanitizeString,
   sanitizeSymbol,
@@ -28,15 +27,6 @@ import {
   parseFloatSafe,
   parseIntSafe,
 } from '../utils/sanitizers.js';
-
-/** Nearest whole tick; 0 stays 0 (no price / no trigger). Two decimals when the tick is unknown. */
-function roundToNearestTick(value, tick) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return n;
-  if (!Number.isFinite(tick) || tick <= 0) return Number(n.toFixed(2));
-  const decimals = (String(tick).split('.')[1] || '').length;
-  return Number((Math.round(n / tick) * tick).toFixed(decimals));
-}
 
 class OrderService {
   /**
@@ -411,17 +401,8 @@ class OrderService {
     return Math.abs(targetPosition) < Math.abs(currentPosition);
   }
 
-  _normalizeSymbol(symbol) {
-    return normalizeSymbolKey(symbol);
-  }
 
-  _normalizeExchange(exchange) {
-    return normalizeExchange(exchange);
-  }
 
-  _normalizeProduct(product) {
-    return normalizeProduct(product);
-  }
 
   /**
    * Cancel order

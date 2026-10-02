@@ -13,6 +13,7 @@ import { log } from '../core/logger.js';
 import db from '../core/database.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import { requiresLimitOrders } from '../utils/broker-type.util.js';
+import { roundToTick } from '../utils/order-helpers.js';
 
 
 // Second-chance staleness window for a fill-now caller. The strict pass wants a ~2s quote; the
@@ -127,7 +128,7 @@ class LimitPriceService {
 
     const bid = depthBid ?? this._parsePrice(quote?.bid ?? quote?.best_bid ?? quote?.bestBid ?? quote?.bp);
     const ask = depthAsk ?? this._parsePrice(quote?.ask ?? quote?.best_ask ?? quote?.bestAsk ?? quote?.ap);
-    const ltp = quote ? extractLtp(quote) : null;
+    const ltp = quote ? extractLtp(quote, { forOrder: true }) : null;
 
     let basePrice = null;
     let priceSource = null;
@@ -178,7 +179,7 @@ class LimitPriceService {
       throw new ValidationError(`Computed limit price invalid for ${normalizedExchange}:${normalizedSymbol}`);
     }
 
-    price = this._roundToTick(
+    price = roundToTick(
       price,
       await this.resolveTickSize(normalizedExchange, normalizedSymbol, tickSize),
       normalizedSide
@@ -216,7 +217,7 @@ class LimitPriceService {
       const instance = await db.get('SELECT * FROM instances WHERE id = ?', [instanceId]).catch(() => null);
       if (instance) {
         quote = await openalgoClient.getQuote(instance, symbol, exchange, { ignoreCircuit: true }).catch(() => null);
-        if (!(extractLtp(quote) > 0)) quote = null;
+        if (!(extractLtp(quote, { forOrder: true }) > 0)) quote = null;
       }
     }
     if (!quote) {
@@ -234,7 +235,7 @@ class LimitPriceService {
     if (!instance?.host_url) return null;
     try {
       const quote = await openalgoClient.getQuote(instance, symbol, exchange, { ignoreCircuit: true });
-      const ltp = extractLtp(quote);
+      const ltp = extractLtp(quote, { forOrder: true });
       return ltp && ltp > 0 ? ltp : null;
     } catch (error) {
       log.warn('Instance quote failed', { instanceId: instance.id, exchange, symbol, error: error.message });
@@ -254,26 +255,7 @@ class LimitPriceService {
     return parsed;
   }
 
-  _roundToTick(price, tickSize, side) {
-    const tick = typeof tickSize === 'string' ? parseFloat(tickSize) : tickSize;
-    if (!Number.isFinite(tick) || tick <= 0) {
-      return Number(price.toFixed(2));
-    }
 
-    const ticks = price / tick;
-    const roundedTicks = side === 'BUY'
-      ? Math.ceil(ticks - 1e-9)
-      : Math.floor(ticks + 1e-9);
-    const rounded = roundedTicks * tick;
-    const decimals = this._countDecimals(tick);
-    return Number(rounded.toFixed(decimals));
-  }
-
-  _countDecimals(value) {
-    const text = value.toString();
-    const idx = text.indexOf('.');
-    return idx === -1 ? 0 : Math.min(6, text.length - idx - 1);
-  }
 
   /**
    * Price type + price for a caller that means "fill now" (quick orders, auto-exit, retries,
