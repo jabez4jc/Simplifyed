@@ -117,6 +117,7 @@ function fakeChart({ refuse = [] } = {}) {
       const inst = {
         id: options.instanceId || `ind-${++n}`, indicatorId, name: indicatorId.toUpperCase(),
         settings: () => ({ ...settings }), visible: () => shown, setVisible: (v) => { shown = v; },
+        barSource: () => options.barSource || 'chart',
       };
       studies.push(inst);
       return inst;
@@ -164,6 +165,20 @@ test('saved studies come back on a fresh chart, and one that waits for bars is k
   // The same chart again (a symbol switch keeps it): nothing is added twice.
   app.applyIndicatorsTo(app.chart);
   assert.strictEqual(app.chart.indicators().length, 2);
+});
+
+test('a study set to the underlying bars comes back on them, and only then is it written', () => {
+  const { app, store } = freshApp();
+  store['chart-indicators'] = JSON.stringify([
+    { indicatorId: 'ema', instanceId: 'a', settings: { length: 9 }, visible: true, barSource: 'underlying' },
+    { indicatorId: 'rsi', instanceId: 'b', settings: { length: 21 }, visible: true },
+  ]);
+  app.chart = fakeChart();
+  app.applyIndicatorsTo(app.chart);
+  assert.deepStrictEqual(app.chart.indicators().map((i) => i.barSource()), ['underlying', 'chart']);
+
+  app.saveIndicators();
+  assert.deepStrictEqual(JSON.parse(store['chart-indicators']).map((s) => s.barSource), ['underlying', undefined]);
 });
 
 test('copying to an option chart replaces its studies with the main chart\'s, settings included', () => {

@@ -70,7 +70,7 @@ test('the bridge publishes every export the chart code calls', async ({ page }) 
       'DrawingController', 'registeredDrawingTools', 'getDrawingTool', 'migrateDrawings',
       'keyToDrawingAction', 'drawingToolIcon', 'iconSvg', 'computeVolumeProfileSessions',
       'VolumeProfile', 'computeFootprint', 'cumulativeDelta', 'FootprintAggregator', 'Footprint',
-      'TradeController', 'createAlertUi', 'mountIndicatorSettings', 'mountIndicatorPicker',
+      'FOOTPRINT_THEMES', 'DEFAULT_FOOTPRINT_OPTIONS', 'TradeController', 'createAlertUi', 'mountIndicatorSettings', 'mountIndicatorPicker',
       'applyScript', 'removeScript', 'savedScripts',
     ];
     return required.filter((key) => !window.OAC[key]);
@@ -134,6 +134,8 @@ test('every transform the type picker offers is applied by the chart, live', asy
         out[type] = { error: e.message };
       }
     }
+    window.app.applySeriesType(chart, series, 'renko', 2, 'atr');
+    out.atr = chart.seriesTransform(series);
     window.app.applySeriesType(chart, series, 'candlestick');
     out.plain = chart.seriesTransform(series);
     chart.destroy();
@@ -145,7 +147,40 @@ test('every transform the type picker offers is applied by the chart, live', asy
     // getData hands back the host's bars, not the elements: the transform never replaces them.
     expect(result.out[type], type).toEqual({ spec: type, bars: result.given });
   }
+  expect(result.out.atr, 'a sizing mode carries its own option').toMatchObject({
+    type: 'renko', options: { mode: 'atr', atrMultiplier: 2 },
+  });
   expect(result.out.plain, 'Candles takes the transform off').toBeNull();
+  assertNoPageErrors(errors);
+});
+
+test('every footprint view and colour theme the order flow bar offers is accepted', async ({ page }) => {
+  const errors = collectPageErrors(page);
+  await ensureChartSymbol(page);
+  await switchView(page, 'chart');
+  await page.waitForSelector('#chart-profile-bar', { state: 'attached', timeout: 30000 });
+  const failures = await page.evaluate(() => {
+    const app = window.app;
+    const s = app.profileState();
+    const saved = { on: s.footprintOn, view: s.footprintView, theme: s.footprintTheme, zones: s.zonesOn };
+    s.footprintOn = true;
+    app.renderProfileBar();
+    const fp = new window.OAC.Footprint(app.footprintOptions());
+    const out = [];
+    const views = [...document.querySelectorAll('#chart-profile-bar [data-fp="footprintView"] option')]
+      .map((o) => o.value);
+    if (views.length !== 7) out.push(`the bar offers ${views.length} views`);
+    for (const view of views) {
+      for (const theme of ['', ...Object.keys(window.OAC.FOOTPRINT_THEMES)]) {
+        Object.assign(s, { footprintView: view, footprintTheme: theme, zonesOn: true });
+        try { fp.setOptions(app.footprintOptions()); } catch (e) { out.push(`${view}/${theme}: ${e.message}`); }
+      }
+    }
+    Object.assign(s, { footprintOn: saved.on, footprintView: saved.view, footprintTheme: saved.theme, zonesOn: saved.zones });
+    app.renderProfileBar();
+    return out;
+  });
+  expect(failures).toEqual([]);
   assertNoPageErrors(errors);
 });
 
@@ -324,6 +359,35 @@ test('an OpenScript study applied from the editor is registered and put on the c
     saved: Object.keys(window.OAC.savedScripts()),
   }));
   expect(state).toEqual({ registered: true, on: true, saved: ['oscript-e2e-mean'] });
+
+  // The chart knows its instrument and has a bars provider, so a script can read another series
+  // through the history API, and a script's alert on a new live bar reaches the operator as a toast.
+  expect(await page.evaluate(() => window.app.chart.getDataContext()?.symbol)).toBe(
+    await page.evaluate(() => window.app.chartState.symbol));
+  const historyAsked = page.waitForRequest((r) => /\/history\?.*timeframe=1h(&|$)/.test(r.url()), { timeout: 15000 });
+  await page.click('#chart-indicators-bar [data-action="script"]');
+  await page.fill('#chart-ind-picker [data-role="src"]', [
+    'version 1',
+    'study("E2E hourly", overlay = true)',
+    'plot(req.symbol("BTCUSDFUT", "1h", close), "Hourly", red)',
+    'if close > 0',
+    '    alert("E2E alert fired", id = "always")',
+  ].join('\n'));
+  await page.click('#chart-ind-picker [data-action="apply"]');
+  await historyAsked;
+  await page.waitForFunction(() => window.app.chart.indicators()
+    .find((i) => i.indicatorId === 'oscript-e2e-hourly')?.dataStatus()?.state === 'ready', null, { timeout: 15000 });
+  await page.evaluate(() => {
+    // The live feed would write the bar it believes is last over the one appended here.
+    window.app.applyChartQuote = () => {};
+    const bars = window.app.chartCandles;
+    const last = bars[bars.length - 1];
+    window.app.candleSeries.update({
+      time: last.ts + (last.ts - bars[bars.length - 2].ts),
+      open: last.close, high: last.close, low: last.close, close: last.close, volume: 1,
+    });
+  });
+  await expect(page.locator('#toast-container .alert-content', { hasText: 'E2E alert fired' })).toBeVisible();
 
   // A script that does not compile shows its diagnostics instead of registering anything.
   await page.click('#chart-indicators-bar [data-action="script"]');

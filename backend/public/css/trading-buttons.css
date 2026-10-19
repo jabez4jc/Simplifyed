@@ -3,8 +3,8 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 12px 24px;
-  font-size: var(--font-size-base);
+  padding: 9px 18px;
+  font-size: var(--font-size-sm);
   font-weight: 600;
   line-height: 1.5;
   text-align: center;
@@ -13,12 +13,12 @@
   vertical-align: middle;
   cursor: pointer;
   user-select: none;
-  border: 2px solid transparent;
-  border-radius: 8px;
-  min-width: 120px;
-  transition: all 0.2s ease-in-out;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  min-width: 0;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s, filter 0.15s, box-shadow 0.15s, transform 0.15s;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   -webkit-appearance: none;
   -moz-appearance: none;
@@ -27,18 +27,15 @@
 }
 .btn:focus {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(74, 144, 226, 0.3);
 }
 .btn:active {
   transform: translateY(1px);
 }
 .btn:disabled, .btn.disabled {
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 0.4;
   pointer-events: none;
-  background-color: #E8E8E8;
-  color: #B0B0B0;
-  border-color: #D0D0D0;
+  filter: saturate(0.5);
 }
 .btn:disabled:hover, .btn:disabled:active, .btn.disabled:hover, .btn.disabled:active {
   transform: none;
@@ -77,208 +74,71 @@
     transform: rotate(360deg);
   }
 }
-.btn-buy,
-.btn-buy-ce,
-.btn-buy-pe,
-.btn-long {
-  background-color: #7ED6B2;
-  color: #1A5A45;
-  border-color: #6BC9A3;
+/* Semantic action colours: one solid fill per intent, tuned per theme so label text clears WCAG AA.
+   The previous palette was pastel (#7ED6B2 / #FFD494 / #FF9999) with dark-green/brown text; it
+   was designed for a light page and looked washed-out on the dark terminal theme. */
+:root,
+:root[data-theme="light"] {
+  --act-buy: #047857;   --act-buy-on: #FFFFFF;
+  --act-sell: #B45309;  --act-sell-on: #FFFFFF;
+  --act-short: #C2410C; --act-short-on: #FFFFFF;
+  --act-exit: #B91C1C;  --act-exit-on: #FFFFFF;
+  --act-edit: #4338CA;  --act-edit-on: #FFFFFF;
+  --act-neutral: #EEF0F3; --act-neutral-on: #1F2937; --act-neutral-bd: #D1D5DB;
 }
-.btn-buy:hover:not(:disabled):not(.disabled),
-.btn-buy-ce:hover:not(:disabled):not(.disabled),
-.btn-buy-pe:hover:not(:disabled):not(.disabled),
-.btn-long:hover:not(:disabled):not(.disabled) {
-  background-color: #6BC9A3;
-  border-color: rgb(88.3168316832, 194.1831683168, 151.3861386139);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-}
-.btn-buy:active:not(:disabled):not(.disabled),
-.btn-buy-ce:active:not(:disabled):not(.disabled),
-.btn-buy-pe:active:not(:disabled):not(.disabled),
-.btn-long:active:not(:disabled):not(.disabled) {
-  background-color: #58BC94;
-  border-color: rgb(69.6336633663, 187.3663366337, 139.7722772277);
-  transform: translateY(1px);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-.btn-buy:focus:not(:disabled):not(.disabled),
-.btn-buy-ce:focus:not(:disabled):not(.disabled),
-.btn-buy-pe:focus:not(:disabled):not(.disabled),
-.btn-long:focus:not(:disabled):not(.disabled) {
-  box-shadow: 0 0 0 3px rgba(126, 214, 178, 0.3);
+:root[data-theme="dark"] {
+  --act-buy: #10B981;   --act-buy-on: #03221A;
+  --act-sell: #F59E0B;  --act-sell-on: #2B1700;
+  --act-short: #FB923C; --act-short-on: #2B1000;
+  --act-exit: #F87171;  --act-exit-on: #2B0505;
+  --act-edit: #818CF8;  --act-edit-on: #0B0B2E;
+  --act-neutral: #26262B; --act-neutral-on: #E4E4E7; --act-neutral-bd: #3F3F46;
 }
 
-.btn-sell,
-.btn-reduce,
-.btn-reduce-ce,
-.btn-reduce-pe,
-.btn-cover {
-  background-color: #FFD494;
-  color: #8B5A00;
-  border-color: #FFC974;
-}
-.btn-sell:hover:not(:disabled):not(.disabled),
-.btn-reduce:hover:not(:disabled):not(.disabled),
-.btn-reduce-ce:hover:not(:disabled):not(.disabled),
-.btn-reduce-pe:hover:not(:disabled):not(.disabled),
-.btn-cover:hover:not(:disabled):not(.disabled) {
-  background-color: #FFC974;
-  border-color: rgb(255, 191.0935251799, 90.5);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-}
-.btn-sell:active:not(:disabled):not(.disabled),
-.btn-reduce:active:not(:disabled):not(.disabled),
-.btn-reduce-ce:active:not(:disabled):not(.disabled),
-.btn-reduce-pe:active:not(:disabled):not(.disabled),
-.btn-cover:active:not(:disabled):not(.disabled) {
-  background-color: #FFBE5A;
-  border-color: rgb(255, 181.1870503597, 65);
-  transform: translateY(1px);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-.btn-sell:focus:not(:disabled):not(.disabled),
-.btn-reduce:focus:not(:disabled):not(.disabled),
-.btn-reduce-ce:focus:not(:disabled):not(.disabled),
-.btn-reduce-pe:focus:not(:disabled):not(.disabled),
-.btn-cover:focus:not(:disabled):not(.disabled) {
-  box-shadow: 0 0 0 3px rgba(255, 212, 148, 0.3);
-}
+.btn-buy, .btn-buy-ce, .btn-buy-pe, .btn-long { --act: var(--act-buy); --act-on: var(--act-buy-on); --act-bd: var(--act-buy); }
+.btn-sell, .btn-reduce, .btn-reduce-ce, .btn-reduce-pe, .btn-cover { --act: var(--act-sell); --act-on: var(--act-sell-on); --act-bd: var(--act-sell); }
+.btn-short { --act: var(--act-short); --act-on: var(--act-short-on); --act-bd: var(--act-short); }
+.btn-exit, .btn-close, .btn-close-all, .btn-close-all-ce, .btn-close-all-pe,
+.btn-exit-all, .btn-cancel, .btn-cancel-all, .btn-remove { --act: var(--act-exit); --act-on: var(--act-exit-on); --act-bd: var(--act-exit); }
+.btn-edit, .btn-modify { --act: var(--act-edit); --act-on: var(--act-edit-on); --act-bd: var(--act-edit); }
+.btn-neutral, .btn-refresh, .btn-default { --act: var(--act-neutral); --act-on: var(--act-neutral-on); --act-bd: var(--act-neutral-bd); }
 
-.btn-short {
-  background-color: #FFB380;
-  color: #8B3A00;
-  border-color: #FFA666;
+.btn-buy, .btn-buy-ce, .btn-buy-pe, .btn-long,
+.btn-sell, .btn-reduce, .btn-reduce-ce, .btn-reduce-pe, .btn-cover,
+.btn-short,
+.btn-exit, .btn-close, .btn-close-all, .btn-close-all-ce, .btn-close-all-pe,
+.btn-exit-all, .btn-cancel, .btn-cancel-all, .btn-remove,
+.btn-edit, .btn-modify,
+.btn-neutral, .btn-refresh, .btn-default {
+  background-color: var(--act);
+  color: var(--act-on);
+  border-color: var(--act-bd);
 }
-.btn-short:hover:not(:disabled):not(.disabled) {
-  background-color: #FFA666;
-  border-color: rgb(255, 151.1666666667, 76.5);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+.btn-buy:hover:not(:disabled):not(.disabled), .btn-buy-ce:hover:not(:disabled):not(.disabled),
+.btn-buy-pe:hover:not(:disabled):not(.disabled), .btn-long:hover:not(:disabled):not(.disabled),
+.btn-sell:hover:not(:disabled):not(.disabled), .btn-reduce:hover:not(:disabled):not(.disabled),
+.btn-reduce-ce:hover:not(:disabled):not(.disabled), .btn-reduce-pe:hover:not(:disabled):not(.disabled),
+.btn-cover:hover:not(:disabled):not(.disabled), .btn-short:hover:not(:disabled):not(.disabled),
+.btn-exit:hover:not(:disabled):not(.disabled), .btn-close:hover:not(:disabled):not(.disabled),
+.btn-close-all:hover:not(:disabled):not(.disabled), .btn-close-all-ce:hover:not(:disabled):not(.disabled),
+.btn-close-all-pe:hover:not(:disabled):not(.disabled), .btn-exit-all:hover:not(:disabled):not(.disabled),
+.btn-cancel:hover:not(:disabled):not(.disabled), .btn-cancel-all:hover:not(:disabled):not(.disabled),
+.btn-remove:hover:not(:disabled):not(.disabled), .btn-edit:hover:not(:disabled):not(.disabled),
+.btn-modify:hover:not(:disabled):not(.disabled), .btn-neutral:hover:not(:disabled):not(.disabled),
+.btn-refresh:hover:not(:disabled):not(.disabled), .btn-default:hover:not(:disabled):not(.disabled) {
+  filter: brightness(1.12);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--act) 35%, transparent);
 }
-.btn-short:active:not(:disabled):not(.disabled) {
-  background-color: #FF994D;
-  border-color: rgb(255, 136.3333333333, 51);
-  transform: translateY(1px);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-.btn-short:focus:not(:disabled):not(.disabled) {
-  box-shadow: 0 0 0 3px rgba(255, 179, 128, 0.3);
-}
-
-.btn-exit,
-.btn-close,
-.btn-close-all,
-.btn-close-all-ce,
-.btn-close-all-pe,
-.btn-exit-all,
-.btn-cancel,
-.btn-cancel-all,
-.btn-remove {
-  background-color: #FF9999;
-  color: #8B0000;
-  border-color: #FF8080;
-}
-.btn-exit:hover:not(:disabled):not(.disabled),
-.btn-close:hover:not(:disabled):not(.disabled),
-.btn-close-all:hover:not(:disabled):not(.disabled),
-.btn-close-all-ce:hover:not(:disabled):not(.disabled),
-.btn-close-all-pe:hover:not(:disabled):not(.disabled),
-.btn-exit-all:hover:not(:disabled):not(.disabled),
-.btn-cancel:hover:not(:disabled):not(.disabled),
-.btn-cancel-all:hover:not(:disabled):not(.disabled),
-.btn-remove:hover:not(:disabled):not(.disabled) {
-  background-color: #FF8080;
-  border-color: rgb(255, 102.5, 102.5);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-}
-.btn-exit:active:not(:disabled):not(.disabled),
-.btn-close:active:not(:disabled):not(.disabled),
-.btn-close-all:active:not(:disabled):not(.disabled),
-.btn-close-all-ce:active:not(:disabled):not(.disabled),
-.btn-close-all-pe:active:not(:disabled):not(.disabled),
-.btn-exit-all:active:not(:disabled):not(.disabled),
-.btn-cancel:active:not(:disabled):not(.disabled),
-.btn-cancel-all:active:not(:disabled):not(.disabled),
-.btn-remove:active:not(:disabled):not(.disabled) {
-  background-color: #FF6666;
-  border-color: #ff4d4d;
-  transform: translateY(1px);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-.btn-exit:focus:not(:disabled):not(.disabled),
-.btn-close:focus:not(:disabled):not(.disabled),
-.btn-close-all:focus:not(:disabled):not(.disabled),
-.btn-close-all-ce:focus:not(:disabled):not(.disabled),
-.btn-close-all-pe:focus:not(:disabled):not(.disabled),
-.btn-exit-all:focus:not(:disabled):not(.disabled),
-.btn-cancel:focus:not(:disabled):not(.disabled),
-.btn-cancel-all:focus:not(:disabled):not(.disabled),
-.btn-remove:focus:not(:disabled):not(.disabled) {
-  box-shadow: 0 0 0 3px rgba(255, 153, 153, 0.3);
-}
-
-.btn-neutral,
-.btn-refresh,
-.btn-default {
-  background-color: #B8C9D9;
-  color: #2C3E50;
-  border-color: #A8BBCC;
-}
-.btn-neutral:hover:not(:disabled):not(.disabled),
-.btn-refresh:hover:not(:disabled):not(.disabled),
+.btn-neutral:hover:not(:disabled):not(.disabled), .btn-refresh:hover:not(:disabled):not(.disabled),
 .btn-default:hover:not(:disabled):not(.disabled) {
-  background-color: #A8BBCC;
-  border-color: rgb(151.9239130435, 174.4347826087, 194.5760869565);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-}
-.btn-neutral:active:not(:disabled):not(.disabled),
-.btn-refresh:active:not(:disabled):not(.disabled),
-.btn-default:active:not(:disabled):not(.disabled) {
-  background-color: #98AEC0;
-  border-color: rgb(135.847826087, 161.8695652174, 185.152173913);
-  transform: translateY(1px);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-.btn-neutral:focus:not(:disabled):not(.disabled),
-.btn-refresh:focus:not(:disabled):not(.disabled),
-.btn-default:focus:not(:disabled):not(.disabled) {
-  box-shadow: 0 0 0 3px rgba(184, 201, 217, 0.3);
-}
-
-.btn-edit,
-.btn-modify {
-  background-color: #D4D4F5;
-  color: #4A4A8B;
-  border-color: #C5C5F0;
-}
-.btn-edit:hover:not(:disabled):not(.disabled),
-.btn-modify:hover:not(:disabled):not(.disabled) {
-  background-color: #C5C5F0;
-  border-color: rgb(176.7397260274, 176.7397260274, 234.7602739726);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
-}
-.btn-edit:active:not(:disabled):not(.disabled),
-.btn-modify:active:not(:disabled):not(.disabled) {
-  background-color: #B6B6EB;
-  border-color: rgb(156.4794520548, 156.4794520548, 229.5205479452);
-  transform: translateY(1px);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-.btn-edit:focus:not(:disabled):not(.disabled),
-.btn-modify:focus:not(:disabled):not(.disabled) {
-  box-shadow: 0 0 0 3px rgba(212, 212, 245, 0.3);
+  box-shadow: none;
+  border-color: var(--color-neutral-400);
 }
 
 .btn-sm {
-  padding: 8px 16px;
+  padding: 6px 12px;
   font-size: var(--font-size-xs);
-  min-width: 80px;
+  min-width: 0;
 }
 .btn-sm svg,
 .btn-sm i {
@@ -290,10 +150,15 @@
   margin-left: 4px;
 }
 
+/* Icon-only buttons size to their glyph; the text-button padding above would crush the svg. */
+.btn.btn-square, .btn.btn-circle { padding: 0; }
+.btn-square svg, .btn-circle svg { margin: 0; }
+.btn-icon.btn-sm { padding: 6px; }
+
 .btn-lg {
-  padding: 16px 32px;
-  font-size: var(--font-size-lg);
-  min-width: 160px;
+  padding: 13px 26px;
+  font-size: var(--font-size-base);
+  min-width: 0;
 }
 .btn-lg svg,
 .btn-lg i {
@@ -337,47 +202,34 @@
 }
 
 .btn.active {
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.15);
-}
-.btn.active.btn-buy {
-  background-color: #58BC94;
-}
-.btn.active.btn-sell, .btn.active.btn-reduce {
-  background-color: #FFBE5A;
-}
-.btn.active.btn-short {
-  background-color: #FF994D;
-}
-.btn.active.btn-exit, .btn.active.btn-close {
-  background-color: #FF6666;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.25);
+  filter: brightness(0.9);
 }
 
-.btn-outline {
+/* Outline: transparent fill, intent-coloured edge and text; fills in on hover.
+   .btn-outline.btn-neutral needs the same specificity as daisyUI's own rule for that pair,
+   which otherwise paints near-invisible dark text on the dark theme. */
+.btn-outline,
+.btn-outline.btn-neutral {
   background-color: transparent;
+  color: var(--color-neutral-700);
+  border-color: var(--color-neutral-300);
 }
-.btn-outline.btn-buy {
-  color: #1A5A45;
-  border-color: #7ED6B2;
+.btn-outline.btn-neutral:hover:not(:disabled),
+.btn-outline:not([class*="btn-buy"]):not([class*="btn-sell"]):not([class*="btn-exit"]):not(.btn-error):hover:not(:disabled) {
+  background-color: var(--color-neutral-100);
+  color: var(--color-neutral-900);
+  border-color: var(--color-neutral-400);
 }
-.btn-outline.btn-buy:hover:not(:disabled) {
-  background-color: #7ED6B2;
-  color: #1A5A45;
+.btn-outline.btn-buy, .btn-outline.btn-sell, .btn-outline.btn-exit {
+  background-color: transparent;
+  color: var(--act);
+  border-color: var(--act);
 }
-.btn-outline.btn-sell {
-  color: #8B5A00;
-  border-color: #FFD494;
-}
-.btn-outline.btn-sell:hover:not(:disabled) {
-  background-color: #FFD494;
-  color: #8B5A00;
-}
-.btn-outline.btn-exit {
-  color: #8B0000;
-  border-color: #FF9999;
-}
+.btn-outline.btn-buy:hover:not(:disabled), .btn-outline.btn-sell:hover:not(:disabled),
 .btn-outline.btn-exit:hover:not(:disabled) {
-  background-color: #FF9999;
-  color: #8B0000;
+  background-color: var(--act);
+  color: var(--act-on);
 }
 
 .btn-ghost {
@@ -387,35 +239,24 @@
   padding-left: 12px;
   padding-right: 12px;
 }
-.btn-ghost.btn-buy {
-  color: #1A5A45;
+.btn-ghost:hover:not(:disabled) {
+  background-color: var(--color-neutral-100);
 }
-.btn-ghost.btn-buy:hover:not(:disabled) {
-  background-color: rgba(126, 214, 178, 0.1);
-}
-.btn-ghost.btn-sell {
-  color: #8B5A00;
-}
-.btn-ghost.btn-sell:hover:not(:disabled) {
-  background-color: rgba(255, 212, 148, 0.1);
-}
-.btn-ghost.btn-exit {
-  color: #8B0000;
-}
+.btn-ghost.btn-buy, .btn-ghost.btn-sell, .btn-ghost.btn-exit { color: var(--act); }
+.btn-ghost.btn-buy:hover:not(:disabled), .btn-ghost.btn-sell:hover:not(:disabled),
 .btn-ghost.btn-exit:hover:not(:disabled) {
-  background-color: rgba(255, 153, 153, 0.1);
+  background-color: color-mix(in srgb, var(--act) 14%, transparent);
+  filter: none;
 }
 
 @media (max-width: 768px) {
   .btn {
-    padding: 10px 20px;
+    padding: 10px 16px;
     font-size: var(--font-size-sm);
-    min-width: 100px;
   }
   .btn-sm {
-    padding: 7px 14px;
+    padding: 7px 12px;
     font-size: var(--font-size-2xs);
-    min-width: 70px;
   }
   .btn-lg {
     padding: 14px 28px;
@@ -434,7 +275,7 @@
   }
 }
 .btn:focus-visible {
-  outline: 3px solid #4A90E2;
+  outline: 2px solid var(--color-accent, #FF5733);
   outline-offset: 2px;
 }
 
@@ -537,17 +378,17 @@ input[type=reset].btn:not(:disabled) {
 }
 
 .bg-buy-light {
-  background-color: rgb(164.7, 226.3, 201.1) !important;
-  color: #1A5A45 !important;
+  background-color: rgba(16, 185, 129, 0.14) !important;
+  color: #047857 !important;
 }
 
 .bg-exit-light {
-  background-color: #ffcccc !important;
-  color: #8B0000 !important;
+  background-color: rgba(239, 68, 68, 0.12) !important;
+  color: #B91C1C !important;
 }
 
 .bg-neutral-light {
-  background-color: rgb(210.576146789, 221.2128440367, 231.223853211) !important;
+  background-color: var(--color-neutral-100) !important;
   color: #2C3E50 !important;
 }
 
@@ -681,6 +522,15 @@ input[type=reset].btn:not(:disabled) {
   color: #4A4A8B;
   border-left-color: #D4D4F5;
 }
+
+/* Dark theme: translucent tint + intent-coloured text instead of opaque pastel slabs. */
+[data-theme="dark"] .alert { box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45); }
+[data-theme="dark"] .alert-success { background-color: #0F2A21; color: #6EE7B7; border-left-color: #10B981; }
+[data-theme="dark"] .alert-warning { background-color: #2E2108; color: #FBBF24; border-left-color: #F59E0B; }
+[data-theme="dark"] .alert-danger  { background-color: #301313; color: #FCA5A5; border-left-color: #F87171; }
+[data-theme="dark"] .alert-info    { background-color: #15192E; color: #A5B4FC; border-left-color: #818CF8; }
+
+input[type="radio"], input[type="checkbox"] { accent-color: var(--color-primary); }
 
 .tag {
   display: inline-block;

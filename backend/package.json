@@ -44,7 +44,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "node-cron": "^4.6.0",
-    "openalgo-charts": "^2.6.0",
+    "openalgo-charts": "^2.6.4",
     "openalgo-script": "^0.8.1",
     "sqlite3": "^6.0.1",
     "undici": "^7.16.0",

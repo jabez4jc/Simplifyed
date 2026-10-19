@@ -865,6 +865,7 @@ Object.assign(DashboardApp.prototype, {
       // answer for the old one must not be drawn under the new one.
       if (this.chartState !== state || `${state.exchange}:${state.symbol}:${state.timeframe}` !== requested) return;
       const { candles = [], stale, source } = res.data || {};
+      this.setChartDataSource?.(this.chart, state);
 
       if (!candles.length) {
         // Common and legitimate: illiquid or far-dated contracts have no history at this

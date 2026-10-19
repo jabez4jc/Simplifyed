@@ -353,7 +353,10 @@ summary::-webkit-details-marker {
 }
 
 .stat-label {
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--color-neutral-600);
   margin-bottom: var(--space-2);
 }
@@ -361,7 +364,19 @@ summary::-webkit-details-marker {
 .stat-value {
   font-size: var(--font-size-2xl);
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
   color: var(--color-neutral-900);
+}
+
+/* Four KPI tiles per row stack into a column of full-width cards on a phone; two across keeps
+   the whole summary on one screen. */
+@media (max-width: 640px) {
+  .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3); }
+  .stat-card { padding: var(--space-3); }
+  .stat-value { font-size: var(--font-size-xl); overflow-wrap: anywhere; }
+  /* The System Health summary puts a title and a status string on one row; keep the title on one line and let the status wrap. */
+  summary.card-header .card-title { white-space: nowrap; }
+  summary.card-header > span.ml-auto { min-width: 0; text-align: right; }
 }
 
 /* ========== Modal ========== */
@@ -381,7 +396,7 @@ summary::-webkit-details-marker {
 .modal-content {
   background-color: var(--color-surface);
   border-radius: var(--radius-lg);
-  max-width: 1300px;
+  max-width: 680px; /* forms and confirms; data-heavy modals opt in to wider below or inline */
   width: 97%;
   max-height: 90vh;
   overflow-y: auto;
@@ -413,6 +428,7 @@ summary::-webkit-details-marker {
 
 /* Instance modal layout */
 .instance-modal .modal-content {
+  max-width: 1100px;
   width: min(1100px, 96%);
 }
 
@@ -879,6 +895,8 @@ summary::-webkit-details-marker {
    done the same). Force a single column so overflow scrolls as intended. */
 .drawer-side ul.menu {
   flex-wrap: nowrap;
+  gap: 2px;
+  padding: 0.75rem;
 }
 
 .drawer-side ul.menu > li {

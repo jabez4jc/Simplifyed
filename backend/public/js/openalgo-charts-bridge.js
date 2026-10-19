@@ -28,7 +28,7 @@ import {
 } from '/vendor/openalgo-charts/openalgo-charts.draw.mjs';
 import {
   computeVolumeProfileSessions, VolumeProfile, computeFootprint, cumulativeDelta,
-  FootprintAggregator, Footprint,
+  FootprintAggregator, Footprint, FOOTPRINT_THEMES, DEFAULT_FOOTPRINT_OPTIONS,
 } from '/vendor/openalgo-charts/openalgo-charts.profile.mjs';
 import { TradeController } from '/vendor/openalgo-charts/openalgo-charts.trade.mjs';
 // Side effects only: the transform tier registers Heikin Ashi, Renko, range bars, line break,
@@ -80,13 +80,31 @@ function compileScript(source) {
   }
   const probe = descriptorFor(program, { chartVersion: CHARTS_VERSION, source: file });
   const slug = probe.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'script';
-  return descriptorFor(program, {
+  const descriptor = descriptorFor(program, {
     id: `oscript-${slug}`,
     category: 'OpenScript',
     chartVersion: CHARTS_VERSION,
     source: file,
     simulateOrders: true,
   });
+  return descriptor.alerts ? { ...descriptor, alerts: descriptor.alerts.map(onClosedBar) } : descriptor;
+}
+
+/**
+ * A script's `alert(...)` is final only once its bar has closed, so the adapter's flag sits on
+ * closed bars and is unset on the forming one. The chart judges a bar once, when it first appears
+ * - still forming - and never looks back, so as registered a script alert would never be delivered
+ * on a live chart (measured on 2.6.0 / 0.8.1). Each alert is therefore read one bar back: a bar's
+ * arrival is what closes the one before it. The chart's own `frequency: 'onBarClose'` delivers
+ * too, but hands the message a settings object the adapter does not know, and the text is lost.
+ */
+function onClosedBar(alert) {
+  const back = (ctx) => ({ ...ctx, index: ctx.index - 1 });
+  return {
+    ...alert,
+    when: (ctx) => ctx.index > 0 && alert.when(back(ctx)),
+    ...(typeof alert.message === 'function' ? { message: (ctx) => alert.message(back(ctx)) } : {}),
+  };
 }
 
 /** Compile, register and remember a script. Throws with the rendered diagnostics on error. */
@@ -141,6 +159,8 @@ window.OAC = {
   cumulativeDelta,
   FootprintAggregator,
   Footprint,
+  FOOTPRINT_THEMES,
+  DEFAULT_FOOTPRINT_OPTIONS,
   TradeController,
   createAlertUi,
   mountIndicatorSettings,

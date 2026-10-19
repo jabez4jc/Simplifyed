@@ -15,6 +15,13 @@
  * up/down tick as the fallback when no quoted spread is available). Both start EMPTY the moment
  * they are switched on and grow only from there - never pretending to have history they don't.
  */
+/** openalgo-charts' footprint `displayMode`s (imbalance, deltaPct, volumeDelta since 2.6.1, deltaShadedVolume 2.6.4). */
+const FOOTPRINT_VIEWS = {
+  bidask: 'Bid x Ask', imbalance: 'Imbalance', delta: 'Delta', deltaPct: 'Delta %',
+  volume: 'Volume', volumeDelta: 'Volume x Delta', deltaShadedVolume: 'Delta-shaded volume',
+};
+const ZONE_LABELS = { stackedBuy: 'stacked buy', stackedSell: 'stacked sell', node: 'node', absorption: 'absorption' };
+
 Object.assign(DashboardApp.prototype, {
   profileState() {
     if (!this._profile) {
@@ -22,6 +29,7 @@ Object.assign(DashboardApp.prototype, {
         volumeOn: false, footprintOn: false, cvdOn: false,
         vpPrimitive: null, footprintPrimitive: null, cvdSeries: null, cvdPaneIndex: null,
         cvdLegend: null, aggregator: null, footprintBars: [],
+        footprintView: 'bidask', footprintTheme: '', zonesOn: false, zoneUnsub: null,
       };
     }
     return this._profile;
@@ -34,6 +42,9 @@ Object.assign(DashboardApp.prototype, {
     s.volumeOn = Boolean(saved.volumeOn);
     s.footprintOn = Boolean(saved.footprintOn);
     s.cvdOn = Boolean(saved.cvdOn);
+    if (FOOTPRINT_VIEWS[saved.footprintView]) s.footprintView = saved.footprintView;
+    if (typeof saved.footprintTheme === 'string') s.footprintTheme = saved.footprintTheme;
+    s.zonesOn = Boolean(saved.zonesOn);
   },
 
   saveProfilePrefs() {
@@ -41,6 +52,7 @@ Object.assign(DashboardApp.prototype, {
     try {
       localStorage.setItem('chart-profile', JSON.stringify({
         volumeOn: s.volumeOn, footprintOn: s.footprintOn, cvdOn: s.cvdOn,
+        footprintView: s.footprintView, footprintTheme: s.footprintTheme, zonesOn: s.zonesOn,
       }));
     } catch (_) { /* private mode */ }
   },
@@ -81,6 +93,18 @@ Object.assign(DashboardApp.prototype, {
       <button type="button" class="chart-ind-btn ${s.volumeOn ? 'active' : ''}" data-profile="volume">Volume Profile</button>
       <button type="button" class="chart-ind-btn ${s.footprintOn ? 'active' : ''}" data-profile="footprint">Footprint</button>
       <button type="button" class="chart-ind-btn ${s.cvdOn ? 'active' : ''}" data-profile="cvd">CVD</button>
+      ${s.footprintOn ? `
+        <select class="form-input chart-qty-input chart-box-mode" data-fp="footprintView" aria-label="Footprint view">
+          ${Object.entries(FOOTPRINT_VIEWS).map(([v, label]) => `
+            <option value="${v}" ${s.footprintView === v ? 'selected' : ''}>${label}</option>`).join('')}
+        </select>
+        <select class="form-input chart-qty-input chart-box-mode" data-fp="footprintTheme" aria-label="Footprint colours">
+          <option value="">Default colours</option>
+          ${Object.keys(window.OAC?.FOOTPRINT_THEMES || {}).map((t) => `
+            <option value="${t}" ${s.footprintTheme === t ? 'selected' : ''}>${t[0].toUpperCase()}${t.slice(1)}</option>`).join('')}
+        </select>
+        <button type="button" class="chart-ind-btn ${s.zonesOn ? 'active' : ''}" data-profile="zones"
+                title="Extend stacked-imbalance, node and absorption zones, and alert when price comes back to one">Zones</button>` : ''}
       <p class="chart-profile-note">
         Volume Profile uses the loaded history. Footprint and CVD build up from live ticks only -
         OpenAlgo does not store trade-by-trade bid/ask history, so both start empty and grow from
@@ -92,8 +116,30 @@ Object.assign(DashboardApp.prototype, {
         if (kind === 'volume') this.toggleVolumeProfile();
         else if (kind === 'footprint') this.toggleFootprint();
         else if (kind === 'cvd') this.toggleCvd();
+        else if (kind === 'zones') this.setFootprintOption('zonesOn', !s.zonesOn);
       });
     });
+    host.querySelectorAll('[data-fp]').forEach((sel) => {
+      sel.addEventListener('change', () => this.setFootprintOption(sel.dataset.fp, sel.value));
+    });
+  },
+
+  setFootprintOption(key, value) {
+    const s = this.profileState();
+    s[key] = value;
+    this.saveProfilePrefs();
+    s.footprintPrimitive?.setOptions(this.footprintOptions());
+    this.renderProfileBar();
+  },
+
+  /** The view, colour theme and zones the bar picks, as a full patch - each choice resets cleanly. */
+  footprintOptions() {
+    const s = this.profileState();
+    const defaults = window.OAC.DEFAULT_FOOTPRINT_OPTIONS;
+    const theme = window.OAC.FOOTPRINT_THEMES[s.footprintTheme] || {};
+    // A theme patches only the colours it names; the rest go back to the library's own.
+    const colours = Object.fromEntries(Object.keys(window.OAC.FOOTPRINT_THEMES.ocean).map((k) => [k, defaults[k]]));
+    return { ...colours, ...theme, displayMode: s.footprintView, showZones: s.zonesOn };
   },
 
   /**
@@ -245,7 +291,13 @@ Object.assign(DashboardApp.prototype, {
         // reason to leave headroom for a dense, fully-zoomed-out history the way the default
         // tuning does. cellWidth is left auto (derived from bar spacing) rather than fixed, so
         // it keeps adapting correctly as the chart is zoomed.
-        s.footprintPrimitive = new window.OAC.Footprint({ font: 12, widthFactor: 0.96, minTextHeight: 9 });
+        s.footprintPrimitive = new window.OAC.Footprint({
+          font: 12, widthFactor: 0.96, minTextHeight: 9, ...this.footprintOptions(),
+        });
+        // Fires only for zones `showZones` extends, and never for the history a footprint starts with.
+        s.zoneUnsub = s.footprintPrimitive.onZoneAlert(({ zone }) => {
+          Utils.showToast(`Footprint: price back at ${ZONE_LABELS[zone.kind] || zone.kind} zone ${zone.low}-${zone.high}`, 'info', 6000);
+        });
         this.chart.addPrimitive(s.footprintPrimitive, 0);
       }
       s.footprintPrimitive.setBars(s.footprintBars);
@@ -257,6 +309,8 @@ Object.assign(DashboardApp.prototype, {
   clearFootprint() {
     const s = this.profileState();
     if (s.footprintPrimitive) {
+      s.zoneUnsub?.();
+      s.zoneUnsub = null;
       try { this.chart?.removePrimitive(s.footprintPrimitive); } catch (_) { /* disposed */ }
       s.footprintPrimitive = null;
     }

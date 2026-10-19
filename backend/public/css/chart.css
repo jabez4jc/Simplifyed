@@ -1448,6 +1448,7 @@
   font-size: var(--font-size-3xs);
   font-variant-numeric: tabular-nums;
 }
+.chart-qty-input.chart-box-mode { width: auto; }
 
 /* Both of these carry long text. Left to wrap they turn the one-row toolbar into two, so they
    truncate and keep the full string in the tooltip. */

@@ -284,6 +284,7 @@ Object.assign(DashboardApp.prototype, {
     const series = chart.addSeries('candlestick');
     this.applySeriesType(chart, series, seriesType);
     chart.timeScale.setRightOffset(RIGHT_OFFSET_BARS);
+    this.setChartDataSource(chart, { exchange: contract.exchange, symbol: contract.symbol, timeframe: this.paneTimeframe(key) });
 
     this.optionPanes[key] = { chart, series, contract, candles, seriesType };
     // No IST display shift needed - the engine renders IST natively from raw UTC seconds (see
@@ -444,10 +445,23 @@ const MIN_CHART_BUDGET_HEIGHT = 360;
  */
 const RIGHT_OFFSET_BARS = 8;
 
-/** What persists of one study: enough for `addIndicator` to bring the same study back. */
+/**
+ * What persists of one study: enough for `addIndicator` to bring the same study back. The bar
+ * source (2.6.0: a study on a Renko or Heikin Ashi chart may compute on the real bars) is not a
+ * setting, so it is kept beside them - written only when set, as the engine's own state does.
+ */
 function indicatorSnapshot(inst) {
-  return { indicatorId: inst.indicatorId, instanceId: inst.id, settings: inst.settings(), visible: inst.visible() };
+  const snap = { indicatorId: inst.indicatorId, instanceId: inst.id, settings: inst.settings(), visible: inst.visible() };
+  if (inst.barSource?.() === 'underlying') snap.barSource = 'underlying';
+  return snap;
 }
+
+/** The engine and OpenScript write a day as `1D`; this app's history API writes it `D`. */
+const toChartInterval = (timeframe) => (timeframe === 'D' ? '1D' : timeframe);
+const fromChartInterval = (interval) => (interval === '1D' ? 'D' : interval);
+
+/** Charts that already have their bars provider - setting it again would cancel requests in flight. */
+const chartsWithBarsProvider = new WeakSet();
 
 Object.assign(DashboardApp.prototype, {
   /** The chart a scope names: the main chart, or one CE/PE pane's. */
@@ -493,6 +507,7 @@ Object.assign(DashboardApp.prototype, {
     const left = [];
     for (const saved of list) {
       const options = saved.instanceId && !taken.has(saved.instanceId) ? { instanceId: saved.instanceId } : {};
+      if (saved.barSource === 'underlying') options.barSource = 'underlying';
       try {
         let inst;
         try {
@@ -510,6 +525,40 @@ Object.assign(DashboardApp.prototype, {
       }
     }
     return left;
+  },
+
+  /**
+   * Tell a chart which instrument and interval its bars are, and where a study gets bars it was
+   * not fed. That is what an OpenScript `req.timeframe(...)` / `req.symbol(...)` read and a
+   * built-in comparison study ask through; without it they report themselves unsupported. Called
+   * BEFORE the bars go in, since a context change marks the bars already loaded as the old source.
+   * A request the history API refuses (an interval the broker has none of) rejects, and the study
+   * says so in its own legend row.
+   */
+  setChartDataSource(chart, { exchange, symbol, timeframe }) {
+    if (!chart || typeof chart.setDataContext !== 'function') return;
+    if (!chartsWithBarsProvider.has(chart)) {
+      chartsWithBarsProvider.add(chart);
+      chart.setBarsProvider(async (req) => {
+        const ex = req.exchange || chart.getDataContext()?.exchange || '';
+        const res = await api.request(
+          `/history?exchange=${encodeURIComponent(ex)}&symbol=${encodeURIComponent(req.symbol)}`
+          + `&timeframe=${encodeURIComponent(fromChartInterval(req.interval))}`
+          + `&from=${Math.floor(req.from)}&to=${Math.ceil(req.to)}`
+        );
+        return this.seriesBars(res.data?.candles);
+      });
+    }
+    chart.setDataContext({ exchange, symbol, interval: toChartInterval(timeframe) });
+  },
+
+  /**
+   * A study's own alert fired on a live bar (an OpenScript `alert(...)`, or a built-in's declared
+   * condition). The engine only announces it; delivery is the host's.
+   */
+  onIndicatorAlert(scope, { title, message }) {
+    const where = scope ? this.optionPanes?.[scope]?.contract?.symbol : this.chartState?.symbol;
+    Utils.showToast(`${where ? `${where}: ` : ''}${message || title}`, 'warning', 10000);
   },
 
   /**
@@ -559,6 +608,7 @@ Object.assign(DashboardApp.prototype, {
       }, 150);
     });
     chart.on('indicatorSettings', ({ instanceId }) => this.openIndicatorSettings(scope, instanceId));
+    chart.on('indicator:alert', (alert) => this.onIndicatorAlert(scope, alert));
   },
 
   /**

@@ -36,23 +36,37 @@ const PLAIN_SERIES_TYPES = [
  */
 const TRANSFORM_SERIES_TYPES = {
   'heikin-ashi': { label: 'Heikin Ashi' },
-  renko: { label: 'Renko', sizeKey: 'boxSize', boxLabel: 'Box size' },
+  renko: { label: 'Renko', sizeKey: 'boxSize', boxLabel: 'Box size', sizeModes: true },
   'range-bars': { label: 'Range Bars', sizeKey: 'range', boxLabel: 'Range' },
   'line-break': { label: 'Line Break' },
-  'point-figure': { label: 'Point & Figure', sizeKey: 'boxSize', boxLabel: 'Box size' },
+  'point-figure': { label: 'Point & Figure', sizeKey: 'boxSize', boxLabel: 'Box size', sizeModes: true },
   kagi: { label: 'Kagi', sizeKey: 'reversal', boxLabel: 'Reversal' },
 };
 
 /**
- * Put `type` on `series`: a transform spec for the six transforms, otherwise no transform and the
- * plain renderer. `boxSize` null leaves the transform's size to the chart. Shared by the main
- * chart and each CE/PE pane.
+ * How Renko and point and figure size a box (since openalgo-charts 2.6.1), each with the option the
+ * one size input writes: a fixed price, a percent of price, a multiple of ATR(14), or a percent of
+ * ATR(14). Left empty, each takes the chart's default (a size from the history, 1%, 1x).
  */
-function applySeriesType(chart, series, type, boxSize = null) {
+const BOX_SIZE_MODES = {
+  fixed: { label: 'Fixed', key: null },
+  percent: { label: '% of price', key: 'percent', inputLabel: 'Percent' },
+  atr: { label: 'ATR', key: 'atrMultiplier', inputLabel: 'ATR x' },
+  atrPercent: { label: '% of ATR', key: 'percent', inputLabel: 'ATR %' },
+};
+
+/**
+ * Put `type` on `series`: a transform spec for the six transforms, otherwise no transform and the
+ * plain renderer. `boxSize` null leaves the transform's size to the chart; `boxMode` applies only
+ * to the types with `sizeModes`. Shared by the main chart and each CE/PE pane.
+ */
+function applySeriesType(chart, series, type, boxSize = null, boxMode = 'fixed') {
   if (!chart || !series) return;
   const def = TRANSFORM_SERIES_TYPES[type];
   if (def) {
-    const options = def.sizeKey && boxSize > 0 ? { [def.sizeKey]: boxSize } : {};
+    const mode = def.sizeModes && BOX_SIZE_MODES[boxMode] ? boxMode : 'fixed';
+    const key = BOX_SIZE_MODES[mode].key || def.sizeKey;
+    const options = { ...(mode !== 'fixed' ? { mode } : {}), ...(key && boxSize > 0 ? { [key]: boxSize } : {}) };
     chart.setSeriesTransform(series, { type, options });
     return;
   }
@@ -82,7 +96,7 @@ Object.assign(DashboardApp.prototype, {
   seriesBars,
 
   chartTypeState() {
-    if (!this._chartType) this._chartType = { type: 'candlestick', boxSize: null };
+    if (!this._chartType) this._chartType = { type: 'candlestick', boxSize: null, boxMode: 'fixed' };
     return this._chartType;
   },
 
@@ -93,12 +107,13 @@ Object.assign(DashboardApp.prototype, {
     const known = PLAIN_SERIES_TYPES.some((t) => t.type === saved.type) || TRANSFORM_SERIES_TYPES[saved.type];
     s.type = known ? saved.type : 'candlestick';
     s.boxSize = Number.isFinite(saved.boxSize) && saved.boxSize > 0 ? saved.boxSize : null;
+    s.boxMode = BOX_SIZE_MODES[saved.boxMode] ? saved.boxMode : 'fixed';
   },
 
   saveChartTypePref() {
     const s = this.chartTypeState();
     try {
-      localStorage.setItem('chart-series-type', JSON.stringify({ type: s.type, boxSize: s.boxSize }));
+      localStorage.setItem('chart-series-type', JSON.stringify({ type: s.type, boxSize: s.boxSize, boxMode: s.boxMode }));
     } catch (_) { /* private mode */ }
   },
 
@@ -107,6 +122,7 @@ Object.assign(DashboardApp.prototype, {
     if (!host) return;
     const s = this.chartTypeState();
     const transformDef = TRANSFORM_SERIES_TYPES[s.type];
+    const boxMode = transformDef?.sizeModes ? BOX_SIZE_MODES[s.boxMode] : BOX_SIZE_MODES.fixed;
 
     host.innerHTML = `
       <span class="chart-toolbar-label">Series</span>
@@ -119,9 +135,14 @@ Object.assign(DashboardApp.prototype, {
         <button type="button" class="chart-ind-btn ${s.type === type ? 'active' : ''}" data-charttype="${type}">
           ${def.label}
         </button>`).join('')}
+      ${transformDef?.sizeModes ? `
+        <select id="chart-type-box-mode" class="form-input chart-qty-input chart-box-mode" aria-label="Box size from">
+          ${Object.entries(BOX_SIZE_MODES).map(([mode, m]) => `
+            <option value="${mode}" ${s.boxMode === mode ? 'selected' : ''}>${m.label}</option>`).join('')}
+        </select>` : ''}
       ${transformDef?.sizeKey ? `
-        <label class="chart-lots" title="Leave empty to size it from the loaded history">
-          <span>${transformDef.boxLabel}</span>
+        <label class="chart-lots" title="Leave empty for the chart's default">
+          <span>${boxMode.inputLabel || transformDef.boxLabel}</span>
           <input id="chart-type-box-size" type="number" class="form-input chart-qty-input"
                  value="${s.boxSize ?? ''}" placeholder="Auto" min="0" step="any" />
         </label>` : ''}
@@ -129,6 +150,14 @@ Object.assign(DashboardApp.prototype, {
 
     host.querySelectorAll('[data-charttype]').forEach((btn) => {
       btn.addEventListener('click', () => this.setChartSeriesType(btn.dataset.charttype));
+    });
+    document.getElementById('chart-type-box-mode')?.addEventListener('change', (e) => {
+      // Each mode reads the number differently (a price, a percent, a multiplier) - start it empty.
+      s.boxMode = e.target.value;
+      s.boxSize = null;
+      this.saveChartTypePref();
+      this.applyChartSeriesType();
+      this.renderChartTypeBar();
     });
     const boxInput = document.getElementById('chart-type-box-size');
     boxInput?.addEventListener('change', () => {
@@ -143,7 +172,7 @@ Object.assign(DashboardApp.prototype, {
   applyChartSeriesType() {
     const s = this.chartTypeState();
     try {
-      applySeriesType(this.chart, this.candleSeries, s.type, s.boxSize);
+      applySeriesType(this.chart, this.candleSeries, s.type, s.boxSize, s.boxMode);
     } catch (error) {
       // An option the transform refuses throws before anything changes - say so, keep the chart.
       Utils.showToast(`${TRANSFORM_SERIES_TYPES[s.type]?.label || s.type}: ${error.message}`, 'error');
