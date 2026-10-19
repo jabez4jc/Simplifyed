@@ -28,9 +28,26 @@ broker is the only check that means anything, and it is made per test, not once 
 Instances are selected **by name** (see `ALLOWED_INSTANCES` in `live-orders.test.js`). An
 instance that is not on that list is never touched, whatever mode it is in.
 
+## Their own database
+
+The live suites use `database/live.db` (`live-db.js`), never the `database/simplifyed.db` the
+running app has open - two processes writing one SQLite file is what produced "database is
+locked" mid-run. It is a snapshot taken on first use and kept, so past runs' orders (source
+`live_test`) stay readable by the cleanup. Each run refreshes the instances (hosts and API keys
+rotate on login) and the instruments cache (contracts expire) from the real database; nothing
+flows back.
+
+## Leaving nothing open
+
+`cleanup.js` wraps the client so every order a suite sends is recorded. Each file's last test
+calls `closeEverythingOpened`: it cancels whatever is still working on those symbols (this run's
+plus every symbol recorded with source `live_test`), flattens their positions, re-reads the books
+and fails if anything is still open. It touches only symbols a live test ordered - never an
+instance's other positions - and only after the broker confirms analyzer mode.
+
 ## One file at a time
 
 `npm run test:live` runs the files serially (`--test-concurrency=1`). They trade the same
 symbols on the same instances with position-targeted orders, so two files running at once
 change each other's positions - a NIFTY future ended up long 1,625 on Fyers when they ran in
-parallel. Every file closes what it opened and its last test checks the books are flat.
+parallel.

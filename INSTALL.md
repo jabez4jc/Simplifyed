@@ -67,7 +67,7 @@ sudo apt-get upgrade -y
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/simplifyed.git
+git clone https://github.com/jabez4jc/simplifyed.git
 cd simplifyed
 
 # Or if you've uploaded files directly
@@ -175,7 +175,7 @@ To create a Telegram bot:
 
 The script will automatically:
 
-1. ✓ Install Node.js 18.x
+1. ✓ Install Node.js 20.x
 2. ✓ Install system dependencies (Nginx, SQLite, Certbot, etc.)
 3. ✓ Create application user (`simplifyed`)
 4. ✓ Copy application files to `/opt/simplifyed`
@@ -376,8 +376,8 @@ Application logs are stored in:
 View logs:
 
 ```bash
-# Application logs
-sudo tail -f /opt/simplifyed/backend/logs/app.log
+# Application logs (error.log holds errors only)
+sudo tail -f /opt/simplifyed/backend/logs/combined.log
 
 # System logs (via journalctl)
 sudo journalctl -u simplifyed -f
@@ -493,33 +493,21 @@ sudo journalctl -u simplifyed --since today
 
 ### Updating the Application
 
-To update to a new version:
+Pull the new code into your checkout (the folder you ran `install.sh` from), back up the database, then run `update.sh`:
 
 ```bash
-# 1. Stop the service
-sudo systemctl stop simplifyed
+# 1. Get the new code
+cd /path/to/simplifyed && git pull
 
-# 2. Backup database
+# 2. Back up the database (update.sh leaves it in place but does not copy it)
 sudo cp /opt/simplifyed/backend/database/simplifyed.db \
        /opt/simplifyed/backend/database/simplifyed.db.backup
 
-# 3. Pull latest changes
-cd /opt/simplifyed
-sudo -u simplifyed git pull
-
-# 4. Install dependencies
-cd /opt/simplifyed/backend
-sudo -u simplifyed npm install --production
-
-# 5. Run migrations
-sudo -u simplifyed npm run migrate
-
-# 6. Build CSS
-sudo -u simplifyed npm run build:css
-
-# 7. Restart service
-sudo systemctl restart simplifyed
+# 3. Update the installed instance
+sudo ./update.sh --instance prod      # or: --dir /opt/simplifyed
 ```
+
+`update.sh` stops the service, syncs the code (keeping `.env`, the database and logs), reports keys in `.env.example` that your `.env` lacks, runs `npm ci` (which regenerates `public/vendor`), builds CSS, prunes dev dependencies, runs migrations and restarts the service. Run it with no option to pick from the installed `/opt/simplifyed*` instances. `--reinstall` does an in-place clean reinstall, backing up config and data first.
 
 ### Regular Backups
 

@@ -24,13 +24,14 @@ Simplifyed Admin is the control plane for running multiple OpenAlgo broker insta
 ├── backend/
 │   ├── public/                 # Front-end assets (dashboard.html, JS, CSS)
 │   ├── src/                    # Express server, routes, services, integrations
-│   ├── migrations/             # SQLite migrations (single squashed 000_initial_schema.js)
-│   ├── scripts/                # Utility scripts (imports, maintenance)
+│   ├── migrations/             # Numbered, forward-only SQLite migrations (000_initial_schema.js onward)
+│   ├── scripts/                # prepare-test-db, set-user-password, sync-vendor-charts
 │   ├── Test/                   # node:test: unit + services (offline logic), integration + live (real brokers)
 │   ├── e2e/                    # Playwright browser tests against the real brokers
 │   ├── package.json            # Backend dependencies + scripts
 │   └── server.js               # Entry point (starts feed service + Express)
-├── install.sh / uninstall-instance.sh  # Ubuntu production install/uninstall (Nginx + systemd + Let's Encrypt)
+├── install.sh / update.sh / uninstall-instance.sh  # Ubuntu production install/update/uninstall (Nginx + systemd + Let's Encrypt)
+├── docs/                       # AUDIT-REPORT.md and per-phase review notes
 └── README.md                   # This file
 ```
 
@@ -46,7 +47,7 @@ For production Ubuntu servers with domain and SSL:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/simplifyed.git
+git clone https://github.com/jabez4jc/simplifyed.git
 cd simplifyed
 
 # Run automated installer
@@ -107,20 +108,20 @@ npm run migrate
 
 Re-run this command after pulling new migrations.
 
-#### 5. Build styling (optional for dev)
+#### 5. Build styling
 
 ```bash
 npm run build:css
 ```
 
-During active development you can run Tailwind in watch mode via `npm run dev:css` (see `backend/package.json` if needed).
+This compiles `public/css/modern.css` into `public/css/tailwind.css` (Tailwind + DaisyUI). Re-run it after changing Tailwind classes; the other stylesheets under `public/css` are plain CSS and need no build.
 
 #### 6. Start the server
 
 ```bash
 npm start            # production style
 # or
-npm run dev          # rebuilds CSS + restarts on change (if configured)
+npm run dev          # restarts on file change (node --watch)
 ```
 
 The dashboard is available at `http://localhost:3000`.
@@ -155,13 +156,15 @@ npm run set-password -- you@example.com new-password
 | `npm test`              | Offline logic tests, then the integration tests against the real brokers. |
 | `npm run test:logic`    | `Test/unit` + `Test/services` - offline, no broker. |
 | `npm run test:unit`     | Just `Test/unit`. |
+| `npm run test:services` | Just `Test/services`. |
+| `npm run test:watch` / `npm run test:coverage` | Logic tests in watch mode / unit, services and integration with coverage. |
 | `npm run test:integration` | `Test/integration` - every route and flow on Jz Kotak, Jz Fyers and Jabez Crypto (analyzer mode), one file at a time. |
 | `npm run test:e2e`      | Playwright browser tests on a copy of those three instances (port 3111). |
 | `npm run test:live`     | Live order tests on all five instances, including Maha and Ana. |
 | `npm run test:all`      | `npm test`, then `npm run test:e2e`. |
-| `npm run lint` / `npm run format` | ESLint / Prettier over `src/`. |
+| `npm run lint` / `npm run format` | ESLint over `server.js`, `src/`, `migrations/`, `scripts/` / Prettier over `src/`. |
 
-Every test that touches a broker uses the real instances in `database/simplifyed.db` (copied, never written), confirms analyzer mode at the broker before any order, and closes everything it opened. There is no fake broker. See [ARCHITECTURE.md §13.5](ARCHITECTURE.md) for the rules.
+Every test that touches a broker uses the real instances in `database/simplifyed.db` (copied, never written), confirms analyzer mode at the broker before any order, and closes everything it opened. There is no fake broker. See [ARCHITECTURE.md §10](ARCHITECTURE.md#10-testing) for the rules.
 
 ---
 
@@ -172,14 +175,14 @@ Every test that touches a broker uses the real instances in `database/simplifyed
 | **Dashboard** | Totals for real-money and simulated (analyzer) accounts: P&L, trades, turnover, balance. |
 | **Instances** | Your OpenAlgo accounts. Add one (Test Connection detects the broker), edit, switch between Analyzer and Live, set session target/max loss and a quantity multiplier. |
 | **Watchlists** | Symbols you trade, mapped to the instances that should receive the orders. Expand a row to trade it; set targets and stop-losses in points or % of entry. A *broadcast* watchlist shows the TradingView webhook URL to paste into an alert. |
-| **Chart** | Candles for any watchlist symbol, with indicators, drawing tools and order entry. |
+| **Chart** | Candles for any watchlist symbol, with indicators, drawing tools and order entry. Chart types include Heikin Ashi, Renko, Range Bars, Line Break, Point & Figure and Kagi (Renko and P&F box size: fixed, % of price or ATR-based). Volume Profile, Footprint (view modes, colour themes, zone alerts) and CVD; Footprint and CVD build from live ticks only. |
 | **Positions** | Open positions per instance, with exit buttons. |
 | **Orders** | The live order book per instance, and one Order history of everything this app sent (filter by instance and status; "From" shows Watchlist, Strategy, Webhook, Manual or Test). |
 | **Trades** | Fills per instance. |
 | **Strategies** | Multi-leg strategies: add legs, Execute on all mapped instances, Exit All, or trigger from TradingView. |
 | **Daily P&L** | End-of-day P&L snapshots. |
 | **Notifications** | Health and system alerts. |
-| **Settings** | *General*: order costs, trading hours, and two broker limits (orders per second, response timeout). *Access Control*: users, roles and the webhook token. *Data Management*: instruments and CSV import/export. *System Status*: health. |
+| **Settings** | *Orders & Costs*: spread guard, brokerage, crypto market orders. *Trading Hours*: session windows. *Broker Connection*: orders per second, response timeout. *Futures*: auto-roll days. *Access Control*: users, roles and the webhook token. *Data Management*: instruments and CSV import/export. *System Status*: health. |
 
 **Kill switch** (top bar, red): after a confirmation, it cancels every pending order, closes every open position on every instance (live and analyzer, with LIMIT orders), and switches every instance to analyzer mode. Going back to live is manual, per instance. If a live instance still has positions it cannot close, it is left live and named in the result so you can close them at the broker.
 
@@ -191,7 +194,7 @@ Indian exchanges only ever receive LIMIT orders (SEBI); a "market" order is pric
 
 ### Instruments (symbols and contracts)
 
-The instruments cache fills itself: it is refreshed from a healthy instance when it goes stale, crypto contracts are refreshed daily at 17:31 IST, and expired contracts are dropped. To refresh by hand, use **Settings → Data Management** (fetch from an instance, or upload an OpenAlgo symbols CSV).
+The instruments cache fills itself: it is refreshed from a healthy instance daily (Indian exchanges 08:30 IST, crypto 17:31 IST) and at startup when stale, and expired contracts are purged at 17:50 and 00:05 IST. To refresh by hand, use **Settings → Data Management** (fetch from an instance, or upload an OpenAlgo symbols CSV).
 
 ### Accounts
 
@@ -228,13 +231,15 @@ sudo ./uninstall-instance.sh --dir /opt/simplifyed-dev
 | Options quick order fails with “Symbol does not support options trading” | Edit the watchlist symbol and enable `tradable_options`, or ensure the underlying is mapped in the instruments cache. |
 | Unable to see options expiries | Refresh the instruments cache under Settings → Data Management. |
 
-Logs stream to stdout via Winston; check the console for `[info]`/`[warn]`/`[error]` entries. Market-data feed events also log each refresh cycle.
+Logs are key=value lines (Winston) on stdout and in `backend/logs/combined.log`, with errors also in `backend/logs/error.log`. Secrets (tokens, API keys, passwords) are redacted. Test runs write to `logs/test-combined.log` / `logs/test-error.log` instead, so they never mix with the app's logs.
 
 ---
 
 ## Additional Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) – Full architecture reference (backend services, database schema, watchlist/strategy trading workflows, API surface).
+- [ARCHITECTURE.md](ARCHITECTURE.md) – Architecture reference: modules, data flow, settings sources, background jobs, order-safety invariants, data model, testing.
+- [backend/Test/live/README.md](backend/Test/live/README.md) – How the opt-in live broker tests stay safe.
+- [docs/AUDIT-REPORT.md](docs/AUDIT-REPORT.md) – The code audit and its per-phase fix notes under `docs/reviews/`.
 - [INSTALL.md](INSTALL.md) / [QUICKSTART.md](QUICKSTART.md) / [BEGINNER_GUIDE.md](BEGINNER_GUIDE.md) – Production install via `install.sh`.
 - `backend/.env.example` – Every supported environment variable, annotated.
 

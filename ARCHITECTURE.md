@@ -70,6 +70,9 @@ docs/                   AUDIT-REPORT.md and per-phase review notes
 | `broker-units.service.js`, `broker-capabilities.service.js` | Per-broker lot units and capability flags. Units are converted only at the client boundary. |
 | `openalgo-ws.service.js`, `ws-gateway.service.js` | Upstream OpenAlgo WebSocket per instance (quotes, order updates) and the downstream gateway that forwards events to browsers. |
 | `instance-health-check.service.js`, `instance-health.service.js` | The one ping loop that writes `health_status` for the UI and feeds the tracker. |
+| `instance.service.js` | Instance CRUD and schema feature-detection. |
+| `instance-analyzer.service.js` | The safe analyzer/live toggle (close positions and cancel orders before analyzer; session reset on return to live). |
+| `instance-connection-test.service.js` | Ping/funds connectivity and API-key check, run before credentials are saved and by "Test Connection". |
 
 ### 3.2 Market data and positions
 
@@ -92,6 +95,7 @@ docs/                   AUDIT-REPORT.md and per-phase review notes
 | `limit-price.service.js` | Marketable LIMIT pricing from bid/ask or LTP, tick rounding, spread guard (`SPREAD_TOO_WIDE`). Exits may bypass the spread guard; entries may not. |
 | `order-payload.factory.js`, `order-repository.js`, `utils/order-validation.js`, `utils/order-helpers.js` | Payload shape, persistence, validation, shared helpers. |
 | `quick-order.service.js`, `quick-order-history.service.js` | Option and future quick orders: FLOAT_OFS strike selection, buyer/writer modes, close and reduce flows. |
+| `margin-sizing.service.js` | Quantity from available margin instead of a fixed `qty_value` (quick orders, broadcasts, strategies). |
 | `idempotency.service.js` | Request-id de-duplication; pending rows expire after 5 minutes. |
 | `kill-switch.service.js` | The only code (with the explicit "Cancel all" route) that may call `cancelAllOrders`. Cancels, closes every position, switches instances to analyzer mode. |
 | `gtt.service.js` | GTT trigger orders. |
@@ -112,7 +116,7 @@ docs/                   AUDIT-REPORT.md and per-phase review notes
 |---|---|
 | `instruments.service.js` | One `replaceExchange` import path (delete, bulk insert, one expiry format, in one transaction), then an FTS5 `rebuild`. Refresh is per segment (Indian, crypto). Daily crons plus a boot catch-up when stale. |
 | `symbol-validation.service.js`, `utils/symbol-parsing.util.js`, `utils/underlying.util.js`, `utils/expiry.js` | Search, parsing, the single expiry parse/format helper. |
-| `derivative-resolution.service.js`, `options-resolution.service.js`, `option-chain.service.js`, `option-greeks.service.js`, `utils/black76-pricing.util.js` | Contract resolution from the instruments table, option chain, greeks. |
+| `derivative-resolution.service.js`, `options-resolution.service.js`, `option-chain.service.js`, `option-greeks.service.js`, `utils/black76-pricing.util.js` | Contract resolution, option chain, greeks. Strikes and chain rows come only from the instruments table (`instruments.buildOptionChain`, matched on `underlying_key`, never a symbol prefix). The broker `/optionchain` only overlays quotes and greeks by symbol, else multiquotes. |
 | `expiry-management.service.js`, `futures-roll.service.js` | Nearest-expiry rules; futures auto-roll (`auto_roll` 0/1/2) at the purge crons, early roll only when flat. |
 
 Expired contracts are purged and never queried.
@@ -134,7 +138,7 @@ Expired contracts are purged and never queried.
 | `rbac.service.js`, `middleware/auth.js` | Users, roles, permissions. `optionalAuth` caches user, role and permissions for 30 s and is invalidated on any RBAC change. Routes gate on `requirePermission('<area>.<action>')`. |
 | `retention.service.js` | The 6-hourly prune. Windows: `audit_logs` 7 d, `candles` 30 d, `risk_events` 30 d, read `notifications` 30 d, `quick_orders` 90 d, `watchlist_orders` 90 d. |
 | `core/database.js` | Promise wrapper over sqlite3 with a serialised `transaction()` queue. Plain `db.run` calls made while a transaction is open run inside it and roll back with it. Keep long imports short (per exchange). |
-| `core/logger.js` | Key-value logger. Prints every primitive meta key, redacts `token`, `api_key`, `apikey`, `password`, serialises `err` as its message. |
+| `core/logger.js` | Winston key=value logger to stdout and `logs/combined.log` / `logs/error.log`. Prints every primitive meta key, redacts any key matching `token`, `api_key`/`apikey`, `password`, `secret` or `authorization`, serialises `err` as its message. Test processes (`NODE_TEST_CONTEXT`) write `logs/test-*.log` instead. |
 
 ## 4. Data flow
 
@@ -172,7 +176,7 @@ Rules:
 
 - Never an env var **and** a Settings row for the same value; never a `||` fallback that duplicates a default. Defaults come from `settingDefault(key)`.
 - A key absent from the registry cannot be written: `settings.service.updateSetting()` refuses it. The UI renders from `GET /api/v1/settings/schema`; adding a registry entry is the only step needed to surface a setting.
-- Secrets (the webhook token) are read with `getSecret`. Never `SELECT *` from `application_settings` unfiltered.
+- Secrets (the webhook token) are read with `getSecret`. Never `SELECT *` from `application_settings` unfiltered; `getSchema` reads registry keys only, and a source-scan test fails on any unfiltered select.
 - Settings UI groups: Orders & Costs, Trading Hours, Broker Connection, Futures, plus Access Control and status pages.
 
 ## 6. Background jobs
@@ -182,7 +186,7 @@ Rules:
 | Market-data feed (quotes, positions, funds) | `market-data-feed.service` | Intervals from `core/config.js`; started at boot |
 | Auto-exit evaluation | `auto-exit.service` | Started at boot |
 | Instance polling (P&L, cutoff, analyzer check) | `polling.service` | Started at boot; analyzer check at 60 s |
-| Instance health ping | `instance-health.service` | Cron every 3 h from 08:00 IST |
+| Instance health ping | `instance-health.service` | Cron every 3 h (00:00, 03:00, ... IST); closed exchanges skipped |
 | Instruments refresh | `instruments.service` | Indian 08:30 IST, crypto 17:31 IST, and once at boot if stale |
 | Futures purge and auto-roll | `futures-roll.service` | At the expiry purge crons (17:50 and 00:05 IST) and on startup |
 | Retention prune | `retention.service` | Every 6 h |
@@ -224,7 +228,7 @@ Notes: `watchlist_orders` is what chart order lines read; `quick_orders` is sync
 Static pages (`index`, `login`, `dashboard`, `access-pending`) and plain ES modules under `public/js`. There is no bundler.
 
 - `api-client.js` wraps `fetch` with the JWT and 401 handling. `utils.js` holds shared helpers; user text goes through `Utils.escapeHTML`, toasts use `textContent`.
-- Dashboard: `dashboard-*.js` (overview, instances, orders, positions, trades, P&L, notifications, watchlists). Charts: `dashboard-chart-*.js` on `openalgo-charts` through `openalgo-charts-bridge.js`.
+- Dashboard: `dashboard-*.js` (overview, instances, orders, positions, trades, P&L, notifications, watchlists). Charts: `dashboard-chart-*.js` on `openalgo-charts` through `openalgo-charts-bridge.js`. `dashboard-chart-types.js` adds the transform types (Heikin Ashi, Renko, Range Bars, Line Break, Point & Figure, Kagi; Renko and P&F box size fixed, % of price or ATR). `dashboard-chart-profile.js` adds Volume Profile, Footprint (view mode, colour theme, zones with alerts) and CVD, saved per browser in `localStorage`.
 - Quick order: `quick-order-*.js`. Strategies: `strategy-builder.js`. Settings: `settings-*.js`, rendered from the registry schema.
 - `service-worker.js` is network-first for `/js`, `/css` and `/vendor`, keeps one cached copy per path, and deletes old caches on activate.
 - Cache busting: after changing any file under `public/js` or `public/css`, bump its `?v=` in the HTML that loads it.
@@ -243,8 +247,8 @@ Static pages (`index`, `login`, `dashboard`, `access-pending`) and plain ES modu
 
 Rules:
 
-- `node:test`, supertest and Playwright only. Test scripts set `TELEGRAM_BOT_TOKEN=` so tests never message the operator.
-- Tests never write `database/simplifyed.db`. `scripts/prepare-test-db.js` builds `database/test.db` from migrations.
+- `node:test`, supertest and Playwright only. Test scripts set `TELEGRAM_BOT_TOKEN=` so tests never message the operator. Test processes log to `logs/test-*.log`, never the app's `error.log`.
+- Tests never write `database/simplifyed.db`. `scripts/prepare-test-db.js` builds `database/test.db` from migrations; E2E uses `database/e2e.db` and live tests `database/live.db` (see `Test/live/README.md`).
 - Test instances: Kotak **3**, Fyers **6**, Maha **19**, Ana **20**, Delta **26**. All must be in analyzer mode before a broker suite runs. Live tests must leave nothing open (no positions, no resting orders).
 - Never print the webhook token in test output.
 - Validation failures return 422.

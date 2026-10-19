@@ -58,7 +58,7 @@ That's it! The script handles everything else automatically.
 
 The installer automatically:
 
-- ✓ Installs Node.js 18.x
+- ✓ Installs Node.js 20.x
 - ✓ Sets up the application in /opt/simplifyed
 - ✓ Configures Nginx reverse proxy
 - ✓ Obtains Let's Encrypt SSL certificate

@@ -475,7 +475,7 @@ If you're stuck:
    - See [QUICKSTART.md](QUICKSTART.md) for quick reference
 
 3. **Common log locations:**
-   - Application logs: `/opt/simplifyed/backend/logs/app.log`
+   - Application logs: `/opt/simplifyed/backend/logs/combined.log` (errors only: `error.log`)
    - Nginx logs: `/var/log/nginx/simplifyed-error.log`
    - System logs: `sudo journalctl -u simplifyed`
 
