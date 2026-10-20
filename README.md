@@ -75,7 +75,7 @@ git archive HEAD | ssh aiccloud 'rm -rf /root/simplifyed-src && mkdir /root/simp
 ssh -t aiccloud 'cd /root/simplifyed-src && BEHIND_PROXY=1 bash install.sh'
 ```
 
-To update, upload the new commit in the same way. Then back up the database and run `update.sh --dir /opt/simplifyed`. **See [INSTALL.md → Installing on AIC Cloud](INSTALL.md#installing-on-aic-cloud)** for SSH key setup, domain mapping, the routing check, the one-line update command and rollback.
+To update, upload the new commit in the same way. Then back up the database and run `update.sh --dir /opt/simplifyed`. **See [INSTALL.md → Installing on AIC Cloud](INSTALL.md#installing-on-aic-cloud)** for SSH key setup, domain mapping, the routing check, the one-line update command, rollback, and **moving data to a new server** (copy the database file: the CSV exports mask API keys).
 
 ### Manual Installation (Development)
 

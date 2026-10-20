@@ -403,6 +403,53 @@ ssh aiccloud 'systemctl stop simplifyed && rsync -a --delete /root/db-backup-<da
 
 To roll back the code too, check out the previous commit locally and run the update command again. Delete old `/root/db-backup-*` folders from time to time.
 
+### 5. Move data from another install (migration)
+
+Use this procedure to move your data to a new server, for example from your Mac to the VPS. Copy the SQLite database file. Do not use the CSV exports in Settings for a migration:
+
+- The **instances** export masks every API key. On an empty database, the import skips each instance, so no instance is created.
+- The database file holds all the data: instances with their real API keys, users, watchlists, strategies, P&L history and settings.
+
+The API keys are stored in the database, not encrypted with a value from `.env`. So the copy works on the new server without extra steps.
+
+Install the app on the new server first (step 3). Then set `SVC` to the service name of the new install. This is also the name of the system user. Use `simplifyed` if you gave no instance identifier, or `simplifyed-<id>` if you did:
+
+```bash
+SVC=simplifyed-prod   # check with: ssh aiccloud 'systemctl list-units "simplifyed*"'
+
+# 1. On the source machine, take a consistent snapshot. This is safe while the app runs (WAL mode).
+cd ~/Personal/GitHub/Simplifyed/backend
+sqlite3 database/simplifyed.db ".backup /tmp/simplifyed-migrate.db"
+scp /tmp/simplifyed-migrate.db aiccloud:/root/
+
+# 2. On the server, back up the database, put the snapshot in its place, migrate and restart.
+ssh aiccloud "
+  set -e
+  systemctl stop $SVC
+  cd /opt/simplifyed/backend
+  cp -a database /root/db-backup-before-migrate
+  rm -f database/simplifyed.db-wal database/simplifyed.db-shm
+  mv /root/simplifyed-migrate.db database/simplifyed.db
+  chown $SVC:$SVC database/simplifyed.db
+  sudo -u $SVC npm run migrate --silent
+  systemctl start $SVC
+  sleep 4; systemctl is-active $SVC"
+
+# 3. Copy the webhook token without printing it, so existing TradingView alert URLs keep working.
+grep '^WEBHOOK_TOKEN=' .env | ssh aiccloud "set -e; f=/opt/simplifyed/backend/.env; read -r l; sed -i '/^WEBHOOK_TOKEN=/d' \$f; echo \"\$l\" >> \$f; systemctl restart $SVC"
+
+rm /tmp/simplifyed-migrate.db
+```
+
+Points to check after a migration:
+
+- **Log in with an account from the source machine.** The users table is replaced, so the admin account that you created during the install no longer exists.
+- **Webhook token.** If you rotated the token in Settings, it is stored in the database and has moved already. If you did not, step 3 copies the value from `.env`.
+- **Sessions.** The new server has its own `JWT_SECRET`, so all users must log in again.
+- **Live instances.** After the copy, both machines know the same broker instances. Enable order placement and webhooks on **one** machine only, or one alert places its orders twice.
+- **Start fresh instead.** If the source database contains test instances or test data that the new server must not have, do not migrate. Install a fresh copy and add the instances by hand.
+- **Roll back.** To restore the database that the new install had before the migration, stop the service and copy `/root/db-backup-before-migrate/` back into `/opt/simplifyed/backend/database/`. Then set `$SVC` as the owner of the files and start the service.
+
 ---
 
 ## Configuration
