@@ -352,7 +352,7 @@ Answer the prompts as follows:
 
 | Prompt | Answer |
 |--------|--------|
-| Instance identifier | Press Enter (single instance) |
+| Instance identifier | Press Enter (single instance). If you type a name such as `prod`, the service and user become `simplifyed-prod`. |
 | Domain | `velocity.simplifyed.in` |
 | Let's Encrypt email | Any address. It is not used with `BEHIND_PROXY=1`. |
 | Port | Press Enter (`3000`) |
@@ -368,7 +368,14 @@ curl -sI https://velocity.simplifyed.in/ | head -1
 
 ### 4. Update to a new version
 
-Commit the new version first. Only `HEAD` is uploaded, so uncommitted work never reaches the server. Then run this on your Mac:
+Commit the new version first. Only `HEAD` is uploaded, so uncommitted work never reaches the server.
+
+The service and the system user are named after the instance identifier that you gave the installer. With no identifier, both are `simplifyed`. With `prod`, both are `simplifyed-prod`. To see the name, run `ssh aiccloud 'systemctl list-units "simplifyed*"'`. The commands below are for an install with no identifier in `/opt/simplifyed`. If you used an identifier with the default directory, make two changes:
+
+- Change `simplifyed` to `simplifyed-prod` in `systemctl` and `chown`.
+- Add `--instance prod` to the `update.sh` call, for example `update.sh --instance prod --dir /opt/simplifyed`.
+
+Then run this on your Mac:
 
 ```bash
 cd ~/Personal/GitHub/Simplifyed && git archive HEAD | ssh aiccloud '

@@ -73,7 +73,8 @@ if [[ -z "$INSTALL_DIR" && -z "$INSTANCE" ]]; then
 fi
 
 if [[ -n "$INSTANCE" ]]; then
-  INSTALL_DIR="/opt/simplifyed-${INSTANCE}"
+  # --dir wins when both are given: install.sh lets a named instance keep the default directory.
+  INSTALL_DIR="${INSTALL_DIR:-/opt/simplifyed-${INSTANCE}}"
   APP_USER="simplifyed-${INSTANCE}"
   SERVICE_NAME="simplifyed-${INSTANCE}"
 else
