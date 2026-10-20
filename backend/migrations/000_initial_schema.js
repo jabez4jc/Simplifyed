@@ -842,8 +842,10 @@ async function seedRbac(db) {
     (29, 'pages.notifications.edit', 'Manage Notifications (mark read)')
   `);
 
-  // Admin: everything. Trader: everything except rbac.
-  // Monitor: read-only pages + basic order/position actions, no settings/watchlist management.
+  // Admin: everything. Trader: trading access without settings - everything except rbac,
+  // settings.manage and instances.delete.
+  // Monitor: read-only pages + cancel/close/flatten actions (incl. the kill switch), never
+  // orders.place. 081 later revokes 2, 9 and 10 (settings and watchlist management).
   // (ids 19, 30 and 31 were monitor.view / pages.audit.view / pages.api_playground.view, retired.)
   const adminPerms = Array.from({ length: 29 }, (_, i) => i + 1).filter((id) => id !== 19);
   const traderPerms = [2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29];

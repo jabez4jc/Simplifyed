@@ -7,7 +7,7 @@
  */
 
 import db from '../core/database.js';
-import { log } from '../core/logger.js';
+import { log, rememberInstanceNames } from '../core/logger.js';
 import openalgoClient from '../integrations/openalgo/client.js';
 import {
   NotFoundError,
@@ -49,6 +49,7 @@ class InstanceService {
       query += ' ORDER BY created_at DESC';
 
       const instances = await db.all(query, params);
+      rememberInstanceNames(instances);
       return this._attachTelemetry(instances);
     } catch (error) {
       log.error('Failed to get instances', error);
@@ -68,11 +69,12 @@ class InstanceService {
       if (!instance) {
         throw new NotFoundError('Instance');
       }
+      rememberInstanceNames([instance]);
 
       return this._attachTelemetry([instance])[0];
     } catch (error) {
       if (error instanceof NotFoundError) throw error;
-      log.error('Failed to get instance', error, { id });
+      log.error('Failed to get instance', error, { instanceId: id });
       throw error;
     }
   }
@@ -151,7 +153,7 @@ class InstanceService {
 
       const instance = await this.getInstanceById(result.lastID);
 
-      log.info('Instance created', { id: instance.id, name: instance.name, broker: instance.broker });
+      log.info('Instance created', { instanceId: instance.id, name: instance.name, broker: instance.broker });
       // Creation just pinged the broker successfully, so mark it healthy now. A new row starts
       // 'unknown', and only 'healthy' instances serve market data - it sat out of the pool (no
       // quotes, no chart history) until the next scheduled check, minutes away.
@@ -159,7 +161,7 @@ class InstanceService {
       try {
         created = (await (await import('./instance-health-check.service.js')).default.updateHealthStatus(instance.id, { force: true })) || instance;
       } catch (error) {
-        log.warn('Initial health check after create failed', { id: instance.id, error: error.message });
+        log.warn('Initial health check after create failed', { instanceId: instance.id, error: error.message });
       }
 
       return created;
@@ -248,14 +250,14 @@ class InstanceService {
 
       const instance = await this.getInstanceById(id);
 
-      log.info('Instance updated', { id, updates: Object.keys(normalized) });
+      log.info('Instance updated', { instanceId: id, updates: Object.keys(normalized) });
 
       return instance;
     } catch (error) {
       if (error instanceof NotFoundError || error instanceof ValidationError) {
         throw error;
       }
-      log.error('Failed to update instance', error, { id, updates });
+      log.error('Failed to update instance', error, { instanceId: id, updates });
       throw error;
     }
   }
@@ -303,10 +305,10 @@ class InstanceService {
       // Imported here: the feed imports this service, so a top-level import would be a cycle.
       const { default: marketDataFeedService } = await import('./market-data-feed.service.js');
       marketDataFeedService.forgetInstance(id);
-      log.info('Instance deleted successfully', { id, force });
+      log.info('Instance deleted successfully', { instanceId: id, force });
     } catch (error) {
       if (error instanceof NotFoundError || error instanceof ValidationError) throw error;
-      log.error('Failed to delete instance', error, { id });
+      log.error('Failed to delete instance', error, { instanceId: id });
       throw error;
     }
   }

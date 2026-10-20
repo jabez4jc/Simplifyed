@@ -58,7 +58,7 @@ class InstanceAnalyzerService {
         [analyzerMode ? 1 : 0, id]
       );
     } catch (error) {
-      log.warn('Failed to refresh analyzer status', { id, error: error.message });
+      log.warn('Failed to refresh analyzer status', { instanceId: id, error: error.message });
     }
 
     return await instanceService.getInstanceById(id);
@@ -76,25 +76,25 @@ class InstanceAnalyzerService {
 
       // If switching to analyzer mode, close positions and cancel orders first
       if (mode === true) {
-        log.info('Safe-Switch: Starting Live → Analyzer workflow', { id });
+        log.info('Safe-Switch: Starting Live → Analyzer workflow', { instanceId: id });
 
         // Cancel first, so nothing fills after the book is flattened. Then close every position
         // with LIMIT orders (SEBI) - never OpenAlgo's closeposition, which squares off at MARKET.
         try {
           await openalgoClient.cancelAllOrders(instance, instance.strategy_tag || 'default');
         } catch (error) {
-          log.warn('Safe-Switch: cancelling orders failed', { id, error: error.message });
+          log.warn('Safe-Switch: cancelling orders failed', { instanceId: id, error: error.message });
         }
         const { stillOpen, errors } = await quickOrderService.closeAllPositions(instance, { strategy: 'SAFE_SWITCH' });
         if (stillOpen.length > 0) {
-          log.error('Safe-Switch: Cannot switch - positions still open', { id, open_positions: stillOpen.length });
+          log.error('Safe-Switch: Cannot switch - positions still open', { instanceId: id, open_positions: stillOpen.length });
           throw new ValidationError(
             `Cannot switch to analyzer mode: still open - ${stillOpen.join(', ')}`
             + (errors.length ? ` (${errors.join('; ')})` : '')
           );
         }
 
-        log.info('Safe-Switch: All positions closed', { id });
+        log.info('Safe-Switch: All positions closed', { instanceId: id });
       }
 
       // Toggle analyzer mode
@@ -127,12 +127,12 @@ class InstanceAnalyzerService {
       params.push(id);
       await db.run(sql, params);
 
-      log.info('Analyzer mode toggled', { id, mode });
+      log.info('Analyzer mode toggled', { instanceId: id, mode });
 
       return await instanceService.getInstanceById(id);
     } catch (error) {
       if (error instanceof ValidationError) throw error;
-      log.error('Failed to toggle analyzer mode', error, { id, mode });
+      log.error('Failed to toggle analyzer mode', error, { instanceId: id, mode });
       throw error;
     }
   }

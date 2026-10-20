@@ -38,7 +38,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
           <div class="flex gap-2">
             ${canEdit ? `<button class="btn btn-buy btn-sm" onclick="app.markAllNotificationsRead()">Mark all read</button>` : ''}
             <button class="btn btn-neutral btn-outline btn-sm" onclick="app.renderNotificationsView()">Refresh</button>
-            <button class="btn btn-outline btn-sm" onclick="app.triggerHealthCheck()">Run health check now</button>
+            ${this.hasPermission('settings.manage') ? '<button class="btn btn-outline btn-sm" onclick="app.triggerHealthCheck()">Run health check now</button>' : ''}
           </div>
         </div>
       `;

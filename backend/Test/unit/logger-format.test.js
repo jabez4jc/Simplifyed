@@ -30,3 +30,18 @@ test('the message stays last and reserved keys cannot shadow the prefix', () => 
 test('test processes log to test-*.log, never the app error.log', () => {
   assert.strictEqual(LOG_PREFIX, 'test-');
 });
+
+test('a multi-line broker error stays on one log line', () => {
+  const out = line({ error: 'malformed\n(Background on this error at: x)' }, 'a\nb');
+  assert.ok(!out.includes('\n'));
+  assert.match(out, /error=malformed \| \(Background/);
+});
+
+test('an instance id prints as the instance name people know it by', async () => {
+  const { rememberInstanceNames } = await import('../../src/core/logger.js');
+  rememberInstanceNames([{ id: 26, name: 'Jabez Crypto' }]);
+  assert.match(line({ instanceId: 26 }), /instance="Jabez Crypto \(26\)"/);
+  assert.match(line({ instance_id: 26, instance_name: 'Jabez Crypto' }), /instance="Jabez Crypto \(26\)"/);
+  assert.ok(!line({ instanceId: 26 }).includes('instanceId='));
+  assert.match(line({ instanceId: 999 }), /instance="unknown \(999\)"/);
+});

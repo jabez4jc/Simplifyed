@@ -98,6 +98,11 @@ export function withoutExpiredContracts(endpoint, data) {
 }
 const FAST_READ_TIMEOUT_MS = 5000;
 
+// A broker failing the same way on every poll would log the same error every few seconds. The
+// first occurrence is an error; identical repeats within this window drop to debug.
+const REPEAT_ERROR_WINDOW_MS = 5 * 60 * 1000;
+const lastFailureLogged = new Map(); // `${instanceId}|${endpoint}|${message}` -> ms
+
 /** Endpoints that send orders, and where their order rows live in the payload. */
 const ORDER_ENDPOINTS = {
   placeorder: (d) => [d],
@@ -526,7 +531,7 @@ class OpenAlgoClient extends EventEmitter {
         // Log 5xx server errors that will be retried
         if (error.statusCode >= 500) {
           const rawPreview = typeof error.rawBody === 'string' ? error.rawBody.slice(0, 200) : undefined;
-          log.warn('OpenAlgo API Server Error (5xx) - will retry', {
+          log.debug('OpenAlgo API Server Error (5xx) - will retry', {
             endpoint,
             statusCode: error.statusCode,
             attempt: attempt + 1,
@@ -564,7 +569,7 @@ class OpenAlgoClient extends EventEmitter {
         // Log retry attempt
         if (attempt < maxRetries) {
           const delay = baseRetryDelay * Math.pow(2, attempt);
-          log.warn('OpenAlgo request failed, retrying', {
+          log.debug('OpenAlgo request failed, retrying', {
             endpoint,
             attempt: attempt + 1,
             maxRetries,
@@ -579,15 +584,22 @@ class OpenAlgoClient extends EventEmitter {
     }
 
     // All retries failed
-    log.error('OpenAlgo request failed after retries', lastError, {
+    const failureKey = `${instance.id}|${endpoint}|${lastError?.message}`;
+    const now = Date.now();
+    const isRepeat = now - (lastFailureLogged.get(failureKey) || 0) < REPEAT_ERROR_WINDOW_MS;
+    if (!isRepeat) lastFailureLogged.set(failureKey, now);
+    const failureMeta = {
       endpoint,
+      instanceId: instance.id,
+      instanceName: instance.name,
       maxRetries,
       isCritical,
       statusCode: lastError?.statusCode,
-      error: lastError?.message,
       isHtmlResponse: !!lastError?.isHtmlResponse,
       isDnsError: !!lastError?.isDnsError,
-    });
+    };
+    if (isRepeat) log.debug('OpenAlgo request failed after retries (repeat)', failureMeta);
+    else log.error('OpenAlgo request failed after retries', lastError, failureMeta);
 
     throw lastError;
   }

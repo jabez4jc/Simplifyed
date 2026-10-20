@@ -33,7 +33,37 @@ const RESERVED_KEYS = new Set(['ts', 'lvl', 'svc', 'pid', 'msg', 'service']);
  * One key=value log line: every primitive meta key is printed (sanitizeMeta has already dropped
  * objects), in sorted order after the fixed prefix, with the message last for grep-friendliness.
  */
+// A broker's multi-line error (SQLAlchemy appends a "Background on this error" line) would
+// otherwise split one record across several lines.
+const oneLine = (v) => String(v).replace(/\s*\n\s*/g, ' | ');
+
+// Instance names by id, kept current by instance.service on every read. Lets the formatter print
+// `instance="Jabez Crypto (26)"` where a call site logged only `instanceId=26` - people reading
+// the log know their instances by name, not by row id.
+const instanceNames = new Map();
+export function rememberInstanceNames(rows = []) {
+  for (const row of rows) if (row?.id && row.name) instanceNames.set(Number(row.id), row.name);
+}
+
+const INSTANCE_ID_KEYS = ['instanceId', 'instance_id', 'targetInstanceId'];
+const INSTANCE_NAME_KEYS = ['instanceName', 'instance_name'];
+
+/** Fold the id/name keys a call site used for an instance into one readable `instance` field. */
+function withInstanceName(meta) {
+  if (meta.instance !== undefined) return meta; // the call site already chose what to print
+  const idKey = INSTANCE_ID_KEYS.find((k) => meta[k] !== undefined && meta[k] !== null);
+  const nameKey = INSTANCE_NAME_KEYS.find((k) => meta[k]);
+  if (!idKey && !nameKey) return meta;
+  const id = idKey ? meta[idKey] : undefined;
+  const name = nameKey ? meta[nameKey] : instanceNames.get(Number(id));
+  const out = { ...meta };
+  for (const k of [...INSTANCE_ID_KEYS, ...INSTANCE_NAME_KEYS]) delete out[k];
+  out.instance = `"${name ?? 'unknown'}${id !== undefined ? ` (${id})` : ''}"`;
+  return out;
+}
+
 export function formatKv({ timestamp, level, message, service }, meta = {}) {
+  meta = withInstanceName(meta);
   const fields = [`ts=${timestamp}`, `lvl=${level.toUpperCase()}`];
   if (meta.service || service) fields.push(`svc=${meta.service || service}`);
   // Several processes write one log (the app, a test run, a script): without this nobody can say
@@ -42,9 +72,9 @@ export function formatKv({ timestamp, level, message, service }, meta = {}) {
   for (const k of Object.keys(meta).sort()) {
     const v = meta[k];
     if (v === undefined || v === null || RESERVED_KEYS.has(k)) continue;
-    fields.push(`${k}=${SECRET_KEY.test(k) ? '[REDACTED]' : v}`);
+    fields.push(`${k}=${SECRET_KEY.test(k) ? '[REDACTED]' : oneLine(v)}`);
   }
-  if (message) fields.push(`msg="${String(message)}"`);
+  if (message) fields.push(`msg="${oneLine(message)}"`);
   return fields.join(' ');
 }
 
@@ -120,6 +150,10 @@ export const sanitizeMeta = (meta = {}) => {
   );
 };
 
+// The TradingView webhook takes its trading token as ?token= or ?t= (TradingView cannot send a
+// header), so a request URL is never logged with those values in it.
+export const redactUrl = (url = '') => url.replace(/([?&](?:token|t)=)[^&#]*/gi, '$1[redacted]');
+
 /**
  * Helper methods for structured logging
  */
@@ -169,7 +203,7 @@ export const log = {
   http: (req, res, duration) => {
     const meta = sanitizeMeta({
       method: req.method,
-      path: req.url,
+      path: redactUrl(req.url),
       status: res.statusCode,
       duration_ms: duration,
       trace_id: req.correlationId || req.headers['x-request-id'],

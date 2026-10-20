@@ -80,13 +80,13 @@ class InstanceHealthCheckService {
             analyzerMode = analyzerStatus.analyze_mode || false;
             analyzerCheckPerformed = true;
           } catch (error) {
-            log.warn('Failed to get analyzer status', { id, error: error.message });
+            log.warn('Failed to get analyzer status', { instanceId: id, error: error.message });
             analyzerCheckPerformed = true;
           }
         }
       } catch (error) {
         healthStatus = 'unhealthy';
-        log.warn('Health check failed', { id, error: error.message });
+        log.warn('Health check failed', { instanceId: id, error: error.message });
       }
 
       // Update health status in database
@@ -128,7 +128,7 @@ class InstanceHealthCheckService {
 
       return await instanceService.getInstanceById(id);
     } catch (error) {
-      log.error('Failed to update health status', error, { id });
+      log.error('Failed to update health status', error, { instanceId: id });
       throw error;
     }
   }

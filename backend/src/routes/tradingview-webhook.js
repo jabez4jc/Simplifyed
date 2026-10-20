@@ -21,6 +21,54 @@ router.post('/broadcast/:slug?', async (req, res, next) => {
       throw new ValidationError('Request body must be valid JSON');
     }
 
+    const requestIdHeader = req.get('X-Request-Id');
+    const requestIdBody = parsedBody?.request_id;
+    const requestId = requestIdHeader || requestIdBody || null;
+    if (requestId !== null && (typeof requestId !== 'string' || !requestId.trim())) {
+      throw new ValidationError('request_id must be a non-empty string');
+    }
+
+    // One request_id is one alert, whichever path it takes: a TradingView retry of a strategy
+    // alert (it retries any non-2xx, and a partly failed strategy answers 502) must replay the
+    // first answer, not enter again. Returns the response to send for a duplicate, else null.
+    const claimRequest = async (payload) => {
+      if (!requestId) return null;
+      const { hit, record, mismatch } = await idempotencyService.getOrCreate({
+        requestId,
+        source: 'webhook',
+        payload,
+      });
+      if (mismatch) {
+        return res.status(409).json({
+          status: 'error',
+          message: 'Request ID reuse with different payload',
+        });
+      }
+      if (hit && record?.response_json) {
+        const cached = JSON.parse(record.response_json);
+        res.set('X-Idempotency-Hit', 'true');
+        const statusCode = record.status_code || (record.status === 'success' ? 200 : 409);
+        return res.status(statusCode).json(cached);
+      }
+      if (hit) {
+        return res.status(409).json({
+          status: 'error',
+          message: 'Request is already in progress',
+        });
+      }
+      return null;
+    };
+    const completeRequest = async (response, ok) => {
+      if (!requestId) return;
+      await idempotencyService.complete({
+        requestId,
+        source: 'webhook',
+        response,
+        status: ok ? 'success' : 'failed',
+        statusCode: ok ? 200 : 502,
+      });
+    };
+
     // Strategy webhooks use their own slug namespace and a different execution path (multi-leg,
     // basket-batched) rather than the watchlist broadcast-to-many-instances path. instanceId is
     // optional here too - when omitted, targets every active, order-enabled instance assigned to
@@ -48,21 +96,15 @@ router.post('/broadcast/:slug?', async (req, res, next) => {
         const legId = legTagRaw
           ? await strategyService._resolveLegId(strategy.id, { legTag: legTagRaw })
           : null;
+        const duplicate = await claimRequest({ strategySlug: slugParam, instanceId, action, legTag: legTagRaw });
+        if (duplicate) return duplicate;
         const result = isExit
           ? await strategyService.exitStrategy(strategy.id, { instanceId, legId, source: 'strategy_webhook' })
           : await strategyService.executeStrategy(strategy.id, { instanceId, legId, source: 'strategy_webhook' });
-        return res.status(result.success ? 200 : 502).json({
-          status: result.success ? 'ok' : 'error',
-          data: result,
-        });
+        const strategyResponse = { status: result.success ? 'ok' : 'error', data: result };
+        await completeRequest(strategyResponse, result.success);
+        return res.status(result.success ? 200 : 502).json(strategyResponse);
       }
-    }
-
-    const requestIdHeader = req.get('X-Request-Id');
-    const requestIdBody = parsedBody?.request_id;
-    const requestId = requestIdHeader || requestIdBody || null;
-    if (requestId !== null && (typeof requestId !== 'string' || !requestId.trim())) {
-      throw new ValidationError('request_id must be a non-empty string');
     }
 
     const normalized = tradingviewBroadcastService.normalizePayload(parsedBody);
@@ -73,31 +115,8 @@ router.post('/broadcast/:slug?', async (req, res, next) => {
     }
     const watchlistSlug = req.params.slug || req.query.watchlistSlug || req.query.watchlist || null;
 
-    if (requestId) {
-      const { hit, record, mismatch } = await idempotencyService.getOrCreate({
-        requestId,
-        source: 'webhook',
-        payload: { normalized, watchlistId, watchlistSlug },
-      });
-      if (mismatch) {
-        return res.status(409).json({
-          status: 'error',
-          message: 'Request ID reuse with different payload',
-        });
-      }
-      if (hit && record?.response_json) {
-        const cached = JSON.parse(record.response_json);
-        res.set('X-Idempotency-Hit', 'true');
-        const statusCode = record.status_code || (record.status === 'success' ? 200 : 409);
-        return res.status(statusCode).json(cached);
-      }
-      if (hit) {
-        return res.status(409).json({
-          status: 'error',
-          message: 'Request is already in progress',
-        });
-      }
-    }
+    const duplicate = await claimRequest({ normalized, watchlistId, watchlistSlug });
+    if (duplicate) return duplicate;
 
     const result = await tradingviewBroadcastService.broadcast(normalized, { watchlistId, watchlistSlug });
 
@@ -113,15 +132,7 @@ router.post('/broadcast/:slug?', async (req, res, next) => {
       watchlist: result.watchlist,
     };
 
-    if (requestId) {
-      await idempotencyService.complete({
-        requestId,
-        source: 'webhook',
-        response: responsePayload,
-        status: result.ok ? 'success' : 'failed',
-        statusCode: result.ok ? 200 : 502,
-      });
-    }
+    await completeRequest(responsePayload, result.ok);
 
     res.status(result.ok ? 200 : 502).json(responsePayload);
   } catch (error) {

@@ -572,11 +572,17 @@ configure_nginx() {
 
     # Create initial HTTP-only Nginx configuration (SSL will be added by certbot)
     cat > /etc/nginx/sites-available/${NGINX_SITE} <<EOF
+# Access log without query strings: the webhook token (?token= / ?t=) and the dashboard's login
+# token (/stream?token=) travel in the URL, and the default log format would record them.
+log_format ${NGINX_SITE}_noargs '\$remote_addr - \$remote_user [\$time_local] "\$request_method \$uri \$server_protocol" '
+                    '\$status \$body_bytes_sent "\$http_referer" "\$http_user_agent"';
+
 # HTTP server - will be modified by certbot to add HTTPS
 server {
     listen 80;
     listen [::]:80;
     server_name $DOMAIN;
+    access_log /var/log/nginx/access.log ${NGINX_SITE}_noargs;
 
     # Allow Let's Encrypt challenges
     location /.well-known/acme-challenge/ {

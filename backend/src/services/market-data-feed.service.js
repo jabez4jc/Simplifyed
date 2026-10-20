@@ -922,7 +922,8 @@ class MarketDataFeedService extends EventEmitter {
       this.setPositionSnapshot(instanceId, positionBook);
       return true;
     } catch (error) {
-      log.warn('Failed to refresh positions for instance', { instanceId, error: error.message });
+      // The client already logged the failure.
+      log.debug('Failed to refresh positions for instance', { instanceId, error: error.message });
       return true;
     }
   }

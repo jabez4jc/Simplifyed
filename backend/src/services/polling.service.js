@@ -158,7 +158,7 @@ class PollingService {
 
       const duration = Date.now() - startTime;
 
-      log.info('Instance polling completed', {
+      (failed ? log.warn : log.debug)('Instance polling completed', {
         total: instances.length,
         successful,
         failed,

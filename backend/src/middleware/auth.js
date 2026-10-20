@@ -80,7 +80,7 @@ async function attachRoleAndPermissions(userId) {
   // must never be selected here. Password verification uses its own separate query in
   // routes/v1/auth.js, not this helper.
   const user = await db.get(
-    'SELECT id, email, is_admin, created_at FROM users WHERE id = ?',
+    'SELECT id, email, is_admin, created_at, password_changed_at FROM users WHERE id = ?',
     [userId]
   );
   if (!user) return null;
@@ -132,19 +132,12 @@ export async function optionalAuth(req, res, next) {
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
 
     if (token) {
-      try {
-        const localPayload = jwt.verify(token, config.auth.jwtSecret, { algorithms: ['HS256'] });
-        const user = await cachedRoleAndPermissions(parseInt(localPayload.sub, 10));
-        if (user) {
-          log.debug('User authenticated via local token', { userId: user.id, email: user.email });
-          req.user = user;
-          req.isAuthenticated = () => true;
-          return next();
-        }
-        log.warn('Token verified but user not found/created');
-      } catch (err) {
-        log.warn('Token verification failed', { error: err.message });
-        // invalid/expired token, ignore and continue without auth
+      const user = await resolveTokenUser(token);
+      if (user) {
+        log.debug('User authenticated via local token', { userId: user.id, email: user.email });
+        req.user = user;
+        req.isAuthenticated = () => true;
+        return next();
       }
     }
     next();
@@ -186,16 +179,30 @@ export function requirePermission(permissionKey) {
 }
 
 export async function getUserWithRole(userId) {
-  return attachRoleAndPermissions(userId);
+  const user = await attachRoleAndPermissions(userId);
+  if (user) delete user.password_changed_at;
+  return user;
 }
 
 /**
- * Verify a locally-issued Bearer JWT for the WS gateway's connection-upgrade auth.
- *
- * No DB round-trip (unlike optionalAuth) - the gateway only needs to know the token is genuine
- * and unexpired before it starts streaming to that socket, not the user's permission set.
- * Deliberately the SAME secret and algorithm optionalAuth verifies REST requests with: the
- * gateway used to check an express-session cookie instead, which nothing in this app ever
+ * The user a login token belongs to, or null: a bad or expired signature, a deleted user, or a
+ * token issued before that user's last password reset. REST (optionalAuth) and the WS gateway
+ * both authenticate through this, so they cannot disagree about who is still signed in.
+ */
+export async function resolveTokenUser(token) {
+  const payload = verifyLocalToken(token);
+  if (!payload) return null;
+  const user = await cachedRoleAndPermissions(parseInt(payload.sub, 10));
+  if (!user) return null;
+  // Whole seconds on both sides: iat is in seconds, and resetPassword stores seconds.
+  if (user.password_changed_at && payload.iat < user.password_changed_at) return null;
+  delete user.password_changed_at;
+  return user;
+}
+
+/**
+ * Verify a locally-issued JWT's signature and expiry. resolveTokenUser adds the user, role and
+ * password-reset checks that REST and the WS gateway both apply on top. The gateway used to check an express-session cookie instead, which nothing in this app ever
  * issues (saveUninitialized is false and no route writes to req.session), so the WS connection
  * was rejected on every single attempt, not merely sometimes.
  */

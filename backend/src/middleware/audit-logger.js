@@ -6,6 +6,7 @@ const SENSITIVE_KEYS = new Set([
   'secret',
   'password',
   'token',
+  't', // the webhook's short alias for ?token=
   'authorization',
 ]);
 

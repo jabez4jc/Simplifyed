@@ -70,9 +70,21 @@ class WSGatewayService {
         }
         client.isAlive = false;
         try { client.ping(); } catch (_) { /* already gone */ }
+        this._revalidate(client);
       }
     }, PING_INTERVAL_MS);
     this._pingInterval.unref?.();
+  }
+
+  // A token valid at connect time stops being valid when its user is deleted, loses their role,
+  // or has their password reset. Without this re-check such a socket kept the live order and
+  // position stream for the token's full 7 days.
+  // ponytail: polled with the ping (<= ~60 s with the 30 s user cache), push a revoke event if that lag matters.
+  async _revalidate(client) {
+    if (!this.tokenValidator) return;
+    try {
+      if (!(await this.tokenValidator(client.meta?.token))) client.close(4401, 'unauthorized');
+    } catch (_) { /* a failed check leaves the socket for the next round */ }
   }
 
   _wireEvents() {
@@ -89,7 +101,7 @@ class WSGatewayService {
         }
 
         const topics = new Set((topicsParam || '').split(',').filter(Boolean));
-        ws.meta = { topics };
+        ws.meta = { topics, token };
         ws.isAlive = true;
         ws.on('pong', () => { ws.isAlive = true; });
 

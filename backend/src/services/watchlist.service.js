@@ -627,6 +627,12 @@ class WatchlistService {
     // Webhook slug (optional override, mainly system-managed)
     if (data.webhook_slug !== undefined) {
       const slug = sanitizeString(data.webhook_slug);
+      // strat- is the strategy slug namespace (strategyService._generateUniqueSlug). The webhook
+      // looks a slug up as a strategy first, so a watchlist on one would run that strategy's
+      // legs instead of the watchlist order.
+      if (slug && slug.toLowerCase().startsWith('strat-')) {
+        errors.push({ field: 'webhook_slug', message: 'webhook_slug may not start with "strat-" (reserved for strategies)' });
+      }
       normalized.webhook_slug = slug || null;
     }
 

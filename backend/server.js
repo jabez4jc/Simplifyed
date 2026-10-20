@@ -27,7 +27,7 @@ import idempotencyService from './src/services/idempotency.service.js';
 import { pruneOldRows } from './src/services/retention.service.js';
 
 // Middleware
-import { requireAuth, optionalAuth, verifyLocalToken } from './src/middleware/auth.js';
+import { requireAuth, optionalAuth, resolveTokenUser } from './src/middleware/auth.js';
 import { pendingMigrations } from './src/core/migration-check.js';
 import { errorHandler, notFoundHandler } from './src/middleware/error-handler.js';
 import { correlationId, requestLogger, bodyParserErrorHandler } from './src/middleware/request-logger.js';
@@ -264,11 +264,16 @@ async function startServer() {
       enabled: config.wsGateway?.enabled,
       path: config.wsGateway?.path,
       // The gateway used to check an express-session cookie here, which nothing in this
-      // app ever issues (see verifyLocalToken's comment) - every WS connection was rejected,
+      // app ever issues (see verifyLocalToken's comment in auth.js) - every WS connection was rejected,
       // not merely some of them. It now verifies the same locally-issued JWT every REST
       // request already authenticates with; the browser cannot set a custom Authorization
       // header on a WebSocket upgrade, so the client sends it as a `token` query param instead.
-      tokenValidator: async (token) => Boolean(verifyLocalToken(token)),
+      // Same check as REST: a deleted user, a role-less user, or a token from before a password
+      // reset is refused - and the gateway re-runs this on every ping, so it also drops them.
+      tokenValidator: async (token) => {
+        const user = await resolveTokenUser(token);
+        return Boolean(user && (user.is_admin || user.role));
+      },
     });
 
     // Start HTTP server

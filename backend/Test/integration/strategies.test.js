@@ -272,6 +272,22 @@ test('re-entry: a leg still held is skipped; one closed outside the strategy is 
   assert.strictEqual(await waitForNet(a, 'BTCUSDFUT', before), before);
 });
 
+test('double execute: two overlapping entries send one basket; the second skips the leg', async () => {
+  const { admin, s, a } = await oneLegStrategy();
+  const before = await netPosition(a, 'BTCUSDFUT');
+  // A double-click, or a TradingView retry while the first alert is still pricing: both used to
+  // find no open ledger row and both sent the basket.
+  const [first, second] = await Promise.all([execute(admin, s), execute(admin, s)]);
+  assert.strictEqual(first.body.data.success, true, JSON.stringify(first.body.data));
+  assert.strictEqual(second.body.data.success, true, JSON.stringify(second.body.data));
+  assert.strictEqual(broker.countOf('basketorder'), 1, 'one basket, not two');
+  assert.ok(second.body.data.instances[0].legs.every((l) => l.skipped), 'the second entry skipped the leg');
+  assert.strictEqual(await waitForNet(a, 'BTCUSDFUT', before + 1), before + 1, 'one lot held, not two');
+
+  assert.strictEqual((await exitAll(admin, s)).body.data.success, true);
+  assert.strictEqual(await waitForNet(a, 'BTCUSDFUT', before), before);
+});
+
 test('exit: only the strategy\'s own quantity is closed when the contract is also held outside it', async () => {
   const { admin, s, a } = await oneLegStrategy();
   const before = await netPosition(a, 'BTCUSDFUT');

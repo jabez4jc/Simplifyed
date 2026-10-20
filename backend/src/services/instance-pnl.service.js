@@ -139,9 +139,9 @@ class InstancePnlService {
         if (shouldAutoRevertToLive(instance, { currentSession, cutoffReason, sessionKey })) {
           try {
             await instanceAnalyzerService.toggleAnalyzerMode(id, false);
-            log.info('Auto-switching back to live for new session after prior max-loss cutoff', { id });
+            log.info('Auto-switching back to live for new session after prior max-loss cutoff', { instanceId: id });
           } catch (toggleErr) {
-            log.warn('Failed to auto-switch to live for new session', { id, error: toggleErr.message });
+            log.warn('Failed to auto-switch to live for new session', { instanceId: id, error: toggleErr.message });
           }
         }
 
@@ -219,8 +219,8 @@ class InstancePnlService {
           ]
         );
 
-        log.info('P&L updated', {
-          id,
+        log.debug('P&L updated', {
+          instanceId: id,
           balance: currentBalance,
           realized: realizedPnl,
           unrealized: unrealizedPnl,
@@ -230,11 +230,11 @@ class InstancePnlService {
 
         return await instanceService.getInstanceById(id);
       } catch (error) {
-        log.error('Failed to fetch P&L data from OpenAlgo', error, { id });
+        log.error('Failed to fetch P&L data from OpenAlgo', error, { instanceId: id });
         throw error;
       }
     } catch (error) {
-      log.error('Failed to update P&L data', error, { id });
+      log.error('Failed to update P&L data', error, { instanceId: id });
       throw error;
     }
   }

@@ -74,6 +74,9 @@ const VALID_ACTIONS = ['BUY', 'SELL'];
 const VALID_OPTION_TYPES = ['CE', 'PE'];
 const VALID_QTY_TYPES = ['LOTS', 'FIXED', 'MARGIN_BASED'];
 
+// strategyId:instanceId -> the tail of the entries queued on that pair. See _withEntryLock.
+const entryLocks = new Map();
+
 class StrategyService {
   async listStrategies(watchlistId) {
     const rows = await db.all(
@@ -585,7 +588,8 @@ class StrategyService {
 
     const settled = await Promise.allSettled(
       instances.map((instance) =>
-        this._executeStrategyForInstance({ strategy: strategyForExecution, anchorSymbol, instance, executionId, allowScaleIn, userId, source })
+        this._withEntryLock(`${strategy.id}:${instance.id}`, () =>
+          this._executeStrategyForInstance({ strategy: strategyForExecution, anchorSymbol, instance, executionId, allowScaleIn, userId, source }))
       )
     );
 
@@ -1117,6 +1121,26 @@ class StrategyService {
   }
 
   /**
+   * Run fn after every earlier entry on the same strategy+instance has finished. The double-entry
+   * guard (_legsStillOpen) only sees a leg once its ledger row is written, after the basket call
+   * returns - two overlapping entries (a double-click, or a TradingView retry while the first
+   * alert is still pricing) both found nothing open and both sent the basket. Queued, the second
+   * one reads the first one's ledger rows and skips those legs.
+   */
+  // ponytail: in-process lock - right for this single-process app, needs a DB lease if it ever runs clustered.
+  async _withEntryLock(key, fn) {
+    const prev = entryLocks.get(key) || Promise.resolve();
+    const run = prev.then(fn, fn);
+    const tail = run.catch(() => {});
+    entryLocks.set(key, tail);
+    try {
+      return await run;
+    } finally {
+      if (entryLocks.get(key) === tail) entryLocks.delete(key);
+    }
+  }
+
+  /**
    * Resolve every leg, batch-place via basketorder, then apply the same per-leg side effects
    * (exit-config upsert, risk-event logging, order-history row) as the previous per-leg
    * placeQuickOrder path.
@@ -1323,7 +1347,10 @@ class StrategyService {
 
       // Durable per-leg-per-instance execution ledger - the source of truth exitStrategy and
       // the status view read from (watchlist_orders/risk_events only carry this loosely inside
-      // a metadata JSON blob, not as an indexed/FK-joinable column).
+      // a metadata JSON blob, not as an indexed/FK-joinable column). It is also the double-entry
+      // guard, so a failed write on a live leg fails that leg: reported as a success, the next
+      // alert would find nothing open and enter again.
+      let ledgerError = null;
       try {
         await db.run(
           `INSERT INTO strategy_leg_executions
@@ -1338,18 +1365,21 @@ class StrategyService {
           ]
         );
       } catch (error) {
-        log.warn('Failed to record strategy leg execution ledger row', { strategyId: strategy.id, legId: r.leg.id, error: error.message });
+        log.error('Failed to record strategy leg execution ledger row', { strategyId: strategy.id, legId: r.leg.id, orderId: basketResult?.orderid, error: error.message });
+        if (legSuccess) {
+          ledgerError = `order ${basketResult?.orderid || ''} is live at the broker but was not recorded (${error.message}) - check the broker before entering again`;
+        }
       }
 
       legOutcomes.push({
         legId: r.leg.id,
-        success: legSuccess,
+        success: legSuccess && !ledgerError,
         resolvedSymbol: r.symbol,
         resolvedExchange: r.exchange,
         quantity: r.quantity,
         orderId: basketResult?.orderid || null,
         // Per-leg reason, else the basket-level one (a whole-basket rejection has no per-leg results).
-        error: legSuccess ? null : (basketResult?.message || basketResponse?.message || 'Order failed'),
+        error: ledgerError || (legSuccess ? null : (basketResult?.message || basketResponse?.message || 'Order failed')),
       });
     }
 

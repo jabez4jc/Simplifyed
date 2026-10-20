@@ -92,13 +92,16 @@ class RbacService {
   async resetPassword(userId, newPassword) {
     assertValidNewPassword(newPassword);
     const passwordHash = await hashPassword(newPassword);
-    const result = await db.run(`UPDATE users SET password_hash = ? WHERE id = ?`, [
-      passwordHash,
-      userId,
-    ]);
+    // password_changed_at (unix seconds) retires every login token issued before it - see
+    // resolveTokenUser. A reset is how a leaked or shared password gets cut off.
+    const result = await db.run(
+      `UPDATE users SET password_hash = ?, password_changed_at = CAST(strftime('%s', 'now') AS INTEGER) WHERE id = ?`,
+      [passwordHash, userId]
+    );
     if (!result.changes) {
       throw new NotFoundError('User');
     }
+    invalidateUserCache(userId);
   }
 
   async setRolePermissions(roleName, permissionKeys = []) {

@@ -27,8 +27,9 @@ const upload = multer({
 
 router.use(requireAuth);
 
+// Same rule as requirePermission: an admin holds every permission.
 function hasPermission(req, key) {
-  return Array.isArray(req.user?.permissions) && req.user.permissions.includes(key);
+  return Boolean(req.user?.is_admin) || (Array.isArray(req.user?.permissions) && req.user.permissions.includes(key));
 }
 
 
