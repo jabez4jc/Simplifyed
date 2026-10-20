@@ -64,6 +64,19 @@ The automated installer will:
 
 **See [QUICKSTART.md](QUICKSTART.md) for a quick installation guide or [INSTALL.md](INSTALL.md) for detailed documentation.**
 
+### AIC Cloud (behind a NAT proxy)
+
+On AIC Cloud, the shared Caddy proxy terminates TLS and forwards plain HTTP to port 443 on the VPS. Install with `BEHIND_PROXY=1`, so that nginx listens on 443 and certbot is skipped:
+
+```bash
+# Upload the latest commit (from your machine; `aiccloud` is an ~/.ssh/config host)
+git archive HEAD | ssh aiccloud 'rm -rf /root/simplifyed-src && mkdir /root/simplifyed-src && tar -x -C /root/simplifyed-src --exclude=backend/database'
+# Install (interactive)
+ssh -t aiccloud 'cd /root/simplifyed-src && BEHIND_PROXY=1 bash install.sh'
+```
+
+To update, upload the new commit in the same way. Then back up the database and run `update.sh --dir /opt/simplifyed`. **See [INSTALL.md → Installing on AIC Cloud](INSTALL.md#installing-on-aic-cloud)** for SSH key setup, domain mapping, the routing check, the one-line update command and rollback.
+
 ### Manual Installation (Development)
 
 For local development or manual setup:

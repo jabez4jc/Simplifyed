@@ -8,6 +8,7 @@ This guide walks you through installing Simplifyed Admin on an Ubuntu server wit
 - [Pre-Installation Checklist](#pre-installation-checklist)
 - [Installation](#installation)
 - [Post-Installation](#post-installation)
+- [Installing on AIC Cloud](#installing-on-aic-cloud)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Uninstallation](#uninstallation)
@@ -285,6 +286,115 @@ sudo certbot renew --dry-run
 # Force certificate renewal
 sudo certbot renew --force-renewal
 ```
+
+---
+
+## Installing on AIC Cloud
+
+[AIC Cloud](https://aiccloud.in) VPSes are behind NAT. They have only a private IP. SSH reaches the VPS on a high port (for example `20081`). Web traffic goes through AIC Cloud's shared Caddy proxy:
+
+```
+browser → Cloudflare (optional) → AIC Caddy at the public IP (TLS) → VPS port 443 (plain HTTP) → nginx → app :3000
+```
+
+AIC's Caddy holds the certificate and forwards **plain HTTP to port 443** on the VPS. Because of this, run the installer with `BEHIND_PROXY=1`. In that mode, nginx listens on 443 without TLS and sends `X-Forwarded-Proto: https`, and certbot is skipped. Without the flag, certbot fails, and the installer stops before the firewall and summary steps.
+
+The examples below use `velocity.simplifyed.in`, public IP `148.113.16.194` and SSH port `20081`. Replace them with your own values.
+
+### 1. Set up SSH key login (on your Mac)
+
+You type the root password once. Do not share it with anyone.
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/aiccloud -N ""
+ssh-copy-id -i ~/.ssh/aiccloud.pub -p 20081 root@148.113.16.194
+cat >> ~/.ssh/config <<'CFG'
+
+Host aiccloud
+  HostName 148.113.16.194
+  Port 20081
+  User root
+  IdentityFile ~/.ssh/aiccloud
+CFG
+ssh aiccloud true && echo "key login works"
+```
+
+### 2. Point the domain at the VPS
+
+1. In the AIC Cloud panel, add the domain to the VPS. This makes AIC's Caddy issue a certificate and route the host name to your VPS.
+2. In DNS, create an `A` record for the domain that points to the public IP. If you use Cloudflare with the proxy on (orange cloud), set SSL/TLS mode to **Full**.
+
+To check the routing before you install, serve a test page on port 443:
+
+```bash
+ssh aiccloud 'mkdir -p /tmp/probe && echo ok > /tmp/probe/index.html && cd /tmp/probe && (timeout 20 python3 -m http.server 443 >/dev/null 2>&1 &)'
+curl https://velocity.simplifyed.in/   # prints "ok"
+```
+
+If you get a 502, the domain is not mapped to the VPS yet. If you get an SSL error, AIC's Caddy has no certificate for the domain yet.
+
+### 3. Upload the code and install
+
+Run this on your Mac to upload the latest commit. `backend/database` stays local:
+
+```bash
+cd ~/Personal/GitHub/Simplifyed
+git archive HEAD | ssh aiccloud 'rm -rf /root/simplifyed-src && mkdir /root/simplifyed-src && tar -x -C /root/simplifyed-src --exclude=backend/database'
+```
+
+Then run the installer interactively. The admin password is typed on the server only:
+
+```bash
+ssh -t aiccloud 'cd /root/simplifyed-src && BEHIND_PROXY=1 bash install.sh'
+```
+
+Answer the prompts as follows:
+
+| Prompt | Answer |
+|--------|--------|
+| Instance identifier | Press Enter (single instance) |
+| Domain | `velocity.simplifyed.in` |
+| Let's Encrypt email | Any address. It is not used with `BEHIND_PROXY=1`. |
+| Port | Press Enter (`3000`) |
+| Admin email / password | Your choice |
+| Install directory | Press Enter (`/opt/simplifyed`) |
+
+To verify the install:
+
+```bash
+ssh aiccloud 'systemctl is-active simplifyed nginx; curl -sI -H "Host: velocity.simplifyed.in" http://127.0.0.1:443/ | head -1'
+curl -sI https://velocity.simplifyed.in/ | head -1
+```
+
+### 4. Update to a new version
+
+Commit the new version first. Only `HEAD` is uploaded, so uncommitted work never reaches the server. Then run this on your Mac:
+
+```bash
+cd ~/Personal/GitHub/Simplifyed && git archive HEAD | ssh aiccloud '
+  set -e
+  rm -rf /root/simplifyed-src && mkdir /root/simplifyed-src
+  tar -x -C /root/simplifyed-src --exclude=backend/database
+  systemctl stop simplifyed
+  cp -a /opt/simplifyed/backend/database /root/db-backup-$(date +%F-%H%M)
+  bash /root/simplifyed-src/update.sh --dir /opt/simplifyed'
+```
+
+This command does the following:
+
+1. Stops the service.
+2. Copies the database to `/root/db-backup-<date>`. `update.sh` makes no backup on a normal update.
+3. Runs `update.sh`, which syncs the code, runs `npm ci`, rebuilds the CSS, runs the migrations, and restarts the service.
+
+It keeps `backend/.env` and the nginx configuration, so `BEHIND_PROXY` continues to apply.
+
+**Roll back the database** if a migration fails:
+
+```bash
+ssh aiccloud 'systemctl stop simplifyed && rsync -a --delete /root/db-backup-<date>/ /opt/simplifyed/backend/database/ && chown -R simplifyed:simplifyed /opt/simplifyed/backend/database && systemctl start simplifyed'
+```
+
+To roll back the code too, check out the previous commit locally and run the update command again. Delete old `/root/db-backup-*` folders from time to time.
 
 ---
 
