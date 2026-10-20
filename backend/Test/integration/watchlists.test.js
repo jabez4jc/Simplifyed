@@ -111,6 +111,45 @@ test('CSV export and import stay admin-only', async () => {
   assert.strictEqual((await post('/api/v1/watchlists/import/csv', trader)).status, STATUS.FORBIDDEN);
 });
 
+test('an exported watchlist bundle re-imports as-is and restores lists, symbols and links', async () => {
+  // The dashboard saves the export as watchlists-export.txt (text/plain) and uploads that file back.
+  const admin = await asAdmin();
+  const inst = await realInstance(CRYPTO);
+  const wl = await makeWatchlist({ name: 'Round Trip' });
+  await makeWatchlistSymbol(wl.id, { symbol: 'TCS', qty_value: 7 });
+  await makeWatchlistSymbol(wl.id, { symbol: 'INFY' });
+  await linkInstanceToWatchlist(wl.id, inst.id);
+
+  const exported = await get('/api/v1/watchlists/export/csv', admin).buffer(true).parse((res, cb) => {
+    let data = ''; res.on('data', (c) => { data += c; }); res.on('end', () => cb(null, data));
+  });
+  assert.strictEqual(exported.status, STATUS.OK);
+  const bundle = exported.body;
+
+  await db.run('DELETE FROM watchlist_instances');
+  await db.run('DELETE FROM watchlist_symbols');
+  await db.run('DELETE FROM watchlists');
+
+  const res = await post('/api/v1/watchlists/import/csv', admin)
+    .attach('file', Buffer.from(bundle), { filename: 'watchlists-export.txt', contentType: 'text/plain' });
+  assert.strictEqual(res.status, STATUS.OK, JSON.stringify(res.body));
+
+  const restored = await db.get('SELECT id FROM watchlists WHERE name = ?', ['Round Trip']);
+  assert.ok(restored, 'watchlist restored');
+  const syms = await db.all('SELECT symbol, qty_value FROM watchlist_symbols WHERE watchlist_id = ? ORDER BY symbol', [restored.id]);
+  assert.deepStrictEqual(syms.map((r) => [r.symbol, Number(r.qty_value)]), [['INFY', 1], ['TCS', 7]]);
+  const links = await db.all('SELECT instance_id FROM watchlist_instances WHERE watchlist_id = ?', [restored.id]);
+  assert.deepStrictEqual(links.map((r) => r.instance_id), [inst.id]);
+
+  // Importing the same bundle again changes nothing: no duplicates.
+  const again = await post('/api/v1/watchlists/import/csv', admin)
+    .attach('file', Buffer.from(bundle), { filename: 'watchlists-export.txt', contentType: 'text/plain' });
+  assert.strictEqual(again.status, STATUS.OK, JSON.stringify(again.body));
+  assert.strictEqual((await db.get('SELECT COUNT(*) AS n FROM watchlists')).n, 1);
+  assert.strictEqual((await db.get('SELECT COUNT(*) AS n FROM watchlist_symbols')).n, 2);
+  assert.strictEqual((await db.get('SELECT COUNT(*) AS n FROM watchlist_instances')).n, 1);
+});
+
 // ---------------------------------------------------------------------------
 // CRUD
 // ---------------------------------------------------------------------------

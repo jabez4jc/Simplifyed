@@ -20,8 +20,10 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024, files: 1 },
   fileFilter: (_req, file, callback) => {
-    const isCsv = file.mimetype === 'text/csv' || file.originalname.toLowerCase().endsWith('.csv');
-    callback(isCsv ? null : new ValidationError('Only CSV files are allowed'), isCsv);
+    // The export downloads as watchlists-export.txt (text/plain), so that must re-import as-is.
+    const name = file.originalname.toLowerCase();
+    const isCsv = ['text/csv', 'text/plain'].includes(file.mimetype) || name.endsWith('.csv') || name.endsWith('.txt');
+    callback(isCsv ? null : new ValidationError('Only CSV or text files are allowed'), isCsv);
   },
 });
 
