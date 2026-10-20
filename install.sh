@@ -31,6 +31,9 @@ NODE_VERSION="20"
 DOMAIN=""
 EMAIL=""
 PORT=3000
+# BEHIND_PROXY=1: an upstream proxy (e.g. AIC Cloud's Caddy) terminates TLS and forwards plain
+# HTTP to this server's port 443, so nginx listens there without TLS and certbot is skipped.
+BEHIND_PROXY="${BEHIND_PROXY:-0}"
 ADMIN_EMAIL=""
 ADMIN_PASSWORD=""
 
@@ -570,6 +573,12 @@ configure_nginx() {
         NGINX_SITE="simplifyed"
     fi
 
+    if [[ "$BEHIND_PROXY" == "1" ]]; then
+        LISTEN_PORT=443; FORWARDED_PROTO=https
+    else
+        LISTEN_PORT=80; FORWARDED_PROTO='$scheme'
+    fi
+
     # Create initial HTTP-only Nginx configuration (SSL will be added by certbot)
     cat > /etc/nginx/sites-available/${NGINX_SITE} <<EOF
 # Access log without query strings: the webhook token (?token= / ?t=) and the dashboard's login
@@ -579,8 +588,8 @@ log_format ${NGINX_SITE}_noargs '\$remote_addr - \$remote_user [\$time_local] "\
 
 # HTTP server - will be modified by certbot to add HTTPS
 server {
-    listen 80;
-    listen [::]:80;
+    listen $LISTEN_PORT;
+    listen [::]:$LISTEN_PORT;
     server_name $DOMAIN;
     access_log /var/log/nginx/access.log ${NGINX_SITE}_noargs;
 
@@ -598,7 +607,7 @@ server {
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Proto $FORWARDED_PROTO;
         proxy_cache_bypass \$http_upgrade;
 
         # WebSocket support
@@ -625,6 +634,11 @@ EOF
 
 install_ssl_certificate() {
     print_header "Installing Let's Encrypt SSL Certificate"
+
+    if [[ "$BEHIND_PROXY" == "1" ]]; then
+        print_info "BEHIND_PROXY=1: TLS is terminated upstream, skipping certbot"
+        return 0
+    fi
 
     # At this point, Nginx is running with HTTP-only config
     # We'll use certbot --nginx which will modify the config to add HTTPS
