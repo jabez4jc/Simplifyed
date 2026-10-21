@@ -29,6 +29,7 @@ const SEEDED_TABLES = new Set([
   'roles',
   'permissions',
   'role_permissions',
+  'whatsapp_templates',
   'application_settings',
 ]);
 

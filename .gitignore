@@ -11,6 +11,8 @@ database/*.db-wal
 backend/database/*.db
 backend/database/*.db-shm
 backend/database/*.db-wal
+# Linked WhatsApp session (keys to the account)
+backend/database/whatsapp-auth/
 
 # Logs
 logs/*.log

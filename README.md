@@ -195,6 +195,7 @@ Every test that touches a broker uses the real instances in `database/simplifyed
 | **Strategies** | Multi-leg strategies: add legs, Execute on all mapped instances, Exit All, or trigger from TradingView. |
 | **Daily P&L** | End-of-day P&L snapshots. |
 | **Notifications** | Health and system alerts. |
+| **WhatsApp** | Admins only: message instance owners, login reminders and emergency alerts, history, WhatsApp link. |
 | **Settings** | *Orders & Costs*: spread guard, brokerage, crypto market orders. *Trading Hours*: session windows. *Broker Connection*: orders per second, response timeout. *Futures*: auto-roll days. *Access Control*: users, roles and the webhook token. *Data Management*: instruments and CSV import/export. *System Status*: health. |
 
 **Kill switch** (top bar, red): after a confirmation, it cancels every pending order, closes every open position on every instance (live and analyzer, with LIMIT orders), and switches every instance to analyzer mode. Going back to live is manual, per instance. If a live instance still has positions it cannot close, it is left live and named in the result so you can close them at the broker.
@@ -212,6 +213,22 @@ The instruments cache fills itself: it is refreshed from a healthy instance dail
 ### Accounts
 
 The first admin is created with `POST /api/v1/auth/register` (it closes once any user exists); everyone else is added under **Settings → Access Control**. A lost password is reset there by an admin, or on the server with `npm run set-password -- <email> <new-password>`.
+
+### WhatsApp messages and alerts (admins only)
+
+The **WhatsApp** page (sidebar, Administration; Admin role only - not a permission other roles can be granted) sends WhatsApp messages to instance owners from a WhatsApp account linked to the app (the [wabridge](https://github.com/jabez4jc/wabridge) engine, built in). Each instance has two admin-only fields for this, set on the instance form: **Owner Name** and **Owner WhatsApp Number** (digits with country code, e.g. `919876543210`; a 10-digit number is taken as Indian). Non-admins neither see nor change them.
+
+- **Connection** - Connect WhatsApp, scan the QR from your phone (WhatsApp → Settings → Linked Devices → Link a Device). The session is kept in `backend/database/whatsapp-auth/`, survives restarts and updates, and reconnects on its own unless unlinked from the phone (a notification says so). A test message can be sent from here.
+- **Send** - pick instances (or *All with a number* / *Unreachable now*), write or load a saved message, **Preview**, then **Send**. A text that refers to instance details - `{instances}`, `{instance_name}`, `{broker}` or `{host_url}` - goes once per instance, so an owner of two selected instances gets two messages, each about one instance; any other text goes once per owner. Preview shows exactly which messages will go.
+- **Automations** - every message the app sends by itself, each with its text, on/off and recipients (owner, admin = the linked number's own chat, or both):
+  - *Morning login sequence*: a reminder (09:00, on), two follow-ups and an admin escalation (off until you set them). Each step runs once a day at its time (IST), pings the instances first and messages only the owners whose instances are still unreachable - usually because nobody has logged in to OpenAlgo to generate the day's broker token. Indian brokers are skipped on weekends and NSE holidays; crypto runs daily. **Run now** runs a step immediately.
+  - *Emergency alerts*: instance unreachable with open positions, session target/max loss hit, max-loss cap reached, an exit order failed, kill switch executed, instance degraded, futures roll blocked. Each has a cooldown - an instance is alerted about the same problem at most once per cooldown. They also still appear on the Notifications page.
+  - *Saved messages*: reusable texts for the Send tab.
+- **History** - every message with its text, status (sent / failed and why) and who sent it, filterable by instance. Each instance keeps its last 300 messages, for up to 90 days. An automatic message that fails also raises a notification.
+
+Placeholders, filled in per recipient (each button in the editor shows what it holds): `{owner_name}`; instance details `{account}` (broker and login URL - owners never see the app's internal instance names), `{instances}` (one line per instance), `{broker}`, `{host_url}`; figures from the app's latest broker poll `{session_pnl}`, `{total_pnl}`, `{realized_pnl}`, `{unrealized_pnl}`, `{balance}`, `{session_target}`, `{session_max_loss}`, `{mode}` (Live/Analyzer), `{status}` (Reachable/Not reachable); and `{date}`, `{time}`. Automated messages also have `{detail}` (what happened, alerts only; other owners' instances appear as "another account") and `{instance_name}` (the internal name - only in messages that go to the admin alone). WhatsApp formatting (`*bold*`, `_italic_`, `~strike~`, ```` ```mono``` ````) works, and the B / I / S / </> buttons apply it. An unknown placeholder is refused when you save or send.
+
+Messages go out one at a time, 3-6 seconds apart, alerts first. This uses a linked personal WhatsApp account, not the WhatsApp Business API, so keep bulk messages occasional - many identical messages to many people is what gets a number restricted.
 
 ### Caches
 

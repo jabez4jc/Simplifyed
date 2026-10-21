@@ -105,7 +105,7 @@ class InstanceHealthCheckService {
       // Tell the operator the moment an instance holding open positions goes dark (this check is
       // the one place that pings, so it is the one place that sees the transition).
       if (healthStatus === 'unhealthy' && instance.health_status !== 'unhealthy' && marketDataFeedService.openPositionInstances.has(id)) {
-        await notify('Instance unhealthy', `Instance ${id} became unhealthy while positions are open.`, { severity: 'error' });
+        await notify('Instance unhealthy', `${instance.name} became unreachable while positions are open.`, { severity: 'error', alert: 'alert_unhealthy_positions', instanceIds: [id] });
       }
 
       const pingHealthyMs = config.instanceHealth?.pingHealthyIntervalMs ?? DEFAULT_PING_HEALTHY_MS;

@@ -144,6 +144,12 @@ class InstanceService {
         columns.push('session_max_loss');
         values.push(normalized.session_max_loss);
       }
+      for (const f of ['owner_name', 'whatsapp_phone']) {
+        if (normalized[f] !== undefined) {
+          columns.push(f);
+          values.push(normalized[f]);
+        }
+      }
 
       const placeholders = columns.map(() => '?').join(', ');
       const result = await db.run(

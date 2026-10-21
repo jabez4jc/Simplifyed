@@ -87,9 +87,15 @@ export function maskApiKey(apiKey, visibleChars = 4) {
  * tests) read straight from instanceService/db, not from an HTTP response, so this only needs
  * to be applied at the route layer, right before res.json().
  */
+// Owner contact details steer who WhatsApp messages and alerts go to, so they are admin-only:
+// stripped here from every instance response, and added back by the instances routes for admins.
+export const OWNER_FIELDS = ['owner_name', 'whatsapp_phone'];
+
 export function maskInstanceForResponse(instance) {
   if (!instance || typeof instance !== 'object') return instance;
-  return { ...instance, api_key: maskApiKey(instance.api_key) };
+  const masked = { ...instance, api_key: maskApiKey(instance.api_key) };
+  for (const f of OWNER_FIELDS) delete masked[f];
+  return masked;
 }
 
 export function maskInstancesForResponse(instances) {

@@ -445,7 +445,7 @@ class ExitLevelsService {
       const books = new Map();
       for (const inst of instances) {
         const r = live.get(inst.id);
-        if (!r?.success) results.push({ instance: inst.name, ok: false, error: `position book unreadable: ${r?.error || 'no answer'}` });
+        if (!r?.success) results.push({ instance: inst.name, instance_id: inst.id, ok: false, error: `position book unreadable: ${r?.error || 'no answer'}` });
         books.set(inst.id, r?.success ? r.positions || [] : []);
       }
       const covered = await this._covered(level, keys, instances, books);
@@ -456,7 +456,7 @@ class ExitLevelsService {
         const symbol = upper(c.position.symbol || c.position.tradingsymbol);
         const exchange = upper(c.position.exchange || c.position.exch);
         const tag = `${c.instance.id}|${exchange}|${symbol}|${upper(c.position.product)}`;
-        const entry = { instance: c.instance.name, symbol, role: c.role, direction: c.direction, qty: exitQty };
+        const entry = { instance: c.instance.name, instance_id: c.instance.id, symbol, role: c.role, direction: c.direction, qty: exitQty };
         try {
           if (exitQty >= Math.abs(c.qty)) {
             if (closed.has(tag)) continue; // one close already took this product row
@@ -514,7 +514,11 @@ class ExitLevelsService {
     const summary = `${level.ref_symbol} ${level.kind === 'TRAIL' ? 'trailing stop' : 'level'} ${level.trigger_price} hit at ${ltp}: `
       + `${ok} exit${ok === 1 ? '' : 's'} sent${failed.length ? `, ${failed.length} failed (${failed[0].error})${outcome}` : ''}`;
     log.warn('Exit level triggered', { symbol: level.ref_symbol, exchange: level.ref_exchange, reason: summary });
-    await notify('Exit level fired', summary, { severity: failed.length ? 'error' : 'warn' });
+    await notify('Exit level fired', summary, {
+      severity: failed.length ? 'error' : 'warn',
+      // Only a failed exit is an emergency; a level firing as planned is not
+      ...(failed.length ? { alert: 'alert_exit_failed', instanceIds: failed.map((r) => r.instance_id) } : {}),
+    });
     const { default: telegramService } = await import('./telegram.service.js');
     await telegramService.broadcastText(`*EXIT LEVEL*\n${summary}`).catch(() => {});
   }

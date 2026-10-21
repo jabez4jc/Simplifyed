@@ -34,7 +34,7 @@ class DashboardApp {
     this.watchlistQuoteSnapshots = new Map();
     this.isSidebarCollapsed = false;
     this.quickOrder = window.quickOrder || null;
-    this.validViews = ['dashboard', 'instances', 'watchlists', 'chart', 'strategies', 'orders', 'trades', 'positions', 'daily-pnl-snapshots', 'settings', 'notifications'];
+    this.validViews = ['dashboard', 'instances', 'watchlists', 'chart', 'strategies', 'orders', 'trades', 'positions', 'daily-pnl-snapshots', 'settings', 'notifications', 'whatsapp'];
     this.suppressHashChange = false;
     this._throttledWatchlistRefresh = Utils.throttle((opts = {}) => {
       this.refreshWatchlistPositions(opts);
@@ -867,7 +867,8 @@ class DashboardApp {
     }
 
     const requiredPerm = this.viewPermissions[viewName];
-    if (requiredPerm && !this.hasPermission(requiredPerm)) {
+    // WhatsApp is admin-only by role, not by a grantable permission (the API enforces the same)
+    if ((requiredPerm && !this.hasPermission(requiredPerm)) || (viewName === 'whatsapp' && !this.isAdmin())) {
       Utils.showToast('You do not have access to this page.', 'warning');
       return;
     }
@@ -958,6 +959,7 @@ class DashboardApp {
       settings: 'Settings',
       notifications: 'Notifications',
       'daily-pnl-snapshots': 'Daily P&L Snapshots',
+      whatsapp: 'WhatsApp',
     };
 
     document.getElementById('view-title').textContent =
@@ -1005,6 +1007,9 @@ class DashboardApp {
           break;
         case 'notifications':
           await this.renderNotificationsView();
+          break;
+        case 'whatsapp':
+          await this.renderWhatsAppView();
           break;
         default:
           contentArea.innerHTML = '<p>View not found</p>';

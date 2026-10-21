@@ -17,8 +17,9 @@ import {
   isMaskedApiKey,
   maskInstanceForResponse,
   maskInstancesForResponse,
+  OWNER_FIELDS,
 } from '../../utils/sanitizers.js';
-import { requireAuth, requirePermission } from '../../middleware/auth.js';
+import { requireAuth, requirePermission, isAdminUser } from '../../middleware/auth.js';
 import { sanitizeValue } from '../../middleware/audit-logger.js';
 import { rowPayload, upsertByKey } from '../../utils/csv-import.js';
 import db from '../../core/database.js';
@@ -26,6 +27,21 @@ import multer from 'multer';
 import { Parser } from '../../utils/csv.js';
 
 const router = express.Router();
+
+// Owner contact fields (who WhatsApp messages and alerts go to) are visible and editable by admins
+// only; maskInstanceForResponse strips them, these put them back for an admin.
+function forViewer(req, instance) {
+  const masked = maskInstanceForResponse(instance);
+  if (!isAdminUser(req.user) || !masked) return masked;
+  for (const f of OWNER_FIELDS) masked[f] = instance[f] ?? null;
+  return masked;
+}
+function dropOwnerFieldsUnlessAdmin(req, payload) {
+  if (isAdminUser(req.user) || !payload) return payload;
+  const copy = { ...payload };
+  for (const f of OWNER_FIELDS) delete copy[f];
+  return copy;
+}
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024, files: 1 },
@@ -72,7 +88,7 @@ router.get('/', requirePermission('pages.instances.view'), async (req, res, next
 
     res.json({
       status: 'success',
-      data: maskInstancesForResponse(instances),
+      data: instances.map((i) => forViewer(req, i)),
       count: instances.length,
     });
   } catch (error) {
@@ -112,7 +128,7 @@ router.get('/:id', requirePermission('pages.instances.view'), async (req, res, n
 
     res.json({
       status: 'success',
-      data: maskInstanceForResponse(instance),
+      data: forViewer(req, instance),
     });
   } catch (error) {
     next(error);
@@ -125,13 +141,13 @@ router.get('/:id', requirePermission('pages.instances.view'), async (req, res, n
  */
 router.post('/', requirePermission('instances.add'), async (req, res, next) => {
   try {
-    const instance = await instanceService.createInstance(req.body);
+    const instance = await instanceService.createInstance(dropOwnerFieldsUnlessAdmin(req, req.body));
     logAudit(req, 'instances.create', { id: instance?.id, name: instance?.name });
 
     res.status(201).json({
       status: 'success',
       message: 'Instance created successfully',
-      data: maskInstanceForResponse(instance),
+      data: forViewer(req, instance),
     });
   } catch (error) {
     next(error);
@@ -152,13 +168,13 @@ router.put('/:id', requirePermission('instances.edit'), async (req, res, next) =
       );
     }
 
-    const instance = await instanceService.updateInstance(id, req.body);
+    const instance = await instanceService.updateInstance(id, dropOwnerFieldsUnlessAdmin(req, req.body));
     logAudit(req, 'instances.update', { id, body: req.body });
 
     res.json({
       status: 'success',
       message: 'Instance updated successfully',
-      data: maskInstanceForResponse(instance),
+      data: forViewer(req, instance),
     });
   } catch (error) {
     next(error);
@@ -404,7 +420,7 @@ router.post('/:id/analyzer/toggle', requirePermission('instances.toggle_mode'), 
 router.get('/export/csv', requirePermission('settings.manage'), async (req, res, next) => {
   try {
     const columns = await db.all("PRAGMA table_info('instances')");
-    const colNames = columns.map((c) => c.name);
+    const colNames = columns.map((c) => c.name).filter((c) => isAdminUser(req.user) || !OWNER_FIELDS.includes(c));
     const rows = await db.all(`SELECT ${colNames.join(', ')} FROM instances ORDER BY id ASC`);
 
     // api_key is masked here for the same reason every other instance response masks it: this
@@ -452,7 +468,7 @@ router.post('/import/csv', requirePermission('settings.manage'), upload.single('
     // One transaction for the whole file; a row that fails (UNIQUE etc.) rolls back only itself.
     await db.transaction(async () => {
       for (const row of records.rows) {
-        const payload = rowPayload('instances', records.headers, row);
+        const payload = dropOwnerFieldsUnlessAdmin(req, rowPayload('instances', records.headers, row));
 
         // A CSV produced by the export above carries the masked key, never the real one. Writing
         // that back would replace a working credential with a row of asterisks and silently break

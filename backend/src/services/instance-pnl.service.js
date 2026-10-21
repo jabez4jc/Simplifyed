@@ -152,7 +152,7 @@ class InstancePnlService {
             session_pnl: sessionPnl,
             reason: cutoffReason,
           });
-          await notify('Session cutoff', `Instance ${id} switched to analyzer: ${cutoffReason}`, { severity: 'error', session: sessionLabel, session_pnl: sessionPnl });
+          await notify('Session cutoff', `${instance.name || `Instance ${id}`} switched to analyzer: ${cutoffReason}`, { severity: 'error', session: sessionLabel, session_pnl: sessionPnl, alert: 'alert_session_cutoff', instanceIds: [id], alertVars: { session_pnl: sessionPnl } });
           // fire-and-forget safe toggle; errors logged but do not throw to keep polling running
           try {
             await instanceAnalyzerService.toggleAnalyzerMode(id, true);

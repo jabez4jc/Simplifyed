@@ -31,7 +31,7 @@ class KillSwitchService {
       failed: results.filter((r) => !r.success).map((r) => r.name),
     });
     const failed = results.filter((r) => !r.success).map((r) => r.name);
-    await notify('Kill switch', `Executed on ${results.length} instance(s)${failed.length ? `; failed: ${failed.join(', ')}` : ''}`, { severity: failed.length ? 'error' : 'warn' });
+    await notify('Kill switch', `Executed on ${results.length} instance(s)${failed.length ? `; failed: ${failed.join(', ')}` : ''}`, { severity: failed.length ? 'error' : 'warn', alert: 'alert_kill_switch', instanceIds: results.map((r) => r.id) });
     return {
       success: results.every((r) => r.success),
       instances: results,

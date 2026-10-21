@@ -4,7 +4,7 @@ import test, { before } from 'node:test';
 import { useTestDb } from '../helpers/db.js';
 import db from '../../src/core/database.js';
 import { makeInstance } from '../helpers/fixtures.js';
-import { pruneOldRows } from '../../src/services/retention.service.js';
+import { pruneOldRows, WHATSAPP_PER_INSTANCE } from '../../src/services/retention.service.js';
 
 before(async () => {
   await useTestDb('retention');
@@ -52,4 +52,27 @@ test('quick_orders and watchlist_orders keep 90 days', async () => {
   await pruneOldRows();
   assert.strictEqual(await count('quick_orders'), 1);
   assert.strictEqual(await count('watchlist_orders'), 1);
+});
+
+test('WhatsApp history keeps the newest 300 messages per instance, for at most 90 days', async () => {
+  await db.run('DELETE FROM whatsapp_messages');
+  const add = (ids, age = '-1 days', status = 'sent') => db.run(
+    "INSERT INTO whatsapp_messages (recipient, instance_ids, body, status, created_at) VALUES ('owner', ?, 'x', ?, datetime('now', ?))",
+    [ids, status, age]
+  );
+  await add(',1,', '-100 days'); // past 90 days
+  await add(',2,', '-100 days', 'queued'); // never pruned while queued
+  for (let i = 0; i < WHATSAPP_PER_INSTANCE + 5; i += 1) await add(',1,');
+  await add(',2,');
+  await add(',1,2,'); // newest of 1 and of 2
+  await add(null); // admin-only alert
+
+  await pruneOldRows();
+
+  const per = async (id) => (await db.get('SELECT COUNT(*) n FROM whatsapp_messages WHERE instance_ids LIKE ?', [`%,${id},%`])).n;
+  assert.strictEqual(await per(1), WHATSAPP_PER_INSTANCE, 'instance 1 trimmed to the cap, the shared newest one included');
+  assert.strictEqual(await per(2), 3, 'instance 2: its two plus the queued old one');
+  assert.strictEqual(await count('whatsapp_messages'), WHATSAPP_PER_INSTANCE + 3);
+  const oldest = await db.get("SELECT COUNT(*) n FROM whatsapp_messages WHERE created_at < datetime('now', '-90 days') AND status != 'queued'");
+  assert.strictEqual(oldest.n, 0);
 });

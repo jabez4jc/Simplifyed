@@ -186,6 +186,12 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
                           onclick="app.showEditInstanceModal(${instance.id})">
                     Edit
                   </button>
+                  ${this.isAdmin() && instance.whatsapp_phone ? `
+                  <button class="btn btn-neutral btn-outline btn-sm"
+                          onclick="app.messageInstanceOwner(${instance.id})"
+                          title="Send a WhatsApp message to this instance's owner">
+                    Message owner
+                  </button>` : ''}
                   <button class="btn btn-${instance.is_analyzer_mode ? 'success' : 'warning'} btn-sm"
                           onclick="app.toggleAnalyzerMode(${instance.id}, ${!instance.is_analyzer_mode})">
                     ${instance.is_analyzer_mode ? 'Go Live' : 'Analyzer'}
@@ -346,6 +352,21 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
               <label class="form-label">Strategy Tag</label>
               <input type="text" name="strategy_tag" class="form-input" value="default">
             </div>
+
+            ${this.isAdmin() ? `
+            <div class="form-group">
+              <label class="form-label">Owner Name (optional)</label>
+              <input type="text" name="owner_name" class="form-input" maxlength="80" placeholder="Used as {owner_name} in WhatsApp messages">
+            </div>
+            <div class="form-group">
+              <div class="form-label-row">
+                <label class="form-label">Owner WhatsApp Number (optional)</label>
+                <button type="button" class="info-button"
+                        title="With country code, e.g. 919876543210. The owner gets WhatsApp login reminders and alerts for this instance (WhatsApp page). Admins only."
+                        aria-label="WhatsApp number info">i</button>
+              </div>
+              <input type="tel" name="whatsapp_phone" class="form-input" inputmode="numeric" placeholder="919876543210">
+            </div>` : ''}
 
             <div class="form-group">
               <div class="form-label-row">
@@ -911,6 +932,23 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
                 <input type="text" name="strategy_tag" class="form-input"
                        value="${Utils.escapeHTML(instance.strategy_tag || 'default')}">
               </div>
+
+              ${this.isAdmin() ? `
+              <div class="form-group">
+                <label class="form-label">Owner Name (optional)</label>
+                <input type="text" name="owner_name" class="form-input" maxlength="80" placeholder="Used as {owner_name} in WhatsApp messages"
+                       value="${Utils.escapeHTML(instance.owner_name || '')}">
+              </div>
+              <div class="form-group">
+                <div class="form-label-row">
+                  <label class="form-label">Owner WhatsApp Number (optional)</label>
+                  <button type="button" class="info-button"
+                          title="With country code, e.g. 919876543210. The owner gets WhatsApp login reminders and alerts for this instance (WhatsApp page). Admins only."
+                          aria-label="WhatsApp number info">i</button>
+                </div>
+                <input type="tel" name="whatsapp_phone" class="form-input" inputmode="numeric" placeholder="919876543210"
+                       value="${Utils.escapeHTML(instance.whatsapp_phone || '')}">
+              </div>` : ''}
 
               <div class="form-group">
                 <div class="form-label-row">

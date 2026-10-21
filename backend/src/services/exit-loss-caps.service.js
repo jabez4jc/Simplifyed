@@ -111,7 +111,7 @@ class ExitLossCapsService {
         await db.run('UPDATE exit_loss_caps SET result = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [JSON.stringify(history.slice(-20)), cap.id]);
         const text = `${cap.symbol} on ${inst.name}: loss ₹${Math.round(-pnl)} reached the ₹${cap.max_loss} max loss - ${outcome.ok ? 'closing' : `close failed (${outcome.error})`}`;
         log.warn('Max loss reached', { symbol: cap.symbol, exchange: cap.exchange, reason: text });
-        await notify('Max loss reached', text, { severity: 'error' });
+        await notify('Max loss reached', text, { severity: 'error', alert: 'alert_max_loss', instanceIds: [inst.id] });
         const { default: telegramService } = await import('./telegram.service.js');
         await telegramService.broadcastText(`*MAX LOSS*\n${text}`).catch(() => {});
       }

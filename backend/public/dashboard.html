@@ -257,6 +257,18 @@
               <span class="nav-label">Instances</span>
             </a>
           </li>
+          <li data-nav-group-item="administration" data-admin-only="true">
+            <a data-view="whatsapp" data-label="WhatsApp"
+              class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
+              onclick="app.switchView('whatsapp')">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24"
+                stroke="currentColor" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a9.86 9.86 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+              </svg>
+              <span class="nav-label">WhatsApp</span>
+            </a>
+          </li>
           <li data-nav-group-item="administration">
             <a data-view="settings" data-label="Settings" data-permission="pages.settings.view"
               class="nav-link flex items-center gap-3 px-4 py-3 rounded-xl font-medium transition-all hover:bg-base-200"
@@ -352,9 +364,9 @@
   <script defer src="/js/settings-data.js?v=20261002-1600"></script>
   <script defer src="/js/settings-status.js?v=20261002-1600"></script>
   <script defer src="/js/settings-init.js?v=20260714-0200"></script>
-  <script defer src="/js/dashboard-core.js?v=20261002-1000"></script>
+  <script defer src="/js/dashboard-core.js?v=20261022-0100"></script>
   <script defer src="/js/dashboard-overview.js?v=20260930-0400"></script>
-  <script defer src="/js/dashboard-instances.js?v=20261002-h3"></script>
+  <script defer src="/js/dashboard-instances.js?v=20261022-0400"></script>
   <script defer src="/js/dashboard-watchlists-core.js?v=20261002-1500"></script>
   <script defer src="/js/dashboard-watchlists-quotes.js?v=20260930-1500"></script>
   <script defer src="/js/dashboard-watchlists-crud.js?v=20260930-1200"></script>
@@ -365,6 +377,7 @@
   <script defer src="/js/dashboard-positions.js?v=20260930-0600"></script>
   <script defer src="/js/dashboard-notifications.js?v=20261020-1200"></script>
   <script defer src="/js/dashboard-pnl.js?v=20260714-0100"></script>
+  <script defer src="/js/dashboard-whatsapp.js?v=20261022-0800"></script>
   <!--
     The chart runs on openalgo-charts (see js/openalgo-charts-bridge.js), vendored under
     public/vendor by scripts/sync-vendor-charts.js.

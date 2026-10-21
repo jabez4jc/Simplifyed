@@ -224,7 +224,8 @@ class FuturesRollService {
     const lines = outcomes.map((o) => (o.status === 'rolled'
       ? `${o.row.exchange}: ${o.from} -> ${o.to}`
       : `${o.row.exchange}: ${o.row.symbol} not rolled - ${o.message}`));
-    await notify(outcomes.some((o) => o.status !== 'rolled') ? 'Futures roll blocked' : 'Futures rolled', lines.join('; '));
+    const blocked = outcomes.some((o) => o.status !== 'rolled');
+    await notify(blocked ? 'Futures roll blocked' : 'Futures rolled', lines.join('; '), blocked ? { alert: 'alert_roll_blocked' } : {});
     const { default: telegramService } = await import('./telegram.service.js');
     await telegramService
       .broadcastText(`*FUTURES ROLL*\n${lines.join('\n')}`)

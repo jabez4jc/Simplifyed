@@ -178,6 +178,17 @@ export function requirePermission(permissionKey) {
   };
 }
 
+/** The Admin role (or the is_admin flag). Not a permission, so it cannot be granted to another role. */
+export function isAdminUser(user) {
+  return Boolean(user && (user.is_admin || String(user.role || '').toUpperCase() === 'ADMIN'));
+}
+
+export function requireAdmin(req, res, next) {
+  if (!req.user) throw new UnauthorizedError('Authentication required');
+  if (!isAdminUser(req.user)) throw new ForbiddenError('Admins only');
+  next();
+}
+
 export async function getUserWithRole(userId) {
   const user = await attachRoleAndPermissions(userId);
   if (user) delete user.password_changed_at;

@@ -35,6 +35,7 @@
   "author": "Simplifyed",
   "license": "MIT",
   "dependencies": {
+    "baileys": "^6.7.24",
     "bcrypt": "^6.0.0",
     "compression": "^1.7.4",
     "cors": "^2.8.5",
@@ -46,6 +47,7 @@
     "node-cron": "^4.6.0",
     "openalgo-charts": "^2.6.4",
     "openalgo-script": "^0.8.1",
+    "qrcode": "^1.5.4",
     "sqlite3": "^6.0.1",
     "undici": "^7.16.0",
     "winston": "^3.11.0",

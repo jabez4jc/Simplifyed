@@ -447,6 +447,7 @@ Points to check after a migration:
 - **Webhook token.** If you rotated the token in Settings, it is stored in the database and has moved already. If you did not, step 3 copies the value from `.env`.
 - **Sessions.** The new server has its own `JWT_SECRET`, so all users must log in again.
 - **Live instances.** After the copy, both machines know the same broker instances. Enable order placement and webhooks on **one** machine only, or one alert places its orders twice.
+- **WhatsApp.** The linked WhatsApp session (`backend/database/whatsapp-auth/`) is not copied. Link it again on the new server on the **WhatsApp** page (Connection tab), and unlink the old server from your phone (WhatsApp → Linked Devices) so both do not send the 09:00 reminders.
 - **Start fresh instead.** If the source database contains test instances or test data that the new server must not have, do not migrate. Install a fresh copy and add the instances by hand.
 - **Roll back.** To restore the database that the new install had before the migration, stop the service and copy `/root/db-backup-before-migrate/` back into `/opt/simplifyed/backend/database/`. Then set `$SVC` as the owner of the files and start the service.
 

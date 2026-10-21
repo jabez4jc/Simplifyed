@@ -37,7 +37,7 @@ async function updateInstanceEndpoint(instance, endpoint, ok, reason = null) {
   if (prevOk && !ok) {
     const title = `Instance degraded: ${instance.name}`;
     const body = `${endpoint} failed: ${reason || 'Unknown error'}`;
-    await notify(title, body);
+    await notify(title, body, { alert: 'alert_degraded', instanceIds: [instance.id] });
     log.warn(`Instance lost ${endpoint} capability`, { instance: instance.name, reason });
   }
 }

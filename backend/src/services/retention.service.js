@@ -12,6 +12,7 @@ const WINDOWS = [
   ['notifications', 'created_at', 30, 'AND read = 1'],
   ['quick_orders', 'created_at', 90, ''],
   ['watchlist_orders', 'placed_at', 90, ''],
+  ['whatsapp_messages', 'created_at', 90, "AND status != 'queued'"],
 ];
 
 export async function pruneOldRows() {
@@ -26,4 +27,36 @@ export async function pruneOldRows() {
       log.warn('Retention prune failed', { table, error: err.message });
     }
   }
+  try {
+    await pruneWhatsAppPerInstance();
+  } catch (err) {
+    log.warn('Retention prune failed', { table: 'whatsapp_messages', error: err.message });
+  }
+}
+
+/**
+ * WhatsApp history: on top of the 90-day window above, keep the newest WHATSAPP_PER_INSTANCE
+ * messages of each instance. A message about several instances stays while it is among the newest
+ * of any of them; messages about no instance (admin-only alerts) count as one group of their own.
+ */
+export const WHATSAPP_PER_INSTANCE = 300;
+
+async function pruneWhatsAppPerInstance() {
+  const rows = await db.all("SELECT id, instance_ids FROM whatsapp_messages WHERE status != 'queued' ORDER BY id DESC");
+  const seen = new Map();
+  const drop = [];
+  for (const { id, instance_ids: ids } of rows) {
+    let keep = false;
+    for (const key of ids ? ids.split(',').filter(Boolean) : ['none']) {
+      const n = (seen.get(key) || 0) + 1;
+      seen.set(key, n);
+      if (n <= WHATSAPP_PER_INSTANCE) keep = true;
+    }
+    if (!keep) drop.push(id);
+  }
+  for (let i = 0; i < drop.length; i += 500) {
+    const chunk = drop.slice(i, i + 500);
+    await db.run(`DELETE FROM whatsapp_messages WHERE id IN (${chunk.map(() => '?').join(',')})`, chunk);
+  }
+  if (drop.length) log.info('Retention pruned', { table: 'whatsapp_messages', rows: drop.length, perInstance: WHATSAPP_PER_INSTANCE });
 }

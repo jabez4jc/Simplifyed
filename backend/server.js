@@ -21,6 +21,8 @@ import openalgoClient from './src/integrations/openalgo/client.js';
 import settingsService from './src/services/settings.service.js';
 import instanceHealthService from './src/services/instance-health.service.js';
 import instrumentsService from './src/services/instruments.service.js';
+import whatsappService from './src/services/whatsapp.service.js';
+import loginReminderService from './src/services/login-reminder.service.js';
 import wsGatewayService from './src/services/ws-gateway.service.js';
 import tradingviewWebhookRoutes from './src/routes/tradingview-webhook.js';
 import idempotencyService from './src/services/idempotency.service.js';
@@ -278,6 +280,14 @@ async function startServer() {
 
     // Start HTTP server
     server.listen(config.port, async () => {
+      // Printed first, before background services fill the console with their own logs
+      const localUrl = `http://localhost:${config.port}`;
+      console.log(`\n  Simplifyed running (${config.env}) on port ${config.port}`);
+      console.log(`  Local:    ${localUrl}`);
+      if (config.baseUrl && config.baseUrl !== localUrl) console.log(`  Base URL: ${config.baseUrl}`);
+      if (config.auth.enableTestMode === true) console.log('  TEST MODE - AUTH DISABLED');
+      console.log('');
+
       // Started unconditionally on boot, not lazily on the first login: a restart with no
       // browser open must not leave stop-loss/session-limit monitoring off while /webhook can
       // still place orders. startBackgroundServices() is already race-safe and logs its own
@@ -297,6 +307,11 @@ async function startServer() {
 
       // Instruments: daily refresh crons (Indian 08:30, crypto 17:31 IST) plus a boot catch-up if stale
       instrumentsService.startScheduledRefresh();
+
+      // WhatsApp: reconnect a session linked earlier (the outbox drains once it is open), and run
+      // the morning OpenAlgo login sequence
+      whatsappService.boot().catch((err) => log.warn('whatsapp_boot_failed', { error: err.message }));
+      loginReminderService.start();
     });
   } catch (error) {
     log.error('Failed to start server', error);
@@ -318,6 +333,8 @@ async function shutdown() {
     stopBackgroundServices();
     instanceHealthService.stop();
     instrumentsService.stopScheduledRefresh();
+    loginReminderService.stop();
+    whatsappService.stop();
     wsGatewayService.stop();
 
     // Close database

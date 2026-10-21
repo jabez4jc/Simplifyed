@@ -104,6 +104,27 @@ export function normalizeInstanceData(data, isUpdate = false) {
     }
   }
 
+  // Owner's name, for {owner_name} in WhatsApp messages
+  if (data.owner_name !== undefined) {
+    normalized.owner_name = isBlank(data.owner_name) ? null : sanitizeString(data.owner_name).slice(0, 80);
+  }
+
+  // Owner's WhatsApp number for the login reminder. Stored as digits with country code - the
+  // form that WhatsApp addresses (919876543210). A bare 10-digit number is taken as Indian.
+  if (data.whatsapp_phone !== undefined) {
+    if (isBlank(data.whatsapp_phone)) {
+      normalized.whatsapp_phone = null;
+    } else {
+      let digits = String(data.whatsapp_phone).replace(/[\s()+-]/g, '');
+      if (/^\d{10}$/.test(digits)) digits = `91${digits}`;
+      if (/^\d{11,15}$/.test(digits)) {
+        normalized.whatsapp_phone = digits;
+      } else {
+        errors.push({ field: 'whatsapp_phone', message: 'WhatsApp number must be digits with country code, e.g. 919876543210' });
+      }
+    }
+  }
+
   // Broker (auto-detected, but can be overridden)
   if (data.broker !== undefined) {
     normalized.broker = sanitizeString(data.broker);
