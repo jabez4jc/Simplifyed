@@ -15,7 +15,7 @@ import marketDataFeedService, { ORDER_STREAM_SWEEP_MS } from './market-data-feed
 import openalgoWsService from './openalgo-ws.service.js';
 import marketCalendarService from './market-calendar.service.js';
 import brokerUnitsService from './broker-units.service.js';
-import { ExternalAPIError } from '../core/errors.js';
+import { ConflictError, ExternalAPIError } from '../core/errors.js';
 
 /**
  * Order status is push-first (OpenAlgo WebSocket `order_update`, api-documentation/v1/
@@ -232,6 +232,9 @@ class PollingService {
    * @returns {Promise<Object>} - Updated instance data
    */
   async refreshInstance(instanceId) {
+    // Inactive instances are switched off: no broker calls, health checks or rate-limit tracking.
+    const target = await instanceService.getInstanceById(instanceId);
+    if (!target.is_active) throw new ConflictError('Instance is inactive; activate it before refreshing');
     try {
       // Get previous health state for logging
       const previousHealthState = openalgoClient.getInstanceHealthStatus(instanceId);

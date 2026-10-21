@@ -368,3 +368,18 @@
 .instance-row-actions .row-icon-danger {
   color: var(--act-exit);
 }
+
+/* Instances table: Active / Inactive group headers; inactive rows recede. */
+.instance-group-row td {
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-neutral-500);
+  background: var(--color-neutral-50);
+}
+
+.instance-row-inactive > td:not(:last-child) {
+  opacity: 0.55;
+}

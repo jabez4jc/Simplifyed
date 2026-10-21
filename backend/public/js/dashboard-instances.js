@@ -2,6 +2,8 @@
  * Simplifyed Admin V2 - Dashboard: Instances view + modals/bulk actions.
  */
 
+const NOT_CHECKED = '<span class="text-neutral-400" title="Inactive: not health-checked or rate-limited">—</span>';
+
 Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors(class {
   /**
    * Render Instances View
@@ -138,8 +140,12 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
             </tr>
         </thead>
         <tbody>
-          ${instances.map(instance => `
-            <tr>
+          ${this.groupInstancesByActive(instances).map(({ label, title, rows }) => `
+            <tr class="instance-group-row">
+              <td colspan="${showBulkActions ? 9 : 8}" title="${title}">${label} (${rows.length})</td>
+            </tr>
+          ${rows.map(instance => `
+            <tr class="${instance.is_active ? '' : 'instance-row-inactive'}">
               ${showBulkActions ? `<td><input type="checkbox" class="instances-bulk-checkbox" data-instance-id="${instance.id}" onchange="app.updateBulkActionsState()"></td>` : ''}
               <td>
                 <div class="font-medium">${Utils.escapeHTML(instance.name)}</div>
@@ -151,13 +157,13 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
               </td>
               <td>${instance.is_active
         ? Utils.getStatusBadge(instance.health_status || 'unknown')
-        : '<span class="badge badge-neutral" title="Switched off: no data is fetched and no orders are sent">Inactive</span>'}</td>
+        : NOT_CHECKED}</td>
               <td>
                 ${instance.is_analyzer_mode
         ? '<span class="badge badge-warning" title="Analyzer mode: orders are simulated, no real money">Analyzer</span>'
         : '<span class="badge badge-success" title="Live mode: orders go to the exchange with real money">Live</span>'}
               </td>
-              <td>${this.renderLimitBadge(instance.limit_metrics)}</td>
+              <td>${instance.is_active ? this.renderLimitBadge(instance.limit_metrics) : NOT_CHECKED}</td>
               <td class="text-right">
                 <span class="whitespace-nowrap ${Utils.getPnLColorClass(instance.total_pnl)}">${Utils.formatCurrency(instance.total_pnl || 0)}</span>
               </td>
@@ -185,11 +191,12 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
                           onclick="app.showEditInstanceModal(${instance.id})">
                     Edit
                   </button>
+                  ${instance.is_active ? `
                   <button class="btn btn-neutral btn-outline btn-sm row-icon-btn"
                           onclick="app.refreshInstance(${instance.id})"
                           title="Re-check health, balance and P&L now" aria-label="Refresh">
                     <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
-                  </button>
+                  </button>` : ''}
                   ${this.isAdmin() && instance.whatsapp_phone ? `
                   <button class="btn btn-neutral btn-outline btn-sm row-icon-btn"
                           onclick="app.messageInstanceOwner(${instance.id})"
@@ -205,9 +212,18 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
               </td>
             </tr>
           `).join('')}
+          `).join('')}
         </tbody>
       </table>
     `;
+  }
+
+  // Active instances first; empty groups are dropped.
+  groupInstancesByActive(instances) {
+    return [
+      { label: 'Active', title: 'Health-checked, polled for P&L and balance, and receive orders', rows: instances.filter(i => i.is_active) },
+      { label: 'Inactive', title: 'Switched off: no data is fetched, no health or rate-limit checks, no orders sent', rows: instances.filter(i => !i.is_active) },
+    ].filter(g => g.rows.length);
   }
 
   renderLimitBadge(metrics) {

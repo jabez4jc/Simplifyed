@@ -553,3 +553,12 @@ test('a mutating response is not cacheable by the browser', async () => {
     `authenticated API responses must forbid caching, got Cache-Control: '${cacheControl || '(none)'}'`
   );
 });
+
+test('refreshing an inactive instance is refused without touching the broker', async () => {
+  const inst = await makeInstance({ is_active: 0 });
+  const res = await post(`/api/v1/instances/${inst.id}/refresh`, await asAdmin());
+  assert.strictEqual(res.status, STATUS.CONFLICT);
+  assert.strictEqual(broker.countOf('ping'), 0, 'an inactive instance is never health-checked');
+  const row = await db.get('SELECT health_status FROM instances WHERE id = ?', [inst.id]);
+  assert.strictEqual(row.health_status, inst.health_status, 'health is left as it was');
+});
