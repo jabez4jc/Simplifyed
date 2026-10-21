@@ -169,8 +169,8 @@ class APIClient {
   }
 
 
-  async deleteInstance(id) {
-    return this.request(`/instances/${id}`, {
+  async deleteInstance(id, { force = false } = {}) {
+    return this.request(`/instances/${id}${force ? '?force=true' : ''}`, {
       method: 'DELETE',
     });
   }

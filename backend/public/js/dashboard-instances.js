@@ -680,7 +680,19 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     if (!confirmed) return;
 
     try {
-      await api.deleteInstance(instanceId);
+      try {
+        await api.deleteInstance(instanceId);
+      } catch (error) {
+        // The server refuses while it cannot rule out open positions (broker unreachable or
+        // positions still open); show why and let the user force it.
+        if (!String(error.message).includes('force=true')) throw error;
+        const forced = await Utils.confirm(
+          `${error.message.replace(/ Retry, or delete with force=true\.| Close them first, or delete with force=true\./, '')} Delete anyway? Any open position on the broker will no longer be managed by this app.`,
+          'Force Delete'
+        );
+        if (!forced) return;
+        await api.deleteInstance(instanceId, { force: true });
+      }
       Utils.showToast('Instance deleted', 'success');
       await this.refreshCurrentView();
     } catch (error) {
