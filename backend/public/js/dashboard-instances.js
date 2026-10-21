@@ -177,28 +177,29 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
               </td>
               <td>
                 <div class="instance-row-actions">
-                  <button class="btn btn-neutral btn-outline btn-sm"
-                          onclick="app.refreshInstance(${instance.id})"
-                          title="Re-check health, balance and P&L now">
-                    Refresh
+                  <button class="btn btn-${instance.is_analyzer_mode ? 'success' : 'warning'} btn-sm"
+                          onclick="app.toggleAnalyzerMode(${instance.id}, ${!instance.is_analyzer_mode})">
+                    ${instance.is_analyzer_mode ? 'Go Live' : 'Analyzer'}
                   </button>
                   <button class="btn btn-neutral btn-outline btn-sm"
                           onclick="app.showEditInstanceModal(${instance.id})">
                     Edit
                   </button>
-                  ${this.isAdmin() && instance.whatsapp_phone ? `
-                  <button class="btn btn-neutral btn-outline btn-sm"
-                          onclick="app.messageInstanceOwner(${instance.id})"
-                          title="Send a WhatsApp message to this instance's owner">
-                    Message owner
-                  </button>` : ''}
-                  <button class="btn btn-${instance.is_analyzer_mode ? 'success' : 'warning'} btn-sm"
-                          onclick="app.toggleAnalyzerMode(${instance.id}, ${!instance.is_analyzer_mode})">
-                    ${instance.is_analyzer_mode ? 'Go Live' : 'Analyzer'}
+                  <button class="btn btn-neutral btn-outline btn-sm row-icon-btn"
+                          onclick="app.refreshInstance(${instance.id})"
+                          title="Re-check health, balance and P&L now" aria-label="Refresh">
+                    <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
                   </button>
-                  <button class="btn btn-exit btn-sm"
-                          onclick="app.deleteInstance(${instance.id})">
-                    Delete
+                  ${this.isAdmin() && instance.whatsapp_phone ? `
+                  <button class="btn btn-neutral btn-outline btn-sm row-icon-btn"
+                          onclick="app.messageInstanceOwner(${instance.id})"
+                          title="Send a WhatsApp message to this instance's owner" aria-label="Message owner">
+                    <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                  </button>` : ''}
+                  <button class="btn btn-neutral btn-outline btn-sm row-icon-btn row-icon-danger"
+                          onclick="app.deleteInstance(${instance.id})"
+                          title="Delete instance" aria-label="Delete">
+                    <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></svg>
                   </button>
                 </div>
               </td>

@@ -338,9 +338,33 @@
   }
 }
 
-/* Instances table: four row actions in a 2x2 grid keep rows short and the table on screen. */
+/* Instances table: row actions on one line; secondary actions are icon-only. */
 .instance-row-actions {
-  display: grid;
-  grid-template-columns: repeat(2, max-content);
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
   gap: 6px;
+}
+
+.instance-row-actions .row-icon-btn {
+  padding: 0;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.instance-row-actions .row-icon-btn svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.instance-row-actions .row-icon-danger {
+  color: var(--act-exit);
 }
