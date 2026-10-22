@@ -38,6 +38,7 @@ const MULTI_QUOTE_SYMBOL_LIMIT = 50;
 const FEED_STAGGER_MS = 2000;
 const WS_SYMBOL_STALE_MS = 10 * 60 * 1000;
 const DEFAULT_DEPTH_LEVEL = 5;
+const OPEN_ORDER_STATUSES = new Set(['open', 'pending', 'trigger_pending', 'partial']);
 
 /**
  * INT32 overflow markers.
@@ -1169,10 +1170,6 @@ class MarketDataFeedService extends EventEmitter {
         });
       }
 
-      if (trackedSymbols.length === 0) {
-        return [];
-      }
-
       const symbolList = trackedSymbols.map(symbol => ({
         exchange: symbol.exchange,
         symbol: symbol.symbol,
@@ -1196,6 +1193,18 @@ class MarketDataFeedService extends EventEmitter {
           if (symbol && exchange) {
             symbolList.push({ exchange, symbol });
           }
+        });
+      });
+
+      // Add open-order symbols so resting orders stay quoted even with no watchlist row
+      this.orderbookCache.forEach((snapshot) => {
+        const raw = snapshot?.data;
+        const orders = Array.isArray(raw) ? raw : raw?.orders || raw?.data || [];
+        if (!Array.isArray(orders)) return;
+        orders.filter((o) => this._isOpenOrder(o)).forEach((o) => {
+          const symbol = (o.symbol || o.tradingsymbol || '').trim();
+          const exchange = (o.exchange || '').trim();
+          if (symbol && exchange) symbolList.push({ exchange, symbol });
         });
       });
 
@@ -1908,14 +1917,14 @@ class MarketDataFeedService extends EventEmitter {
     this.hasOpenPositions = this.openPositionInstances.size > 0;
   }
 
+  _isOpenOrder(order) {
+    const statusRaw = (order?.order_status || order?.status || '').toString().toLowerCase();
+    return OPEN_ORDER_STATUSES.has(normalizeOrderStatus(statusRaw));
+  }
+
   _updateOpenOrderState(instanceId, orders = []) {
-    const openStatuses = new Set(['open', 'pending', 'trigger_pending', 'partial']);
     const list = Array.isArray(orders) ? orders : orders?.orders || orders?.data || [];
-    const hasOpen = Array.isArray(list) && list.some((order) => {
-      const statusRaw = (order.order_status || order.status || '').toString().toLowerCase();
-      const status = normalizeOrderStatus(statusRaw);
-      return openStatuses.has(status);
-    });
+    const hasOpen = Array.isArray(list) && list.some((order) => this._isOpenOrder(order));
 
     if (hasOpen) {
       this.openOrderInstances.add(instanceId);

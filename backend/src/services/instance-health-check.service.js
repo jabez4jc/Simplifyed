@@ -20,6 +20,7 @@ import { notify } from './notify.service.js';
 import marketDataFeedService from './market-data-feed.service.js';
 import { DEFAULT_ANALYZER_TTL_MS } from './instance-analyzer.service.js';
 import { staggeredInstanceRequest } from '../utils/instance-request-throttle.util.js';
+import { isCryptoBroker } from '../utils/broker-type.util.js';
 
 const DEFAULT_PING_HEALTHY_MS = 5 * 60 * 1000;
 const DEFAULT_PING_UNHEALTHY_MS = 3 * 60 * 1000;
@@ -56,6 +57,7 @@ class InstanceHealthCheckService {
       try {
         // Test connection
         await staggeredInstanceRequest(id, () => openalgoClient.ping(instance));
+        await this._checkBrokerSession(instance);
         healthStatus = 'healthy';
 
         // Update last ping time
@@ -131,6 +133,22 @@ class InstanceHealthCheckService {
       log.error('Failed to update health status', error, { instanceId: id });
       throw error;
     }
+  }
+
+  /**
+   * ping only proves OpenAlgo is up and its API key is valid - it never touches the broker. On
+   * 2026-10-22 Maha (19) and Ana (20) passed it with an expired Fyers token ("Failed to extract
+   * HSM key from access token") and showed healthy while every order was rejected. funds is no
+   * better: in analyzer mode it answers from the sandbox. A quote always goes through the broker
+   * session, and the sandbox prices its fills from one, so it is the call that has to work.
+   * Called raw rather than via getQuote, whose per-symbol failure cooldown would hold an instance
+   * unhealthy after its owner logs back in.
+   */
+  async _checkBrokerSession(instance) {
+    // ponytail: crypto (Delta) keys do not expire daily; add a crypto probe symbol if that changes.
+    if (isCryptoBroker(instance.broker)) return;
+    await staggeredInstanceRequest(instance.id, () =>
+      openalgoClient.request(instance, 'quotes', { symbol: 'NIFTY', exchange: 'NSE_INDEX' }));
   }
 
   resetHealthCheckState(id) {

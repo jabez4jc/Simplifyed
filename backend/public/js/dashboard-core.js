@@ -369,6 +369,25 @@ class DashboardApp {
     this.updateFeedStatus();
     // 1s tick: the stale countdown is the whole point, so it has to advance in real time.
     this.feedStatusInterval = setInterval(() => this.updateFeedStatus(), 1000);
+    // The server polls watchlists, open positions and open orders whatever view is open, but in
+    // REST mode only the Watchlists view's own pollers used to mark the clock - so the pill went
+    // stale the moment you left it. Read the server's quote freshness instead; WS pushes mark it
+    // directly in handleWsMessage.
+    this.pollServerFeedFreshness();
+    this.feedHeartbeatInterval = setInterval(() => this.pollServerFeedFreshness(), 10000);
+  }
+
+  async pollServerFeedFreshness() {
+    if (this.wsConnected || document.hidden) return;
+    try {
+      const res = await api.getTelemetryCacheStatus();
+      const { generatedAt, entries = [] } = res?.data || {};
+      const newest = Math.max(0, ...entries.filter((e) => e.feed === 'quotes').map((e) => e.fetchedAt || 0));
+      // Shift to this browser's clock so server/client skew can't fake freshness.
+      if (newest && generatedAt) this.markDataReceived(Date.now() - (generatedAt - newest));
+    } catch (_) {
+      // The pill going stale is the report.
+    }
   }
 
 
