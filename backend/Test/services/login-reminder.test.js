@@ -24,7 +24,7 @@ before(async () => {
   mock.method(marketCalendarService, 'getHolidayInfo', async () => null);
   mock.method(whatsappService, 'getStatus', () => ({ status: 'open', phone: ADMIN_PHONE, qr: null }));
   mock.method(whatsappService, 'phone', () => ADMIN_PHONE);
-  mock.method(whatsappService, 'sendText', async (phone, text) => {
+  mock.method(whatsappService, 'sendMessage', async (phone, text, media = []) => {
     if (phone === '910000000000') throw new Error('910000000000 is not on WhatsApp');
     sent.push({ phone, text });
   });

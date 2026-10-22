@@ -11,6 +11,18 @@ const WA_TABS = [
   ['connection', 'Connection'],
 ];
 const WA_SEND_TO = [['owner', 'Owner'], ['admin', 'Admin (linked number)'], ['both', 'Owner + admin']];
+// Mirrors mediaKind in whatsapp.service.js: what plays inline (16 MB cap) vs goes as a document
+const WA_INLINE_MAX = 16 * 1024 * 1024;
+const WA_FILE_MAX = 90 * 1024 * 1024;
+function waMediaKind(type) {
+  const m = String(type || '').toLowerCase();
+  if (m === 'image/jpeg' || m === 'image/png') return 'photo';
+  if (m === 'video/mp4' || m === 'video/3gpp') return 'video';
+  if (/^audio\/(aac|mp4|mpeg|mp3|amr|ogg|opus|x-m4a)$/.test(m)) return 'audio';
+  return 'document';
+}
+const waSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+
 const WA_STYLES = [['*', 'Bold', 'font-weight:700'], ['_', 'Italic', 'font-style:italic'], ['~', 'Strikethrough', 'text-decoration:line-through'], ['```', 'Monospace', 'font-family:monospace']];
 
 /**
@@ -161,6 +173,14 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
                   placeholder="Hi {owner_name}, ...">${esc(this.wa.draft || '')}</textarea>
         <p class="text-xs text-neutral-600">Placeholders are filled in per recipient (hover one to see what it holds; P&amp;L and balance are the latest figures the app has polled). Instance details send one message per instance. Select text and use B / I / S / &lt;/&gt; to format it; Preview shows it as WhatsApp will.</p>
         ${this.waChips('custom', 'wa-body')}
+        <div>
+          <label class="btn btn-neutral btn-outline btn-sm" style="cursor:pointer">
+            Attach files
+            <input type="file" multiple class="hidden" onchange="app.addWaFiles(this)" aria-label="Attach files">
+          </label>
+          <span class="text-xs text-neutral-600 ml-2">Up to 10 files: photos (JPG/PNG), videos (MP4), audio up to 16 MB; any other file - PDF, TXT, Excel, screenshots in other formats... - goes as a document, up to 90 MB.</span>
+          <div id="wa-files" class="mt-2"></div>
+        </div>
         <div class="flex flex-wrap gap-2">
           <button class="btn btn-neutral btn-outline btn-sm" onclick="app.previewWaMessage()">Preview</button>
           <button class="btn btn-buy btn-sm" onclick="app.sendWaMessage()">Send</button>
@@ -169,6 +189,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         <div id="wa-preview"></div>
       </div></div>`;
     this.updateWaSelection();
+    this.renderWaFiles();
   }
 
   updateWaSelection() {
@@ -208,6 +229,54 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     if (t) document.getElementById('wa-body').value = t.body;
   }
 
+  addWaFiles(input) {
+    this.wa.files = this.wa.files || [];
+    for (const f of input.files) {
+      const kind = waMediaKind(f.type);
+      if (this.wa.files.length >= 10) { Utils.showToast('At most 10 files per message', 'warning'); break; }
+      if (f.size > WA_FILE_MAX || (kind !== 'document' && f.size > WA_INLINE_MAX)) {
+        Utils.showToast(`${f.name} is too large (${waSize(f.size)}; ${kind === 'document' ? '90' : '16'} MB max for a ${kind})`, 'error', 5000);
+        continue;
+      }
+      this.wa.files.push(f);
+    }
+    input.value = '';
+    this.renderWaFiles();
+  }
+
+  removeWaFile(index) {
+    this.wa.files.splice(index, 1);
+    this.renderWaFiles();
+  }
+
+  renderWaFiles() {
+    const el = document.getElementById('wa-files');
+    if (!el) return;
+    const esc = Utils.escapeHTML;
+    el.innerHTML = (this.wa.files || []).map((f, i) => `
+      <div class="flex items-center gap-2 text-sm">
+        <span class="badge">${waMediaKind(f.type)}</span>
+        <span style="overflow-wrap:anywhere">${esc(f.name)}</span>
+        <span class="text-xs text-neutral-600">${waSize(f.size)}</span>
+        <button type="button" class="btn btn-xs btn-neutral btn-outline" onclick="app.removeWaFile(${i})" aria-label="Remove ${esc(f.name)}">Remove</button>
+      </div>`).join('');
+  }
+
+  /** Attachments as the preview shows them: photo thumbnails (data: URLs - the CSP allows no blob: images), a chip for the rest. */
+  async waFilesPreviewHTML() {
+    const esc = Utils.escapeHTML;
+    const asDataUrl = (f) => new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => resolve('');
+      reader.readAsDataURL(f);
+    });
+    const parts = await Promise.all((this.wa.files || []).map(async (f) => (waMediaKind(f.type) === 'photo'
+      ? `<img src="${await asDataUrl(f)}" alt="${esc(f.name)}" style="max-height:120px;max-width:180px;border-radius:6px">`
+      : `<span class="badge" style="text-transform:none">${waMediaKind(f.type)}: ${esc(f.name)}</span>`)));
+    return `<div class="flex flex-wrap gap-2 mb-1">${parts.join('')}</div>`;
+  }
+
   waPayload() {
     this.wa.draft = document.getElementById('wa-body').value;
     const templateId = Number(document.getElementById('wa-template').value);
@@ -215,6 +284,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
       body: this.wa.draft,
       instance_ids: [...this.wa.selected],
       template_key: this.wa.templates.find((t) => t.id === templateId)?.key || null,
+      attachments: (this.wa.files || []).length > 0,
     };
   }
 
@@ -223,6 +293,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     try {
       const { messages, skipped, per_instance: perInstance } = (await api.request('/whatsapp/preview', { method: 'POST', body: this.waPayload() })).data;
       const esc = Utils.escapeHTML;
+      const filesHtml = this.wa.files?.length ? await this.waFilesPreviewHTML() : '';
       out.innerHTML = `
         <p class="text-sm font-semibold">${messages.length} message(s) will be sent${skipped.length ? ` - skipped (no number): ${esc(skipped.join(', '))}` : ''}</p>
         <p class="text-xs text-neutral-600">${perInstance
@@ -231,6 +302,7 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
         ${messages.slice(0, 5).map((m) => `
           <div class="border border-base-300 rounded-lg p-3 mt-2">
             <div class="text-xs text-neutral-600">To +${esc(m.phone)} - ${esc(m.instances.join(', '))}</div>
+            ${filesHtml}
             <div class="text-sm whitespace-pre-wrap mt-1" style="overflow-wrap:anywhere">${waFormatHTML(m.body)}</div>
           </div>`).join('')}
         ${messages.length > 5 ? `<p class="text-xs text-neutral-600 mt-1">...and ${messages.length - 5} more</p>` : ''}`;
@@ -246,11 +318,22 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
     // Same rule as the server: instance details in the text mean one message per instance
     const perInstance = this.wa.perInstance.test(payload.body);
     const count = perInstance ? chosen.length : owners.size;
-    if (!confirm(`Send ${count} WhatsApp message(s) to ${owners.size} owner(s)?${perInstance && count > owners.size
+    const files = this.wa.files || [];
+    if (!confirm(`Send ${count} WhatsApp message(s) to ${owners.size} owner(s)${files.length ? `, each with ${files.length} attachment(s)` : ''}?${perInstance && count > owners.size
       ? '\n\nThe text refers to instance details, so an owner of several selected instances gets one message per instance.' : ''}`)) return;
+    let body = payload;
+    if (files.length) {
+      body = new FormData();
+      body.append('body', payload.body);
+      body.append('instance_ids', JSON.stringify(payload.instance_ids));
+      if (payload.template_key) body.append('template_key', payload.template_key);
+      files.forEach((f) => body.append('files', f, f.name));
+    }
     try {
-      const { queued, skipped } = (await api.request('/whatsapp/send', { method: 'POST', body: payload })).data;
+      const { queued, skipped } = (await api.request('/whatsapp/send', { method: 'POST', body })).data;
       this.wa.draft = '';
+      this.wa.files = [];
+      this.renderWaFiles();
       Utils.showToast(`${queued} message(s) queued - they go out a few seconds apart. See History.${skipped.length ? ` Skipped: ${skipped.join(', ')}` : ''}`, 'success', 5000);
       document.getElementById('wa-preview').innerHTML = '';
     } catch (error) {
@@ -382,11 +465,27 @@ Object.defineProperties(DashboardApp.prototype, Object.getOwnPropertyDescriptors
               <td class="whitespace-nowrap">${m.recipient === 'admin' ? 'Admin' : ''} ${m.phone ? `+${esc(m.phone)}` : ''}</td>
               <td>${esc(m.template_key || 'custom')}</td>
               <td><span class="badge ${badge[m.status] || ''}">${esc(m.status)}</span>${m.error ? `<div class="text-xs text-error">${esc(m.error)}</div>` : ''}</td>
-              <td><pre class="text-xs whitespace-pre-wrap" style="font-family:inherit;max-width:32rem">${esc(m.body)}</pre></td>
+              <td><pre class="text-xs whitespace-pre-wrap" style="font-family:inherit;max-width:32rem">${esc(m.body)}</pre>
+                ${m.media ? JSON.parse(m.media).map((f, i) => `<button type="button" class="btn btn-xs btn-neutral btn-outline mt-1" style="text-transform:none"
+                     onclick="app.downloadWaAttachment(${m.id}, ${i}, this.dataset.name)" data-name="${esc(f.name)}">📎 ${esc(f.name)}</button>`).join(' ') : ''}</td>
               <td class="text-xs">${esc(m.sent_by_email || 'automatic')}</td>
             </tr>`).join('') : '<tr><td colspan="6" class="text-sm text-neutral-600">No messages yet.</td></tr>'}</tbody>
         </table></div>
       </div></div>`;
+  }
+
+  /** The download needs the login token, so it is fetched and handed to the browser as a blob. */
+  async downloadWaAttachment(id, index, name) {
+    try {
+      const res = await fetch(`/api/v1/whatsapp/messages/${id}/media/${index}`, { headers: { Authorization: `Bearer ${localStorage.getItem('auth_token')}` } });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).message || `HTTP ${res.status}`);
+      const url = URL.createObjectURL(await res.blob());
+      const a = Object.assign(document.createElement('a'), { href: url, download: name });
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      Utils.showToast(error.message, 'error');
+    }
   }
 
   // ── Connection ──────────────────────────────────────────

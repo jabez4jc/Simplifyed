@@ -24,15 +24,16 @@ class WhatsAppOutboxService {
 
   /**
    * Queue messages. Each: { recipient: 'owner'|'admin', phone (owner only - the admin's is the
-   * linked account, resolved at send time), instanceIds, templateKey, body, priority, sentBy }.
+   * linked account, resolved at send time), instanceIds, templateKey, body, priority, sentBy,
+   * media: [{ file, name, mime, size }] already stored in MEDIA_DIR }.
    * @returns {Promise<number[]>} ids of the queued rows
    */
   async enqueue(messages) {
     const ids = [];
     for (const m of messages) {
       const { lastID } = await db.run(
-        `INSERT INTO whatsapp_messages (recipient, phone, instance_ids, template_key, body, priority, sent_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO whatsapp_messages (recipient, phone, instance_ids, template_key, body, priority, sent_by, media)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           m.recipient,
           m.recipient === 'admin' ? null : m.phone,
@@ -41,6 +42,7 @@ class WhatsAppOutboxService {
           m.body,
           m.priority ?? PRIORITY.normal,
           m.sentBy ?? null,
+          m.media?.length ? JSON.stringify(m.media) : null,
         ]
       );
       ids.push(lastID);
@@ -75,7 +77,7 @@ class WhatsAppOutboxService {
       const phone = row.recipient === 'admin' ? whatsappService.phone() : row.phone;
       try {
         if (!phone) throw new Error('WhatsApp not connected');
-        await whatsappService.sendText(phone, row.body);
+        await whatsappService.sendMessage(phone, row.body, row.media ? JSON.parse(row.media) : []);
         await db.run("UPDATE whatsapp_messages SET status = 'sent', phone = ?, sent_at = CURRENT_TIMESTAMP WHERE id = ?", [phone, row.id]);
       } catch (err) {
         await db.run("UPDATE whatsapp_messages SET status = 'failed', phone = ?, error = ? WHERE id = ?", [phone, err.message, row.id]);

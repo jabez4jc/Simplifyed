@@ -2,8 +2,11 @@
  * Retention: the 6-hourly prune job (server.js). Each table keeps a fixed window (audit P3-1).
  */
 
+import fs from 'fs';
+import path from 'path';
 import db from '../core/database.js';
 import { log } from '../core/logger.js';
+import { MEDIA_DIR } from './whatsapp.service.js';
 
 const WINDOWS = [
   ['audit_logs', 'created_at', 7, ''],
@@ -59,4 +62,29 @@ async function pruneWhatsAppPerInstance() {
     await db.run(`DELETE FROM whatsapp_messages WHERE id IN (${chunk.map(() => '?').join(',')})`, chunk);
   }
   if (drop.length) log.info('Retention pruned', { table: 'whatsapp_messages', rows: drop.length, perInstance: WHATSAPP_PER_INSTANCE });
+  await pruneWhatsAppMedia();
+}
+
+/** Delete attachment files no message refers to any more (an hour's grace for a send in progress). */
+async function pruneWhatsAppMedia() {
+  let names;
+  try {
+    names = await fs.promises.readdir(MEDIA_DIR);
+  } catch {
+    return; // nothing uploaded yet
+  }
+  const used = new Set();
+  for (const { media } of await db.all('SELECT media FROM whatsapp_messages WHERE media IS NOT NULL')) {
+    for (const m of JSON.parse(media)) used.add(m.file);
+  }
+  let removed = 0;
+  for (const name of names) {
+    if (used.has(name)) continue;
+    const file = path.join(MEDIA_DIR, name);
+    const { mtimeMs } = await fs.promises.stat(file);
+    if (Date.now() - mtimeMs < 60 * 60 * 1000) continue;
+    await fs.promises.rm(file, { force: true });
+    removed += 1;
+  }
+  if (removed) log.info('Retention pruned', { table: 'whatsapp media files', rows: removed });
 }

@@ -13,6 +13,8 @@ backend/database/*.db-shm
 backend/database/*.db-wal
 # Linked WhatsApp session (keys to the account)
 backend/database/whatsapp-auth/
+# Attachments waiting to be sent / kept for WhatsApp history
+backend/database/whatsapp-media/
 
 # Logs
 logs/*.log

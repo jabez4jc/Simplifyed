@@ -27,9 +27,26 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = path.resolve(__dirname, '../../', process.env.DATABASE_PATH || './database/simplifyed.db');
 // Test runs keep their databases in the same folder, so they get a session folder of their own:
 // the API contract sweep calls /whatsapp/logout, which once deleted the real linked session.
-export const AUTH_DIR = process.env.NODE_TEST_CONTEXT
+const DATA_DIR = process.env.NODE_TEST_CONTEXT
   ? path.join(os.tmpdir(), `simplifyed-whatsapp-test-${process.pid}`)
-  : path.join(path.dirname(DB_PATH), 'whatsapp-auth');
+  : path.dirname(DB_PATH);
+export const AUTH_DIR = path.join(DATA_DIR, process.env.NODE_TEST_CONTEXT ? 'auth' : 'whatsapp-auth');
+// Attachments wait here until every message carrying them has been sent and later pruned
+export const MEDIA_DIR = path.join(DATA_DIR, process.env.NODE_TEST_CONTEXT ? 'media' : 'whatsapp-media');
+
+/**
+ * How WhatsApp shows a file. JPEG/PNG, MP4/3GP and the common audio formats play inline (16 MB
+ * cap); everything else - PDF, text, Office files, ZIP, GIF, WebP, HEIC... - goes as a document,
+ * which WhatsApp accepts in any format.
+ */
+export const INLINE_MAX_BYTES = 16 * 1024 * 1024;
+export function mediaKind(mime) {
+  const m = String(mime || '').toLowerCase();
+  if (m === 'image/jpeg' || m === 'image/png') return 'image';
+  if (m === 'video/mp4' || m === 'video/3gpp') return 'video';
+  if (/^audio\/(aac|mp4|mpeg|mp3|amr|ogg|opus|x-m4a)$/.test(m)) return 'audio';
+  return 'document';
+}
 
 const RECONNECT_MIN_MS = 3000;
 const RECONNECT_MAX_MS = 60000;
@@ -161,10 +178,33 @@ class WhatsAppService {
 
   /** Send a text to a number (digits with country code). Throws when not connected or not on WhatsApp. */
   async sendText(phone, text) {
+    return this.sendMessage(phone, text);
+  }
+
+  /**
+   * Send text and attachments ([{ file, name, mime }] stored in MEDIA_DIR) to one number. The text
+   * rides as the first attachment's caption where WhatsApp allows one (image, video, document);
+   * audio takes no caption, so the text then goes first on its own. Further files follow without one.
+   */
+  async sendMessage(phone, text, media = []) {
     if (!this.sock || this.status !== 'open') throw new Error('WhatsApp not connected');
     const [result] = await this.sock.onWhatsApp(phone);
     if (!result?.exists) throw new Error(`${phone} is not on WhatsApp`);
-    await this.sock.sendMessage(result.jid, { text });
+    let caption = text || undefined;
+    if (!media.length || mediaKind(media[0].mime) === 'audio') {
+      if (caption) await this.sock.sendMessage(result.jid, { text: caption });
+      caption = undefined;
+    }
+    for (const m of media) {
+      const source = { url: path.join(MEDIA_DIR, path.basename(m.file)) };
+      const kind = mediaKind(m.mime);
+      const content = kind === 'document'
+        ? { document: source, mimetype: m.mime || 'application/octet-stream', fileName: m.name, caption }
+        : kind === 'audio' ? { audio: source, mimetype: m.mime, ptt: false }
+          : { [kind]: source, caption };
+      await this.sock.sendMessage(result.jid, content);
+      caption = undefined;
+    }
   }
 }
 

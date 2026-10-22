@@ -10,7 +10,9 @@ import { STATUS } from '../helpers/http.js';
 import db from '../../src/core/database.js';
 import whatsappRoutes from '../../src/routes/v1/whatsapp.js';
 import instanceRoutes from '../../src/routes/v1/instances.js';
-import whatsappService from '../../src/services/whatsapp.service.js';
+import fs from 'fs';
+import path from 'path';
+import whatsappService, { MEDIA_DIR } from '../../src/services/whatsapp.service.js';
 import whatsappOutbox from '../../src/services/whatsapp-outbox.service.js';
 
 let wa;
@@ -21,7 +23,7 @@ before(async () => {
   wa = buildApp(whatsappRoutes, '/api/v1/whatsapp');
   inst = buildApp(instanceRoutes, '/api/v1/instances');
   mock.method(whatsappService, 'getStatus', () => ({ status: 'open', phone: '918951708122', qr: null }));
-  mock.method(whatsappService, 'sendText', async (phone, text) => { sent.push({ phone, text }); });
+  mock.method(whatsappService, 'sendMessage', async (phone, text, media = []) => { sent.push({ phone, text, media }); });
   whatsappOutbox.gap = () => 0;
 });
 beforeEach(async () => {
@@ -165,4 +167,50 @@ test('every instance field is available in custom messages, with live figures pe
     'Session 12.25 | day 0.00 | bal 0.00 | target not set | cap not set | Live | Not reachable',
     'Session ₹1,250.50 | day -₹300.00 | bal ₹1,50,000.00 | target not set | cap ₹2,000.00 | Analyzer | Reachable',
   ]);
+});
+
+test('attachments: stored once, sent to every recipient with the text as caption, downloadable from History', async () => {
+  const admin = await asAdmin();
+  const a = await makeInstance({ owner_name: 'Ana', whatsapp_phone: '919876543210' });
+  const b = await makeInstance({ owner_name: 'Sai', whatsapp_phone: '919812345678' });
+  const before = fs.existsSync(MEDIA_DIR) ? fs.readdirSync(MEDIA_DIR).length : 0;
+
+  const res = await bearer(request(wa).post('/api/v1/whatsapp/send'), admin)
+    .field('body', 'Hi {owner_name}, *statement* attached')
+    .field('instance_ids', JSON.stringify([a.id, b.id]))
+    .attach('files', Buffer.from('%PDF-1.4 test'), { filename: 'Statement Oct.pdf', contentType: 'application/pdf' })
+    .attach('files', Buffer.from([0xff, 0xd8, 0xff, 0xe0]), { filename: 'screen.jpg', contentType: 'image/jpeg' });
+  assert.strictEqual(res.status, STATUS.OK, res.text);
+  assert.deepStrictEqual([res.body.data.queued, res.body.data.attachments], [2, 2]);
+  await whatsappOutbox.drain();
+
+  assert.strictEqual(sent.length, 2);
+  assert.deepStrictEqual(sent.map((m) => m.text).sort(), ['Hi Ana, *statement* attached', 'Hi Sai, *statement* attached']);
+  for (const m of sent) {
+    assert.deepStrictEqual(m.media.map((f) => [f.name, f.mime]), [['Statement Oct.pdf', 'application/pdf'], ['screen.jpg', 'image/jpeg']]);
+  }
+  assert.strictEqual(sent[0].media[0].file, sent[1].media[0].file, 'one stored copy shared by every recipient');
+  assert.strictEqual(fs.readdirSync(MEDIA_DIR).length, before + 2);
+
+  const [row] = (await bearer(request(wa).get('/api/v1/whatsapp/messages'), admin)).body.data;
+  const dl = await bearer(request(wa).get(`/api/v1/whatsapp/messages/${row.id}/media/0`), admin).buffer(true);
+  assert.strictEqual(dl.status, STATUS.OK);
+  assert.match(dl.headers['content-disposition'], /Statement Oct\.pdf/);
+  assert.strictEqual(dl.body.toString(), '%PDF-1.4 test');
+  assert.strictEqual((await bearer(request(wa).get(`/api/v1/whatsapp/messages/${row.id}/media/9`), admin)).status, STATUS.NOT_FOUND);
+
+  // Text is optional with an attachment; a photo over WhatsApp's 16 MB is refused and not kept
+  const onlyFile = await bearer(request(wa).post('/api/v1/whatsapp/send'), admin)
+    .field('body', '').field('instance_ids', JSON.stringify([a.id]))
+    .attach('files', Buffer.from('hello'), { filename: 'note.txt', contentType: 'text/plain' });
+  assert.strictEqual(onlyFile.status, STATUS.OK, onlyFile.text);
+  const count = fs.readdirSync(MEDIA_DIR).length;
+  const big = await bearer(request(wa).post('/api/v1/whatsapp/send'), admin)
+    .field('body', 'x').field('instance_ids', JSON.stringify([a.id]))
+    .attach('files', Buffer.alloc(17 * 1024 * 1024), { filename: 'huge.png', contentType: 'image/png' });
+  assert.strictEqual(big.status, STATUS.VALIDATION);
+  assert.match(big.body.message, /16 MB/);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.strictEqual(fs.readdirSync(MEDIA_DIR).length, count, 'a refused upload is deleted');
+  assert.ok(path.isAbsolute(MEDIA_DIR));
 });

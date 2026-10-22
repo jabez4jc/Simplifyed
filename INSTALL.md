@@ -395,6 +395,14 @@ This command does the following:
 
 It keeps `backend/.env` and the nginx configuration, so `BEHIND_PROXY` continues to apply.
 
+**Once, for installs made before WhatsApp attachments:** nginx accepts only 1 MB per request unless told otherwise, which would block attachments. New installs set `client_max_body_size 100m`. On an older install, add it and reload nginx:
+
+```bash
+ssh aiccloud 'f=/etc/nginx/sites-available/simplifyed-prod; grep -q client_max_body_size $f || sed -i "0,/server_name/s//client_max_body_size 100m;\n    server_name/" $f; nginx -t && systemctl reload nginx'
+```
+
+The site file is named after the service (`simplifyed` or `simplifyed-prod`); check with `ls /etc/nginx/sites-available/`. WhatsApp attachments are kept in `backend/database/whatsapp-media/`, so the database backup above includes them.
+
 **Roll back the database** if a migration fails:
 
 ```bash

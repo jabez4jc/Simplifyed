@@ -4,10 +4,14 @@
  * from the linked account.
  */
 import express from 'express';
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
+import multer from 'multer';
 import db from '../../core/database.js';
 import { requireAuth, requireAdmin } from '../../middleware/auth.js';
-import { ValidationError } from '../../core/errors.js';
-import whatsappService from '../../services/whatsapp.service.js';
+import { ValidationError, NotFoundError } from '../../core/errors.js';
+import whatsappService, { MEDIA_DIR, mediaKind, INLINE_MAX_BYTES } from '../../services/whatsapp.service.js';
 import whatsappOutbox from '../../services/whatsapp-outbox.service.js';
 import whatsappTemplates, {
   PLACEHOLDERS, PLACEHOLDER_HELP, PER_INSTANCE, messageVars, render, groupByPhone, validateBody,
@@ -16,6 +20,20 @@ import loginReminderService from '../../services/login-reminder.service.js';
 import { normalizeInstanceData } from '../../utils/instance-validation.util.js';
 
 const router = express.Router();
+
+// Attachments: up to 10 files, 90 MB each (WhatsApp takes documents far larger, but the request
+// must pass Cloudflare's 100 MB upload cap); photos, videos and audio that play inline are capped
+// at WhatsApp's 16 MB below. Stored under a random name - the original name only travels as the
+// document's file name.
+const MAX_FILES = 10;
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => fs.mkdir(MEDIA_DIR, { recursive: true }, (err) => cb(err, MEDIA_DIR)),
+    filename: (req, file, cb) => cb(null, `${crypto.randomUUID()}${path.extname(file.originalname).toLowerCase().replace(/[^.\w]/g, '')}`),
+  }),
+  limits: { fileSize: 90 * 1024 * 1024, files: MAX_FILES },
+});
+const removeUploads = (files = []) => files.forEach((f) => fs.rm(f.path, { force: true }, () => {}));
 const PER_INSTANCE_PLACEHOLDERS = new RegExp(`\\{(${PER_INSTANCE.join('|')})\\}`);
 router.use(requireAuth, requireAdmin);
 
@@ -41,8 +59,9 @@ router.get('/recipients', wrap(async (req, res) => {
  * selected instances gets two messages, each about one; any other text goes once per owner.
  * Instances without a number are skipped.
  */
-async function buildMessages(body, instanceIds) {
-  const text = validateBody(body, 'custom');
+async function buildMessages(body, instanceIds, { attachments = false } = {}) {
+  // With attachments the text is optional (it becomes the caption)
+  const text = attachments && !String(body ?? '').trim() ? '' : validateBody(body, 'custom');
   const ids = Array.isArray(instanceIds) ? [...new Set(instanceIds.map(Number).filter(Number.isInteger))] : [];
   if (!ids.length) throw new ValidationError('Select at least one instance');
   const instances = await db.all(`SELECT * FROM instances WHERE id IN (${ids.map(() => '?').join(',')})`, ids);
@@ -62,17 +81,38 @@ async function buildMessages(body, instanceIds) {
   };
 }
 
-router.post('/preview', wrap(async (req, res) => ok(res, await buildMessages(req.body?.body, req.body?.instance_ids))));
+router.post('/preview', wrap(async (req, res) => ok(res, await buildMessages(req.body?.body, req.body?.instance_ids,
+  { attachments: Boolean(req.body?.attachments) }))));
 
-router.post('/send', wrap(async (req, res) => {
-  const { messages, skipped } = await buildMessages(req.body?.body, req.body?.instance_ids);
-  if (!messages.length) throw new ValidationError('None of the selected instances has an owner WhatsApp number');
-  if (whatsappService.getStatus().status !== 'open') throw new ValidationError('WhatsApp is not connected');
-  const ids = await whatsappOutbox.enqueue(messages.map((m) => ({
-    recipient: 'owner', phone: m.phone, instanceIds: m.instanceIds, templateKey: req.body?.template_key || null,
-    body: m.body, sentBy: req.user.id,
-  })));
-  ok(res, { queued: ids.length, skipped });
+/** JSON, or multipart with `files` (instance_ids then arrives as a JSON string). */
+router.post('/send', (req, res, next) => upload.array('files', MAX_FILES)(req, res, (err) => {
+  if (err instanceof multer.MulterError) {
+    return next(new ValidationError(err.code === 'LIMIT_FILE_SIZE' ? 'Each file must be under 90 MB'
+      : err.code === 'LIMIT_FILE_COUNT' ? `At most ${MAX_FILES} files per message` : err.message));
+  }
+  return next(err);
+}), wrap(async (req, res) => {
+  const files = req.files || [];
+  try {
+    const tooBig = files.find((f) => mediaKind(f.mimetype) !== 'document' && f.size > INLINE_MAX_BYTES);
+    if (tooBig) throw new ValidationError(`${tooBig.originalname}: photos, videos and audio are limited to 16 MB by WhatsApp - send it as a smaller file`);
+    let instanceIds = req.body?.instance_ids;
+    if (typeof instanceIds === 'string') {
+      try { instanceIds = JSON.parse(instanceIds); } catch { instanceIds = []; }
+    }
+    const { messages, skipped } = await buildMessages(req.body?.body, instanceIds, { attachments: files.length > 0 });
+    if (!messages.length) throw new ValidationError('None of the selected instances has an owner WhatsApp number');
+    if (whatsappService.getStatus().status !== 'open') throw new ValidationError('WhatsApp is not connected');
+    const media = files.map((f) => ({ file: f.filename, name: f.originalname.slice(0, 200), mime: f.mimetype, size: f.size }));
+    const ids = await whatsappOutbox.enqueue(messages.map((m) => ({
+      recipient: 'owner', phone: m.phone, instanceIds: m.instanceIds, templateKey: req.body?.template_key || null,
+      body: m.body, sentBy: req.user.id, media,
+    })));
+    ok(res, { queued: ids.length, skipped, attachments: media.length });
+  } catch (err) {
+    removeUploads(files);
+    throw err;
+  }
 }));
 
 /** A test message to any number - checks the link without involving an instance. */
@@ -100,5 +140,14 @@ router.post('/templates/:id/run', wrap(async (req, res) => {
 
 // ── History ───────────────────────────────────────────────
 router.get('/messages', wrap(async (req, res) => ok(res, await whatsappOutbox.history(req.query.limit, req.query.instance_id))));
+
+/** Download an attachment of a sent message (History). */
+router.get('/messages/:id/media/:index', wrap(async (req, res) => {
+  const row = await db.get('SELECT media FROM whatsapp_messages WHERE id = ?', [Number(req.params.id)]);
+  const item = row?.media ? JSON.parse(row.media)[Number(req.params.index)] : null;
+  const file = item && path.join(MEDIA_DIR, path.basename(item.file));
+  if (!file || !fs.existsSync(file)) throw new NotFoundError('Attachment no longer available');
+  res.download(file, item.name);
+}));
 
 export default router;

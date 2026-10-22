@@ -592,6 +592,8 @@ server {
     listen [::]:$LISTEN_PORT;
     server_name $DOMAIN;
     access_log /var/log/nginx/access.log ${NGINX_SITE}_noargs;
+    # WhatsApp attachments (nginx's default is 1 MB)
+    client_max_body_size 100m;
 
     # Allow Let's Encrypt challenges
     location /.well-known/acme-challenge/ {
